@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .config import settings
+from .workspaces import DEFAULT_WORKSPACE, validate_workspace
 
 
 def utc_now() -> str:
@@ -36,6 +37,7 @@ def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
+                workspace TEXT NOT NULL DEFAULT 'general',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -55,6 +57,8 @@ def init_db() -> None:
                 user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 content TEXT NOT NULL,
+                workspace TEXT NOT NULL DEFAULT 'general',
+                file_type TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
@@ -66,6 +70,7 @@ def init_db() -> None:
                 position INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 embedding TEXT NOT NULL,
+                page INTEGER,
                 FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
@@ -80,6 +85,42 @@ def init_db() -> None:
                 ON chunks(user_id);
             """
         )
+        _ensure_column(
+            connection,
+            "sessions",
+            "workspace",
+            "TEXT NOT NULL DEFAULT 'general'",
+        )
+        _ensure_column(
+            connection,
+            "documents",
+            "workspace",
+            "TEXT NOT NULL DEFAULT 'general'",
+        )
+        _ensure_column(connection, "documents", "file_type", "TEXT")
+        _ensure_column(connection, "chunks", "page", "INTEGER")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_user_workspace "
+            "ON documents(user_id, workspace, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunks_user_workspace "
+            "ON chunks(user_id, document_id)"
+        )
+
+
+def _ensure_column(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    declaration: str,
+) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 def create_user(username: str, password_hash: str) -> dict[str, Any]:
@@ -117,20 +158,27 @@ def get_user_by_id(user_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def create_session(user_id: int, title: str = "New conversation") -> dict[str, Any]:
+def create_session(
+    user_id: int,
+    title: str = "New conversation",
+    workspace: str = DEFAULT_WORKSPACE,
+) -> dict[str, Any]:
     session_id = str(uuid.uuid4())
     now = utc_now()
+    workspace = validate_workspace(workspace)
     with connect() as connection:
         connection.execute(
             """
-            INSERT INTO sessions (id, user_id, title, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO sessions
+                (id, user_id, title, workspace, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (session_id, user_id, title, now, now),
+            (session_id, user_id, title, workspace, now, now),
         )
     return {
         "id": session_id,
         "title": title,
+        "workspace": workspace,
         "created_at": now,
         "updated_at": now,
     }
@@ -139,7 +187,11 @@ def create_session(user_id: int, title: str = "New conversation") -> dict[str, A
 def get_session(session_id: str, user_id: int) -> dict[str, Any] | None:
     with connect() as connection:
         row = connection.execute(
-            "SELECT id, title, created_at, updated_at FROM sessions WHERE id = ? AND user_id = ?",
+            """
+            SELECT id, title, workspace, created_at, updated_at
+            FROM sessions
+            WHERE id = ? AND user_id = ?
+            """,
             (session_id, user_id),
         ).fetchone()
     return dict(row) if row else None
@@ -149,7 +201,7 @@ def list_sessions(user_id: int) -> list[dict[str, Any]]:
     with connect() as connection:
         rows = connection.execute(
             """
-            SELECT id, title, created_at, updated_at
+            SELECT id, title, workspace, created_at, updated_at
             FROM sessions
             WHERE user_id = ?
             ORDER BY updated_at DESC
@@ -227,49 +279,73 @@ def create_document(
     user_id: int,
     name: str,
     content: str,
-    chunks: list[str],
+    chunks: list[dict[str, Any]],
     embeddings: list[list[float]],
+    workspace: str = DEFAULT_WORKSPACE,
+    file_type: str | None = None,
 ) -> dict[str, Any]:
     document_id = str(uuid.uuid4())
     now = utc_now()
+    workspace = validate_workspace(workspace)
     with connect() as connection:
         connection.execute(
             """
-            INSERT INTO documents (id, user_id, name, content, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO documents
+                (id, user_id, name, content, workspace, file_type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (document_id, user_id, name, content, now),
+            (document_id, user_id, name, content, workspace, file_type, now),
         )
         connection.executemany(
             """
-            INSERT INTO chunks (document_id, user_id, position, content, embedding)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO chunks
+                (document_id, user_id, position, content, embedding, page)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
-                (document_id, user_id, index, chunk, json.dumps(embedding))
+                (
+                    document_id,
+                    user_id,
+                    index,
+                    chunk["content"],
+                    json.dumps(embedding),
+                    chunk.get("page"),
+                )
                 for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
             ],
         )
     return {
         "id": document_id,
         "name": name,
+        "workspace": workspace,
+        "file_type": file_type,
         "chunk_count": len(chunks),
         "created_at": now,
     }
 
 
-def list_documents(user_id: int) -> list[dict[str, Any]]:
+def list_documents(
+    user_id: int,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    parameters: list[Any] = [user_id]
+    workspace_filter = ""
+    if workspace:
+        workspace_filter = "AND d.workspace = ?"
+        parameters.append(validate_workspace(workspace))
     with connect() as connection:
         rows = connection.execute(
-            """
-            SELECT d.id, d.name, d.created_at, COUNT(c.id) AS chunk_count
+            f"""
+            SELECT d.id, d.name, d.workspace, d.file_type, d.created_at,
+                   COUNT(c.id) AS chunk_count
             FROM documents d
             LEFT JOIN chunks c ON c.document_id = d.id
             WHERE d.user_id = ?
+              {workspace_filter}
             GROUP BY d.id
             ORDER BY d.created_at DESC
             """,
-            (user_id,),
+            parameters,
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -286,17 +362,20 @@ def delete_document(document_id: str, user_id: int) -> bool:
 def search_chunks(
     user_id: int,
     query_embedding: list[float],
+    workspace: str = DEFAULT_WORKSPACE,
     limit: int = 4,
 ) -> list[dict[str, Any]]:
+    workspace = validate_workspace(workspace)
     with connect() as connection:
         rows = connection.execute(
             """
-            SELECT c.content, c.embedding, d.id AS document_id, d.name
+            SELECT c.content, c.embedding, c.page,
+                   d.id AS document_id, d.name
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
-            WHERE c.user_id = ?
+            WHERE c.user_id = ? AND d.workspace = ?
             """,
-            (user_id,),
+            (user_id, workspace),
         ).fetchall()
 
     query_norm = math.sqrt(sum(value * value for value in query_embedding)) or 1.0
@@ -312,6 +391,7 @@ def search_chunks(
                 "document_id": row["document_id"],
                 "name": row["name"],
                 "content": row["content"],
+                "page": row["page"],
                 "score": round(score, 4),
             }
         )
