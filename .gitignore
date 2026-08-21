@@ -19,6 +19,10 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+backend/data/
+*.db
+*.db-shm
+*.db-wal
 
 # Frontend dependencies and build output
 node_modules/

@@ -1,0 +1,319 @@
+import json
+import math
+import sqlite3
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+from .config import settings
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def connect() -> sqlite3.Connection:
+    settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(settings.database_path, timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
+    return connection
+
+
+def init_db() -> None:
+    with connect() as connection:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                embedding TEXT NOT NULL,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_user_updated
+                ON sessions(user_id, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_messages_session
+                ON messages(session_id, id);
+            CREATE INDEX IF NOT EXISTS idx_documents_user
+                ON documents(user_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_chunks_user
+                ON chunks(user_id);
+            """
+        )
+
+
+def create_user(username: str, password_hash: str) -> dict[str, Any]:
+    now = utc_now()
+    try:
+        with connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+                (username, password_hash, now),
+            )
+            return {
+                "id": cursor.lastrowid,
+                "username": username,
+                "created_at": now,
+            }
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("Username already exists.") from exc
+
+
+def get_user_by_username(username: str) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM users WHERE username = ? COLLATE NOCASE",
+            (username,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_by_id(user_id: int) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT id, username, created_at FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_session(user_id: int, title: str = "New conversation") -> dict[str, Any]:
+    session_id = str(uuid.uuid4())
+    now = utc_now()
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO sessions (id, user_id, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (session_id, user_id, title, now, now),
+        )
+    return {
+        "id": session_id,
+        "title": title,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def get_session(session_id: str, user_id: int) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT id, title, created_at, updated_at FROM sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_sessions(user_id: int) -> list[dict[str, Any]]:
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, title, created_at, updated_at
+            FROM sessions
+            WHERE user_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_session(session_id: str, user_id: int) -> bool:
+    with connect() as connection:
+        cursor = connection.execute(
+            "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
+        )
+    return cursor.rowcount > 0
+
+
+def append_message(session_id: str, role: str, content: str) -> dict[str, Any]:
+    now = utc_now()
+    with connect() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO messages (session_id, role, content, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (session_id, role, content, now),
+        )
+        if role == "user":
+            title = " ".join(content.split())[:42] or "New conversation"
+            connection.execute(
+                """
+                UPDATE sessions
+                SET title = CASE WHEN title = 'New conversation' THEN ? ELSE title END,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (title, now, session_id),
+            )
+        else:
+            connection.execute(
+                "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                (now, session_id),
+            )
+    return {
+        "id": cursor.lastrowid,
+        "role": role,
+        "content": content,
+        "created_at": now,
+    }
+
+
+def list_messages(session_id: str, user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+    if not get_session(session_id, user_id):
+        return []
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, role, content, created_at
+            FROM (
+                SELECT id, role, content, created_at
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            )
+            ORDER BY id ASC
+            """,
+            (session_id, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def create_document(
+    user_id: int,
+    name: str,
+    content: str,
+    chunks: list[str],
+    embeddings: list[list[float]],
+) -> dict[str, Any]:
+    document_id = str(uuid.uuid4())
+    now = utc_now()
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO documents (id, user_id, name, content, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (document_id, user_id, name, content, now),
+        )
+        connection.executemany(
+            """
+            INSERT INTO chunks (document_id, user_id, position, content, embedding)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (document_id, user_id, index, chunk, json.dumps(embedding))
+                for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+            ],
+        )
+    return {
+        "id": document_id,
+        "name": name,
+        "chunk_count": len(chunks),
+        "created_at": now,
+    }
+
+
+def list_documents(user_id: int) -> list[dict[str, Any]]:
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT d.id, d.name, d.created_at, COUNT(c.id) AS chunk_count
+            FROM documents d
+            LEFT JOIN chunks c ON c.document_id = d.id
+            WHERE d.user_id = ?
+            GROUP BY d.id
+            ORDER BY d.created_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_document(document_id: str, user_id: int) -> bool:
+    with connect() as connection:
+        cursor = connection.execute(
+            "DELETE FROM documents WHERE id = ? AND user_id = ?",
+            (document_id, user_id),
+        )
+    return cursor.rowcount > 0
+
+
+def search_chunks(
+    user_id: int,
+    query_embedding: list[float],
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT c.content, c.embedding, d.id AS document_id, d.name
+            FROM chunks c
+            JOIN documents d ON d.id = c.document_id
+            WHERE c.user_id = ?
+            """,
+            (user_id,),
+        ).fetchall()
+
+    query_norm = math.sqrt(sum(value * value for value in query_embedding)) or 1.0
+    scored: list[dict[str, Any]] = []
+    for row in rows:
+        embedding = json.loads(row["embedding"])
+        embedding_norm = math.sqrt(sum(value * value for value in embedding)) or 1.0
+        score = sum(
+            left * right for left, right in zip(query_embedding, embedding)
+        ) / (query_norm * embedding_norm)
+        scored.append(
+            {
+                "document_id": row["document_id"],
+                "name": row["name"],
+                "content": row["content"],
+                "score": round(score, 4),
+            }
+        )
+
+    return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]

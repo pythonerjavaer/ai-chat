@@ -1,23 +1,34 @@
 # ai-chat
 
-一个最小可运行的全栈 AI 聊天项目。后端使用 FastAPI 调用 OpenAI Chat Completions API（`gpt-4o-mini`），前端是原生 HTML、CSS 和 JavaScript。
+一个可本地运行的全栈 AI 工作空间。后端使用 FastAPI、SQLite 和 OpenAI API，前端使用原生 HTML、CSS 与 JavaScript。
 
-## 当前已实现
+## 已实现功能
 
-- `POST /api/chat` 接收用户消息并返回 OpenAI API 的文本回复。
-- 前端展示用户消息、等待状态、AI 回复和请求错误。
-- 当前页面内的既有对话会随下一次请求一并提交，帮助模型理解本页上下文；刷新页面后这些数据会丢失。
-- 后端通过 CORS 允许本地静态前端访问。
+- 用户注册、登录与 JWT 身份认证；不同用户的数据相互隔离。
+- SQLite 持久化对话、消息和个人知识库，服务重启后仍可读取。
+- 多会话管理：创建、读取、继续和删除历史对话。
+- RAG：上传 UTF-8 编码的 TXT、Markdown、CSV 或 JSON 文档，使用 OpenAI Embeddings 建立索引，并在回答时检索相关片段。
+- Agent 工具调用：模型可以调用安全算术计算器和 IANA 时区时间工具。
+- SSE 流式输出，前端逐段展示模型回复、工具调用和知识库来源。
+- 保留非流式 `POST /api/chat`，便于服务间调用和自动化测试。
 
-本项目目前没有数据库或持久化记忆，也没有 RAG、Agent/工具调用、流式输出、用户认证等功能。
+默认聊天模型为 `gpt-4o-mini`，Embedding 模型为 `text-embedding-3-small`，均可通过环境变量修改。
 
 ## 目录结构
 
 ```text
 ai-chat/
 ├── backend/
+│   ├── tests/
+│   │   └── test_api.py
+│   ├── __init__.py
+│   ├── ai_service.py
+│   ├── config.py
+│   ├── database.py
 │   ├── main.py
+│   ├── security.py
 │   ├── requirements.txt
+│   ├── requirements-dev.txt
 │   └── .env.example
 ├── frontend/
 │   └── index.html
@@ -25,54 +36,91 @@ ai-chat/
 └── README.md
 ```
 
+运行后生成的 SQLite 文件默认位于 `backend/data/ai_chat.db`。
+
 ## 本地运行
 
-需要 Python 3.10 或更高版本，以及一个可用的 OpenAI API Key。
+需要 Python 3.10 或更高版本，以及可用的 OpenAI API Key。
 
-### 1. 启动后端
+### 1. 安装后端依赖
 
 ```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
+python3 -m venv backend/.venv
+source backend/.venv/bin/activate
+pip install -r backend/requirements.txt
+cp backend/.env.example backend/.env
 ```
 
 编辑 `backend/.env`：
 
 ```dotenv
-OPENAI_API_KEY=your_key_here
+OPENAI_API_KEY=your_openai_api_key
+JWT_SECRET=replace_with_a_long_random_value
+AI_MODEL=gpt-4o-mini
+EMBEDDING_MODEL=text-embedding-3-small
+DATABASE_PATH=
+CORS_ORIGINS=http://127.0.0.1:5500,http://localhost:5500
 ```
 
-然后启动 FastAPI：
+`DATABASE_PATH` 留空时使用默认 SQLite 路径。
+
+### 2. 启动后端
+
+在仓库根目录运行：
 
 ```bash
-uvicorn main:app --host 127.0.0.1 --port 8000
+uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-### 2. 启动前端
+健康检查和交互式 API 文档：
 
-在另一个终端中，从仓库根目录运行：
+- <http://127.0.0.1:8000/api/health>
+- <http://127.0.0.1:8000/docs>
+
+### 3. 启动前端
+
+在另一个终端中运行：
 
 ```bash
 python3 -m http.server 5500 --bind 127.0.0.1 --directory frontend
 ```
 
-浏览器打开 <http://127.0.0.1:5500/>，前端会请求 `http://127.0.0.1:8000/api/chat`。
+浏览器打开 <http://127.0.0.1:5500/>，注册账号后即可创建持久化对话和上传知识库文档。
 
-## API 示例
+## API
 
-`history` 可省略；如果提供，它只代表本次请求携带的页面会话上下文，后端不会保存。
+除注册和登录外，所有业务接口都需要 `Authorization: Bearer <token>`。
 
-```bash
-curl -X POST http://127.0.0.1:8000/api/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"你好","history":[]}'
-```
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/auth/register` | 注册并获取 Token |
+| `POST` | `/api/auth/login` | 登录并获取 Token |
+| `GET` | `/api/auth/me` | 获取当前用户 |
+| `GET/POST` | `/api/sessions` | 查询或创建对话 |
+| `GET` | `/api/sessions/{id}/messages` | 查询对话消息 |
+| `DELETE` | `/api/sessions/{id}` | 删除对话及其消息 |
+| `GET/POST` | `/api/documents` | 查询或上传知识库文档 |
+| `DELETE` | `/api/documents/{id}` | 删除知识库文档及向量 |
+| `POST` | `/api/chat` | 非流式聊天 |
+| `POST` | `/api/chat/stream` | SSE 流式聊天 |
 
-成功响应：
+聊天请求：
 
 ```json
-{"reply":"..."}
+{
+  "message": "根据我的资料总结项目重点",
+  "session_id": "optional-existing-session-id"
+}
 ```
+
+不传 `session_id` 时会自动创建新对话。非流式响应包含 `reply`、`session_id`、`sources` 和 `tools_used`。
+
+## 测试
+
+```bash
+source backend/.venv/bin/activate
+pip install -r backend/requirements-dev.txt
+python -m pytest -q
+```
+
+测试覆盖认证和用户隔离、SQLite 持久化、文档索引与 RAG 来源、SSE 流式保存以及计算工具输入限制。
