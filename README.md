@@ -76,9 +76,3 @@ curl -X POST http://127.0.0.1:8000/api/chat \
 ```json
 {"reply":"..."}
 ```
-
-## 敏感信息
-
-- 真实密钥只放在 `backend/.env`，不要写入代码或提交到 Git。
-- `.env` 和常见本地缓存、虚拟环境、编辑器文件已由根目录 `.gitignore` 忽略。
-- `backend/.env.example` 只保留配置变量名，不包含真实值。
