@@ -1,0 +1,24 @@
+:root { color-scheme: dark; font-family: "Noto Sans SC", system-ui, sans-serif; color: #eaf6ff; background: #050c16; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 20% 0, rgba(60,207,255,.12), transparent 35%), radial-gradient(circle at 90% 35%, rgba(255,106,49,.1), transparent 35%), #050c16; }
+header, main, footer { width: min(920px, calc(100% - 36px)); margin: auto; }
+header { padding: 34px 0 28px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(177,218,255,.12); }
+.brand { display: flex; align-items: center; gap: 10px; color: #f4fbff; text-decoration: none; font-weight: 800; }
+.mark { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid rgba(117,221,255,.26); border-radius: 11px; background: linear-gradient(135deg, rgba(69,216,255,.15), rgba(255,122,49,.12)); }
+header nav { display: flex; gap: 16px; }
+header nav a { color: #8192a8; font-size: 12px; text-decoration: none; }
+main { padding: 60px 0 80px; }
+.eyebrow { color: #67dfff; font-size: 10px; font-weight: 800; letter-spacing: .18em; }
+h1 { margin: 12px 0 13px; font-size: clamp(36px, 7vw, 58px); letter-spacing: -.055em; }
+.lead { max-width: 720px; color: #90a2b8; line-height: 1.8; }
+.meta { display: inline-flex; margin: 16px 0 34px; padding: 7px 10px; color: #9bb0c7; border: 1px solid rgba(177,218,255,.13); border-radius: 9px; background: rgba(255,255,255,.025); font-size: 11px; }
+article { padding: 25px 28px; border: 1px solid rgba(177,218,255,.12); border-radius: 18px; background: rgba(12,25,42,.62); box-shadow: 0 24px 80px rgba(0,0,0,.18); }
+h2 { margin: 32px 0 10px; color: #f0f9ff; font-size: 18px; }
+h2:first-child { margin-top: 0; }
+h3 { margin: 22px 0 8px; color: #d6e7f5; font-size: 14px; }
+p, li { color: #98aabc; font-size: 13px; line-height: 1.85; }
+a { color: #71ddff; }
+code { padding: 2px 5px; border-radius: 5px; background: rgba(255,255,255,.07); }
+.notice { margin: 22px 0; padding: 14px 16px; color: #d5e9f7; border-left: 3px solid #ff7a31; border-radius: 0 10px 10px 0; background: rgba(255,122,49,.07); font-size: 12px; line-height: 1.7; }
+footer { padding: 28px 0 42px; color: #53677d; border-top: 1px solid rgba(177,218,255,.09); font-size: 11px; }
+@media (max-width: 620px) { header nav { display: none; } main { padding-top: 40px; } article { padding: 20px; } }

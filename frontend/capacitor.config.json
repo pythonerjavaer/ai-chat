@@ -1,0 +1,10 @@
+{
+  "appId": "com.pythonerjavaer.frostfireai",
+  "appName": "冰焰智研",
+  "webDir": "dist",
+  "backgroundColor": "#07111f",
+  "server": {
+    "androidScheme": "https",
+    "iosScheme": "https"
+  }
+}

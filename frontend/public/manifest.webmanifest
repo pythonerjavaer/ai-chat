@@ -1,0 +1,24 @@
+{
+  "name": "冰焰智研 · FrostFire AI",
+  "short_name": "冰焰智研",
+  "description": "合同合规与金融文档的证据驱动 AI 研究工作台",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050b15",
+  "theme_color": "#07111f",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/icons/icon-192.webp",
+      "type": "image/webp",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.webp",
+      "type": "image/webp",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ]
+}

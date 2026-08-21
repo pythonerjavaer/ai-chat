@@ -227,6 +227,7 @@ def build_messages(
         "Use tools when they materially improve accuracy.",
         "Do not claim a tool was used unless a tool result appears in the conversation.",
         "Clearly separate facts found in sources from analysis and assumptions.",
+        "For document-based analysis, prefer the structure: Evidence, Analysis, Gaps, Next checks. Omit a section only when it is genuinely irrelevant.",
     ]
     if workspace == "legal":
         instructions.extend(
@@ -406,6 +407,7 @@ def run_agent(
             messages=working_messages,
             tools=tools,
             tool_choice="auto",
+            store=False,
         )
         message = response.choices[0].message
         if not message.tool_calls:
@@ -450,6 +452,7 @@ def stream_agent(
             tools=tools,
             tool_choice="auto",
             stream=True,
+            store=False,
         )
         text_parts: list[str] = []
         tool_buffers: dict[int, dict[str, str]] = {}

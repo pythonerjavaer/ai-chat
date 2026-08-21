@@ -9,6 +9,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     Response,
     UploadFile,
     status,
@@ -52,7 +53,10 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="AI Chat API", version="3.0.0", lifespan=lifespan)
+PRIVACY_VERSION = "2026-08-21"
+
+
+app = FastAPI(title="FrostFire AI API", version="4.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -62,9 +66,31 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 class AuthRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50, pattern=r"^[\w.-]+$")
     password: str = Field(min_length=8, max_length=128)
+    privacy_accepted: bool = False
+
+
+class PrivacyConsentRequest(BaseModel):
+    accepted: bool
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=128)
+    confirmation: str
 
 
 class SessionRequest(BaseModel):
@@ -99,12 +125,33 @@ def current_user(
 User = Annotated[dict, Depends(current_user)]
 
 
+def public_user(user: dict) -> dict:
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "privacy_accepted": bool(user.get("privacy_accepted_at")),
+        "privacy_version": user.get("privacy_version"),
+    }
+
+
 def token_response(user: dict) -> dict:
     return {
         "access_token": create_access_token(user["id"], user["username"]),
         "token_type": "bearer",
-        "user": {"id": user["id"], "username": user["username"]},
+        "user": public_user(user),
     }
+
+
+def require_privacy_consent(user: User) -> dict:
+    if not user.get("privacy_accepted_at"):
+        raise HTTPException(
+            status_code=428,
+            detail="Privacy consent is required before sending data to OpenAI.",
+        )
+    return user
+
+
+ConsentedUser = Annotated[dict, Depends(require_privacy_consent)]
 
 
 def resolve_session(
@@ -158,10 +205,16 @@ def workspaces() -> list[dict]:
 
 @app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
 def register(request: AuthRequest) -> dict:
+    if not request.privacy_accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="You must accept the privacy policy before creating an account.",
+        )
     try:
         user = database.create_user(
             request.username.strip(),
             hash_password(request.password),
+            PRIVACY_VERSION,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -178,7 +231,39 @@ def login(request: AuthRequest) -> dict:
 
 @app.get("/api/auth/me")
 def me(user: User) -> dict:
-    return {"id": user["id"], "username": user["username"]}
+    return public_user(user)
+
+
+@app.get("/api/legal/disclosures")
+def legal_disclosures() -> dict:
+    return {
+        "privacy_version": PRIVACY_VERSION,
+        "third_party_ai": "OpenAI API",
+        "legal_boundary": "Document review assistance, not legal advice.",
+        "finance_boundary": "Research assistance, not personalized investment advice.",
+    }
+
+
+@app.post("/api/auth/privacy-consent")
+def accept_privacy(request: PrivacyConsentRequest, user: User) -> dict:
+    if not request.accepted:
+        raise HTTPException(status_code=400, detail="Consent was not accepted.")
+    updated = database.record_privacy_consent(user["id"], PRIVACY_VERSION)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return public_user(updated)
+
+
+@app.delete("/api/auth/account", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(request: DeleteAccountRequest, user: User) -> Response:
+    stored_user = database.get_user_by_username(user["username"])
+    if not stored_user or not verify_password(request.password, stored_user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Password is incorrect.")
+    if request.confirmation != "DELETE":
+        raise HTTPException(status_code=400, detail='Enter "DELETE" to confirm.')
+    if not database.delete_user(user["id"]):
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/api/sessions")
@@ -216,7 +301,7 @@ def documents(user: User, workspace: Workspace | None = None) -> list[dict]:
 
 @app.post("/api/documents", status_code=status.HTTP_201_CREATED)
 def upload_document(
-    user: User,
+    user: ConsentedUser,
     file: UploadFile = File(...),
     workspace: str = Form(DEFAULT_WORKSPACE),
 ) -> dict:
@@ -265,7 +350,7 @@ def remove_document(document_id: str, user: User) -> Response:
 
 
 @app.post("/api/chat")
-def chat(request: ChatRequest, user: User) -> dict:
+def chat(request: ChatRequest, user: ConsentedUser) -> dict:
     try:
         session, messages, sources = prepare_chat(user["id"], request)
         reply, tools_used = run_agent(messages, session["workspace"])
@@ -289,7 +374,7 @@ def sse(event: str, data: dict) -> str:
 
 
 @app.post("/api/chat/stream")
-def chat_stream(request: ChatRequest, user: User) -> StreamingResponse:
+def chat_stream(request: ChatRequest, user: ConsentedUser) -> StreamingResponse:
     try:
         session, messages, sources = prepare_chat(user["id"], request)
     except HTTPException:

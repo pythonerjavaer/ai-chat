@@ -30,6 +30,8 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 password_hash TEXT NOT NULL,
+                privacy_accepted_at TEXT,
+                privacy_version TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -99,6 +101,8 @@ def init_db() -> None:
         )
         _ensure_column(connection, "documents", "file_type", "TEXT")
         _ensure_column(connection, "chunks", "page", "INTEGER")
+        _ensure_column(connection, "users", "privacy_accepted_at", "TEXT")
+        _ensure_column(connection, "users", "privacy_version", "TEXT")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_documents_user_workspace "
             "ON documents(user_id, workspace, created_at DESC)"
@@ -123,17 +127,28 @@ def _ensure_column(
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
-def create_user(username: str, password_hash: str) -> dict[str, Any]:
+def create_user(
+    username: str,
+    password_hash: str,
+    privacy_version: str | None = None,
+) -> dict[str, Any]:
     now = utc_now()
+    privacy_accepted_at = now if privacy_version else None
     try:
         with connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-                (username, password_hash, now),
+                """
+                INSERT INTO users
+                    (username, password_hash, privacy_accepted_at, privacy_version, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (username, password_hash, privacy_accepted_at, privacy_version, now),
             )
             return {
                 "id": cursor.lastrowid,
                 "username": username,
+                "privacy_accepted_at": privacy_accepted_at,
+                "privacy_version": privacy_version,
                 "created_at": now,
             }
     except sqlite3.IntegrityError as exc:
@@ -152,10 +167,36 @@ def get_user_by_username(username: str) -> dict[str, Any] | None:
 def get_user_by_id(user_id: int) -> dict[str, Any] | None:
     with connect() as connection:
         row = connection.execute(
-            "SELECT id, username, created_at FROM users WHERE id = ?",
+            """
+            SELECT id, username, privacy_accepted_at, privacy_version, created_at
+            FROM users
+            WHERE id = ?
+            """,
             (user_id,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def record_privacy_consent(user_id: int, privacy_version: str) -> dict[str, Any] | None:
+    accepted_at = utc_now()
+    with connect() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE users
+            SET privacy_accepted_at = ?, privacy_version = ?
+            WHERE id = ?
+            """,
+            (accepted_at, privacy_version, user_id),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_user_by_id(user_id)
+
+
+def delete_user(user_id: int) -> bool:
+    with connect() as connection:
+        cursor = connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    return cursor.rowcount > 0
 
 
 def create_session(

@@ -29,7 +29,11 @@ from backend.ai_service import (
 def register(client: TestClient, username: str) -> tuple[str, dict]:
     response = client.post(
         "/api/auth/register",
-        json={"username": username, "password": "correct-horse-123"},
+        json={
+            "username": username,
+            "password": "correct-horse-123",
+            "privacy_accepted": True,
+        },
     )
     assert response.status_code == 201
     payload = response.json()
@@ -45,7 +49,11 @@ def test_authentication_and_user_isolation():
         alice_token, _ = register(client, "alice")
         duplicate = client.post(
             "/api/auth/register",
-            json={"username": "ALICE", "password": "correct-horse-123"},
+            json={
+                "username": "ALICE",
+                "password": "correct-horse-123",
+                "privacy_accepted": True,
+            },
         )
         assert duplicate.status_code == 409
 
@@ -70,6 +78,44 @@ def test_authentication_and_user_isolation():
             headers=auth(bob_token),
         )
         assert forbidden.status_code == 404
+
+
+def test_privacy_consent_and_account_deletion():
+    with TestClient(main.app) as client:
+        rejected = client.post(
+            "/api/auth/register",
+            json={"username": "no-consent", "password": "correct-horse-123"},
+        )
+        assert rejected.status_code == 400
+
+        token, user = register(client, "delete-me")
+        profile = client.get("/api/auth/me", headers=auth(token)).json()
+        assert profile["privacy_accepted"] is True
+
+        created = client.post(
+            "/api/sessions",
+            headers=auth(token),
+            json={"title": "Private history"},
+        )
+        assert created.status_code == 201
+
+        wrong_password = client.request(
+            "DELETE",
+            "/api/auth/account",
+            headers=auth(token),
+            json={"password": "wrong-password", "confirmation": "DELETE"},
+        )
+        assert wrong_password.status_code == 401
+
+        deleted = client.request(
+            "DELETE",
+            "/api/auth/account",
+            headers=auth(token),
+            json={"password": "correct-horse-123", "confirmation": "DELETE"},
+        )
+        assert deleted.status_code == 204
+        assert database.get_user_by_id(user["id"]) is None
+        assert database.get_session(created.json()["id"], user["id"]) is None
 
 
 def test_persistent_chat_and_session_history(monkeypatch):
