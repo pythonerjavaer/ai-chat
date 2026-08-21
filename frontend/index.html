@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI Chat · Minimal</title>
+  <style>
+    /* 全局黑白极简风 */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    }
+
+    body {
+      background: #050505;
+      color: #f5f5f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    .app {
+      width: 100%;
+      max-width: 800px;
+      border: 1px solid #333;
+      border-radius: 16px;
+      padding: 16px;
+      background: radial-gradient(circle at top left, #161616, #050505);
+      box-shadow: 0 0 40px rgba(0, 0, 0, 0.8);
+    }
+
+    .header {
+      padding: 8px 4px 12px;
+      border-bottom: 1px solid #222;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .logo {
+      font-size: 18px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #e5e5e5;
+    }
+
+    .status {
+      font-size: 12px;
+      color: #888;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+      margin-right: 4px;
+    }
+
+    .chat-window {
+      margin-top: 12px;
+      padding: 12px;
+      height: 400px;
+      overflow-y: auto;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #050505, #111);
+      border: 1px solid #222;
+      font-size: 14px;
+    }
+
+    .msg {
+      margin-bottom: 10px;
+      max-width: 80%;
+      line-height: 1.5;
+    }
+
+    .msg-user {
+      margin-left: auto;
+      text-align: right;
+    }
+
+    .msg-bubble {
+      display: inline-block;
+      padding: 8px 10px;
+      border-radius: 12px;
+      border: 1px solid #333;
+      background: #0b0b0b;
+    }
+
+    .msg-user .msg-bubble {
+      border-color: #444;
+      background: #111827;
+    }
+
+    .msg-ai .msg-bubble {
+      border-color: #444;
+      background: #050505;
+    }
+
+    .msg-meta {
+      font-size: 11px;
+      color: #777;
+      margin-bottom: 2px;
+    }
+
+    .input-bar {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #222;
+      display: flex;
+      gap: 8px;
+    }
+
+    .input-bar input {
+      flex: 1;
+      padding: 10px 12px;
+      border-radius: 999px;
+      border: 1px solid #333;
+      background: #050505;
+      color: #f5f5f5;
+      outline: none;
+    }
+
+    .input-bar input:focus {
+      border-color: #999;
+    }
+
+    .input-bar button {
+      padding: 10px 16px;
+      border-radius: 999px;
+      border: 1px solid #f5f5f5;
+      background: transparent;
+      color: #f5f5f5;
+      cursor: pointer;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .input-bar button:active {
+      transform: translateY(1px);
+    }
+
+    .hint {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="header">
+      <div class="logo">AI CHAT · B/W</div>
+      <div class="status">
+        <span class="status-dot"></span> OpenAI API
+      </div>
+    </div>
+
+    <div id="chat" class="chat-window">
+      <!-- 初始欢迎消息 -->
+      <div class="msg msg-ai">
+        <div class="msg-meta">AI · System</div>
+        <div class="msg-bubble">
+          嗨，这个是我自己写的 AI 聊天程序。
+        </div>
+      </div>
+    </div>
+
+    <form id="chat-form" class="input-bar">
+      <input
+        id="user-input"
+        type="text"
+        placeholder="输入点什么，比如：什么是 API？"
+        autocomplete="off"
+      />
+      <button type="submit">Send</button>
+    </form>
+
+    <div class="hint">
+      Beta Version — Powered by OpenAI API.
+    </div>
+  </div>
+
+  <script>
+    const history = [];
+    const chat = document.getElementById("chat");
+    const form = document.getElementById("chat-form");
+    const input = document.getElementById("user-input");
+
+    form.addEventListener("submit", async function (event) {
+      event.preventDefault();
+
+      const text = input.value.trim();
+      if (!text) return;
+
+      appendMessage("user", text);
+      input.value = "";
+      const pendingMessage = appendMessage("ai", "正在思考中，请稍等……");
+
+      try {
+        const response = await fetch("http://127.0.0.1:8000/api/chat", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            message: text,
+            history: [...history],
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || `HTTP ${response.status}`);
+        }
+
+        pendingMessage.remove();
+        appendMessage("ai", data.reply);
+        history.push(
+          { role: "user", content: text },
+          { role: "assistant", content: data.reply },
+        );
+      } catch (error) {
+        pendingMessage.remove();
+        appendMessage("ai", "请求出错了：" + error.message);
+      }
+    });
+
+    function appendMessage(role, text) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "msg " + (role === "user" ? "msg-user" : "msg-ai");
+
+      const meta = document.createElement("div");
+      meta.className = "msg-meta";
+      meta.textContent = role === "user" ? "You" : "AI";
+
+      const bubble = document.createElement("div");
+      bubble.className = "msg-bubble";
+      bubble.textContent = text;
+
+      wrapper.appendChild(meta);
+      wrapper.appendChild(bubble);
+      chat.appendChild(wrapper);
+      chat.scrollTop = chat.scrollHeight;
+      return wrapper;
+    }
+  </script>
+
+</body>
+</html>
