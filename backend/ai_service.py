@@ -3,6 +3,8 @@ import json
 import operator
 from collections.abc import Generator
 from datetime import datetime
+from io import BytesIO
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -10,18 +12,22 @@ from openai import OpenAI
 
 from . import database
 from .config import settings
+from .workspaces import DEFAULT_WORKSPACE, WORKSPACES, validate_workspace
 
 
 client = OpenAI(api_key=settings.openai_api_key)
 MAX_TOOL_ROUNDS = 3
 RAG_MIN_SIMILARITY = 0.30
+MAX_EXTRACTED_CHARACTERS = 500_000
+MAX_DOCUMENT_CHUNKS = 600
 
-TOOLS = [
+BASE_TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "calculate",
             "description": "Evaluate a basic arithmetic expression safely.",
+            "strict": True,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -40,6 +46,7 @@ TOOLS = [
         "function": {
             "name": "get_current_time",
             "description": "Get the current date and time in an IANA timezone.",
+            "strict": True,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -54,6 +61,42 @@ TOOLS = [
         },
     },
 ]
+
+FINANCE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "calculate_financial_metric",
+        "description": (
+            "Calculate a named financial metric with an explicit formula. "
+            "For growth and CAGR, value_a is current and value_b is previous. "
+            "For margin/returns/ratios, value_a is the numerator and value_b is "
+            "the denominator."
+        ),
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "enum": [
+                        "growth_rate",
+                        "net_margin",
+                        "return_on_assets",
+                        "return_on_equity",
+                        "current_ratio",
+                        "debt_to_equity",
+                        "cagr",
+                    ],
+                },
+                "value_a": {"type": "number"},
+                "value_b": {"type": "number"},
+                "periods": {"type": ["integer", "null"]},
+            },
+            "required": ["metric", "value_a", "value_b", "periods"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 _BINARY_OPERATORS = {
     ast.Add: operator.add,
@@ -88,6 +131,61 @@ def split_document(text: str, size: int = 900, overlap: int = 140) -> list[str]:
     return [chunk for chunk in chunks if chunk]
 
 
+def extract_document(filename: str, raw: bytes) -> tuple[str, list[dict[str, Any]]]:
+    extension = Path(filename).suffix.lower()
+    chunks: list[dict[str, Any]] = []
+
+    if extension == ".pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(raw))
+        if reader.is_encrypted:
+            raise ValueError("Encrypted PDF files are not supported.")
+        pages: list[str] = []
+        for page_number, page in enumerate(reader.pages, start=1):
+            text = (page.extract_text() or "").strip()
+            if not text:
+                continue
+            pages.append(f"[Page {page_number}]\n{text}")
+            chunks.extend(
+                {"content": chunk, "page": page_number}
+                for chunk in split_document(text)
+            )
+        content = "\n\n".join(pages)
+    elif extension == ".docx":
+        from docx import Document
+
+        document = Document(BytesIO(raw))
+        blocks = [paragraph.text.strip() for paragraph in document.paragraphs]
+        for table in document.tables:
+            for row in table.rows:
+                blocks.append("\t".join(cell.text.strip() for cell in row.cells))
+        content = "\n".join(block for block in blocks if block)
+        chunks = [
+            {"content": chunk, "page": None}
+            for chunk in split_document(content)
+        ]
+    else:
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Text documents must use UTF-8 encoding.") from exc
+        chunks = [
+            {"content": chunk, "page": None}
+            for chunk in split_document(content)
+        ]
+
+    if not chunks:
+        raise ValueError(
+            "No readable text was found. Scanned PDFs require OCR before upload."
+        )
+    if len(content) > MAX_EXTRACTED_CHARACTERS or len(chunks) > MAX_DOCUMENT_CHUNKS:
+        raise ValueError(
+            "Extracted document text is too large. Split the file into smaller documents."
+        )
+    return content, chunks
+
+
 def create_embeddings(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
@@ -98,11 +196,21 @@ def create_embeddings(texts: list[str]) -> list[list[float]]:
     return [item.embedding for item in sorted(response.data, key=lambda item: item.index)]
 
 
-def retrieve_context(user_id: int, query: str) -> list[dict[str, Any]]:
-    if not database.list_documents(user_id):
+def retrieve_context(
+    user_id: int,
+    query: str,
+    workspace: str = DEFAULT_WORKSPACE,
+) -> list[dict[str, Any]]:
+    workspace = validate_workspace(workspace)
+    if not database.list_documents(user_id, workspace):
         return []
     query_embedding = create_embeddings([query])[0]
-    candidates = database.search_chunks(user_id, query_embedding, limit=4)
+    candidates = database.search_chunks(
+        user_id,
+        query_embedding,
+        workspace=workspace,
+        limit=5,
+    )
     return [item for item in candidates if item["score"] >= RAG_MIN_SIMILARITY]
 
 
@@ -110,16 +218,49 @@ def build_messages(
     user_id: int,
     session_id: str,
     context: list[dict[str, Any]],
+    workspace: str = DEFAULT_WORKSPACE,
 ) -> list[dict[str, Any]]:
+    workspace = validate_workspace(workspace)
     instructions = [
         "You are a helpful assistant in a persistent chat application.",
         "Answer in Chinese when the user writes Chinese.",
         "Use tools when they materially improve accuracy.",
         "Do not claim a tool was used unless a tool result appears in the conversation.",
+        "Clearly separate facts found in sources from analysis and assumptions.",
     ]
+    if workspace == "legal":
+        instructions.extend(
+            [
+                "You are in the Contract and Compliance workspace.",
+                "Help review contracts, policies, obligations, deadlines, ambiguities, and compliance evidence.",
+                "Cite the supplied source name and page for every material document-based claim when a page is available.",
+                "Do not invent clauses, laws, jurisdictions, or regulatory requirements that are absent from the supplied material.",
+                "Describe risks as review findings, not definitive legal conclusions, and state when qualified legal review is needed.",
+                WORKSPACES["legal"]["boundary"],
+            ]
+        )
+    elif workspace == "finance":
+        instructions.extend(
+            [
+                "You are in the Financial Research workspace.",
+                "Help analyze financial reports, announcements, performance, assumptions, and risk disclosures.",
+                "Cite the supplied source name and page for every material document-based claim when a page is available.",
+                "State currency, units, periods, formulas, and assumptions for calculations.",
+                "Never invent current market data or present stale document figures as live data.",
+                "Do not provide personalized buy, sell, hold, tax, or portfolio instructions.",
+                WORKSPACES["finance"]["boundary"],
+            ]
+        )
+    else:
+        instructions.append("You are in the General Document workspace.")
     if context:
         excerpts = "\n\n".join(
-            f"[Source: {item['name']}]\n{item['content']}" for item in context
+            (
+                f"[Source: {item['name']}"
+                + (f", page {item['page']}" if item.get("page") else "")
+                + f"]\n{item['content']}"
+            )
+            for item in context
         )
         instructions.append(
             "Use the following private knowledge-base excerpts when relevant. "
@@ -163,6 +304,55 @@ def calculate(expression: str) -> dict[str, Any]:
     return {"expression": expression, "result": _evaluate_node(parsed)}
 
 
+def calculate_financial_metric(
+    metric: str,
+    value_a: float,
+    value_b: float,
+    periods: int | None = None,
+) -> dict[str, Any]:
+    if value_b == 0:
+        raise ValueError("The denominator or previous value cannot be zero.")
+
+    percent_metrics = {
+        "growth_rate": ("(current - previous) / abs(previous)", (value_a - value_b) / abs(value_b)),
+        "net_margin": ("net income / revenue", value_a / value_b),
+        "return_on_assets": ("net income / total assets", value_a / value_b),
+        "return_on_equity": ("net income / total equity", value_a / value_b),
+    }
+    ratio_metrics = {
+        "current_ratio": ("current assets / current liabilities", value_a / value_b),
+        "debt_to_equity": ("total debt / total equity", value_a / value_b),
+    }
+
+    if metric in percent_metrics:
+        formula, result = percent_metrics[metric]
+        unit = "%"
+        result *= 100
+    elif metric in ratio_metrics:
+        formula, result = ratio_metrics[metric]
+        unit = "x"
+    elif metric == "cagr":
+        if not periods or periods <= 0:
+            raise ValueError("CAGR requires a positive number of periods.")
+        if value_a < 0 or value_b <= 0:
+            raise ValueError("CAGR requires positive start and non-negative end values.")
+        formula = "(current / previous) ** (1 / periods) - 1"
+        result = ((value_a / value_b) ** (1 / periods) - 1) * 100
+        unit = "%"
+    else:
+        raise ValueError("Unsupported financial metric.")
+
+    return {
+        "metric": metric,
+        "formula": formula,
+        "value_a": value_a,
+        "value_b": value_b,
+        "periods": periods,
+        "result": round(result, 4),
+        "unit": unit,
+    }
+
+
 def get_current_time(timezone_name: str) -> dict[str, str]:
     try:
         zone = ZoneInfo(timezone_name)
@@ -183,6 +373,13 @@ def execute_tool(name: str, arguments: str) -> str:
             result = calculate(payload.get("expression", ""))
         elif name == "get_current_time":
             result = get_current_time(payload.get("timezone", "UTC"))
+        elif name == "calculate_financial_metric":
+            result = calculate_financial_metric(
+                payload.get("metric", ""),
+                payload.get("value_a"),
+                payload.get("value_b"),
+                payload.get("periods"),
+            )
         else:
             result = {"error": f"Unknown tool: {name}"}
     except (ValueError, SyntaxError, ZeroDivisionError, TypeError) as exc:
@@ -190,15 +387,24 @@ def execute_tool(name: str, arguments: str) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
-def run_agent(messages: list[dict[str, Any]]) -> tuple[str, list[str]]:
+def tools_for_workspace(workspace: str) -> list[dict[str, Any]]:
+    workspace = validate_workspace(workspace)
+    return [*BASE_TOOLS, FINANCE_TOOL] if workspace == "finance" else BASE_TOOLS
+
+
+def run_agent(
+    messages: list[dict[str, Any]],
+    workspace: str = DEFAULT_WORKSPACE,
+) -> tuple[str, list[str]]:
     working_messages = list(messages)
     tools_used: list[str] = []
+    tools = tools_for_workspace(workspace)
 
     for _ in range(MAX_TOOL_ROUNDS + 1):
         response = client.chat.completions.create(
             model=settings.ai_model,
             messages=working_messages,
-            tools=TOOLS,
+            tools=tools,
             tool_choice="auto",
         )
         message = response.choices[0].message
@@ -229,15 +435,19 @@ def run_agent(messages: list[dict[str, Any]]) -> tuple[str, list[str]]:
     raise RuntimeError("Agent exceeded the tool-call limit.")
 
 
-def stream_agent(messages: list[dict[str, Any]]) -> Generator[dict[str, Any], None, None]:
+def stream_agent(
+    messages: list[dict[str, Any]],
+    workspace: str = DEFAULT_WORKSPACE,
+) -> Generator[dict[str, Any], None, None]:
     working_messages = list(messages)
     tools_used: list[str] = []
+    tools = tools_for_workspace(workspace)
 
     for _ in range(MAX_TOOL_ROUNDS + 1):
         stream = client.chat.completions.create(
             model=settings.ai_model,
             messages=working_messages,
-            tools=TOOLS,
+            tools=tools,
             tool_choice="auto",
             stream=True,
         )

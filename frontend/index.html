@@ -32,7 +32,7 @@
       font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    button, input { font: inherit; }
+    button, input, select { font: inherit; }
     button { color: inherit; }
     .hidden { display: none !important; }
 
@@ -124,6 +124,19 @@
     .brand span { color: var(--muted); font-size: 12px; }
     .sidebar-actions { padding: 0 16px 14px; }
     .new-chat { width: 100%; padding: 11px 14px; text-align: left; }
+    .workspace-picker { display: grid; gap: 7px; padding: 0 16px 14px; }
+    .workspace-picker label { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+    .workspace-picker select {
+      width: 100%;
+      padding: 11px 36px 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel-2);
+      color: var(--text);
+      outline: none;
+      cursor: pointer;
+    }
+    .workspace-picker select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124, 156, 255, 0.12); }
 
     .section-title {
       padding: 12px 20px 8px;
@@ -164,6 +177,8 @@
     .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
     .topbar { height: 68px; display: flex; align-items: center; justify-content: space-between; padding: 0 26px; border-bottom: 1px solid var(--line); background: rgba(8, 10, 15, 0.72); backdrop-filter: blur(18px); }
     .topbar-title { font-weight: 700; }
+    .title-stack { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .workspace-indicator { padding: 4px 8px; border: 1px solid rgba(124,156,255,.38); border-radius: 999px; color: #b8c7ff; font-size: 10px; white-space: nowrap; }
     .capabilities { display: flex; gap: 8px; }
     .capability { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; }
     .mobile-menu { display: none; padding: 7px 10px; }
@@ -173,6 +188,10 @@
     .welcome-mark { width: 56px; height: 56px; display: grid; place-items: center; margin: 0 auto 18px; border: 1px solid #3a4253; border-radius: 18px; background: linear-gradient(145deg, #202638, #11151e); font-size: 22px; }
     .welcome h2 { margin: 0 0 10px; font-size: clamp(24px, 4vw, 38px); }
     .welcome p { margin: 0; color: var(--muted); line-height: 1.7; }
+    .workspace-boundary { max-width: 620px; margin: 12px auto 0 !important; color: #717b90 !important; font-size: 12px; }
+    .quick-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 24px auto 0; text-align: left; }
+    .quick-action { padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; background: rgba(23,27,37,.72); color: #cbd2df; cursor: pointer; line-height: 1.45; }
+    .quick-action:hover { border-color: rgba(124,156,255,.55); background: rgba(35,42,58,.9); }
 
     .message { max-width: 850px; margin: 0 auto 22px; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; }
     .message.user { grid-template-columns: minmax(0, 1fr) 34px; }
@@ -202,6 +221,7 @@
       .topbar { padding: 0 16px; }
       .chat-window { padding-inline: 16px; }
       .composer-wrap { padding-inline: 12px; }
+      .quick-actions { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -233,8 +253,12 @@
   <div id="app-shell" class="app-shell hidden">
     <aside id="sidebar" class="sidebar">
       <div class="brand">
-        <strong>AI Chat</strong>
-        <span>OpenAI · Private workspace</span>
+        <strong>AI Research Workspace</strong>
+        <span>OpenAI · 专业文档智能平台</span>
+      </div>
+      <div class="workspace-picker">
+        <label for="workspace-select">当前工作区</label>
+        <select id="workspace-select" aria-label="选择工作区"></select>
       </div>
       <div class="sidebar-actions">
         <button id="new-chat" class="ghost new-chat" type="button">＋ 新对话</button>
@@ -243,9 +267,9 @@
       <div id="session-list" class="session-list"></div>
 
       <section class="knowledge">
-        <div class="section-title">个人知识库</div>
-        <label class="upload-label" for="document-input">上传 TXT / MD / CSV / JSON</label>
-        <input id="document-input" type="file" accept=".txt,.md,.csv,.json,text/plain,text/markdown,application/json,text/csv" hidden />
+        <div id="knowledge-title" class="section-title">工作区资料</div>
+        <label id="upload-label" class="upload-label" for="document-input">上传 PDF / DOCX / TXT 等资料</label>
+        <input id="document-input" type="file" accept=".pdf,.docx,.txt,.md,.csv,.json,text/plain,text/markdown,application/json,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
         <div id="document-list" class="document-list"></div>
       </section>
 
@@ -258,9 +282,10 @@
 
     <main class="main">
       <header class="topbar">
-        <div style="display:flex;align-items:center;gap:10px">
+        <div class="title-stack">
           <button id="mobile-menu" class="ghost mobile-menu" type="button">☰</button>
           <div id="conversation-title" class="topbar-title">新对话</div>
+          <span id="workspace-indicator" class="workspace-indicator">通用文档</span>
         </div>
         <div class="capabilities">
           <span class="capability">Memory</span>
@@ -277,7 +302,7 @@
           <input id="message-input" maxlength="12000" autocomplete="off" placeholder="发送消息，或询问已上传的资料…" />
           <button id="send-button" class="send-button" type="submit" aria-label="发送">↑</button>
         </form>
-        <div class="composer-hint">回复由 OpenAI API 生成；对话和知识库保存在本地 SQLite。</div>
+        <div id="composer-hint" class="composer-hint">回复由 OpenAI API 生成；对话和知识库保存在本地 SQLite。</div>
       </div>
     </main>
   </div>
@@ -292,6 +317,8 @@
       sessionId: null,
       sessions: [],
       documents: [],
+      workspaces: [],
+      workspace: localStorage.getItem("ai_chat_workspace") || "general",
       authMode: "login",
       sending: false,
     };
@@ -310,14 +337,19 @@
       password: document.getElementById("password"),
       currentUsername: document.getElementById("current-username"),
       avatar: document.getElementById("avatar"),
+      workspaceSelect: document.getElementById("workspace-select"),
+      workspaceIndicator: document.getElementById("workspace-indicator"),
       sessionList: document.getElementById("session-list"),
       documentList: document.getElementById("document-list"),
       documentInput: document.getElementById("document-input"),
+      knowledgeTitle: document.getElementById("knowledge-title"),
+      uploadLabel: document.getElementById("upload-label"),
       chatWindow: document.getElementById("chat-window"),
       chatForm: document.getElementById("chat-form"),
       messageInput: document.getElementById("message-input"),
       sendButton: document.getElementById("send-button"),
       conversationTitle: document.getElementById("conversation-title"),
+      composerHint: document.getElementById("composer-hint"),
       sidebar: document.getElementById("sidebar"),
       toast: document.getElementById("toast"),
     };
@@ -387,6 +419,7 @@
       elements.appShell.classList.remove("hidden");
       elements.currentUsername.textContent = state.user.username;
       elements.avatar.textContent = state.user.username.slice(0, 1).toUpperCase();
+      await loadWorkspaces();
       await Promise.all([loadSessions(), loadDocuments()]);
       newConversation();
     }
@@ -406,16 +439,68 @@
       renderSessions();
     }
 
+    function activeWorkspace() {
+      return state.workspaces.find((item) => item.id === state.workspace) || {
+        id: "general",
+        label: "通用文档",
+        description: "围绕个人资料进行可追溯的问答与总结。",
+        boundary: "请核对关键事实与来源。",
+        quick_actions: [],
+      };
+    }
+
+    async function loadWorkspaces() {
+      state.workspaces = await api("/workspaces");
+      if (!state.workspaces.some((item) => item.id === state.workspace)) {
+        state.workspace = "general";
+      }
+      elements.workspaceSelect.replaceChildren();
+      state.workspaces.forEach((workspace) => {
+        const option = document.createElement("option");
+        option.value = workspace.id;
+        option.textContent = workspace.label;
+        elements.workspaceSelect.appendChild(option);
+      });
+      elements.workspaceSelect.value = state.workspace;
+      renderWorkspaceChrome();
+    }
+
+    function renderWorkspaceChrome() {
+      const workspace = activeWorkspace();
+      elements.workspaceSelect.value = state.workspace;
+      elements.workspaceIndicator.textContent = workspace.label;
+      elements.knowledgeTitle.textContent = `${workspace.label}资料`;
+      elements.uploadLabel.textContent = `上传到“${workspace.label}” · PDF / DOCX / TXT 等`;
+      elements.messageInput.placeholder = state.workspace === "legal"
+        ? "询问条款、义务、期限、风险或合规要求…"
+        : state.workspace === "finance"
+          ? "询问财务指标、期间变化、假设或风险…"
+          : "发送消息，或询问已上传的资料…";
+      elements.composerHint.textContent = `${workspace.boundary} 回复由 OpenAI API 生成，资料保存在本地 SQLite。`;
+    }
+
+    async function changeWorkspace() {
+      state.workspace = elements.workspaceSelect.value;
+      localStorage.setItem("ai_chat_workspace", state.workspace);
+      state.sessionId = null;
+      renderWorkspaceChrome();
+      await loadDocuments();
+      newConversation();
+    }
+
     function renderSessions() {
       elements.sessionList.replaceChildren();
-      if (!state.sessions.length) {
+      const workspaceSessions = state.sessions.filter(
+        (session) => (session.workspace || "general") === state.workspace,
+      );
+      if (!workspaceSessions.length) {
         const empty = document.createElement("div");
         empty.className = "section-title";
-        empty.textContent = "还没有保存的对话";
+        empty.textContent = "当前工作区还没有对话";
         elements.sessionList.appendChild(empty);
         return;
       }
-      state.sessions.forEach((session) => {
+      workspaceSessions.forEach((session) => {
         const row = document.createElement("div");
         row.className = "session-row" + (session.id === state.sessionId ? " active" : "");
         const open = document.createElement("button");
@@ -434,17 +519,41 @@
     }
 
     function renderWelcome() {
-      elements.chatWindow.innerHTML = `
-        <div class="welcome">
-          <div class="welcome-mark">✦</div>
-          <h2>今天想聊什么？</h2>
-          <p>我会保存本账号的对话上下文，也可以检索你上传的资料，必要时调用工具，并以流式方式返回回答。</p>
-        </div>`;
+      const workspace = activeWorkspace();
+      elements.chatWindow.replaceChildren();
+      const welcome = document.createElement("div");
+      welcome.className = "welcome";
+      const mark = document.createElement("div");
+      mark.className = "welcome-mark";
+      mark.textContent = state.workspace === "legal" ? "§" : state.workspace === "finance" ? "↗" : "✦";
+      const title = document.createElement("h2");
+      title.textContent = workspace.label;
+      const description = document.createElement("p");
+      description.textContent = workspace.description;
+      const boundary = document.createElement("p");
+      boundary.className = "workspace-boundary";
+      boundary.textContent = workspace.boundary;
+      const actions = document.createElement("div");
+      actions.className = "quick-actions";
+      (workspace.quick_actions || []).forEach((copy) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "quick-action";
+        button.textContent = copy;
+        button.addEventListener("click", () => {
+          elements.messageInput.value = copy;
+          elements.messageInput.focus();
+        });
+        actions.appendChild(button);
+      });
+      welcome.append(mark, title, description, boundary, actions);
+      elements.chatWindow.appendChild(welcome);
     }
 
     function newConversation() {
       state.sessionId = null;
-      elements.conversationTitle.textContent = "新对话";
+      elements.conversationTitle.textContent = `${activeWorkspace().label} · 新对话`;
+      renderWorkspaceChrome();
       renderSessions();
       renderWelcome();
       elements.messageInput.focus();
@@ -455,6 +564,10 @@
       try {
         const messages = await api(`/sessions/${session.id}/messages`);
         state.sessionId = session.id;
+        state.workspace = session.workspace || "general";
+        localStorage.setItem("ai_chat_workspace", state.workspace);
+        renderWorkspaceChrome();
+        await loadDocuments();
         elements.conversationTitle.textContent = session.title;
         elements.chatWindow.replaceChildren();
         messages.forEach((message) => appendMessage(message.role, message.content));
@@ -477,15 +590,22 @@
     }
 
     async function loadDocuments() {
-      state.documents = await api("/documents");
+      state.documents = await api(`/documents?workspace=${encodeURIComponent(state.workspace)}`);
       elements.documentList.replaceChildren();
+      if (!state.documents.length) {
+        const empty = document.createElement("div");
+        empty.className = "section-title";
+        empty.textContent = "还没有工作区资料";
+        elements.documentList.appendChild(empty);
+        return;
+      }
       state.documents.forEach((documentItem) => {
         const row = document.createElement("div");
         row.className = "document-row";
         const name = document.createElement("span");
         name.className = "document-name";
         name.textContent = documentItem.name;
-        name.title = `${documentItem.name} · ${documentItem.chunk_count} chunks`;
+        name.title = `${documentItem.name} · ${documentItem.chunk_count} 个片段`;
         const remove = document.createElement("button");
         remove.className = "delete-button";
         remove.textContent = "×";
@@ -501,11 +621,12 @@
       if (!file) return;
       const data = new FormData();
       data.append("file", file);
+      data.append("workspace", state.workspace);
       try {
         showToast("正在建立文档索引…");
         await api("/documents", { method: "POST", body: data });
         await loadDocuments();
-        showToast("文档已加入知识库");
+        showToast(`文档已加入“${activeWorkspace().label}”`);
       } catch (error) {
         showToast(error.message);
       } finally {
@@ -583,7 +704,11 @@
             "Authorization": `Bearer ${state.token}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ message, session_id: state.sessionId }),
+          body: JSON.stringify({
+            message,
+            session_id: state.sessionId,
+            workspace: state.workspace,
+          }),
         });
         if (!response.ok) {
           let detail = `HTTP ${response.status}`;
@@ -605,7 +730,10 @@
             const packet = parseSseBlock(block);
             if (packet.event === "meta") {
               state.sessionId = packet.data.session_id;
-              (packet.data.sources || []).forEach((source) => tags.push(`来源 · ${source.name}`));
+              (packet.data.sources || []).forEach((source) => {
+                const page = source.page ? ` · 第 ${source.page} 页` : "";
+                tags.push(`来源 · ${source.name}${page}`);
+              });
             } else if (packet.event === "token") {
               if (!receivedText) {
                 pending.body.textContent = "";
@@ -645,6 +773,7 @@
     document.getElementById("logout").addEventListener("click", logout);
     document.getElementById("new-chat").addEventListener("click", newConversation);
     document.getElementById("mobile-menu").addEventListener("click", () => elements.sidebar.classList.toggle("open"));
+    elements.workspaceSelect.addEventListener("change", changeWorkspace);
     elements.documentInput.addEventListener("change", uploadDocument);
     elements.chatForm.addEventListener("submit", sendMessage);
 

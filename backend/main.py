@@ -3,7 +3,16 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -13,9 +22,9 @@ from . import database
 from .ai_service import (
     build_messages,
     create_embeddings,
+    extract_document,
     retrieve_context,
     run_agent,
-    split_document,
     stream_agent,
 )
 from .config import settings
@@ -24,6 +33,12 @@ from .security import (
     decode_access_token,
     hash_password,
     verify_password,
+)
+from .workspaces import (
+    DEFAULT_WORKSPACE,
+    Workspace,
+    public_workspace_config,
+    validate_workspace,
 )
 
 
@@ -37,7 +52,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="AI Chat API", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="AI Chat API", version="3.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -54,11 +69,13 @@ class AuthRequest(BaseModel):
 
 class SessionRequest(BaseModel):
     title: str = Field(default="New conversation", min_length=1, max_length=80)
+    workspace: Workspace = DEFAULT_WORKSPACE
 
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=12_000)
     session_id: str | None = None
+    workspace: Workspace | None = None
 
 
 def current_user(
@@ -90,24 +107,38 @@ def token_response(user: dict) -> dict:
     }
 
 
-def resolve_session(user_id: int, session_id: str | None) -> dict:
+def resolve_session(
+    user_id: int,
+    session_id: str | None,
+    workspace: str | None = None,
+) -> dict:
     if not session_id:
-        return database.create_session(user_id)
+        return database.create_session(
+            user_id,
+            workspace=validate_workspace(workspace),
+        )
     session = database.get_session(session_id, user_id)
     if not session:
         raise HTTPException(status_code=404, detail="Conversation not found.")
+    if workspace and session["workspace"] != validate_workspace(workspace):
+        raise HTTPException(
+            status_code=409,
+            detail="The conversation belongs to a different workspace.",
+        )
     return session
 
 
 def prepare_chat(user_id: int, request: ChatRequest) -> tuple[dict, list, list]:
-    session = resolve_session(user_id, request.session_id)
-    context = retrieve_context(user_id, request.message)
+    session = resolve_session(user_id, request.session_id, request.workspace)
+    workspace = session["workspace"]
+    context = retrieve_context(user_id, request.message, workspace)
     database.append_message(session["id"], "user", request.message)
-    messages = build_messages(user_id, session["id"], context)
+    messages = build_messages(user_id, session["id"], context, workspace)
     sources = [
         {
             "document_id": item["document_id"],
             "name": item["name"],
+            "page": item.get("page"),
             "score": item["score"],
         }
         for item in context
@@ -118,6 +149,11 @@ def prepare_chat(user_id: int, request: ChatRequest) -> tuple[dict, list, list]:
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "version": app.version}
+
+
+@app.get("/api/workspaces")
+def workspaces() -> list[dict]:
+    return public_workspace_config()
 
 
 @app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
@@ -152,7 +188,11 @@ def sessions(user: User) -> list[dict]:
 
 @app.post("/api/sessions", status_code=status.HTTP_201_CREATED)
 def new_session(request: SessionRequest, user: User) -> dict:
-    return database.create_session(user["id"], request.title.strip())
+    return database.create_session(
+        user["id"],
+        request.title.strip(),
+        request.workspace,
+    )
 
 
 @app.get("/api/sessions/{session_id}/messages")
@@ -170,33 +210,39 @@ def remove_session(session_id: str, user: User) -> Response:
 
 
 @app.get("/api/documents")
-def documents(user: User) -> list[dict]:
-    return database.list_documents(user["id"])
+def documents(user: User, workspace: Workspace | None = None) -> list[dict]:
+    return database.list_documents(user["id"], workspace)
 
 
 @app.post("/api/documents", status_code=status.HTTP_201_CREATED)
 def upload_document(
     user: User,
     file: UploadFile = File(...),
+    workspace: str = Form(DEFAULT_WORKSPACE),
 ) -> dict:
+    try:
+        workspace = validate_workspace(workspace)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     filename = (file.filename or "document.txt").strip()[:160]
-    if not filename.lower().endswith((".txt", ".md", ".csv", ".json")):
+    supported_extensions = (".txt", ".md", ".csv", ".json", ".pdf", ".docx")
+    if not filename.lower().endswith(supported_extensions):
         raise HTTPException(
             status_code=415,
-            detail="Only .txt, .md, .csv and .json files are supported.",
+            detail="Only TXT, Markdown, CSV, JSON, PDF and DOCX files are supported.",
         )
-    raw = file.file.read(1_000_001)
-    if len(raw) > 1_000_000:
-        raise HTTPException(status_code=413, detail="Document exceeds 1 MB.")
+    raw = file.file.read(10_000_001)
+    if len(raw) > 10_000_000:
+        raise HTTPException(status_code=413, detail="Document exceeds 10 MB.")
     try:
-        content = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(status_code=400, detail="Document must be UTF-8 text.") from exc
-    chunks = split_document(content)
-    if not chunks:
-        raise HTTPException(status_code=400, detail="Document is empty.")
+        content, chunks = extract_document(filename, raw)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("Document parsing failed for %s", filename, exc_info=True)
+        raise HTTPException(status_code=400, detail="Document could not be parsed.") from exc
     try:
-        embeddings = create_embeddings(chunks)
+        embeddings = create_embeddings([chunk["content"] for chunk in chunks])
     except Exception as exc:
         logger.exception("Embedding request failed")
         raise HTTPException(status_code=502, detail="Embedding request failed.") from exc
@@ -206,6 +252,8 @@ def upload_document(
         content,
         chunks,
         embeddings,
+        workspace,
+        filename.rsplit(".", 1)[-1].lower(),
     )
 
 
@@ -220,11 +268,12 @@ def remove_document(document_id: str, user: User) -> Response:
 def chat(request: ChatRequest, user: User) -> dict:
     try:
         session, messages, sources = prepare_chat(user["id"], request)
-        reply, tools_used = run_agent(messages)
+        reply, tools_used = run_agent(messages, session["workspace"])
         database.append_message(session["id"], "assistant", reply)
         return {
             "reply": reply,
             "session_id": session["id"],
+            "workspace": session["workspace"],
             "sources": sources,
             "tools_used": tools_used,
         }
@@ -254,9 +303,13 @@ def chat_stream(request: ChatRequest, user: User) -> StreamingResponse:
         try:
             yield sse(
                 "meta",
-                {"session_id": session["id"], "sources": sources},
+                {
+                    "session_id": session["id"],
+                    "workspace": session["workspace"],
+                    "sources": sources,
+                },
             )
-            for event in stream_agent(messages):
+            for event in stream_agent(messages, session["workspace"]):
                 if event["type"] == "token":
                     reply_parts.append(event["content"])
                     yield sse("token", {"content": event["content"]})
