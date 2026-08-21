@@ -19,7 +19,7 @@
 - 自适应三栏桌面界面、移动端抽屉、离线状态、原生触觉反馈和本地偏好。
 - 隐私政策、使用条款、支持中心、第三方 AI 数据传输明示同意与账号删除闭环。
 - Capacitor iOS/Android 工程、原生图标、启动图、iOS Privacy Manifest 和 Android Release 混淆/资源压缩配置。
-- Docker 后端镜像与单机持久化部署配置。
+- 多阶段 Docker 镜像：构建 Web 前端并由同一个 FastAPI 容器提供前端、法律页面与 API；附带单机持久化部署配置。
 
 ## 明确边界
 
@@ -132,6 +132,8 @@ docker compose up --build
 ```
 
 `ai-chat-data` volume 会持久化 SQLite 数据。生产环境必须由反向代理或托管平台终止 HTTPS，并把 `CORS_ORIGINS` 限制为实际 Web 域名。
+
+Docker 镜像会在构建阶段执行 Vite 生产构建。运行后，`/` 提供 Web 应用，`/privacy.html`、`/terms.html` 和 `/support.html` 提供公开政策页面，`/api/*` 提供后端接口，因此可以只维护一个 HTTPS 域名。
 
 ## 移动端
 
