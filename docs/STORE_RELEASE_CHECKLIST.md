@@ -53,6 +53,11 @@ VITE_API_BASE_URL=https://api.example.com/api npm run mobile:sync
 
 - [ ] 使用有效 Apple Developer 账号；涉及法律/金融服务时确认应使用的组织主体与资质
 - [ ] 在 App Store Connect 创建 App 记录、SKU、Bundle ID 和版本
+- [ ] 若销售 Pro 订阅：签署 Paid Applications 协议并完成税务、银行和结算资料
+- [ ] 创建 Subscription Group 与每个订阅产品 ID；价格、地区、试用期、恢复购买行为必须与应用内文案一致
+- [ ] 在 Xcode 启用 In-App Purchase；接入 StoreKit 交易、恢复购买和交易完成处理，不能只放一个“订阅”按钮
+- [ ] 将 App Store Server API 凭证与签名交易（JWS）服务端校验配置为部署环境密钥；不要写入仓库或移动端
+- [ ] 用 Sandbox 账号完成购买、续订、取消、恢复购买、额度生效与失败回退测试
 - [ ] 使用完整 Xcode 设置 Team、Signing & Capabilities
 - [ ] 真机测试网络、键盘、安全区、深色界面、上传和删号
 - [ ] Archive 并上传 build；先经 TestFlight 内部测试

@@ -200,6 +200,8 @@ def retrieve_context(
     user_id: int,
     query: str,
     workspace: str = DEFAULT_WORKSPACE,
+    limit: int = 5,
+    min_similarity: float = RAG_MIN_SIMILARITY,
 ) -> list[dict[str, Any]]:
     workspace = validate_workspace(workspace)
     if not database.list_documents(user_id, workspace):
@@ -209,9 +211,194 @@ def retrieve_context(
         user_id,
         query_embedding,
         workspace=workspace,
-        limit=5,
+        limit=limit,
     )
-    return [item for item in candidates if item["score"] >= RAG_MIN_SIMILARITY]
+    return [item for item in candidates if item["score"] >= min_similarity]
+
+
+def run_space(
+    system_prompt: str,
+    message: str,
+    max_output_tokens: int = 600,
+) -> tuple[str, dict[str, int]]:
+    """Run a custom user-created space with a hard output token ceiling."""
+    response = client.chat.completions.create(
+        model=settings.ai_model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are operating inside a user-created AI Space. "
+                    "Respect its rules, be concise, distinguish facts from assumptions, "
+                    "and never claim tool use or external actions that did not occur.\n\n"
+                    + system_prompt
+                ),
+            },
+            {"role": "user", "content": message},
+        ],
+        max_tokens=max(128, min(max_output_tokens, 1_200)),
+        store=False,
+    )
+    usage = response.usage
+    input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", input_tokens + output_tokens) or 0)
+    return response.choices[0].message.content or "", {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+CROSS_EXAM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string"},
+        "executive_summary": {"type": "string"},
+        "collisions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "severity": {
+                        "type": "string",
+                        "enum": ["critical", "high", "medium", "low"],
+                    },
+                    "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+                    "legal_mechanism": {"type": "string"},
+                    "financial_consequence": {"type": "string"},
+                    "why_it_matters": {"type": "string"},
+                    "legal_source_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "finance_source_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "missing_evidence": {"type": "string"},
+                    "next_action": {"type": "string"},
+                },
+                "required": [
+                    "title",
+                    "severity",
+                    "confidence",
+                    "legal_mechanism",
+                    "financial_consequence",
+                    "why_it_matters",
+                    "legal_source_ids",
+                    "finance_source_ids",
+                    "missing_evidence",
+                    "next_action",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "stress_scenarios": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "trigger": {"type": "string"},
+                    "impact_chain": {"type": "string"},
+                    "early_warning": {"type": "string"},
+                    "response": {"type": "string"},
+                },
+                "required": [
+                    "name",
+                    "trigger",
+                    "impact_chain",
+                    "early_warning",
+                    "response",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "blind_spots": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+    },
+    "required": [
+        "headline",
+        "executive_summary",
+        "collisions",
+        "stress_scenarios",
+        "blind_spots",
+    ],
+    "additionalProperties": False,
+}
+
+
+def _numbered_context(
+    context: list[dict[str, Any]],
+    prefix: str,
+) -> str:
+    return "\n\n".join(
+        (
+            f"[{prefix}{index}] {item['name']}"
+            + (f", page {item['page']}" if item.get("page") else "")
+            + f"\n{item['content']}"
+        )
+        for index, item in enumerate(context, start=1)
+    )
+
+
+def run_cross_exam(
+    focus: str,
+    legal_context: list[dict[str, Any]],
+    finance_context: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Connect legal mechanisms to financial consequences using locked source IDs."""
+    instructions = """
+You are the FrostFire Cross-Examination Engine. Analyze only the supplied private
+contract/compliance excerpts and financial excerpts. Your job is not to summarize
+the two folders independently. Build causal bridges: identify a legal mechanism,
+show the plausible financial consequence, then state what evidence is missing.
+
+Rules:
+- Every collision must cite at least one valid L source ID and one valid F source ID.
+- Never invent a clause, number, jurisdiction, market price, or live fact.
+- Treat confidence as evidence coverage, not certainty or professional advice.
+- Prefer concrete mechanisms such as pricing, payment timing, renewal, termination,
+  service levels, indemnity, warranties, covenants, disclosure, or concentration.
+- Produce 2-5 collision cards when the evidence permits.
+- Produce exactly three stress scenarios: Base, Downside, and Breakpoint. Scenarios
+  are reasoned counterfactuals, not forecasts; do not invent numeric impacts.
+- Write concise Chinese output.
+""".strip()
+    prompt = f"""
+审查焦点：{focus}
+
+寒冰证据（合同与合规）：
+{_numbered_context(legal_context, 'L')}
+
+烈火证据（金融研究）：
+{_numbered_context(finance_context, 'F')}
+""".strip()
+    response = client.chat.completions.create(
+        model=settings.ai_model,
+        messages=[
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "frostfire_cross_exam",
+                "strict": True,
+                "schema": CROSS_EXAM_SCHEMA,
+            },
+        },
+        store=False,
+    )
+    content = response.choices[0].message.content or "{}"
+    result = json.loads(content)
+    if not isinstance(result, dict):
+        raise ValueError("Cross-examination result was not a JSON object.")
+    return result
 
 
 def build_messages(

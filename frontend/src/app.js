@@ -50,6 +50,14 @@ const state = {
   authMode: "login",
   sending: false,
   latestEvidence: { sources: [], tools: [] },
+  crossExamDocuments: { legal: [], finance: [] },
+  crossExamRunning: false,
+  spaceTemplates: [],
+  spaces: [],
+  billing: null,
+  selectedTemplateId: "project_engineer",
+  activeSpaceId: null,
+  studioRunning: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -78,6 +86,17 @@ const elements = {
   consentDialog: $("consent-dialog"), evidenceProgress: $("evidence-progress"),
   evidencePercent: $("evidence-percent"), evidenceTitle: $("evidence-title"),
   evidenceSummary: $("evidence-summary"), evidenceDetail: $("evidence-detail"),
+  crossExamDialog: $("cross-exam-dialog"), crossExamFocus: $("cross-focus"),
+  crossExamRun: $("cross-exam-run"), crossExamResults: $("cross-exam-results"),
+  crossExamError: $("cross-exam-error"), crossLegalCount: $("cross-legal-count"),
+  crossFinanceCount: $("cross-finance-count"),
+  studioDialog: $("studio-dialog"), studioTemplateGrid: $("space-template-grid"),
+  spaceForm: $("space-form"), spaceName: $("space-name"), spaceDescription: $("space-description"),
+  spaceRules: $("space-rules"), spaceBudget: $("space-budget"), spaceCreate: $("space-create"),
+  spaceFormError: $("space-form-error"), spaceList: $("space-list"), spaceCount: $("space-count"),
+  billingPlan: $("billing-plan"), billingUsage: $("billing-usage"), spaceRunner: $("space-runner"),
+  runnerIcon: $("runner-icon"), runnerName: $("runner-name"), runnerBudget: $("runner-budget"),
+  runnerInput: $("runner-input"), runnerSend: $("runner-send"), runnerOutput: $("runner-output"),
 };
 
 function activeWorkspace() {
@@ -175,6 +194,11 @@ function translateError(message) {
     "Password is incorrect.": "密码不正确。",
     'Enter "DELETE" to confirm.': "请输入 DELETE 确认。",
     "OpenAI API request failed.": "OpenAI API 暂时未能完成请求，请稍后重试。",
+    "OpenAI API could not complete the cross-examination.": "OpenAI API 暂时未能完成冰火交叉审查，请稍后重试。",
+    "Cross-examination requires at least one document in both the legal and finance workspaces.": "请先在寒冰工作台和烈火工作台各上传至少一份资料。",
+    "Your current plan has reached its AI Space limit.": "当前方案已达到 AI Space 数量上限。",
+    "The requested Space token budget exceeds your plan limit.": "这个 Space 的 Token 上限超过当前方案允许范围。",
+    "This AI Space has reached its monthly Token budget.": "这个 AI Space 已达到本月 Token 上限。",
   };
   return known[message] || message;
 }
@@ -544,6 +568,424 @@ function updateEvidence(sources = [], tools = []) {
   }
 }
 
+function makeElement(tag, className, text) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text !== undefined && text !== null) element.textContent = String(text);
+  return element;
+}
+
+function setCrossExamCounts() {
+  const legalCount = state.crossExamDocuments.legal.length;
+  const financeCount = state.crossExamDocuments.finance.length;
+  elements.crossLegalCount.textContent = `${legalCount} 份资料`;
+  elements.crossFinanceCount.textContent = `${financeCount} 份资料`;
+  elements.crossExamRun.disabled = state.crossExamRunning || !legalCount || !financeCount;
+  if (!legalCount || !financeCount) {
+    elements.crossExamError.textContent = "请先在寒冰工作台和烈火工作台各上传至少一份资料。";
+  }
+}
+
+async function openCrossExam() {
+  closePanels();
+  elements.crossExamError.textContent = "";
+  if (!elements.crossExamDialog.open) elements.crossExamDialog.showModal();
+  elements.crossLegalCount.textContent = "检查中…";
+  elements.crossFinanceCount.textContent = "检查中…";
+  elements.crossExamRun.disabled = true;
+  try {
+    const [legal, finance] = await Promise.all([
+      api("/documents?workspace=legal"),
+      api("/documents?workspace=finance"),
+    ]);
+    state.crossExamDocuments = { legal, finance };
+    setCrossExamCounts();
+  } catch (error) {
+    elements.crossExamError.textContent = translateError(error.message);
+  }
+}
+
+function renderCrossExamLoading() {
+  elements.crossExamResults.replaceChildren();
+  const loading = makeElement("div", "cross-loading");
+  loading.append(
+    makeElement("div", "cross-loading-orbit"),
+    makeElement("strong", "", "正在让条款与数字相互质询…"),
+    makeElement("p", "", "建立证据锁链 · 推演三档情景 · 标记未知事项"),
+  );
+  elements.crossExamResults.appendChild(loading);
+}
+
+function resultSection(title, note) {
+  const heading = makeElement("div", "result-section-title");
+  heading.append(makeElement("h4", "", title), makeElement("span", "", note));
+  return heading;
+}
+
+function renderCrossExamResult(result) {
+  elements.crossExamResults.replaceChildren();
+
+  const header = makeElement("div", "cross-result-header");
+  const summary = makeElement("div");
+  summary.append(
+    makeElement("span", "overline", "CROSS-EXAM VERDICT"),
+    makeElement("h3", "", result.headline || "冰火交叉审查结果"),
+    makeElement("p", "", result.executive_summary || ""),
+  );
+  const passport = makeElement("div", "analysis-passport");
+  passport.append(
+    makeElement("small", "", "ANALYSIS PASSPORT"),
+    makeElement("strong", "", result.analysis_id || "—"),
+    makeElement("small", "", "相同资料与焦点可用此指纹核对输入版本"),
+  );
+  header.append(summary, passport);
+  elements.crossExamResults.appendChild(header);
+
+  const collisions = result.collisions || [];
+  elements.crossExamResults.appendChild(resultSection("因果碰撞卡", `${collisions.length} 条跨域链路`));
+  const collisionGrid = makeElement("div", "collision-grid");
+  const severityLabels = { critical: "临界", high: "高", medium: "中", low: "低" };
+  collisions.forEach((collision) => {
+    const card = makeElement("article", "collision-card");
+    card.dataset.severity = collision.severity || "medium";
+    const top = makeElement("div", "collision-top");
+    top.append(
+      makeElement("h5", "", collision.title),
+      makeElement("span", "severity-pill", `${severityLabels[collision.severity] || "中"}风险`),
+    );
+    const confidence = Math.max(0, Math.min(100, Number(collision.confidence) || 0));
+    const meter = makeElement("div", "confidence-meter");
+    const line = makeElement("i");
+    line.style.setProperty("--confidence", `${confidence}%`);
+    meter.append(makeElement("span", "", "证据覆盖"), line, makeElement("b", "", `${confidence}%`));
+
+    const chain = makeElement("div", "causal-chain");
+    const legalNode = makeElement("div", "causal-node frost");
+    legalNode.append(makeElement("small", "", "寒冰 · 条款机制"), document.createTextNode(collision.legal_mechanism || "—"));
+    const financeNode = makeElement("div", "causal-node ember");
+    financeNode.append(makeElement("small", "", "烈火 · 财务后果"), document.createTextNode(collision.financial_consequence || "—"));
+    chain.append(legalNode, makeElement("div", "causal-arrow", "→"), financeNode);
+
+    const evidence = makeElement("div", "evidence-chain");
+    (collision.evidence || []).forEach((source) => {
+      const chip = makeElement(
+        "span",
+        `source-chip ${source.workspace === "legal" ? "frost" : "ember"}`,
+        `${source.source_id} · ${source.name}${source.page ? ` · P${source.page}` : ""}`,
+      );
+      chip.title = source.excerpt || source.name;
+      evidence.appendChild(chip);
+    });
+
+    const gapAction = makeElement("div", "gap-action");
+    const gap = makeElement("div", "gap-box");
+    gap.append(makeElement("b", "", "证据缺口"), document.createTextNode(collision.missing_evidence || "未标记"));
+    const action = makeElement("div", "action-box");
+    action.append(makeElement("b", "", "下一步"), document.createTextNode(collision.next_action || "继续核对"));
+    gapAction.append(gap, action);
+
+    card.append(
+      top,
+      meter,
+      chain,
+      makeElement("p", "collision-why", collision.why_it_matters || ""),
+      evidence,
+      gapAction,
+    );
+    collisionGrid.appendChild(card);
+  });
+  elements.crossExamResults.appendChild(collisionGrid);
+
+  const scenarios = result.stress_scenarios || [];
+  elements.crossExamResults.appendChild(resultSection("反事实压力舱", "情景不是预测，不虚构数值"));
+  const scenarioGrid = makeElement("div", "scenario-grid");
+  scenarios.forEach((scenario) => {
+    const card = makeElement("article", "scenario-card");
+    card.appendChild(makeElement("h5", "", scenario.name));
+    const list = makeElement("dl");
+    [
+      ["触发条件", scenario.trigger],
+      ["影响链", scenario.impact_chain],
+      ["早期信号", scenario.early_warning],
+      ["响应动作", scenario.response],
+    ].forEach(([label, value]) => {
+      const row = makeElement("div");
+      row.append(makeElement("dt", "", label), makeElement("dd", "", value || "—"));
+      list.appendChild(row);
+    });
+    card.appendChild(list);
+    scenarioGrid.appendChild(card);
+  });
+  elements.crossExamResults.appendChild(scenarioGrid);
+
+  const blindSpots = result.blind_spots || [];
+  elements.crossExamResults.appendChild(resultSection("未知事项雷达", "主动显示模型无法从资料确认的内容"));
+  const blindList = makeElement("ul", "blind-list");
+  blindSpots.forEach((item) => blindList.appendChild(makeElement("li", "", item)));
+  if (!blindSpots.length) blindList.appendChild(makeElement("li", "", "本次未返回额外未知事项，仍需人工复核关键结论。"));
+  elements.crossExamResults.appendChild(blindList);
+
+  const sources = result.sources || [];
+  elements.crossExamResults.appendChild(resultSection("证据锁链", `${sources.length} 个锁定片段`));
+  const ledger = makeElement("div", "source-ledger");
+  sources.forEach((source) => {
+    const row = makeElement("div", "source-ledger-row");
+    row.dataset.workspace = source.workspace;
+    row.title = source.excerpt || source.name;
+    row.append(
+      makeElement("b", "", source.source_id),
+      makeElement("span", "", `${source.name}${source.page ? ` · 第 ${source.page} 页` : ""}`),
+      makeElement("small", "", `${Math.round((Number(source.score) || 0) * 100)}% 相关`),
+    );
+    ledger.appendChild(row);
+  });
+  elements.crossExamResults.appendChild(ledger);
+}
+
+async function runCrossExam() {
+  if (state.crossExamRunning) return;
+  const focus = elements.crossExamFocus.value.trim();
+  if (focus.length < 4) {
+    elements.crossExamError.textContent = "请写下至少 4 个字的审查焦点。";
+    return;
+  }
+  state.crossExamRunning = true;
+  elements.crossExamError.textContent = "";
+  elements.crossExamRun.disabled = true;
+  elements.crossExamRun.querySelector("span").textContent = "双域质询进行中…";
+  renderCrossExamLoading();
+  try {
+    const result = await api("/cross-exam", {
+      method: "POST",
+      body: JSON.stringify({ focus }),
+    });
+    renderCrossExamResult(result);
+    await haptic();
+  } catch (error) {
+    elements.crossExamError.textContent = translateError(error.message);
+    const failed = makeElement("div", "cross-empty-state");
+    failed.append(
+      makeElement("i", "", "!"),
+      makeElement("h3", "", "本次交叉审查未完成"),
+      makeElement("p", "", translateError(error.message)),
+    );
+    elements.crossExamResults.replaceChildren(failed);
+  } finally {
+    state.crossExamRunning = false;
+    elements.crossExamRun.querySelector("span").textContent = "启动双域质询";
+    setCrossExamCounts();
+  }
+}
+
+const SPACE_GLOWS = {
+  forge: "#ff8150",
+  aurora: "#8d7dff",
+  frost: "#45d8ff",
+  ember: "#ff7a31",
+  mono: "#b7c5d5",
+};
+
+function selectedSpaceTemplate() {
+  return state.spaceTemplates.find((item) => item.id === state.selectedTemplateId)
+    || state.spaceTemplates[0];
+}
+
+function renderSpaceTemplates() {
+  elements.studioTemplateGrid.replaceChildren();
+  state.spaceTemplates.forEach((template) => {
+    const button = makeElement(
+      "button",
+      `space-template${template.id === state.selectedTemplateId ? " active" : ""}`,
+    );
+    button.type = "button";
+    button.append(
+      makeElement("span", "", template.icon),
+      makeElement("strong", "", template.label),
+      makeElement("small", "", template.description),
+    );
+    button.addEventListener("click", () => {
+      state.selectedTemplateId = template.id;
+      elements.spaceRules.value = template.system_prompt;
+      if (!elements.spaceDescription.value.trim()) elements.spaceDescription.value = template.description;
+      renderSpaceTemplates();
+    });
+    elements.studioTemplateGrid.appendChild(button);
+  });
+}
+
+function renderBilling() {
+  const billing = state.billing;
+  if (!billing) return;
+  const plan = billing.plan === "pro" ? "Pro" : "Free";
+  const used = billing.usage?.total_tokens || 0;
+  const total = billing.limits?.monthly_tokens || 0;
+  elements.billingPlan.textContent = `${plan} · ${billing.space_count}/${billing.limits?.max_spaces || 0} Spaces`;
+  elements.billingUsage.textContent = `${used.toLocaleString()} / ${total.toLocaleString()} Tokens · ${billing.period}`;
+  const spaceLimit = billing.limits?.max_space_tokens || 10_000;
+  [...elements.spaceBudget.options].forEach((option) => {
+    option.disabled = Number(option.value) > spaceLimit;
+  });
+}
+
+function renderSpaces() {
+  elements.spaceList.replaceChildren();
+  elements.spaceCount.textContent = String(state.spaces.length);
+  if (!state.spaces.length) {
+    elements.spaceList.appendChild(makeElement(
+      "div",
+      "space-empty",
+      "还没有 AI Space。选择左侧模板，写下你的规则，就能创建一个可运行的专属智能体。",
+    ));
+    return;
+  }
+  state.spaces.forEach((space) => {
+    const card = makeElement(
+      "button",
+      `space-card${space.id === state.activeSpaceId ? " active" : ""}`,
+    );
+    card.type = "button";
+    card.style.setProperty("--space-glow", SPACE_GLOWS[space.theme] || SPACE_GLOWS.mono);
+    const top = makeElement("div", "space-card-top");
+    top.append(
+      makeElement("span", "space-card-icon", space.icon),
+      (() => {
+        const copy = makeElement("div");
+        copy.append(makeElement("strong", "", space.name), makeElement("small", "", space.template_id.replaceAll("_", " · ")));
+        return copy;
+      })(),
+    );
+    const used = space.usage?.total_tokens || 0;
+    const budget = space.monthly_token_budget || 0;
+    const foot = makeElement("div", "space-card-foot");
+    foot.append(makeElement("span", "", `已用 ${used.toLocaleString()} Tokens`), makeElement("span", "", `上限 ${budget.toLocaleString()}`));
+    card.append(top, makeElement("p", "", space.description), foot);
+    card.addEventListener("click", () => selectSpace(space.id));
+    elements.spaceList.appendChild(card);
+  });
+}
+
+function selectSpace(spaceId, preserveOutput = false) {
+  const space = state.spaces.find((item) => item.id === spaceId);
+  if (!space) return;
+  state.activeSpaceId = spaceId;
+  elements.spaceRunner.classList.remove("hidden");
+  elements.runnerIcon.textContent = space.icon;
+  elements.runnerName.textContent = space.name;
+  const used = space.usage?.total_tokens || 0;
+  elements.runnerBudget.textContent = `${used.toLocaleString()} / ${space.monthly_token_budget.toLocaleString()} Tokens`;
+  if (!preserveOutput) {
+    elements.runnerOutput.textContent = "给这个 Space 一项任务。它会遵守你刚才定义的规则，并返回本次实际 Token 消耗。";
+  }
+  renderSpaces();
+  elements.runnerInput.focus();
+}
+
+async function refreshStudio() {
+  const [templates, spaces, billing] = await Promise.all([
+    api("/platform/templates"),
+    api("/spaces"),
+    api("/billing/status"),
+  ]);
+  state.spaceTemplates = templates;
+  state.spaces = spaces;
+  state.billing = billing;
+  if (!state.spaceTemplates.some((item) => item.id === state.selectedTemplateId)) {
+    state.selectedTemplateId = state.spaceTemplates[0]?.id || "blank";
+  }
+  renderSpaceTemplates();
+  renderBilling();
+  renderSpaces();
+}
+
+async function openStudio() {
+  closePanels();
+  elements.spaceFormError.textContent = "";
+  if (!elements.studioDialog.open) elements.studioDialog.showModal();
+  try {
+    await refreshStudio();
+    const template = selectedSpaceTemplate();
+    if (template && !elements.spaceRules.value.trim()) {
+      elements.spaceRules.value = template.system_prompt;
+      elements.spaceDescription.value = template.description;
+    }
+  } catch (error) {
+    elements.spaceFormError.textContent = translateError(error.message);
+  }
+}
+
+async function createSpace(event) {
+  event.preventDefault();
+  elements.spaceFormError.textContent = "";
+  if (!elements.spaceForm.reportValidity()) return;
+  const template = selectedSpaceTemplate();
+  if (!template) return;
+  elements.spaceCreate.disabled = true;
+  elements.spaceCreate.querySelector("span").textContent = "正在创建…";
+  try {
+    const created = await api("/spaces", {
+      method: "POST",
+      body: JSON.stringify({
+        name: elements.spaceName.value.trim(),
+        description: elements.spaceDescription.value.trim(),
+        template_id: template.id,
+        system_prompt: elements.spaceRules.value.trim(),
+        icon: template.icon,
+        theme: template.theme,
+        monthly_token_budget: Number(elements.spaceBudget.value),
+      }),
+    });
+    elements.spaceName.value = "";
+    elements.spaceDescription.value = "";
+    elements.spaceRules.value = template.system_prompt;
+    await refreshStudio();
+    selectSpace(created.id);
+    showToast("AI Space 已创建，现在可以运行第一项任务。", 5000);
+    await haptic();
+  } catch (error) {
+    elements.spaceFormError.textContent = translateError(error.message);
+  } finally {
+    elements.spaceCreate.disabled = false;
+    elements.spaceCreate.querySelector("span").textContent = "创建可运行的 AI Space";
+  }
+}
+
+async function runActiveSpace() {
+  const message = elements.runnerInput.value.trim();
+  if (!state.activeSpaceId || !message || state.studioRunning) return;
+  state.studioRunning = true;
+  elements.runnerSend.disabled = true;
+  elements.runnerSend.querySelector("span").textContent = "正在运行…";
+  elements.runnerOutput.textContent = "模型正在遵守 Space 规则完成任务…";
+  try {
+    const result = await api(`/spaces/${encodeURIComponent(state.activeSpaceId)}/run`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    });
+    elements.runnerOutput.innerHTML = safeMarkdown(result.reply || "模型没有返回文本。");
+    const usage = result.usage || {};
+    const footer = makeElement("div", "");
+    footer.textContent = `本次消耗：输入 ${usage.input_tokens || 0} · 输出 ${usage.output_tokens || 0} · 合计 ${usage.total_tokens || 0} Tokens`;
+    elements.runnerOutput.appendChild(footer);
+    elements.runnerInput.value = "";
+    state.billing = result.billing;
+    await refreshStudio();
+    selectSpace(state.activeSpaceId, true);
+    await haptic();
+  } catch (error) {
+    elements.runnerOutput.textContent = `运行失败：${translateError(error.message)}`;
+  } finally {
+    state.studioRunning = false;
+    elements.runnerSend.disabled = false;
+    elements.runnerSend.querySelector("span").textContent = "运行一次";
+  }
+}
+
+function explainBillingSetup() {
+  const message = state.billing?.apple_store?.message
+    || "App Store Connect 商品和服务器验签尚未配置。";
+  showToast(`Pro 订阅尚未启用：${message}`, 7000);
+}
+
 function parseSseBlock(block) {
   let event = "message";
   const data = [];
@@ -709,6 +1151,22 @@ elements.messageInput.addEventListener("keydown", (event) => {
   }
 });
 $("composer-upload").addEventListener("click", () => elements.documentInput.click());
+$("studio-open").addEventListener("click", openStudio);
+$("studio-open-secondary").addEventListener("click", openStudio);
+$("mobile-studio-open").addEventListener("click", openStudio);
+$("studio-close").addEventListener("click", () => elements.studioDialog.close());
+elements.spaceForm.addEventListener("submit", createSpace);
+elements.runnerSend.addEventListener("click", runActiveSpace);
+$("billing-upgrade").addEventListener("click", explainBillingSetup);
+$("cross-exam-open").addEventListener("click", openCrossExam);
+$("cross-exam-close").addEventListener("click", () => elements.crossExamDialog.close());
+elements.crossExamRun.addEventListener("click", runCrossExam);
+document.querySelectorAll("[data-cross-focus]").forEach((button) => {
+  button.addEventListener("click", () => {
+    elements.crossExamFocus.value = button.dataset.crossFocus;
+    elements.crossExamFocus.focus();
+  });
+});
 $("mobile-menu").addEventListener("click", () => openPanel(elements.conversationPanel));
 $("panel-close").addEventListener("click", closePanels);
 $("knowledge-toggle").addEventListener("click", () => openPanel(elements.knowledgePanel));

@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: frostfire-ai
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    disk:
+      name: frostfire-data
+      mountPath: /app/backend/data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_PATH
+        value: /app/backend/data/ai_chat.db
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: AI_MODEL
+        value: gpt-4o-mini
+      - key: EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: CORS_ORIGINS
+        sync: false

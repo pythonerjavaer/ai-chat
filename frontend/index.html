@@ -23,32 +23,32 @@
           <span class="brand-mark"><i></i><b></b></span>
           <span><strong>冰焰智研</strong><small>FROSTFIRE AI</small></span>
         </a>
-        <span class="landing-status"><i></i> OpenAI API 驱动</span>
+        <span class="landing-status"><i></i> PRIVATE AI WORKSPACE</span>
       </header>
 
       <div class="landing-grid">
         <div class="landing-copy">
-          <span class="overline">EVIDENCE-FIRST INTELLIGENCE</span>
-          <h1>在冰的秩序与<br />火的洞察之间，<br /><em>看见证据。</em></h1>
-          <p>同一套可信工作流，两种截然不同的专业视角。上传合同或财务资料，让每个结论都能回到来源、口径与假设。</p>
+          <span class="overline">ONE HOME FOR SPECIALIST AI</span>
+          <h1>把复杂工作，<br />压缩成一个清晰的<br /><em>AI 工作流。</em></h1>
+          <p>从专业研究到专属 AI Space，把规则、资料与成本控制放在同一个地方。打开即用，不必从空白提示词开始。</p>
+          <div class="landing-proof" aria-label="产品能力概览">
+            <div class="proof-item"><span>01</span><div><strong>专业工作台</strong><small>合同合规 · 金融研究 · 通用文档</small></div></div>
+            <div class="proof-item"><span>02</span><div><strong>AI Space</strong><small>把你的方法和输出标准保存为专属智能体</small></div></div>
+            <div class="proof-item"><span>03</span><div><strong>Token 可见</strong><small>每次运行都有实际用量与预算边界</small></div></div>
+          </div>
+          <div class="landing-footer-note"><span class="note-dot"></span> 资料、对话与 AI Space 均按账号隔离</div>
           <div class="duality-preview" aria-label="产品工作区预览">
-            <article class="preview-card frost-card">
-              <span class="preview-icon">§</span>
-              <div><small>寒冰工作台</small><strong>合同与合规</strong><p>条款地图 · 义务期限 · 证据缺口</p></div>
-            </article>
-            <article class="preview-card ember-card">
-              <span class="preview-icon">↗</span>
-              <div><small>烈火工作台</small><strong>金融研究</strong><p>信号面板 · 指标计算 · 风险假设</p></div>
-            </article>
+            <article class="preview-card frost-card"><span class="preview-icon">§</span><div><small>FROST DESK</small><strong>合同与合规</strong><p>条款、义务、期限与证据缺口</p></div></article>
+            <article class="preview-card ember-card"><span class="preview-icon">↗</span><div><small>EMBER DESK</small><strong>金融研究</strong><p>指标、假设、风险与来源核对</p></div></article>
           </div>
         </div>
 
         <div class="auth-panel">
           <div class="auth-card">
             <div class="auth-heading">
-              <span id="auth-kicker">欢迎回来</span>
-              <h2 id="auth-title">进入你的研究舱</h2>
-              <p id="auth-description">对话、文档与证据索引会与你的账号绑定。</p>
+              <span id="auth-kicker">继续工作</span>
+              <h2 id="auth-title">进入工作空间</h2>
+              <p id="auth-description">你的对话、资料与 AI Space 会安全地保存在这里。</p>
             </div>
             <form id="auth-form" novalidate>
               <label class="field">
@@ -86,6 +86,7 @@
         <nav id="workspace-tabs" class="workspace-tabs" aria-label="切换工作区"></nav>
         <div class="header-actions">
           <span id="network-status" class="network-status"><i></i><b>在线</b></span>
+          <button id="studio-open" class="studio-launch" type="button" aria-label="打开 AI Space Studio"><span>＋</span><b>AI Space</b></button>
           <button id="knowledge-toggle" class="icon-button tablet-only" type="button" aria-label="打开资料库">◇</button>
           <button id="settings-button" class="profile-button" type="button" aria-label="账号与设置">
             <span id="avatar">A</span><b id="current-username">account</b><i>⌄</i>
@@ -124,6 +125,8 @@
           <div class="conversation-bar">
             <div><span id="workspace-indicator" class="workspace-badge">通用文档</span><h2 id="conversation-title">新对话</h2></div>
             <div class="conversation-actions">
+              <button id="studio-open-secondary" class="studio-launch studio-launch-secondary" type="button"><span>＋</span><b>创建 AI Space</b></button>
+              <button id="cross-exam-open" class="cross-exam-launch" type="button"><span>⟁</span><b>冰火交叉审查</b><i>NEW</i></button>
               <button id="open-evidence" class="soft-button" type="button"><span>◇</span> 证据透镜</button>
             </div>
           </div>
@@ -162,9 +165,97 @@
           <div class="boundary-card"><span>i</span><p id="workspace-boundary">请核对关键事实与来源。</p></div>
         </aside>
       </div>
+      <button id="mobile-studio-open" class="mobile-cross-button mobile-only" type="button">＋ 创建 AI Space</button>
       <button id="mobile-knowledge" class="mobile-vault-button mobile-only" type="button">◇ 资料与证据</button>
       <div id="panel-backdrop" class="panel-backdrop hidden"></div>
     </section>
+
+    <dialog id="cross-exam-dialog" class="cross-exam-dialog">
+      <div class="crossfire-shell">
+        <header class="crossfire-header">
+          <div class="crossfire-title">
+            <span class="crossfire-glyph">⟁</span>
+            <div><span class="overline">CLAUSE-TO-CASHFLOW ENGINE</span><h2>冰火交叉审查</h2><p>让寒冰条款与烈火数据相互质询，而不是分别做两份摘要。</p></div>
+          </div>
+          <button id="cross-exam-close" class="icon-button" type="button" aria-label="关闭冰火交叉审查">×</button>
+        </header>
+
+        <div class="crossfire-body">
+          <section class="crossfire-control">
+            <div class="crossfire-status">
+              <div class="frost-status"><span>§</span><div><small>寒冰证据</small><strong id="cross-legal-count">检查中…</strong></div></div>
+              <div class="cross-link"><i></i><b>交叉</b><i></i></div>
+              <div class="ember-status"><span>↗</span><div><small>烈火证据</small><strong id="cross-finance-count">检查中…</strong></div></div>
+            </div>
+
+            <div class="innovation-strip">
+              <div><b>01</b><span>条款→现金流<br />因果碰撞卡</span></div>
+              <div><b>02</b><span>Base / Downside / Breakpoint<br />反事实压力舱</span></div>
+              <div><b>03</b><span>证据锁链与分析指纹<br />可复核、可重跑</span></div>
+            </div>
+
+            <label class="cross-focus-field">
+              <span>本次审查焦点</span>
+              <textarea id="cross-focus" rows="3" maxlength="800">识别合同条款如何影响收入确认、现金流、成本、续约和下行风险，并指出相互矛盾、证据缺口与最需要验证的事项。</textarea>
+            </label>
+            <div class="cross-presets" aria-label="审查焦点模板">
+              <button type="button" data-cross-focus="检查续约、涨价和最低采购承诺如何影响成本、利润率与现金流。">续约涨价 × 现金流</button>
+              <button type="button" data-cross-focus="检查终止、违约、赔偿和责任上限在下行情景中的财务影响。">违约责任 × 下行风险</button>
+              <button type="button" data-cross-focus="检查服务水平、退款、质保和赔偿条款是否与利润率假设一致。">服务承诺 × 利润率</button>
+              <button type="button" data-cross-focus="检查合同义务、管理层陈述与财务披露之间的不一致和证据缺口。">合同承诺 × 财务披露</button>
+            </div>
+            <button id="cross-exam-run" class="cross-run-button" type="button"><span>启动双域质询</span><b>⟁</b></button>
+            <p id="cross-exam-error" class="cross-error" role="alert"></p>
+          </section>
+
+          <section id="cross-exam-results" class="crossfire-results" aria-live="polite">
+            <div class="cross-empty-state">
+              <span>ICE</span><i>⟁</i><span>FIRE</span>
+              <h3>一次提问，同时审问两个证据世界</h3>
+              <p>系统只使用你已上传到寒冰和烈火工作台的资料。运行后会显示条款机制、财务后果、证据缺口、压力情景和可复核来源。</p>
+            </div>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="studio-dialog" class="studio-dialog">
+      <div class="space-studio-shell">
+        <header class="space-studio-header">
+          <div><span class="overline">AI SPACE STUDIO</span><h2>把你的方法，变成可以运行的 AI</h2><p>模板是起点；规则、成本和体验由你定义。</p></div>
+          <button id="studio-close" class="icon-button" type="button" aria-label="关闭 AI Space Studio">×</button>
+        </header>
+        <div class="space-studio-body">
+          <section class="space-builder">
+            <div class="billing-summary">
+              <div><span class="overline">TOKEN CONTROL</span><strong id="billing-plan">Free</strong><small id="billing-usage">正在读取用量…</small></div>
+              <button id="billing-upgrade" class="soft-button" type="button">Pro 订阅</button>
+            </div>
+            <form id="space-form" class="space-form">
+              <div class="form-heading"><span>01</span><div><strong>选择起点</strong><small>选择模板后仍可完全重写规则。</small></div></div>
+              <div id="space-template-grid" class="space-template-grid" aria-label="AI Space 模板"></div>
+              <div class="form-heading"><span>02</span><div><strong>定义你的 Space</strong><small>每个 Space 有独立规则与 Token 预算。</small></div></div>
+              <label class="field compact-field"><span>名称</span><input id="space-name" maxlength="60" placeholder="例如：我的产品工程师" required /></label>
+              <label class="field compact-field"><span>它帮助谁解决什么</span><input id="space-description" maxlength="240" placeholder="例如：把产品需求拆成可交付任务" /></label>
+              <label class="field compact-field"><span>操作规则</span><textarea id="space-rules" rows="5" maxlength="8000" placeholder="说明角色、边界、输出格式、判断标准…"></textarea></label>
+              <label class="field compact-field"><span>每月 Token 上限</span><select id="space-budget"><option value="3000">3,000 · 极省模式</option><option value="6000" selected>6,000 · 日常模式</option><option value="10000">10,000 · 深度模式</option></select></label>
+              <button id="space-create" class="primary-button" type="submit"><span>创建可运行的 AI Space</span><b>＋</b></button>
+              <p id="space-form-error" class="form-error" role="alert"></p>
+            </form>
+          </section>
+          <section class="space-canvas">
+            <div class="canvas-heading"><div><span class="overline">YOUR OPERATING SPACES</span><h3>已创建的 AI Space</h3></div><span id="space-count" class="space-count">0</span></div>
+            <div id="space-list" class="space-list"></div>
+            <section id="space-runner" class="space-runner hidden" aria-live="polite">
+              <div class="runner-heading"><div><span id="runner-icon" class="runner-icon">✦</span><div><small>SPACE SANDBOX</small><strong id="runner-name">选择一个 Space</strong></div></div><span id="runner-budget">—</span></div>
+              <textarea id="runner-input" rows="3" maxlength="4000" placeholder="给这个 AI Space 一项具体任务…"></textarea>
+              <button id="runner-send" class="studio-run-button" type="button"><span>运行一次</span><b>→</b></button>
+              <div id="runner-output" class="runner-output">每一次运行都会显示实际 Token 消耗；Space 达到预算后会停止调用模型。</div>
+            </section>
+          </section>
+        </div>
+      </div>
+    </dialog>
 
     <dialog id="settings-dialog" class="modal">
       <form method="dialog" class="modal-shell">

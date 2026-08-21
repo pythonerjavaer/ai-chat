@@ -77,6 +77,34 @@ def init_db() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS spaces (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                icon TEXT NOT NULL,
+                theme TEXT NOT NULL,
+                template_id TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                monthly_token_budget INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS token_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                space_id TEXT,
+                period TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (space_id) REFERENCES spaces(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sessions_user_updated
                 ON sessions(user_id, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -103,6 +131,7 @@ def init_db() -> None:
         _ensure_column(connection, "chunks", "page", "INTEGER")
         _ensure_column(connection, "users", "privacy_accepted_at", "TEXT")
         _ensure_column(connection, "users", "privacy_version", "TEXT")
+        _ensure_column(connection, "users", "plan", "TEXT NOT NULL DEFAULT 'free'")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_documents_user_workspace "
             "ON documents(user_id, workspace, created_at DESC)"
@@ -110,6 +139,14 @@ def init_db() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_chunks_user_workspace "
             "ON chunks(user_id, document_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spaces_user_updated "
+            "ON spaces(user_id, updated_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_usage_user_period "
+            "ON token_usage(user_id, period)"
         )
 
 
@@ -168,13 +205,137 @@ def get_user_by_id(user_id: int) -> dict[str, Any] | None:
     with connect() as connection:
         row = connection.execute(
             """
-            SELECT id, username, privacy_accepted_at, privacy_version, created_at
+            SELECT id, username, privacy_accepted_at, privacy_version, plan, created_at
             FROM users
             WHERE id = ?
             """,
             (user_id,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def create_space(
+    user_id: int,
+    name: str,
+    description: str,
+    icon: str,
+    theme: str,
+    template_id: str,
+    system_prompt: str,
+    monthly_token_budget: int,
+) -> dict[str, Any]:
+    space_id = str(uuid.uuid4())
+    now = utc_now()
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO spaces
+                (id, user_id, name, description, icon, theme, template_id,
+                 system_prompt, monthly_token_budget, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                space_id,
+                user_id,
+                name,
+                description,
+                icon,
+                theme,
+                template_id,
+                system_prompt,
+                monthly_token_budget,
+                now,
+                now,
+            ),
+        )
+    return get_space(space_id, user_id) or {}
+
+
+def list_spaces(user_id: int) -> list[dict[str, Any]]:
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, name, description, icon, theme, template_id,
+                   monthly_token_budget, created_at, updated_at
+            FROM spaces
+            WHERE user_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_space(space_id: str, user_id: int) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT id, name, description, icon, theme, template_id,
+                   system_prompt, monthly_token_budget, created_at, updated_at
+            FROM spaces
+            WHERE id = ? AND user_id = ?
+            """,
+            (space_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def count_spaces(user_id: int) -> int:
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM spaces WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return int(row["count"])
+
+
+def usage_period() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def token_usage(user_id: int, space_id: str | None = None) -> dict[str, int]:
+    parameters: list[Any] = [user_id, usage_period()]
+    space_filter = ""
+    if space_id:
+        space_filter = "AND space_id = ?"
+        parameters.append(space_id)
+    with connect() as connection:
+        row = connection.execute(
+            f"""
+            SELECT COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(total_tokens), 0) AS total_tokens
+            FROM token_usage
+            WHERE user_id = ? AND period = ? {space_filter}
+            """,
+            parameters,
+        ).fetchone()
+    return {key: int(row[key]) for key in row.keys()}
+
+
+def record_token_usage(
+    user_id: int,
+    space_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+) -> None:
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO token_usage
+                (user_id, space_id, period, input_tokens, output_tokens, total_tokens, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                space_id,
+                usage_period(),
+                max(0, input_tokens),
+                max(0, output_tokens),
+                max(0, total_tokens),
+                utc_now(),
+            ),
+        )
 
 
 def record_privacy_consent(user_id: int, privacy_version: str) -> dict[str, Any] | None:

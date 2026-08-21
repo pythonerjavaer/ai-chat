@@ -335,6 +335,179 @@ def test_professional_workspaces_isolate_sessions_documents_and_prompts(monkeypa
         }
 
 
+def test_cross_exam_links_legal_and_finance_evidence(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "create_embeddings",
+        lambda chunks: [[1.0, 0.0] for _ in chunks],
+    )
+
+    with TestClient(main.app) as client:
+        token, _ = register(client, "cross-exam-user")
+        legal_upload = client.post(
+            "/api/documents",
+            headers=auth(token),
+            data={"workspace": "legal"},
+            files={
+                "file": (
+                    "subscription.md",
+                    "The agreement renews automatically and fees rise by 8%.",
+                    "text/markdown",
+                )
+            },
+        )
+        finance_upload = client.post(
+            "/api/documents",
+            headers=auth(token),
+            data={"workspace": "finance"},
+            files={
+                "file": (
+                    "forecast.md",
+                    "Operating costs are expected to increase next year.",
+                    "text/markdown",
+                )
+            },
+        )
+        assert legal_upload.status_code == 201
+        assert finance_upload.status_code == 201
+
+        def fake_context(_user_id, _query, workspace, *_args):
+            if workspace == "legal":
+                return [{
+                    "document_id": legal_upload.json()["id"],
+                    "name": "subscription.md",
+                    "content": "The agreement renews automatically and fees rise by 8%.",
+                    "page": None,
+                    "score": 0.91,
+                }]
+            return [{
+                "document_id": finance_upload.json()["id"],
+                "name": "forecast.md",
+                "content": "Operating costs are expected to increase next year.",
+                "page": None,
+                "score": 0.88,
+            }]
+
+        monkeypatch.setattr(main, "retrieve_context", fake_context)
+        monkeypatch.setattr(
+            main,
+            "run_cross_exam",
+            lambda *_: {
+                "headline": "续约条款可能放大成本压力",
+                "executive_summary": "合同升级机制与成本预测形成交叉风险。",
+                "collisions": [{
+                    "title": "自动续约与成本上行",
+                    "severity": "high",
+                    "confidence": 86,
+                    "legal_mechanism": "自动续约并上调费用。",
+                    "financial_consequence": "预计成本压力可能被放大。",
+                    "why_it_matters": "预算可能未覆盖合同升级。",
+                    "legal_source_ids": ["L1"],
+                    "finance_source_ids": ["F1", "F99"],
+                    "missing_evidence": "缺少终止通知窗口。",
+                    "next_action": "核对终止窗口并更新预算。",
+                }],
+                "stress_scenarios": [
+                    {
+                        "name": name,
+                        "trigger": "示例触发条件",
+                        "impact_chain": "示例影响链",
+                        "early_warning": "示例预警",
+                        "response": "示例响应",
+                    }
+                    for name in ["Base", "Downside", "Breakpoint"]
+                ],
+                "blind_spots": ["缺少终止窗口信息"],
+            },
+        )
+
+        response = client.post(
+            "/api/cross-exam",
+            headers=auth(token),
+            json={"focus": "检查合同对成本和现金流的影响"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["analysis_id"].startswith("FF-")
+        assert payload["document_counts"] == {"legal": 1, "finance": 1}
+        assert [item["source_id"] for item in payload["collisions"][0]["evidence"]] == [
+            "L1",
+            "F1",
+        ]
+        assert payload["method"]["name"] == "Clause-to-Cashflow Cross-Examination"
+
+        missing_token, _ = register(client, "cross-exam-missing")
+        missing = client.post(
+            "/api/cross-exam",
+            headers=auth(missing_token),
+            json={"focus": "检查跨域影响"},
+        )
+        assert missing.status_code == 409
+
+
+def test_ai_space_studio_usage_and_billing_boundaries(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "run_space",
+        lambda *_args, **_kwargs: (
+            "A concise project plan.",
+            {"input_tokens": 120, "output_tokens": 80, "total_tokens": 200},
+        ),
+    )
+
+    with TestClient(main.app) as client:
+        token, _ = register(client, "space-owner")
+        templates = client.get("/api/platform/templates").json()
+        assert {item["id"] for item in templates} >= {
+            "project_engineer",
+            "workflow_designer",
+            "document_oracle",
+            "blank",
+        }
+
+        created = client.post(
+            "/api/spaces",
+            headers=auth(token),
+            json={
+                "name": "My Project Engineer",
+                "description": "Plans and verifies product work.",
+                "template_id": "project_engineer",
+                "monthly_token_budget": 1_000,
+            },
+        )
+        assert created.status_code == 201
+        space_id = created.json()["id"]
+        assert created.json()["theme"] == "forge"
+
+        run = client.post(
+            f"/api/spaces/{space_id}/run",
+            headers=auth(token),
+            json={"message": "Plan a token-efficient MVP."},
+        )
+        assert run.status_code == 200
+        assert run.json()["reply"] == "A concise project plan."
+        assert run.json()["usage"]["total_tokens"] == 200
+        assert run.json()["billing"]["usage"]["total_tokens"] == 200
+
+        listed = client.get("/api/spaces", headers=auth(token)).json()
+        assert listed[0]["usage"]["total_tokens"] == 200
+
+        second_token, _ = register(client, "space-visitor")
+        hidden = client.post(
+            f"/api/spaces/{space_id}/run",
+            headers=auth(second_token),
+            json={"message": "Try to access another account."},
+        )
+        assert hidden.status_code == 404
+
+        apple = client.post(
+            "/api/billing/apple/verify",
+            headers=auth(token),
+            json={"signed_transaction": "x" * 20},
+        )
+        assert apple.status_code == 503
+
+
 def test_docx_extraction_preserves_readable_content():
     from docx import Document
 

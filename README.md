@@ -1,6 +1,6 @@
 # 冰焰智研 · FrostFire AI
 
-一个面向合同合规与金融文档研究的证据驱动 AI 工作台。法律工作台采用寒冰蓝视觉和“条款地图”，金融工作台采用烈焰橙红视觉和“信号面板”；两者共享同一套账号、私人资料库、来源引用和流式对话能力。
+一个面向合同合规与金融文档研究的证据驱动 AI 工作台，也是一个可创建专属 AI Space 的轻量平台底座。法律工作台采用寒冰蓝视觉和“条款地图”，金融工作台采用烈焰橙红视觉和“信号面板”；两者共享同一套账号、私人资料库、来源引用和流式对话能力。
 
 当前仓库同时包含 Web、iOS 和 Android 工程。后端使用 FastAPI、SQLite 与 OpenAI API；前端使用 Vite、原生 HTML/CSS/JavaScript 和 Capacitor。
 
@@ -9,6 +9,11 @@
 - 用户注册、登录、JWT 鉴权、隐私同意记录与应用内永久删号；用户数据相互隔离。
 - SQLite 持久化会话、消息、文档文本和向量；工作区之间不会交叉检索资料。
 - 合同与合规、金融研究、通用文档三个工作区。
+- “冰火交叉审查”独立工作台：把合同机制与财务后果连接成跨域因果碰撞卡，而不是分别生成两份摘要。
+- AI Space Studio：用户可从项目工程师、工作流设计师、文档研究员或空白模板出发，定义独立角色规则、说明和月度 Token 上限，并在 Space Sandbox 中运行任务。
+- Token 账本：按账号和按 AI Space 记录模型实际输入/输出 Token，用免费计划额度与每个 Space 的预算在服务端阻止超额调用。
+- 订阅能力的服务端边界：已有 Free/Pro 权益模型、额度查询和一个默认关闭的 Apple 交易校验入口；未配置交易校验时接口明确拒绝，不会把演示按钮伪装成已完成收款。
+- 三档反事实压力舱（Base / Downside / Breakpoint）、未知事项雷达、证据锁链和输入版本分析指纹；情景明确标注为推演而非预测。
 - PDF、DOCX、TXT、Markdown、CSV、JSON 上传；使用 OpenAI Embeddings 建立私人文档索引。
 - PDF 引用显示文件名与页码；其他文件显示文件来源。
 - 合同工作台支持条款、义务、期限、风险与证据缺口分析入口。
@@ -30,7 +35,9 @@
 - 不接入实时行情、券商交易或外部法律法规数据库；
 - 不具备扫描 PDF 的 OCR；仅支持带可提取文字层的 PDF；
 - 不验证上传材料本身的真实性或完整性；“证据透镜”表示检索相关度与覆盖情况，不是准确率或评级；
-- 不是多人组织协作、计费或企业审计系统；
+- AI Space 当前是文本任务运行时，尚未提供可视化应用生成、代码执行、外部工具连接或将上传资料自动绑定到任意 Space 的功能；
+- 不是多人组织协作或企业审计系统；
+- Pro 计划目前是权益数据模型，不是已上线的 Apple 内购。必须完成 App Store Connect 商品、StoreKit 客户端交易、服务端签名交易验证和 Sandbox 测试，才可以向用户收费；
 - 生产部署目前使用单实例 SQLite，若需要多副本和更高并发应迁移到托管 PostgreSQL。
 
 默认聊天模型为 `gpt-4o-mini`，Embedding 模型为 `text-embedding-3-small`，均可通过环境变量修改。OpenAI API Key 始终只存在于服务端。
@@ -182,6 +189,12 @@ npm run ios:open
 | `DELETE` | `/api/documents/{id}` | 删除文档与向量 |
 | `POST` | `/api/chat` | 非流式聊天 |
 | `POST` | `/api/chat/stream` | SSE 流式聊天 |
+| `POST` | `/api/cross-exam` | 法律条款与金融资料的双域交叉审查 |
+| `GET` | `/api/platform/templates` | AI Space 模板定义 |
+| `GET` | `/api/billing/status` | 当前计划、Token 额度和用量 |
+| `GET/POST` | `/api/spaces` | 查询或创建专属 AI Space |
+| `POST` | `/api/spaces/{id}/run` | 按 Space 规则运行一次任务并记录实际 Token 用量 |
+| `POST` | `/api/billing/apple/verify` | Apple 交易校验预留入口（未配置时返回 503） |
 
 聊天请求示例：
 
@@ -211,7 +224,7 @@ npm run build
 npm audit
 ```
 
-测试覆盖认证、隐私同意、级联删号、用户隔离、SQLite 持久化、RAG 来源、SSE 保存、工作区隔离、专业提示、金融计算、DOCX 提取和工具输入限制。
+测试覆盖认证、隐私同意、级联删号、用户隔离、SQLite 持久化、RAG 来源、SSE 保存、工作区隔离、双域交叉审查与证据锁定、专业提示、金融计算、DOCX 提取、工具输入限制，以及 AI Space 的创建、隔离、Token 记录和未配置支付入口。
 
 ## 上架状态
 
@@ -219,5 +232,6 @@ npm audit
 - Android 调试 APK、Release AAB 与 Lint：已在本机通过构建；Release AAB 必须使用发布方真实密钥签名后才能上传。
 - iOS 原生工程、图标、启动图与 Privacy Manifest：已生成并校验；本机当前只有 Command Line Tools，尚未用完整 Xcode 归档和签名。
 - App Store / 华为应用市场提交：尚未提交。需要已验证的开发者账号、最终运营主体资料、支持邮箱与公开 HTTPS 后端/政策 URL。
+- Apple 订阅：尚未上线或收款。完成商店内购配置后，仍须在真机 Sandbox 用真实交易流程验证，才具备提交订阅功能的条件。
 
 这份状态是工程事实，不等同于商店审核保证。最终提交还会受到账号资质、地区、内容分级、隐私披露和平台审核决定影响。
