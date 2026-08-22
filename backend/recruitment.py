@@ -2,6 +2,23 @@ from datetime import date
 from typing import Any
 
 
+# UI categories intentionally stay human-readable while the stored job feed
+# keeps its stable employer_type values.  Expand them here so a user can pick
+# a clean category (for example “外企/咨询”) without losing matches from an
+# existing official card tagged simply “外企”.
+EMPLOYER_TYPE_ALIASES: dict[str, set[str]] = {
+    "央国企": {"央国企", "央国企能源", "央国企科技"},
+    "央国企科技": {"央国企", "央国企科技"},
+    "银行/金融": {"银行/金融", "政策性金融"},
+    "券商/基金": {"券商/基金", "资管"},
+    "保险/综合金融": {"保险/综合金融", "保险"},
+    "互联网企业": {"互联网企业", "互联网"},
+    "快消/消费": {"快消/消费", "快消"},
+    "外企/咨询": {"外企/咨询", "外企", "咨询"},
+    "量化私募": {"量化私募", "量化", "私募"},
+}
+
+
 def _words(values: Any) -> set[str]:
     if not isinstance(values, list):
         return set()
@@ -13,6 +30,11 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
     industries = _words(profile.get("industries"))
     locations = _words(profile.get("locations"))
     employer_types = _words(profile.get("employer_types"))
+    selected_employer_types = {
+        value
+        for category in employer_types
+        for value in EMPLOYER_TYPE_ALIASES.get(category, {category})
+    }
     haystack = " ".join(
         str(job.get(key, "")) for key in ("title", "company", "city", "industry", "requirements", "tags")
     ).lower()
@@ -28,7 +50,7 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
     if locations and any(word in str(job.get("city", "")).lower() for word in locations):
         score += 8
         reasons.append("城市偏好匹配")
-    if employer_types and str(job.get("employer_type", "")).lower() in employer_types:
+    if selected_employer_types and str(job.get("employer_type", "")).lower() in selected_employer_types:
         score += 12
         reasons.append("雇主类型匹配")
     score = min(98, score)

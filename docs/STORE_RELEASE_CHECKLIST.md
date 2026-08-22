@@ -14,7 +14,7 @@
 
 ## 1. 冻结身份
 
-- [ ] 确认“冰焰智研 / FrostFire AI”名称、图标和商标风险
+- [ ] 确认“冰火空间 / FrostFire Space”名称、图标和商标风险
 - [ ] 确认最终 Bundle ID / Application ID：`com.pythonerjavaer.frostfireai`
 - [ ] 确认版本 `1.0.0`、iOS build number 和 Android versionCode
 - [ ] 提供运营主体法定名称、地址、支持邮箱和隐私联系邮箱

@@ -63,6 +63,7 @@ from .live_sources import (
     fetch_public_recruitment_sources,
     is_actionable_recruitment_listing,
     is_priority_campus_listing,
+    is_priority_public_source_lead,
 )
 from .config import settings
 from .security import (
@@ -110,7 +111,7 @@ MODEL_USER_UNIT_LIMIT = 60
 MODEL_GLOBAL_UNIT_LIMIT = 240
 REGISTRATION_WINDOW_SECONDS = 3_600
 REGISTRATION_LIMIT = 60
-RECRUITMENT_SOURCE_COOLDOWN_SECONDS = 300
+RECRUITMENT_SOURCE_COOLDOWN_SECONDS = 60
 
 
 class RecruitmentRefreshBusy(RuntimeError):
@@ -265,7 +266,7 @@ async def lifespan(_: FastAPI):
 PRIVACY_VERSION = "2026-08-22"
 
 
-app = FastAPI(title="FrostFire AI API", version="4.0.0", lifespan=lifespan)
+app = FastAPI(title="FrostFire Space API", version="4.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -350,7 +351,7 @@ class RecruitmentProfileRequest(BaseModel):
     desired_roles: list[str] = Field(default_factory=list, max_length=12)
     industries: list[str] = Field(default_factory=list, max_length=8)
     locations: list[str] = Field(default_factory=list, max_length=12)
-    employer_types: list[str] = Field(default_factory=list, max_length=6)
+    employer_types: list[str] = Field(default_factory=list, max_length=9)
 
 
 class RecruitmentIngestJob(BaseModel):
@@ -592,7 +593,14 @@ def recruitment_jobs(user: User) -> dict:
     jobs = [
         score_job(job, profile)
         for job in available_jobs
-        if is_priority_campus_listing(job) or "动态监控" in job.get("tags", [])
+        if (
+            is_priority_campus_listing(job)
+            or (
+                is_priority_public_source_lead(job)
+                and "待打开核对" in (job.get("tags") or [])
+            )
+            or "动态监控" in job.get("tags", [])
+        )
     ]
     jobs = [job for job in jobs if job["days_left"] is None or job["days_left"] >= 0]
     jobs.sort(
@@ -602,21 +610,28 @@ def recruitment_jobs(user: User) -> dict:
             item["days_left"] if item["days_left"] is not None else 9999,
         )
     )
+    public_source_leads = sum(
+        "待打开核对" in (job.get("tags") or []) for job in jobs
+    )
+    verified_jobs = len(jobs) - public_source_leads
+    inventory_copy = (
+        f"当前展示 {len(jobs)} 个未过期校招岗位；"
+        f"已核验 {verified_jobs} 个，公开源待核对 {public_source_leads} 个。"
+    )
     if watch_summary["total"] == 0:
         source_message = (
-            f"当前展示 {len(jobs)} 个已核验且未过期岗位；"
-            "尚未创建零 Token 网页监控。"
+            inventory_copy + "尚未创建零 Token 网页监控。"
         )
     elif watch_summary["last_checked_at"] is None:
         source_message = (
             f"已创建 {watch_summary['total']} 个零 Token 网页监控，等待首次检查；"
-            f"当前展示 {len(jobs)} 个已核验岗位。"
+            + inventory_copy
         )
     else:
         source_message = (
             f"{watch_summary['enabled']} 个零 Token 网页监控最近检查于 "
             f"{watch_summary['last_checked_at']}；发现 {watch_summary['changed']} 个页面变化，"
-            f"{watch_summary['errors']} 个检查失败。当前展示 {len(jobs)} 个已核验岗位。"
+            f"{watch_summary['errors']} 个检查失败。{inventory_copy}"
         )
     return {
         "jobs": jobs,
@@ -629,6 +644,8 @@ def recruitment_jobs(user: User) -> dict:
             "last_sync": watch_summary["last_checked_at"],
             "last_job_verified_at": job_summary["last_verified_at"],
             "open_jobs": job_summary["open_jobs"],
+            "verified_jobs": verified_jobs,
+            "public_source_leads": public_source_leads,
             "watches": watch_summary,
             "model_tokens_used": 0,
         },

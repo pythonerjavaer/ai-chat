@@ -1059,7 +1059,7 @@ def list_recruitment_jobs() -> list[dict[str, Any]]:
 
 
 def purge_legacy_recruitment_samples() -> None:
-    """Remove prototype vacancies and unverified aggregator cards."""
+    """Remove prototype vacancies while retaining refreshable public-source rows."""
     with connect() as connection:
         connection.execute(
             """
@@ -1070,12 +1070,6 @@ def purge_legacy_recruitment_samples() -> None:
                 'sample-state-tech-2026'
             )
                OR source IN ('示例岗位，等待接入官方源', '示例数据')
-            """
-        )
-        connection.execute(
-            """
-            DELETE FROM recruitment_jobs
-            WHERE source IN ('国资小新', '银行招聘网', 'Adzuna API')
             """
         )
 

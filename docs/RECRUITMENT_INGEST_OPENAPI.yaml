@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
-  title: FrostFire Recruitment Monitor Ingest
+  title: FrostFire Space Opportunity Monitor Ingest
   version: 1.0.0
-  description: Push verified campus vacancies into the autumn-recruiting radar.
+  description: Push verified campus vacancies into the Future Opportunity Radar.
 servers:
   - url: https://YOUR_RENDER_DOMAIN
 paths:

@@ -1448,12 +1448,18 @@ async function refreshRecruitmentSource() {
     await refreshRecruitment();
     const jobsOk = results[0].status === "fulfilled";
     const watchesOk = results[1].status === "fulfilled";
+    const sourceResult = jobsOk ? results[0].value : null;
+    const sourceCopy = sourceResult
+      ? sourceResult.cached
+        ? "沿用 60 秒内的公开源结果"
+        : `读取 ${Number(sourceResult.count || 0).toLocaleString()} 条公开源候选`
+      : "公开岗位源本次未完成";
     showToast(
       jobsOk && watchesOk
-        ? "岗位源与官网变化雷达已刷新。"
+        ? `${sourceCopy}；官网变化雷达已刷新。`
         : jobsOk
-          ? "岗位源已刷新；官网变化雷达本次未完成。"
-          : "官网变化雷达已刷新；岗位源本次未完成。",
+          ? `${sourceCopy}；官网变化雷达本次未完成。`
+          : "官网变化雷达已刷新；公开岗位源本次未完成。",
       4500,
     );
   } catch (error) {
