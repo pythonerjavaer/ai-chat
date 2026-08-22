@@ -8,7 +8,7 @@
 
 - 用户注册、登录、JWT 鉴权、隐私同意记录与应用内永久删号；用户数据相互隔离。
 - 管理员汇总使用面板：访问 `/?admin=usage` 后以 `ADMIN_DASHBOARD_TOKEN` 解锁，约每 10 秒刷新注册量、活跃量、会话/消息/文档、API 请求、已记录的普通聊天与 AI Space 模型调用及 Token；不查询或展示用户名、消息正文、文档内容、密码、Prompt 或模型回复。内容无关的 API 使用事件最多保存 30 天。
-- SQLite 保存会话、消息、文档文本和向量；本地使用 Docker volume，Render 线上实例使用挂载到 `/app/backend/data` 的 1GB 持久盘。工作区之间不会交叉检索资料。
+- SQLite 保存会话、消息、文档文本和向量；本地或 Docker volume 可以持久化，但当前 Render Free 线上实例使用临时文件系统，休眠、重启或重新部署后账号及业务数据可能丢失。工作区之间不会交叉检索资料。
 - 合同与合规、金融研究、通用文档三个工作区。
 - “冰焰交叉审查”独立工作台：把合同机制与财务后果连接成跨域因果碰撞卡，而不是分别生成两份摘要。
 - AI Space 成果胶囊：用户可从项目工程师、工作流设计师、文档研究员或空白模板出发，定义独立的成功标准、边界和月度 Token 上限，再以 `local`、`lean` 或 `deep` 三种模式更新成果。
@@ -42,7 +42,7 @@
 - 自适应三栏桌面界面、移动端抽屉、离线状态、原生触觉反馈和本地偏好。
 - 隐私政策、使用条款、支持中心、第三方 AI 数据传输明示同意与账号删除闭环。
 - Capacitor iOS/Android 工程、原生图标、启动图、iOS Privacy Manifest 和 Android Release 混淆/资源压缩配置。
-- 多阶段 Docker 镜像：构建 Web 前端并由同一个 FastAPI 容器提供前端、法律页面与 API；`docker-compose.yml` 提供本地持久化，`render.yaml` 使用 Starter 实例与 1GB 持久盘。
+- 多阶段 Docker 镜像：构建 Web 前端并由同一个 FastAPI 容器提供前端、法律页面与 API；`docker-compose.yml` 提供本地持久化，`render.yaml` 当前使用免费演示实例。
 
 ## 明确边界
 
@@ -59,10 +59,10 @@
 - 岗位源刷新不会抓取需要登录、验证码或违反网站条款的页面；未配置 `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` 时会跳过 Adzuna，只保留已配置的公开源与已核验卡片，不会伪造 Adzuna 结果；
 - 官网变化雷达会在每次请求与跳转前校验 HTTPS、端口和公网 DNS，但当前标准库传输层不会把已验证 IP 固定到连接。面向不受信任的公开注册用户正式运营前，仍应增加受控出站代理或可信招聘域名策略，消除 DNS 重绑定时间窗；
 - OpenAI 支持的接口有单进程、十分钟窗口的账号级与服务级请求频率熔断，普通聊天和交叉审查也有输出上限；但公开注册目前没有邀请码、验证码或持久化的服务总费用熔断，进程重启也会清空频率窗口。正式公开运营前仍需加入邀请/风控，并在 OpenAI 项目侧设置预算与用量告警；
-- 官网变化提醒是用户打开应用后看到的站内首页提醒，不是 iOS/Android 系统推送，也没有声称具备后台通知。运行中的服务会按 `RECRUITMENT_REFRESH_MINUTES` 周期检查，也可以由用户手动刷新；部署或维护重启期间不会执行进程内刷新；
+- 官网变化提醒是用户打开应用后看到的站内首页提醒，不是 iOS/Android 系统推送，也没有声称具备后台通知。服务清醒时，官网雷达会按 `RECRUITMENT_REFRESH_MINUTES` 周期检查，也可以由用户手动刷新；Render Free 休眠期间，应用进程和进程内定时刷新均不会持续运行；
 - 不是多人组织协作或企业审计系统；
 - Pro 计划目前是权益数据模型，不是已上线的 Apple 内购。必须完成 App Store Connect 商品、StoreKit 客户端交易、服务端签名交易验证和 Sandbox 测试，才可以向用户收费；
-- 当前线上部署使用 Render Starter 单实例 SQLite 与 1GB 持久盘，实例重启和重新部署后账号、成果历史、画像与岗位状态会保留。它仍不是多副本数据库；如需水平扩展、高可用、独立备份恢复或多服务并发写入，应迁移到托管 PostgreSQL。
+- 当前线上部署使用 Render Free 临时文件系统中的单实例 SQLite，不具备账户数据持久化保证；实例休眠后重新启动、重新部署或重启都会丢失本地账号、成果历史、画像和岗位状态。正式上线前必须迁移到外部持久数据库（例如托管 PostgreSQL），不能继续把当前线上 SQLite 当作生产数据库。
 
 默认聊天模型为 `gpt-4o-mini`，Embedding 模型为 `text-embedding-3-small`，均可通过环境变量修改；替换的聊天模型必须兼容 OpenAI Chat Completions 与 `max_completion_tokens`。OpenAI API Key 始终只存在于服务端。
 
@@ -168,9 +168,9 @@ docker compose up --build
 
 Docker 镜像会在构建阶段执行 Vite 生产构建。运行后，`/` 提供 Web 应用，`/privacy.html`、`/terms.html` 和 `/support.html` 提供公开政策页面，`/api/*` 提供后端接口，因此可以只维护一个 HTTPS 域名。
 
-### Render 持久化部署
+### Render 免费演示部署
 
-根目录 `render.yaml` 使用 Render Starter Web Service，并把 1GB 持久盘挂载到 `/app/backend/data`。SQLite 数据库路径为 `/app/backend/data/ai_chat.db`，因此实例重启和重新部署不会清空账号、会话、文档、成果胶囊历史与未来雷达岗位数据。该配置适合当前单实例 MVP；需要多副本、高可用或数据库级备份恢复时，应迁移到托管 PostgreSQL。
+根目录 `render.yaml` 当前使用 Render Free Web Service，且没有持久化磁盘。它只适合公开演示和小规模测试：空闲后会休眠，实例重新启动、重新部署或重启会清空 SQLite 中的账号、会话、文档、成果胶囊历史和未来雷达岗位数据；休眠期间进程内招聘刷新也不会继续执行。正式上线前必须接入外部持久数据库，或升级服务并使用受支持的持久存储。
 
 部署时必须在 Render 的环境变量页面填写 `OPENAI_API_KEY`、`CORS_ORIGINS` 和一个自行保存的强随机 `ADMIN_DASHBOARD_TOKEN`；`JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 由 Blueprint 自动生成。管理员面板入口是 `/?admin=usage`，Token 只保存在当前页面内存。`render.yaml` 为未来雷达启用每 6 小时一次的限频 OpenAI 网页搜索；如需零额外模型费用，可将 `RECRUITMENT_WEB_SEARCH_ENABLED` 改为 `false`。真实密钥不得写入仓库。
 
