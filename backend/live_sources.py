@@ -3,6 +3,8 @@ import json
 import re
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 
@@ -26,7 +28,43 @@ def is_actionable_recruitment_listing(job: dict) -> bool:
     if not title or GENERIC_RECRUITMENT_TITLE.fullmatch(title):
         return False
     city = str(job.get("city", ""))
-    return "招聘" not in city
+    if "招聘" in city:
+        return False
+    campus_text = " ".join(
+        [title, str(job.get("requirements", "")), " ".join(job.get("tags", []))]
+    ).lower()
+    return any(marker in campus_text for marker in ("校园招聘", "秋招", "校招", "应届", "毕业生", "届", "graduate", "campus"))
+
+
+class _TextParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+
+def _extract_deadline(url: str) -> str | None:
+    """Return an explicitly labelled application deadline from a public notice."""
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "FrostFire-Autumn-Radar/1.0"})
+        with urllib.request.urlopen(request, timeout=6) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+        parser = _TextParser()
+        parser.feed(html)
+        text = re.sub(r"\s+", "", " ".join(parser.parts))
+        match = re.search(
+            r"(?:报名|网申|投递|申请).{0,24}?(?:截止|截至|截止时间).{0,12}?((20\d{2})年)?(\d{1,2})月(\d{1,2})日",
+            text,
+        )
+        if not match:
+            return None
+        year = int(match.group(2) or date.today().year)
+        month, day = int(match.group(3)), int(match.group(4))
+        return date(year, month, day).isoformat()
+    except Exception:
+        return None
 
 
 # Personal monitoring scope migrated from the owner's existing ChatGPT autumn
@@ -102,7 +140,7 @@ class _RecruitmentLinkParser(HTMLParser):
 
 def fetch_public_recruitment_sources() -> list[dict]:
     jobs: list[dict] = []
-    keywords = ("校园招聘", "秋招", "校招", "招聘公告", "招聘")
+    keywords = ("校园招聘", "秋招", "校招", "应届", "毕业生", "届")
     for source in PUBLIC_RECRUITMENT_SOURCES:
         try:
             request = urllib.request.Request(
@@ -134,6 +172,12 @@ def fetch_public_recruitment_sources() -> list[dict]:
                     break
         except Exception:
             continue
+    # Alerts are created only from dates explicitly labelled as application
+    # deadlines on the original public notice, never from publish dates.
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(_extract_deadline, job["url"]): job for job in jobs[:30]}
+        for future, job in futures.items():
+            job["closing_date"] = future.result()
     return jobs
 
 

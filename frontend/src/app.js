@@ -1031,9 +1031,13 @@ function renderRecruitmentMonitors(pools = []) {
 function renderRecruitmentDeadlineAlerts(jobs) {
   elements.recruitmentDeadlineAlerts.replaceChildren();
   const urgent = jobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 7);
-  if (!urgent.length) return;
+  const dated = jobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0);
   const heading = document.createElement("strong");
-  heading.textContent = `网申截止预警 · ${urgent.length} 个岗位将在 7 天内截止`;
+  heading.textContent = urgent.length
+    ? `网申截止预警 · ${urgent.length} 个校招岗位将在 7 天内截止`
+    : dated.length
+      ? "网申截止预警 · 暂无 7 天内到期的已核验校招岗位"
+      : "网申截止预警 · 暂无公告明确标注截止日期，刷新后将自动核验";
   const list = document.createElement("div");
   urgent.forEach((job) => {
     const item = document.createElement("a");
