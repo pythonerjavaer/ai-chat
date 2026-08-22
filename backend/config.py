@@ -22,6 +22,10 @@ class Settings:
     adzuna_country: str
     recruitment_refresh_minutes: int
     recruitment_ingest_token: str
+    recruitment_web_search_enabled: bool
+    recruitment_web_search_model: str
+    recruitment_web_search_interval_minutes: int
+    recruitment_web_search_max_tool_calls: int
 
 
 def load_settings() -> Settings:
@@ -47,6 +51,10 @@ def load_settings() -> Settings:
         ).split(",")
         if origin.strip()
     ]
+    web_search_enabled = os.getenv(
+        "RECRUITMENT_WEB_SEARCH_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
     return Settings(
         openai_api_key=openai_api_key,
@@ -62,6 +70,23 @@ def load_settings() -> Settings:
         adzuna_country=os.getenv("ADZUNA_COUNTRY", "gb").strip() or "gb",
         recruitment_refresh_minutes=max(0, int(os.getenv("RECRUITMENT_REFRESH_MINUTES", "30").strip() or "30")),
         recruitment_ingest_token=os.getenv("RECRUITMENT_INGEST_TOKEN", "").strip(),
+        recruitment_web_search_enabled=web_search_enabled,
+        recruitment_web_search_model=(
+            os.getenv("RECRUITMENT_WEB_SEARCH_MODEL", "").strip()
+            or os.getenv("AI_MODEL", "").strip()
+            or "gpt-4o-mini"
+        ),
+        recruitment_web_search_interval_minutes=max(
+            60,
+            int(os.getenv("RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES", "360").strip() or "360"),
+        ),
+        recruitment_web_search_max_tool_calls=max(
+            1,
+            min(
+                8,
+                int(os.getenv("RECRUITMENT_WEB_SEARCH_MAX_TOOL_CALLS", "8").strip() or "8"),
+            ),
+        ),
     )
 
 

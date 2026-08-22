@@ -202,6 +202,12 @@ def init_db() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS system_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sessions_user_updated
                 ON sessions(user_id, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -1036,6 +1042,39 @@ def recruitment_job_summary() -> dict[str, Any]:
     }
 
 
+def get_system_state(key: str) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT value, updated_at FROM system_state WHERE key = ?",
+            (key,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        value = json.loads(row["value"])
+    except (TypeError, json.JSONDecodeError):
+        value = {"value": row["value"]}
+    if not isinstance(value, dict):
+        value = {"value": value}
+    value["updated_at"] = row["updated_at"]
+    return value
+
+
+def set_system_state(key: str, value: dict[str, Any]) -> None:
+    now = utc_now()
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO system_state (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at
+            """,
+            (key, json.dumps(value, ensure_ascii=False), now),
+        )
+
+
 def list_recruitment_jobs() -> list[dict[str, Any]]:
     with connect() as connection:
         rows = connection.execute(
@@ -1131,6 +1170,45 @@ def upsert_recruitment_jobs(jobs: list[dict[str, Any]]) -> None:
                     json.dumps(job.get("tags", []), ensure_ascii=False),
                     job.get("historical_applicants"), job.get("historical_offers"),
                     job.get("last_verified_at", utc_now()), job.get("status", "open"),
+                ),
+            )
+
+
+def replace_recruitment_source_jobs(source: str, jobs: list[dict[str, Any]]) -> None:
+    """Atomically replace one crawler snapshot while retaining closed rows for audit."""
+    if not jobs:
+        return
+    now = utc_now()
+    with connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "UPDATE recruitment_jobs SET status = 'closed', last_verified_at = ? WHERE source = ?",
+            (now, source),
+        )
+        for job in jobs:
+            connection.execute(
+                """
+                INSERT INTO recruitment_jobs
+                    (id, company, employer_type, title, city, industry, url, source,
+                     opening_date, closing_date, requirements, tags, historical_applicants,
+                     historical_offers, last_verified_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    company=excluded.company, employer_type=excluded.employer_type,
+                    title=excluded.title, city=excluded.city, industry=excluded.industry,
+                    url=excluded.url, source=excluded.source,
+                    opening_date=excluded.opening_date, closing_date=excluded.closing_date,
+                    requirements=excluded.requirements, tags=excluded.tags,
+                    last_verified_at=excluded.last_verified_at, status=excluded.status
+                """,
+                (
+                    job["id"], job["company"], job.get("employer_type", "重点雇主"),
+                    job["title"], job.get("city", ""), job.get("industry", ""),
+                    job.get("url", ""), source, job.get("opening_date"),
+                    job.get("closing_date"), job.get("requirements", ""),
+                    json.dumps(job.get("tags", []), ensure_ascii=False),
+                    job.get("historical_applicants"), job.get("historical_offers"),
+                    job.get("last_verified_at", now), job.get("status", "open"),
                 ),
             )
 

@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from backend import main
 from backend import ai_service
 from backend import database
+from backend import recruitment_search
 from backend import recruitment_watch
 from backend.ai_service import (
     build_messages,
@@ -722,7 +723,8 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         jobs = client.get("/api/recruitment/jobs", headers=auth(token))
         assert jobs.status_code == 200
         payload = jobs.json()
-        assert payload["data_status"]["mode"] == "verified_dynamic"
+        assert payload["data_status"]["mode"] == "hybrid_live"
+        assert set(payload["data_status"]["tier_counts"]) == {"T0", "T1", "T2", "T3"}
         assert len(payload["monitor_pools"]) == 8
         assert payload["jobs"]
         titles = {job["title"] for job in payload["jobs"]}
@@ -1063,6 +1065,95 @@ def test_recruitment_jobs_sort_today_deadline_before_tomorrow(monkeypatch):
         token, _ = register(client, "deadline-sort-owner")
         jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
         assert [job["id"] for job in jobs[:2]] == ["today", "tomorrow"]
+
+
+def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypatch):
+    payload = {
+        "jobs": [
+            {
+                "company": "拼多多",
+                "title": "2027届校园招聘产品策略岗",
+                "city": "上海",
+                "industry": "互联网",
+                "official_url": "https://careers.pddglobalhr.com/campus/grad/product",
+                "opening_date": "2026-08-20",
+                "closing_date": "2099-09-01",
+                "requirements": "面向2027届毕业生",
+                "category": "互联网企业",
+            },
+            {
+                "company": "未知小公司",
+                "title": "2027届校园招聘",
+                "city": "上海",
+                "industry": "互联网",
+                "official_url": "https://example.com/campus",
+                "opening_date": None,
+                "closing_date": None,
+                "requirements": "面向2027届毕业生",
+                "category": "互联网企业",
+            },
+            {
+                "company": "腾讯",
+                "title": "2027 campus graduate program",
+                "city": "深圳",
+                "industry": "互联网",
+                "official_url": "https://www.linkedin.com/jobs/view/123",
+                "opening_date": None,
+                "closing_date": None,
+                "requirements": "graduate role",
+                "category": "互联网企业",
+            },
+        ]
+    }
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            assert kwargs["tools"][0]["type"] == "web_search"
+            assert kwargs["max_tool_calls"] <= 6
+            return SimpleNamespace(
+                output_text=__import__("json").dumps(payload),
+                output=[SimpleNamespace(type="web_search_call")],
+                usage=SimpleNamespace(input_tokens=800, output_tokens=160, total_tokens=960),
+                model="gpt-4o-mini",
+            )
+
+    monkeypatch.setattr(
+        recruitment_search,
+        "PERSONAL_MONITOR_POOLS",
+        recruitment_search.PERSONAL_MONITOR_POOLS[:1],
+    )
+    result = recruitment_search.search_current_recruitment_jobs(
+        SimpleNamespace(responses=FakeResponses())
+    )
+    assert len(result.jobs) == 1
+    assert result.jobs[0]["company"] == "拼多多"
+    assert result.jobs[0]["employer_type"] == "互联网企业"
+    assert "动态监控" in result.jobs[0]["tags"]
+    assert result.tool_calls == 1
+    assert result.total_tokens == 960
+    assert result.failed_pools == ()
+
+
+def test_web_search_keeps_successful_pools_when_one_pool_fails(monkeypatch):
+    pools = recruitment_search.PERSONAL_MONITOR_POOLS[:2]
+    monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", pools)
+
+    def fake_search_pool(_client, pool):
+        if pool["id"] == pools[0]["id"]:
+            raise RuntimeError("temporary search failure")
+        return recruitment_search.WebRecruitmentSearchResult(
+            jobs=[],
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=15,
+            tool_calls=1,
+            model="gpt-4o-mini",
+        )
+
+    monkeypatch.setattr(recruitment_search, "_search_pool", fake_search_pool)
+    result = recruitment_search.search_current_recruitment_jobs(SimpleNamespace())
+    assert result.total_tokens == 15
+    assert result.failed_pools == (pools[0]["id"],)
 
 
 def test_docx_extraction_preserves_readable_content():

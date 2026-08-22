@@ -50,6 +50,11 @@ from .space_engine import (
     render_local_capsule,
 )
 from .recruitment import score_job
+from .recruitment_search import (
+    WEB_SEARCH_SOURCE,
+    WEB_SEARCH_STATE_KEY,
+    search_current_recruitment_jobs,
+)
 from .recruitment_watch import (
     WatchFetchError,
     fetch_watch_page,
@@ -189,7 +194,27 @@ def enforce_registration_rate() -> None:
         _registration_requests.append(now)
 
 
-def refresh_recruitment_sources() -> int:
+def _web_recruitment_search_due(state: dict | None) -> bool:
+    if not settings.recruitment_web_search_enabled:
+        return False
+    if not state:
+        return True
+    attempted_at = state.get("attempted_at") or state.get("updated_at")
+    if not attempted_at:
+        return True
+    try:
+        attempted = datetime.fromisoformat(str(attempted_at))
+        if attempted.tzinfo is None:
+            attempted = attempted.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    interval_minutes = settings.recruitment_web_search_interval_minutes
+    if state.get("status") == "error":
+        interval_minutes = min(interval_minutes, 60)
+    return datetime.now(timezone.utc) - attempted >= timedelta(minutes=interval_minutes)
+
+
+def refresh_recruitment_sources(*, include_web_search: bool = True) -> int:
     """Refresh public recruitment sources; safe to call from a scheduled worker."""
     global _recruitment_source_last_count, _recruitment_source_last_refresh
     if not _recruitment_source_refresh_lock.acquire(blocking=False):
@@ -200,6 +225,56 @@ def refresh_recruitment_sources() -> int:
         if settings.adzuna_app_id and settings.adzuna_app_key:
             jobs.extend(fetch_adzuna_jobs())
         database.upsert_recruitment_jobs(jobs)
+        web_state = database.get_system_state(WEB_SEARCH_STATE_KEY)
+        if include_web_search and _web_recruitment_search_due(web_state):
+            attempted_at = database.utc_now()
+            try:
+                web_result = search_current_recruitment_jobs()
+                if web_result.jobs:
+                    database.replace_recruitment_source_jobs(
+                        WEB_SEARCH_SOURCE,
+                        web_result.jobs,
+                    )
+                category_counts: dict[str, int] = {}
+                for job in web_result.jobs:
+                    category = str(job.get("employer_type", "其他"))
+                    category_counts[category] = category_counts.get(category, 0) + 1
+                database.set_system_state(
+                    WEB_SEARCH_STATE_KEY,
+                    {
+                        "status": "success",
+                        "attempted_at": attempted_at,
+                        "completed_at": database.utc_now(),
+                        "jobs": len(web_result.jobs),
+                        "tool_calls": web_result.tool_calls,
+                        "input_tokens": web_result.input_tokens,
+                        "output_tokens": web_result.output_tokens,
+                        "total_tokens": web_result.total_tokens,
+                        "model": web_result.model,
+                        "category_counts": category_counts,
+                        "failed_pools": list(web_result.failed_pools),
+                    },
+                )
+                logger.info(
+                    "Recruitment web search completed: %s jobs, %s tool calls, "
+                    "%s tokens, categories=%s, failed_pools=%s",
+                    len(web_result.jobs),
+                    web_result.tool_calls,
+                    web_result.total_tokens,
+                    category_counts,
+                    list(web_result.failed_pools),
+                )
+                jobs.extend(web_result.jobs)
+            except Exception as exc:
+                logger.exception("Recruitment web search failed")
+                database.set_system_state(
+                    WEB_SEARCH_STATE_KEY,
+                    {
+                        "status": "error",
+                        "attempted_at": attempted_at,
+                        "error": str(exc)[:300],
+                    },
+                )
         with _recruitment_source_refresh_state_guard:
             _recruitment_source_last_refresh = time.monotonic()
             _recruitment_source_last_count = len(jobs)
@@ -614,9 +689,27 @@ def recruitment_jobs(user: User) -> dict:
         "待打开核对" in (job.get("tags") or []) for job in jobs
     )
     verified_jobs = len(jobs) - public_source_leads
+    tier_counts = {
+        tier: sum(job.get("tier_code") == tier for job in jobs)
+        for tier in ("T0", "T1", "T2", "T3")
+    }
+    web_search_state = database.get_system_state(WEB_SEARCH_STATE_KEY) or {
+        "status": "disabled" if not settings.recruitment_web_search_enabled else "pending"
+    }
+    web_search_copy = ""
+    if web_search_state.get("status") == "success":
+        web_search_copy = (
+            f"AI 网页搜索最近发现 {web_search_state.get('jobs', 0)} 条候选，"
+            "均标记为待打开核对。"
+        )
+    elif web_search_state.get("status") == "error":
+        web_search_copy = "AI 网页搜索本轮未完成，已保留上一轮岗位。"
+    elif web_search_state.get("status") == "pending":
+        web_search_copy = "AI 网页搜索等待首次运行。"
     inventory_copy = (
         f"当前展示 {len(jobs)} 个未过期校招岗位；"
         f"已核验 {verified_jobs} 个，公开源待核对 {public_source_leads} 个。"
+        f"{web_search_copy}"
     )
     if watch_summary["total"] == 0:
         source_message = (
@@ -638,16 +731,18 @@ def recruitment_jobs(user: User) -> dict:
         "profile": public_recruitment_profile(profile),
         "monitor_pools": PERSONAL_MONITOR_POOLS,
         "data_status": {
-            "mode": "verified_dynamic",
-            "method": "zero_token_http_fingerprint",
+            "mode": "hybrid_live",
+            "method": "public_crawl_plus_bounded_web_search",
             "message": source_message,
             "last_sync": watch_summary["last_checked_at"],
             "last_job_verified_at": job_summary["last_verified_at"],
             "open_jobs": job_summary["open_jobs"],
             "verified_jobs": verified_jobs,
             "public_source_leads": public_source_leads,
+            "tier_counts": tier_counts,
+            "web_search": web_search_state,
             "watches": watch_summary,
-            "model_tokens_used": 0,
+            "model_tokens_used": int(web_search_state.get("total_tokens", 0) or 0),
         },
     }
 
@@ -852,13 +947,14 @@ def refresh_recruitment(user: ConsentedUser) -> dict:
         cached_count = _recruitment_source_last_count
     if _recruitment_source_last_refresh and age < RECRUITMENT_SOURCE_COOLDOWN_SECONDS:
         return {
-            "source": "公开招聘页面 + 已配置 API",
+            "source": "公开招聘页面 + AI 网页搜索 + 已配置 API",
             "count": cached_count,
             "refreshed_at": database.utc_now(),
             "cached": True,
+            "web_search": database.get_system_state(WEB_SEARCH_STATE_KEY),
         }
     try:
-        count = refresh_recruitment_sources()
+        count = refresh_recruitment_sources(include_web_search=False)
     except RecruitmentRefreshBusy as exc:
         raise HTTPException(
             status_code=429,
@@ -869,10 +965,11 @@ def refresh_recruitment(user: ConsentedUser) -> dict:
         logger.exception("Recruitment source refresh failed")
         raise HTTPException(status_code=502, detail="招聘源刷新失败，请稍后重试。") from exc
     return {
-        "source": "公开招聘页面 + 已配置 API",
+        "source": "公开招聘页面 + AI 网页搜索 + 已配置 API",
         "count": count,
         "refreshed_at": database.utc_now(),
         "cached": False,
+        "web_search": database.get_system_state(WEB_SEARCH_STATE_KEY),
     }
 
 
