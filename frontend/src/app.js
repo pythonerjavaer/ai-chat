@@ -131,14 +131,23 @@ async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
-  const response = await fetch(API_BASE + path, { ...options, headers });
-  if (response.status === 401 && !path.startsWith("/auth/login")) await logout(false);
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try { detail = (await response.json()).detail || detail; } catch (_) {}
-    throw new Error(detail);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 15000);
+  try {
+    const response = await fetch(API_BASE + path, { ...options, headers, signal: controller.signal });
+    if (response.status === 401 && !path.startsWith("/auth/login")) await logout(false);
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try { detail = (await response.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    return response.status === 204 ? null : response.json();
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("请求超时，请检查服务是否已启动或稍后重试。");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  return response.status === 204 ? null : response.json();
 }
 
 function showToast(message, timeout = 3600) {
