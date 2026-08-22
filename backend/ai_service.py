@@ -12,6 +12,7 @@ from openai import OpenAI
 
 from . import database
 from .config import settings
+from .space_engine import SpaceRunMode, compile_space_system_prompt
 from .workspaces import DEFAULT_WORKSPACE, WORKSPACES, validate_workspace
 
 
@@ -220,6 +221,7 @@ def run_space(
     system_prompt: str,
     message: str,
     max_output_tokens: int = 600,
+    mode: SpaceRunMode = "lean",
 ) -> tuple[str, dict[str, int]]:
     """Run a custom user-created space with a hard output token ceiling."""
     response = client.chat.completions.create(
@@ -227,16 +229,11 @@ def run_space(
         messages=[
             {
                 "role": "system",
-                "content": (
-                    "You are operating inside a user-created AI Space. "
-                    "Respect its rules, be concise, distinguish facts from assumptions, "
-                    "and never claim tool use or external actions that did not occur.\n\n"
-                    + system_prompt
-                ),
+                "content": compile_space_system_prompt(system_prompt, mode),
             },
             {"role": "user", "content": message},
         ],
-        max_tokens=max(128, min(max_output_tokens, 1_200)),
+        max_completion_tokens=max(128, min(max_output_tokens, 1_200)),
         store=False,
     )
     usage = response.usage
@@ -392,6 +389,7 @@ Rules:
                 "schema": CROSS_EXAM_SCHEMA,
             },
         },
+        max_completion_tokens=1_800,
         store=False,
     )
     content = response.choices[0].message.content or "{}"
@@ -456,7 +454,10 @@ def build_messages(
             + excerpts
         )
 
-    stored_messages = database.list_messages(session_id, user_id, limit=40)
+    # Keep the full history in SQLite while sending only the most recent turns
+    # back to the model. This gives the regular chat a predictable input-cost
+    # ceiling without pretending it has infinite conversational memory.
+    stored_messages = database.list_messages(session_id, user_id, limit=16)
     return [
         {"role": "system", "content": "\n\n".join(instructions)},
         *[
@@ -594,6 +595,7 @@ def run_agent(
             messages=working_messages,
             tools=tools,
             tool_choice="auto",
+            max_completion_tokens=700,
             store=False,
         )
         message = response.choices[0].message
@@ -638,6 +640,7 @@ def stream_agent(
             messages=working_messages,
             tools=tools,
             tool_choice="auto",
+            max_completion_tokens=700,
             stream=True,
             store=False,
         )

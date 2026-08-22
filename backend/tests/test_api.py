@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import tempfile
+from datetime import date, timedelta
+from email.message import Message
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,12 +13,14 @@ os.environ["OPENAI_API_KEY"] = "test-key"
 os.environ["JWT_SECRET"] = "test-secret-that-is-long-enough-for-tests"
 os.environ["DATABASE_PATH"] = str(TEST_DIRECTORY / "test.db")
 os.environ["RECRUITMENT_INGEST_TOKEN"] = "test-recruitment-ingest-token"
+os.environ["RECRUITMENT_REFRESH_MINUTES"] = "0"
 
 from fastapi.testclient import TestClient
 
 from backend import main
 from backend import ai_service
 from backend import database
+from backend import recruitment_watch
 from backend.ai_service import (
     build_messages,
     calculate,
@@ -25,6 +29,7 @@ from backend.ai_service import (
     split_document,
     tools_for_workspace,
 )
+from backend.recruitment_watch import WatchFetchResult, fetch_watch_page
 
 
 def register(client: TestClient, username: str) -> tuple[str, dict]:
@@ -92,6 +97,30 @@ def test_privacy_consent_and_account_deletion():
         token, user = register(client, "delete-me")
         profile = client.get("/api/auth/me", headers=auth(token)).json()
         assert profile["privacy_accepted"] is True
+
+        stale_token, stale_user = register(client, "stale-consent")
+        with database.connect() as connection:
+            connection.execute(
+                "UPDATE users SET privacy_version = ? WHERE id = ?",
+                ("2026-08-21", stale_user["id"]),
+            )
+        stale_profile = client.get(
+            "/api/auth/me", headers=auth(stale_token)
+        ).json()
+        assert stale_profile["privacy_accepted"] is False
+        blocked = client.post(
+            "/api/spaces",
+            headers=auth(stale_token),
+            json={"name": "Blocked Space", "template_id": "blank"},
+        )
+        assert blocked.status_code == 428
+        renewed = client.post(
+            "/api/auth/privacy-consent",
+            headers=auth(stale_token),
+            json={"accepted": True},
+        )
+        assert renewed.status_code == 200
+        assert renewed.json()["privacy_accepted"] is True
 
         created = client.post(
             "/api/sessions",
@@ -509,6 +538,173 @@ def test_ai_space_studio_usage_and_billing_boundaries(monkeypatch):
         assert apple.status_code == 503
 
 
+def test_ai_space_v2_preflight_local_cache_budget_and_history(monkeypatch):
+    model_calls: list[dict] = []
+
+    def fake_run_space(_system_prompt, message, **kwargs):
+        model_calls.append({"message": message, **kwargs})
+        return (
+            "A reusable outcome capsule.",
+            {"input_tokens": 50, "output_tokens": 40, "total_tokens": 90},
+        )
+
+    monkeypatch.setattr(main, "run_space", fake_run_space)
+
+    with TestClient(main.app) as client:
+        token, _ = register(client, "space-v2-owner")
+        created = client.post(
+            "/api/spaces",
+            headers=auth(token),
+            json={
+                "name": "Outcome Capsule",
+                "template_id": "workflow_designer",
+                "monthly_token_budget": 1_000,
+            },
+        )
+        assert created.status_code == 201
+        space_id = created.json()["id"]
+
+        local_preview = client.post(
+            f"/api/spaces/{space_id}/preflight",
+            headers=auth(token),
+            json={"message": "事实：原型完成", "mode": "local"},
+        )
+        assert local_preview.status_code == 200
+        assert local_preview.json()["execution_path"] == "local"
+        assert local_preview.json()["estimated_total_tokens"] == 0
+        assert local_preview.json()["estimated_tokens_saved"] > 0
+        assert model_calls == []
+
+        local_run = client.post(
+            f"/api/spaces/{space_id}/run",
+            headers=auth(token),
+            json={
+                "message": "事实：原型完成\n待确认：支付范围\n行动：验证缓存",
+                "mode": "local",
+            },
+        )
+        assert local_run.status_code == 200
+        assert local_run.json()["usage"]["total_tokens"] == 0
+        assert local_run.json()["artifact"]["facts"] == ["原型完成"]
+        assert local_run.json()["artifact"]["open_questions"] == ["支付范围"]
+        assert model_calls == []
+
+        model_message = "Summarize this requirement.\nKeep code:\n    approve()"
+        model_preview = client.post(
+            f"/api/spaces/{space_id}/preflight",
+            headers=auth(token),
+            json={"message": model_message, "mode": "lean"},
+        )
+        assert model_preview.status_code == 200
+        assert model_preview.json()["allowed"] is True
+        assert model_preview.json()["execution_path"] == "lean"
+        assert model_preview.json()["estimated_total_tokens"] > 0
+        assert model_calls == []
+
+        model_run = client.post(
+            f"/api/spaces/{space_id}/runs",
+            headers=auth(token),
+            json={"message": model_message, "mode": "lean"},
+        )
+        assert model_run.status_code == 201
+        assert model_run.json()["execution_path"] == "lean"
+        assert model_run.json()["usage"]["total_tokens"] == 90
+        assert len(model_calls) == 1
+        assert model_calls[0]["mode"] == "lean"
+
+        cached_preview = client.post(
+            f"/api/spaces/{space_id}/preflight",
+            headers=auth(token),
+            json={
+                "message": "Summarize this requirement.\r\nKeep code:\r\n    approve()",
+                "mode": "lean",
+            },
+        )
+        assert cached_preview.status_code == 200
+        assert cached_preview.json()["execution_path"] == "cache"
+        assert cached_preview.json()["estimated_total_tokens"] == 0
+        assert cached_preview.json()["model_calls"] == 0
+
+        indentation_sensitive_preview = client.post(
+            f"/api/spaces/{space_id}/preflight",
+            headers=auth(token),
+            json={
+                "message": "Summarize this requirement.\nKeep code:\napprove()",
+                "mode": "lean",
+            },
+        )
+        assert indentation_sensitive_preview.status_code == 200
+        assert indentation_sensitive_preview.json()["execution_path"] == "lean"
+
+        cached_run = client.post(
+            f"/api/spaces/{space_id}/runs",
+            headers=auth(token),
+            json={
+                "message": "Summarize this requirement.\r\nKeep code:\r\n    approve()",
+                "mode": "lean",
+            },
+        )
+        assert cached_run.status_code == 201
+        assert cached_run.json()["execution_path"] == "cache"
+        assert cached_run.json()["cache_hit"] is True
+        assert cached_run.json()["cached_from_run_id"] == model_run.json()["run_id"]
+        assert cached_run.json()["usage"]["total_tokens"] == 0
+        assert cached_run.json()["saved_tokens"] > 0
+        assert cached_run.json()["billing"]["usage"]["total_tokens"] == 90
+        assert len(model_calls) == 1
+
+        history = client.get(
+            f"/api/spaces/{space_id}/runs",
+            headers=auth(token),
+        )
+        assert history.status_code == 200
+        assert [item["execution_path"] for item in history.json()[:3]] == [
+            "cache",
+            "lean",
+            "local",
+        ]
+        detail = client.get(
+            f"/api/spaces/{space_id}/runs/{cached_run.json()['run_id']}",
+            headers=auth(token),
+        )
+        assert detail.status_code == 200
+        assert detail.json()["cached_from_run_id"] == model_run.json()["run_id"]
+
+        expensive = client.post(
+            "/api/spaces",
+            headers=auth(token),
+            json={
+                "name": "Hard Budget Gate",
+                "template_id": "blank",
+                "system_prompt": "规则" * 2_000,
+                "monthly_token_budget": 1_000,
+            },
+        )
+        assert expensive.status_code == 201
+        expensive_id = expensive.json()["id"]
+        blocked_preview = client.post(
+            f"/api/spaces/{expensive_id}/preflight",
+            headers=auth(token),
+            json={"message": "Run this task.", "mode": "lean"},
+        )
+        assert blocked_preview.status_code == 200
+        assert blocked_preview.json()["allowed"] is False
+        blocked_run = client.post(
+            f"/api/spaces/{expensive_id}/runs",
+            headers=auth(token),
+            json={"message": "Run this task.", "mode": "lean"},
+        )
+        assert blocked_run.status_code == 429
+        assert len(model_calls) == 1
+
+        other_token, _ = register(client, "space-v2-visitor")
+        hidden_history = client.get(
+            f"/api/spaces/{space_id}/runs",
+            headers=auth(other_token),
+        )
+        assert hidden_history.status_code == 404
+
+
 def test_recruitment_profile_matching_and_deadline_metadata():
     with TestClient(main.app) as client:
         token, _ = register(client, "recruiter")
@@ -563,6 +759,13 @@ def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs():
                 "official_url": "https://example.com/campus/expired",
                 "closing_date": "2020-08-01",
             },
+            {
+                "company": "社会招聘机构",
+                "title": "高级销售经理",
+                "city": "北京",
+                "official_url": "https://example.com/jobs/sales-manager",
+                "tags": ["社会招聘"],
+            },
         ]
     }
     with TestClient(main.app) as client:
@@ -575,7 +778,10 @@ def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs():
         )
         assert result.status_code == 200
         assert result.json()["accepted"] == 1
-        assert result.json()["skipped"] == [{"title": "2020届校园招聘岗位", "reason": "expired"}]
+        assert result.json()["skipped"] == [
+            {"title": "2020届校园招聘岗位", "reason": "expired"},
+            {"title": "高级销售经理", "reason": "not_campus"},
+        ]
         token, _ = register(client, "dynamic-recruiter")
         jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
         assert any(job["title"] == "2099届校园招聘数据岗" for job in jobs)
@@ -591,6 +797,272 @@ def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs():
         ]
         jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
         assert not any(job["title"] == "2099届校园招聘数据岗" for job in jobs)
+
+
+def test_recruitment_watch_fetch_is_offline_deterministic_and_safe(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __init__(self):
+            self.headers = Message()
+            self.headers["Content-Type"] = "text/html; charset=utf-8"
+            self.headers["Content-Length"] = "140"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def geturl(self):
+            return "https://careers.example.com/campus"
+
+        def read(self, _limit):
+            return (
+                b"<html><style>hidden</style><body>2027 Campus Recruitment "
+                b"<script>ignored()</script>Data Analyst</body></html>"
+            )
+
+    class FakeOpener:
+        def open(self, _request, timeout):
+            assert timeout == recruitment_watch.DEFAULT_TIMEOUT_SECONDS
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        recruitment_watch,
+        "_resolved_addresses",
+        lambda _hostname: {recruitment_watch.ipaddress.ip_address("93.184.216.34")},
+    )
+    result = fetch_watch_page(
+        "https://careers.example.com/campus#jobs",
+        ["Campus Recruitment", "Data Analyst", "ignored"],
+        opener_factory=lambda *_handlers: FakeOpener(),
+    )
+    assert result.keyword_hits == ["Campus Recruitment", "Data Analyst"]
+    assert len(result.fingerprint) == 64
+    assert result.url == "https://careers.example.com/campus"
+
+    class OversizedOpener:
+        def open(self, _request, timeout):
+            del timeout
+            response = FakeResponse()
+            response.headers.replace_header("Content-Length", "2000000")
+            return response
+
+    try:
+        fetch_watch_page(
+            "https://careers.example.com/campus",
+            ["校园招聘"],
+            max_bytes=1024,
+            opener_factory=lambda *_handlers: OversizedOpener(),
+        )
+    except recruitment_watch.WatchFetchError:
+        pass
+    else:
+        raise AssertionError("Oversized watch page was accepted")
+
+    for unsafe_url in (
+        "http://example.com/jobs",
+        "https://127.0.0.1/jobs",
+        "https://localhost/jobs",
+        "https://10.0.0.8/jobs",
+    ):
+        try:
+            recruitment_watch.validate_public_https_url(unsafe_url, resolve_dns=False)
+        except recruitment_watch.WatchFetchError:
+            pass
+        else:
+            raise AssertionError(f"Unsafe watch URL was accepted: {unsafe_url}")
+
+    monkeypatch.setattr(
+        recruitment_watch,
+        "_resolved_addresses",
+        lambda _hostname: {recruitment_watch.ipaddress.ip_address("127.0.0.1")},
+    )
+    try:
+        recruitment_watch.validate_public_https_url(
+            "https://public-name.example/jobs",
+            resolve_dns=True,
+        )
+    except recruitment_watch.WatchFetchError:
+        pass
+    else:
+        raise AssertionError("Hostname resolving to a private address was accepted")
+
+
+def test_recruitment_watch_crud_refresh_and_real_status(monkeypatch):
+    fingerprint = {"value": "a" * 64}
+    monkeypatch.setattr(main, "WATCH_REFRESH_COOLDOWN_SECONDS", 0)
+
+    def fake_fetch(url, keywords):
+        return WatchFetchResult(
+            url=url,
+            final_url=url,
+            fingerprint=fingerprint["value"],
+            keyword_hits=[keywords[0]],
+            content_bytes=128,
+            http_status=200,
+        )
+
+    monkeypatch.setattr(main, "fetch_watch_page", fake_fetch)
+    with TestClient(main.app) as client:
+        token, _ = register(client, "watch-owner")
+        created = client.post(
+            "/api/recruitment/watches",
+            headers=auth(token),
+            json={
+                "name": "目标企业校招页",
+                "url": "https://careers.example.com/campus",
+                "keywords": ["校园招聘", "数据"],
+            },
+        )
+        assert created.status_code == 201
+        watch_id = created.json()["id"]
+        assert created.json()["last_status"] == "baseline"
+
+        first = client.post("/api/recruitment/watches/refresh", headers=auth(token))
+        assert first.status_code == 200
+        assert first.json()["counts"]["unchanged"] == 1
+        assert first.json()["model_tokens_used"] == 0
+
+        fingerprint["value"] = "b" * 64
+        second = client.post("/api/recruitment/watches/refresh", headers=auth(token))
+        assert second.status_code == 200
+        assert second.json()["counts"]["changed"] == 1
+
+        # An unchanged follow-up scan must keep the change visible until the
+        # user explicitly acknowledges it.
+        third = client.post("/api/recruitment/watches/refresh", headers=auth(token))
+        assert third.status_code == 200
+        assert third.json()["counts"]["unchanged"] == 1
+        listed = client.get("/api/recruitment/watches", headers=auth(token)).json()
+        assert listed["summary"]["changed"] == 1
+        assert listed["watches"][0]["change_pending"] is True
+        assert listed["watches"][0]["last_keyword_hits"] == ["校园招聘"]
+
+        observed_version = listed["watches"][0]["change_version"]
+        fingerprint["value"] = "c" * 64
+        newest = client.post("/api/recruitment/watches/refresh", headers=auth(token))
+        assert newest.status_code == 200
+        stale_acknowledgement = client.post(
+            f"/api/recruitment/watches/{watch_id}/acknowledge",
+            headers=auth(token),
+            json={"change_version": observed_version},
+        )
+        assert stale_acknowledgement.status_code == 409
+        latest_watch = client.get(
+            "/api/recruitment/watches",
+            headers=auth(token),
+        ).json()["watches"][0]
+
+        acknowledged = client.post(
+            f"/api/recruitment/watches/{watch_id}/acknowledge",
+            headers=auth(token),
+            json={"change_version": latest_watch["change_version"]},
+        )
+        assert acknowledged.status_code == 200
+        assert acknowledged.json()["change_pending"] is False
+        assert client.get(
+            "/api/recruitment/watches",
+            headers=auth(token),
+        ).json()["summary"]["changed"] == 0
+
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()
+        assert jobs["data_status"]["watches"]["total"] == 1
+        assert jobs["data_status"]["last_sync"] is not None
+        assert jobs["data_status"]["model_tokens_used"] == 0
+
+        deleted = client.delete(
+            f"/api/recruitment/watches/{watch_id}",
+            headers=auth(token),
+        )
+        assert deleted.status_code == 204
+        assert client.get("/api/recruitment/watches", headers=auth(token)).json()["watches"] == []
+
+
+def test_recruitment_watch_preserves_fragment_links_and_enforces_cap(monkeypatch):
+    fetched_urls: list[str] = []
+
+    def fake_fetch(url, keywords):
+        fetched_urls.append(url)
+        return WatchFetchResult(
+            url=url,
+            final_url=url,
+            fingerprint="d" * 64,
+            keyword_hits=list(keywords[:1]),
+            content_bytes=64,
+            http_status=200,
+        )
+
+    monkeypatch.setattr(main, "fetch_watch_page", fake_fetch)
+    monkeypatch.setattr(main, "WATCH_CREATE_LIMIT", 100)
+    with TestClient(main.app) as client:
+        token, _ = register(client, "fragment-watch-owner")
+        for index in range(12):
+            created = client.post(
+                "/api/recruitment/watches",
+                headers=auth(token),
+                json={
+                    "name": f"九坤岗位 {index}",
+                    "url": f"https://app.mokahr.com/campus_apply/example#/job/{index}",
+                    "keywords": [f"岗位 {index}"],
+                },
+            )
+            assert created.status_code == 201
+            assert created.json()["url"].endswith(f"#/job/{index}")
+        assert all("#" not in url for url in fetched_urls)
+
+        over_cap = client.post(
+            "/api/recruitment/watches",
+            headers=auth(token),
+            json={
+                "name": "第十三条",
+                "url": "https://example.com/campus#/job/13",
+                "keywords": ["校园招聘"],
+            },
+        )
+        assert over_cap.status_code == 409
+
+
+def test_recruitment_jobs_sort_today_deadline_before_tomorrow(monkeypatch):
+    today = date.today()
+    base_job = {
+        "company": "测试机构",
+        "employer_type": "互联网企业",
+        "city": "北京",
+        "industry": "互联网",
+        "url": "https://example.com/campus",
+        "source": "动态监控 API",
+        "opening_date": None,
+        "requirements": "2027届校园招聘",
+        "tags": ["校园招聘", "动态监控"],
+        "historical_applicants": None,
+        "historical_offers": None,
+        "last_verified_at": "2099-01-01T00:00:00+00:00",
+        "status": "open",
+    }
+    monkeypatch.setattr(
+        database,
+        "list_recruitment_jobs",
+        lambda: [
+            {
+                **base_job,
+                "id": "tomorrow",
+                "title": "2027届校园招聘数据岗 B",
+                "closing_date": (today + timedelta(days=1)).isoformat(),
+            },
+            {
+                **base_job,
+                "id": "today",
+                "title": "2027届校园招聘数据岗 A",
+                "closing_date": today.isoformat(),
+            },
+        ],
+    )
+    with TestClient(main.app) as client:
+        token, _ = register(client, "deadline-sort-owner")
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
+        assert [job["id"] for job in jobs[:2]] == ["today", "tomorrow"]
 
 
 def test_docx_extraction_preserves_readable_content():

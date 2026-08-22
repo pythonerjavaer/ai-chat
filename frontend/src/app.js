@@ -58,8 +58,10 @@ const state = {
   selectedTemplateId: "project_engineer",
   activeSpaceId: null,
   studioRunning: false,
+  spacePreflightTimer: null,
   recruitmentProfile: null,
   recruitmentJobs: [],
+  recruitmentWatches: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -99,12 +101,19 @@ const elements = {
   billingPlan: $("billing-plan"), billingUsage: $("billing-usage"), spaceRunner: $("space-runner"),
   runnerIcon: $("runner-icon"), runnerName: $("runner-name"), runnerBudget: $("runner-budget"),
   runnerInput: $("runner-input"), runnerSend: $("runner-send"), runnerOutput: $("runner-output"),
+  runnerRoute: $("runner-route"), runnerEstimatedInput: $("runner-estimated-input"),
+  runnerOutputCeiling: $("runner-output-ceiling"), runnerCallCount: $("runner-call-count"),
+  runnerCacheState: $("runner-cache-state"), runnerImpact: $("runner-impact"),
+  runnerHistory: $("runner-history"), runnerHistoryRefresh: $("runner-history-refresh"),
   recruitmentDialog: $("recruitment-dialog"), recruitmentForm: $("recruitment-form"),
   recruitmentRoles: $("recruitment-roles"), recruitmentIndustries: $("recruitment-industries"), recruitmentLocations: $("recruitment-locations"),
   recruitmentJobs: $("recruitment-jobs"), recruitmentStatus: $("recruitment-source-status"),
   recruitmentRefresh: $("recruitment-refresh"), recruitmentSave: $("recruitment-save"),
   recruitmentError: $("recruitment-error"), recruitmentMonitorPools: $("recruitment-monitor-pools"),
   recruitmentDeadlineAlerts: $("recruitment-deadline-alerts"),
+  recruitmentWatchForm: $("recruitment-watch-form"), recruitmentWatchName: $("recruitment-watch-name"),
+  recruitmentWatchUrl: $("recruitment-watch-url"), recruitmentWatchKeywords: $("recruitment-watch-keywords"),
+  recruitmentWatchAdd: $("recruitment-watch-add"), recruitmentWatchList: $("recruitment-watch-list"),
   homeDeadlineAlerts: $("home-deadline-alerts"), homeAlertTitle: $("home-alert-title"),
   homeAlertList: $("home-alert-list"),
 };
@@ -218,6 +227,10 @@ function translateError(message) {
     "Your current plan has reached its AI Space limit.": "当前方案已达到 AI Space 数量上限。",
     "The requested Space token budget exceeds your plan limit.": "这个 Space 的 Token 上限超过当前方案允许范围。",
     "This AI Space has reached its monthly Token budget.": "这个 AI Space 已达到本月 Token 上限。",
+    "This run would exceed the AI Space monthly token budget.": "这次运行的预估消耗会超过本月 Token 预算，模型尚未被调用。",
+    "Only public HTTPS recruitment pages can be watched.": "只支持公开的 HTTPS 企业招聘页面。",
+    "This address is not allowed for recruitment monitoring.": "这个地址不能加入监控，请使用企业公开招聘官网。",
+    "Consent to the current privacy policy is required.": "请先同意当前版本的隐私政策。",
   };
   return known[message] || message;
 }
@@ -234,31 +247,64 @@ async function enterApp() {
 
 async function loadHomeRecruitmentAlerts() {
   try {
-    const data = await api("/recruitment/jobs");
+    const [data, watchData] = await Promise.all([
+      api("/recruitment/jobs"),
+      api("/recruitment/watches").catch(() => ({ watches: [] })),
+    ]);
     state.recruitmentJobs = data.jobs || [];
-    renderHomeRecruitmentAlerts(state.recruitmentJobs);
+    state.recruitmentWatches = watchData.watches || watchData || [];
+    renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
   } catch (_) {
     elements.homeDeadlineAlerts.classList.add("hidden");
   }
 }
 
-function renderHomeRecruitmentAlerts(jobs) {
+function watchHasFreshChange(watch) {
+  if (Object.prototype.hasOwnProperty.call(watch, "change_pending")) return watch.change_pending === true;
+  if (watch.changed === true || watch.change_detected === true || watch.has_changed === true) return true;
+  const changedAt = watch.last_changed_at || watch.changed_at;
+  if (!changedAt) return false;
+  const timestamp = Date.parse(changedAt);
+  return Number.isFinite(timestamp) && Date.now() - timestamp <= 7 * 24 * 60 * 60 * 1000;
+}
+
+function renderHomeRecruitmentAlerts(jobs, watches = state.recruitmentWatches) {
   const urgent = jobs
     .filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 7)
     .sort((a, b) => a.days_left - b.days_left);
+  const changedWatches = (watches || []).filter(watchHasFreshChange);
   elements.homeAlertList.replaceChildren();
-  if (!urgent.length) {
+  if (!urgent.length && !changedWatches.length) {
     elements.homeDeadlineAlerts.classList.add("hidden");
     return;
   }
-  elements.homeAlertTitle.textContent = `${urgent.length} 个校招网申将在 7 天内截止`;
+  const labels = [];
+  if (urgent.length) labels.push(`${urgent.length} 个网申临近截止`);
+  if (changedWatches.length) labels.push(`${changedWatches.length} 个官网有变化`);
+  elements.homeAlertTitle.textContent = labels.join(" · ");
   urgent.forEach((job) => {
     const link = document.createElement("a");
     link.href = job.url;
     link.target = "_blank";
     link.rel = "noreferrer";
     const urgency = job.days_left === 0 ? "今天截止" : `剩 ${job.days_left} 天`;
-    link.innerHTML = `<span>${DOMPurify.sanitize(job.company)}</span><strong>${DOMPurify.sanitize(job.title)}</strong><b>${urgency}</b>`;
+    link.append(
+      makeElement("span", "", job.company || "招聘单位"),
+      makeElement("strong", "", job.title || "校招岗位"),
+      makeElement("b", "", urgency),
+    );
+    elements.homeAlertList.appendChild(link);
+  });
+  changedWatches.forEach((watch) => {
+    const link = document.createElement("a");
+    link.href = watch.url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.append(
+      makeElement("span", "", "官网变化"),
+      makeElement("strong", "", watch.name || "招聘页面"),
+      makeElement("b", "", "去核对 ↗"),
+    );
     elements.homeAlertList.appendChild(link);
   });
   elements.homeDeadlineAlerts.classList.remove("hidden");
@@ -871,7 +917,7 @@ function renderBilling() {
   const used = billing.usage?.total_tokens || 0;
   const total = billing.limits?.monthly_tokens || 0;
   elements.billingPlan.textContent = `${plan} · ${billing.space_count}/${billing.limits?.max_spaces || 0} Spaces`;
-  elements.billingUsage.textContent = `${used.toLocaleString()} / ${total.toLocaleString()} Tokens · ${billing.period}`;
+  elements.billingUsage.textContent = `Space ${used.toLocaleString()} / ${total.toLocaleString()} Tokens · ${billing.period}`;
   const spaceLimit = billing.limits?.max_space_tokens || 10_000;
   [...elements.spaceBudget.options].forEach((option) => {
     option.disabled = Number(option.value) > spaceLimit;
@@ -885,7 +931,7 @@ function renderSpaces() {
     elements.spaceList.appendChild(makeElement(
       "div",
       "space-empty",
-      "还没有 AI Space。选择左侧模板，写下你的规则，就能创建一个可运行的专属智能体。",
+      "还没有成果胶囊。选择一种成果类型，系统会把你的方法、预算与历史更新放在一起。",
     ));
     return;
   }
@@ -925,9 +971,11 @@ function selectSpace(spaceId, preserveOutput = false) {
   const used = space.usage?.total_tokens || 0;
   elements.runnerBudget.textContent = `${used.toLocaleString()} / ${space.monthly_token_budget.toLocaleString()} Tokens`;
   if (!preserveOutput) {
-    elements.runnerOutput.textContent = "给这个 Space 一项任务。它会遵守你刚才定义的规则，并返回本次实际 Token 消耗。";
+    elements.runnerOutput.textContent = "描述这次要新增、改变或验证的内容。系统会先给出 Token 飞行计划，再决定走零 Token、缓存或模型路径。";
   }
   renderSpaces();
+  loadSpaceHistory();
+  scheduleSpacePreflight();
   elements.runnerInput.focus();
 }
 
@@ -990,44 +1038,150 @@ async function createSpace(event) {
     elements.spaceRules.value = template.system_prompt;
     await refreshStudio();
     selectSpace(created.id);
-    showToast("AI Space 已创建，现在可以运行第一项任务。", 5000);
+    showToast("成果胶囊已创建，现在可以预检第一项任务。", 5000);
     await haptic();
   } catch (error) {
     elements.spaceFormError.textContent = translateError(error.message);
   } finally {
     elements.spaceCreate.disabled = false;
-    elements.spaceCreate.querySelector("span").textContent = "创建可运行的 AI Space";
+    elements.spaceCreate.querySelector("span").textContent = "创建成果胶囊";
+  }
+}
+
+function activeRunnerMode() {
+  return document.querySelector('input[name="runner-mode"]:checked')?.value || "lean";
+}
+
+function updateRunnerModeCopy() {
+  const mode = activeRunnerMode();
+  const labels = { local: "生成零 Token 胶囊", lean: "执行节能更新", deep: "执行深度重算" };
+  elements.runnerSend.querySelector("span").textContent = labels[mode] || labels.lean;
+  scheduleSpacePreflight();
+}
+
+function resetSpacePreflight(message = "输入任务后自动预检") {
+  elements.runnerRoute.textContent = message;
+  elements.runnerEstimatedInput.textContent = "—";
+  elements.runnerOutputCeiling.textContent = "—";
+  elements.runnerCallCount.textContent = "—";
+  elements.runnerCacheState.textContent = "—";
+  elements.runnerImpact.textContent = "预检由应用服务器计算，不调用 OpenAI。";
+}
+
+async function previewActiveSpace() {
+  const message = elements.runnerInput.value.trim();
+  if (!state.activeSpaceId || !message) {
+    resetSpacePreflight();
+    return;
+  }
+  const mode = activeRunnerMode();
+  elements.runnerRoute.textContent = "正在计算，不调用模型…";
+  try {
+    const preview = await api(`/spaces/${encodeURIComponent(state.activeSpaceId)}/preflight`, {
+      method: "POST",
+      body: JSON.stringify({ message, mode }),
+    });
+    const route = preview.execution_path || preview.path || preview.route || (mode === "local" ? "local" : "ai");
+    const routeLabels = { local: "零 Token · 规则成果胶囊", cache: "缓存命中 · 直接复用", lean: "节能更新 · 单次模型调用", deep: "深度重算 · 单次模型调用", ai: "模型执行" };
+    const inputEstimate = preview.estimated_input_tokens ?? preview.estimated_input ?? preview.input_tokens ?? 0;
+    const outputCeiling = preview.max_output_tokens ?? preview.output_ceiling ?? 0;
+    const cacheHit = Boolean(preview.cache_hit || route === "cache");
+    const modelCalls = preview.model_calls ?? ((mode === "local" || cacheHit) ? 0 : 1);
+    elements.runnerRoute.textContent = routeLabels[route] || route;
+    elements.runnerEstimatedInput.textContent = `${Number(inputEstimate).toLocaleString()} T`;
+    elements.runnerOutputCeiling.textContent = `${Number(outputCeiling).toLocaleString()} T`;
+    elements.runnerCallCount.textContent = `${modelCalls} 次`;
+    elements.runnerCacheState.textContent = cacheHit ? "已命中 · 0 T" : "未命中";
+    elements.runnerImpact.textContent = preview.explanation || preview.impact || preview.message || "预算已在调用前核对；只有点击执行才可能调用模型。";
+  } catch (error) {
+    elements.runnerRoute.textContent = "预检失败";
+    elements.runnerImpact.textContent = translateError(error.message);
+  }
+}
+
+function scheduleSpacePreflight() {
+  window.clearTimeout(state.spacePreflightTimer);
+  state.spacePreflightTimer = window.setTimeout(previewActiveSpace, 260);
+}
+
+function renderSpaceHistory(runs = []) {
+  elements.runnerHistory.replaceChildren();
+  if (!runs.length) {
+    elements.runnerHistory.appendChild(makeElement("small", "", "还没有成果记录；第一次执行后会在这里保留路径与用量。"));
+    return;
+  }
+  runs.slice(0, 8).forEach((run) => {
+    const item = document.createElement("article");
+    item.className = "space-history-item";
+    const path = run.execution_path || run.path || run.mode || "run";
+    const message = run.message || run.input || run.task || "成果更新";
+    const createdAt = run.created_at ? new Date(run.created_at).toLocaleString("zh-CN", { hour12: false }) : "";
+    const total = run.total_tokens ?? run.usage?.total_tokens ?? 0;
+    item.append(
+      makeElement("span", "", path),
+      (() => { const copy = document.createElement("div"); copy.append(makeElement("strong", "", message), makeElement("small", "", createdAt)); return copy; })(),
+      makeElement("b", "", `${Number(total).toLocaleString()} T`),
+    );
+    elements.runnerHistory.appendChild(item);
+  });
+}
+
+async function loadSpaceHistory() {
+  if (!state.activeSpaceId) return;
+  try {
+    const data = await api(`/spaces/${encodeURIComponent(state.activeSpaceId)}/runs`);
+    renderSpaceHistory(data.runs || data || []);
+  } catch (_) {
+    renderSpaceHistory([]);
   }
 }
 
 async function runActiveSpace() {
   const message = elements.runnerInput.value.trim();
   if (!state.activeSpaceId || !message || state.studioRunning) return;
+  const spaceId = state.activeSpaceId;
   state.studioRunning = true;
+  const mode = activeRunnerMode();
   elements.runnerSend.disabled = true;
-  elements.runnerSend.querySelector("span").textContent = "正在运行…";
-  elements.runnerOutput.textContent = "模型正在遵守 Space 规则完成任务…";
+  elements.runnerSend.querySelector("span").textContent = mode === "local" ? "正在规则整理…" : "正在执行…";
+  elements.runnerOutput.textContent = mode === "local" ? "正在整理零 Token 成果胶囊…" : "正在按飞行计划执行；已先通过保守预算门槛…";
   try {
-    const result = await api(`/spaces/${encodeURIComponent(state.activeSpaceId)}/run`, {
+    const result = await api(`/spaces/${encodeURIComponent(spaceId)}/run`, {
       method: "POST",
-      body: JSON.stringify({ message }),
+      timeoutMs: 90000,
+      body: JSON.stringify({ message, mode }),
     });
-    elements.runnerOutput.innerHTML = safeMarkdown(result.reply || "模型没有返回文本。");
+    const resultCopy = result.reply || result.output || (result.artifact ? `\`\`\`json\n${JSON.stringify(result.artifact, null, 2)}\n\`\`\`` : "没有返回成果内容。");
+    elements.runnerOutput.innerHTML = safeMarkdown(resultCopy);
     const usage = result.usage || {};
-    const footer = makeElement("div", "");
-    footer.textContent = `本次消耗：输入 ${usage.input_tokens || 0} · 输出 ${usage.output_tokens || 0} · 合计 ${usage.total_tokens || 0} Tokens`;
+    const path = result.execution_path || result.path || (result.cache_hit ? "cache" : mode);
+    const footer = makeElement("div", "runner-usage-footer");
+    const total = usage.total_tokens || 0;
+    footer.append(
+      makeElement("span", total === 0 ? "zero-token" : "", `本次实际 ${total.toLocaleString()} Tokens`),
+      makeElement("span", "", `路径 ${path}`),
+      makeElement("span", "", `输入 ${usage.input_tokens || 0} · 输出 ${usage.output_tokens || 0}`),
+    );
+    const saved = result.avoided_tokens ?? result.saved_tokens ?? 0;
+    if (result.cache_hit && saved > 0) {
+      footer.appendChild(makeElement("span", "zero-token", `复用成果，避免实际 ${Number(saved).toLocaleString()} Tokens`));
+    } else if (mode === "local" && (result.estimated_tokens_saved || 0) > 0) {
+      footer.appendChild(makeElement("span", "zero-token", `相对节能上限估算最多 ${Number(result.estimated_tokens_saved).toLocaleString()} Tokens`));
+    }
     elements.runnerOutput.appendChild(footer);
     elements.runnerInput.value = "";
-    state.billing = result.billing;
+    if (result.billing) state.billing = result.billing;
     await refreshStudio();
-    selectSpace(state.activeSpaceId, true);
+    selectSpace(spaceId, true);
+    await loadSpaceHistory();
+    resetSpacePreflight("成果已更新，输入下一项变化");
     await haptic();
   } catch (error) {
     elements.runnerOutput.textContent = `运行失败：${translateError(error.message)}`;
   } finally {
     state.studioRunning = false;
     elements.runnerSend.disabled = false;
-    elements.runnerSend.querySelector("span").textContent = "运行一次";
+    updateRunnerModeCopy();
   }
 }
 
@@ -1053,6 +1207,109 @@ function renderRecruitmentProfile(profile) {
   document.querySelectorAll(".recruitment-checks input").forEach((input) => {
     input.checked = (profile.employer_types || []).includes(input.value);
   });
+}
+
+function recruitmentWatchStatus(watch) {
+  if (watch.last_status === "error" || watch.error || watch.last_error) return "暂时无法读取";
+  if (watchHasFreshChange(watch)) return "官网内容有变化 · 待核对";
+  if (watch.last_status === "baseline") return "基线已建立";
+  if (watch.last_checked_at) return "已核对 · 暂无变化";
+  return "等待首次建立基线";
+}
+
+function renderRecruitmentWatches(watches = []) {
+  elements.recruitmentWatchList.replaceChildren();
+  if (!watches.length) {
+    elements.recruitmentWatchList.appendChild(makeElement("small", "", "尚未添加官网。你可以先加入最关心企业的官方校招页。"));
+    return;
+  }
+  watches.forEach((watch) => {
+    const card = document.createElement("article");
+    card.className = `watch-card${watchHasFreshChange(watch) ? " changed" : ""}`;
+    const top = makeElement("div", "watch-card-top");
+    const copy = document.createElement("div");
+    const link = makeElement("a", "", watch.url || "");
+    link.href = watch.url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    copy.append(makeElement("strong", "", watch.name || "招聘官网"), link);
+    const actions = makeElement("div", "watch-card-actions");
+    if (watchHasFreshChange(watch)) {
+      const acknowledge = makeElement("button", "watch-acknowledge", "已核对");
+      acknowledge.type = "button";
+      acknowledge.addEventListener("click", () => acknowledgeRecruitmentWatch(watch.id, watch.change_version || 0));
+      actions.appendChild(acknowledge);
+    }
+    const remove = makeElement("button", "watch-delete", "×");
+    remove.type = "button";
+    remove.title = "停止监控";
+    remove.addEventListener("click", () => deleteRecruitmentWatch(watch.id));
+    actions.appendChild(remove);
+    top.append(copy, actions);
+    const statuses = makeElement("div", "watch-card-status");
+    statuses.appendChild(makeElement("span", "", recruitmentWatchStatus(watch)));
+    const checkedAt = watch.last_checked_at ? new Date(watch.last_checked_at).toLocaleString("zh-CN", { hour12: false }) : "尚未检查";
+    statuses.appendChild(makeElement("span", "", checkedAt));
+    const keywordList = Array.isArray(watch.keywords) ? watch.keywords : [];
+    const excerpt = watch.excerpt || watch.change_excerpt || (keywordList.length ? `关注：${keywordList.join(" · ")}` : "系统只比较公开网页文本指纹，不调用模型。" );
+    card.append(top, statuses, makeElement("p", "", excerpt));
+    elements.recruitmentWatchList.appendChild(card);
+  });
+}
+
+async function addRecruitmentWatch(event) {
+  event.preventDefault();
+  if (!elements.recruitmentWatchForm.reportValidity()) return;
+  elements.recruitmentWatchAdd.disabled = true;
+  elements.recruitmentWatchAdd.querySelector("span").textContent = "正在建立基线…";
+  elements.recruitmentError.textContent = "";
+  try {
+    const createdWatch = await api("/recruitment/watches", {
+      method: "POST",
+      timeoutMs: 12000,
+      body: JSON.stringify({
+        name: elements.recruitmentWatchName.value.trim(),
+        url: elements.recruitmentWatchUrl.value.trim(),
+        keywords: splitRecruitmentValues(elements.recruitmentWatchKeywords.value),
+      }),
+    });
+    elements.recruitmentWatchForm.reset();
+    await refreshRecruitment();
+    showToast(
+      createdWatch.last_status === "error"
+        ? "已加入动态雷达，但首次基线尚未建立；请稍后刷新重试。"
+        : "已加入动态雷达；首次内容作为基线，不会误报变化。",
+      5000,
+    );
+  } catch (error) {
+    elements.recruitmentError.textContent = translateError(error.message);
+  } finally {
+    elements.recruitmentWatchAdd.disabled = false;
+    elements.recruitmentWatchAdd.querySelector("span").textContent = "加入动态雷达";
+  }
+}
+
+async function deleteRecruitmentWatch(watchId) {
+  try {
+    await api(`/recruitment/watches/${encodeURIComponent(watchId)}`, { method: "DELETE" });
+    await refreshRecruitment();
+    showToast("已停止监控这个页面。", 3000);
+  } catch (error) {
+    elements.recruitmentError.textContent = translateError(error.message);
+  }
+}
+
+async function acknowledgeRecruitmentWatch(watchId, changeVersion) {
+  try {
+    await api(`/recruitment/watches/${encodeURIComponent(watchId)}/acknowledge`, {
+      method: "POST",
+      body: JSON.stringify({ change_version: changeVersion }),
+    });
+    await refreshRecruitment();
+    showToast("已标记为核对完成；下次页面变化会再次提醒。", 3500);
+  } catch (error) {
+    elements.recruitmentError.textContent = translateError(error.message);
+  }
 }
 
 function renderRecruitmentMonitors(pools = []) {
@@ -1097,21 +1354,81 @@ function renderRecruitmentJobs(jobs) {
   jobs.filter((job) => /^https:\/\//.test(job.url || "")).forEach((job) => {
     const card = document.createElement("article");
     card.className = "recruitment-job-card";
-    const deadline = job.days_left == null ? "截止日期待官方确认" : `${job.days_left} 天后截止`;
-    card.innerHTML = `<div class="job-card-top"><div><span class="job-company">${DOMPurify.sanitize(job.company)}</span><span class="job-type">${DOMPurify.sanitize(job.employer_type)}</span></div><div class="job-rank"><span class="job-tier ${DOMPurify.sanitize(job.tier_code || "T3")}">${DOMPurify.sanitize(job.tier_code || "T3")}</span><span class="job-score">${job.match_score}% 匹配</span></div></div><h4>${DOMPurify.sanitize(job.title)}</h4><p class="job-meta">${DOMPurify.sanitize(job.city)} · ${DOMPurify.sanitize(job.industry)} · ${deadline}</p><p class="job-requirements">${DOMPurify.sanitize(job.requirements)}</p><div class="job-card-bottom"><a href="${DOMPurify.sanitize(job.url)}" target="_blank" rel="noreferrer">打开校招公告 ↗</a></div>`;
+    const deadline = job.days_left == null ? "截止日期待官方确认" : (job.days_left === 0 ? "今天截止" : `${job.days_left} 天后截止`);
+    const tierCode = ["T0", "T1", "T2", "T3"].includes(job.tier_code) ? job.tier_code : "T3";
+    const top = makeElement("div", "job-card-top");
+    const labels = document.createElement("div");
+    labels.append(
+      makeElement("span", "job-company", job.company || "招聘单位"),
+      makeElement("span", "job-type", job.employer_type || "重点雇主"),
+    );
+    const rank = makeElement("div", "job-rank");
+    rank.appendChild(makeElement("span", `job-tier ${tierCode}`, tierCode));
+    top.append(labels, rank);
+    const bottom = makeElement("div", "job-card-bottom");
+    const officialLink = makeElement("a", "", "打开校招公告 ↗");
+    officialLink.href = job.url;
+    officialLink.target = "_blank";
+    officialLink.rel = "noreferrer";
+    bottom.appendChild(officialLink);
+    card.append(
+      top,
+      makeElement("h4", "", job.title || "校招岗位"),
+      makeElement("p", "job-meta", `${job.city || "地点待确认"} · ${job.industry || "行业待确认"} · ${deadline}`),
+      makeElement("p", "job-requirements", job.requirements || "请打开官方公告核对申请条件。"),
+      bottom,
+    );
+    const watchButton = makeElement("button", "job-watch-button", "跟踪此公告变化");
+    watchButton.type = "button";
+    watchButton.addEventListener("click", () => addRecruitmentWatchFromJob(job, watchButton));
+    bottom.appendChild(watchButton);
     elements.recruitmentJobs.appendChild(card);
   });
 }
 
+async function addRecruitmentWatchFromJob(job, button) {
+  button.disabled = true;
+  button.textContent = "正在建立基线…";
+  elements.recruitmentError.textContent = "";
+  try {
+    const createdWatch = await api("/recruitment/watches", {
+      method: "POST",
+      timeoutMs: 12000,
+      body: JSON.stringify({
+        name: `${job.company} · ${job.title}`.slice(0, 80),
+        url: job.url,
+        keywords: [job.company, job.title].filter(Boolean).slice(0, 12),
+      }),
+    });
+    await refreshRecruitment();
+    showToast(
+      createdWatch.last_status === "error"
+        ? "已加入动态雷达；官网暂时无法建立基线，可稍后重试。"
+        : "已开始跟踪此校招公告；页面变化会在首页待核对区提示。",
+      5000,
+    );
+  } catch (error) {
+    elements.recruitmentError.textContent = translateError(error.message);
+    button.disabled = false;
+    button.textContent = "跟踪此公告变化";
+  }
+}
+
 async function refreshRecruitment() {
   try {
-    const [profile, data] = await Promise.all([api("/recruitment/profile"), api("/recruitment/jobs")]);
+    const [profile, data, watchData] = await Promise.all([
+      api("/recruitment/profile"),
+      api("/recruitment/jobs"),
+      api("/recruitment/watches").catch(() => ({ watches: [] })),
+    ]);
     state.recruitmentProfile = profile;
     state.recruitmentJobs = data.jobs || [];
+    state.recruitmentWatches = watchData.watches || watchData || [];
     renderRecruitmentProfile(profile);
     renderRecruitmentJobs(state.recruitmentJobs);
+    renderRecruitmentWatches(state.recruitmentWatches);
     renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
-    renderHomeRecruitmentAlerts(state.recruitmentJobs);
+    renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
     renderRecruitmentMonitors(data.monitor_pools || []);
     setRecruitmentStatus(data.data_status?.message || "已读取动态岗位源");
   } catch (error) {
@@ -1123,12 +1440,25 @@ async function refreshRecruitment() {
 async function refreshRecruitmentSource() {
   elements.recruitmentRefresh.disabled = true;
   try {
-    await api("/recruitment/refresh", { method: "POST" });
+    const results = await Promise.allSettled([
+      api("/recruitment/refresh", { method: "POST" }),
+      api("/recruitment/watches/refresh", { method: "POST", timeoutMs: 35000 }),
+    ]);
+    if (results.every((result) => result.status === "rejected")) throw results[0].reason;
     await refreshRecruitment();
-    showToast("岗位源已刷新。", 3500);
+    const jobsOk = results[0].status === "fulfilled";
+    const watchesOk = results[1].status === "fulfilled";
+    showToast(
+      jobsOk && watchesOk
+        ? "岗位源与官网变化雷达已刷新。"
+        : jobsOk
+          ? "岗位源已刷新；官网变化雷达本次未完成。"
+          : "官网变化雷达已刷新；岗位源本次未完成。",
+      4500,
+    );
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
-    showToast("当前还没有配置官方实时岗位源。", 4500);
+    showToast("刷新未完成，请稍后重试。", 4500);
   } finally { elements.recruitmentRefresh.disabled = false; }
 }
 
@@ -1165,7 +1495,7 @@ async function saveRecruitment(event) {
     state.recruitmentJobs = data.jobs || [];
     renderRecruitmentJobs(state.recruitmentJobs);
     renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
-    renderHomeRecruitmentAlerts(state.recruitmentJobs);
+    renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
     renderRecruitmentMonitors(data.monitor_pools || []);
     setRecruitmentStatus(data.data_status?.message || "已读取动态岗位源");
     showToast("筛选已保存，岗位匹配已更新。", 3500);
@@ -1345,17 +1675,23 @@ elements.messageInput.addEventListener("keydown", (event) => {
 $("composer-upload").addEventListener("click", () => elements.documentInput.click());
 $("studio-open").addEventListener("click", openStudio);
 $("recruitment-open").addEventListener("click", openRecruitment);
+$("mobile-recruitment-open").addEventListener("click", openRecruitment);
 $("home-alert-open").addEventListener("click", openRecruitment);
 $("recruitment-close").addEventListener("click", () => elements.recruitmentDialog.close());
 elements.recruitmentRefresh.addEventListener("click", refreshRecruitmentSource);
 elements.recruitmentForm.addEventListener("submit", saveRecruitment);
+elements.recruitmentWatchForm.addEventListener("submit", addRecruitmentWatch);
 $("studio-open-secondary").addEventListener("click", openStudio);
 $("mobile-studio-open").addEventListener("click", openStudio);
 $("studio-close").addEventListener("click", () => elements.studioDialog.close());
 elements.spaceForm.addEventListener("submit", createSpace);
 elements.runnerSend.addEventListener("click", runActiveSpace);
+elements.runnerInput.addEventListener("input", scheduleSpacePreflight);
+document.querySelectorAll('input[name="runner-mode"]').forEach((input) => input.addEventListener("change", updateRunnerModeCopy));
+elements.runnerHistoryRefresh.addEventListener("click", loadSpaceHistory);
 $("billing-upgrade").addEventListener("click", explainBillingSetup);
 $("cross-exam-open").addEventListener("click", openCrossExam);
+$("mobile-cross-exam-open").addEventListener("click", openCrossExam);
 $("cross-exam-close").addEventListener("click", () => elements.crossExamDialog.close());
 elements.crossExamRun.addEventListener("click", runCrossExam);
 document.querySelectorAll("[data-cross-focus]").forEach((button) => {

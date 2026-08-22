@@ -3,8 +3,11 @@ import hashlib
 import json
 import logging
 import secrets
+import threading
+import time
+from collections import deque
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -15,6 +18,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
@@ -38,7 +42,19 @@ from .ai_service import (
     stream_agent,
 )
 from .platform import SPACE_TEMPLATES, plan_limits
+from .space_engine import (
+    SpaceRunMode,
+    build_local_capsule,
+    build_model_capsule,
+    build_preflight,
+    render_local_capsule,
+)
 from .recruitment import score_job
+from .recruitment_watch import (
+    WatchFetchError,
+    fetch_watch_page,
+    normalize_public_https_urls,
+)
 from .live_sources import (
     CORE_LOCATION_MARKERS,
     CURATED_CAMPUS_JOBS,
@@ -65,26 +81,166 @@ from .workspaces import (
 
 logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
+_space_lock_registry_guard = threading.Lock()
+_space_lock_registry: dict[int, threading.Lock] = {}
+_watch_fetch_slots = threading.BoundedSemaphore(4)
+_watch_lock_registry_guard = threading.Lock()
+_watch_lock_registry: dict[str, threading.Lock] = {}
+_watch_refresh_cooldown_guard = threading.Lock()
+_watch_refresh_last_request: dict[int, float] = {}
+_watch_create_rate_guard = threading.Lock()
+_watch_create_requests: dict[int, deque[float]] = {}
+_model_rate_guard = threading.Lock()
+_model_user_units: dict[int, deque[tuple[float, int]]] = {}
+_model_global_units: deque[tuple[float, int]] = deque()
+_registration_rate_guard = threading.Lock()
+_registration_requests: deque[float] = deque()
+_recruitment_source_refresh_lock = threading.Lock()
+_recruitment_source_refresh_state_guard = threading.Lock()
+_recruitment_source_last_refresh = 0.0
+_recruitment_source_last_count = 0
+WATCH_REFRESH_COOLDOWN_SECONDS = 15
+WATCH_CREATE_WINDOW_SECONDS = 300
+WATCH_CREATE_LIMIT = 12
+WATCH_FETCH_SLOT_TIMEOUT_SECONDS = 10.0
+WATCH_BASELINE_SLOT_TIMEOUT_SECONDS = 0.5
+SCHEDULED_WATCH_BATCH_LIMIT = 40
+MODEL_RATE_WINDOW_SECONDS = 600
+MODEL_USER_UNIT_LIMIT = 60
+MODEL_GLOBAL_UNIT_LIMIT = 240
+REGISTRATION_WINDOW_SECONDS = 3_600
+REGISTRATION_LIMIT = 60
+RECRUITMENT_SOURCE_COOLDOWN_SECONDS = 300
+
+
+class RecruitmentRefreshBusy(RuntimeError):
+    pass
+
+
+def space_execution_lock(user_id: int, space_id: str) -> threading.Lock:
+    """Serialize one user's runs so account/Space budget checks stay atomic."""
+    del space_id
+    with _space_lock_registry_guard:
+        return _space_lock_registry.setdefault(user_id, threading.Lock())
+
+
+def watch_refresh_lock(watch_id: str) -> threading.Lock:
+    with _watch_lock_registry_guard:
+        return _watch_lock_registry.setdefault(watch_id, threading.Lock())
+
+
+def enforce_watch_create_rate(user_id: int) -> None:
+    now = time.monotonic()
+    with _watch_create_rate_guard:
+        requests = _watch_create_requests.setdefault(user_id, deque())
+        while requests and now - requests[0] >= WATCH_CREATE_WINDOW_SECONDS:
+            requests.popleft()
+        if len(requests) >= WATCH_CREATE_LIMIT:
+            retry_after = max(1, int(WATCH_CREATE_WINDOW_SECONDS - (now - requests[0])))
+            raise HTTPException(
+                status_code=429,
+                detail="添加官网监控过于频繁，请稍后重试。",
+                headers={"Retry-After": str(retry_after)},
+            )
+        requests.append(now)
+
+
+def enforce_model_request_rate(user_id: int, units: int) -> None:
+    """Bound expensive OpenAI-backed actions for this single-process demo."""
+    now = time.monotonic()
+    safe_units = max(1, int(units))
+    with _model_rate_guard:
+        user_usage = _model_user_units.setdefault(user_id, deque())
+        while user_usage and now - user_usage[0][0] >= MODEL_RATE_WINDOW_SECONDS:
+            user_usage.popleft()
+        while _model_global_units and now - _model_global_units[0][0] >= MODEL_RATE_WINDOW_SECONDS:
+            _model_global_units.popleft()
+        user_total = sum(item[1] for item in user_usage)
+        global_total = sum(item[1] for item in _model_global_units)
+        if (
+            user_total + safe_units > MODEL_USER_UNIT_LIMIT
+            or global_total + safe_units > MODEL_GLOBAL_UNIT_LIMIT
+        ):
+            raise HTTPException(
+                status_code=429,
+                detail="模型请求过于频繁，请稍后重试。",
+                headers={"Retry-After": str(MODEL_RATE_WINDOW_SECONDS)},
+            )
+        record = (now, safe_units)
+        user_usage.append(record)
+        _model_global_units.append(record)
+
+
+def enforce_registration_rate() -> None:
+    now = time.monotonic()
+    with _registration_rate_guard:
+        while (
+            _registration_requests
+            and now - _registration_requests[0] >= REGISTRATION_WINDOW_SECONDS
+        ):
+            _registration_requests.popleft()
+        if len(_registration_requests) >= REGISTRATION_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="新账号创建过于频繁，请稍后重试。",
+                headers={"Retry-After": str(REGISTRATION_WINDOW_SECONDS)},
+            )
+        _registration_requests.append(now)
 
 
 def refresh_recruitment_sources() -> int:
     """Refresh public recruitment sources; safe to call from a scheduled worker."""
-    jobs = [dict(job) for job in CURATED_CAMPUS_JOBS]
-    jobs.extend(fetch_public_recruitment_sources())
-    if settings.adzuna_app_id and settings.adzuna_app_key:
-        jobs.extend(fetch_adzuna_jobs())
-    database.upsert_recruitment_jobs(jobs)
-    return len(jobs)
+    global _recruitment_source_last_count, _recruitment_source_last_refresh
+    if not _recruitment_source_refresh_lock.acquire(blocking=False):
+        raise RecruitmentRefreshBusy("Recruitment source refresh is already running.")
+    try:
+        jobs = [dict(job) for job in CURATED_CAMPUS_JOBS]
+        jobs.extend(fetch_public_recruitment_sources())
+        if settings.adzuna_app_id and settings.adzuna_app_key:
+            jobs.extend(fetch_adzuna_jobs())
+        database.upsert_recruitment_jobs(jobs)
+        with _recruitment_source_refresh_state_guard:
+            _recruitment_source_last_refresh = time.monotonic()
+            _recruitment_source_last_count = len(jobs)
+        return len(jobs)
+    finally:
+        _recruitment_source_refresh_lock.release()
 
 
 async def recruitment_refresh_loop() -> None:
     while True:
         try:
             count = await asyncio.to_thread(refresh_recruitment_sources)
-            logger.info("Scheduled recruitment refresh completed: %s jobs", count)
+            logger.info("Scheduled recruitment source refresh completed: %s jobs", count)
         except Exception:
-            logger.exception("Scheduled recruitment refresh failed")
+            logger.exception("Scheduled recruitment source refresh failed")
+        try:
+            watch_counts = await refresh_all_recruitment_watches()
+            logger.info(
+                "Scheduled recruitment watch refresh completed: %s watches checked",
+                watch_counts["checked"],
+            )
+        except Exception:
+            logger.exception("Scheduled recruitment watch refresh failed")
         await asyncio.sleep(settings.recruitment_refresh_minutes * 60)
+
+
+async def refresh_all_recruitment_watches() -> dict[str, int]:
+    """Refresh every enabled watch while the web service is awake."""
+    due_before = (
+        datetime.now(timezone.utc)
+        - timedelta(minutes=max(1, settings.recruitment_refresh_minutes))
+    ).isoformat()
+    watches = database.list_enabled_recruitment_watches(
+        due_before=due_before,
+        limit=SCHEDULED_WATCH_BATCH_LIMIT,
+    )
+    results = await _refresh_watch_batch(watches)
+    return {
+        "checked": len(results),
+        "changed": sum(item.get("last_status") == "changed" for item in results),
+        "errors": sum(item.get("last_status") == "error" for item in results),
+    }
 
 
 @asynccontextmanager
@@ -106,7 +262,7 @@ async def lifespan(_: FastAPI):
                 pass
 
 
-PRIVACY_VERSION = "2026-08-21"
+PRIVACY_VERSION = "2026-08-22"
 
 
 app = FastAPI(title="FrostFire AI API", version="4.0.0", lifespan=lifespan)
@@ -182,6 +338,10 @@ class SpaceRunRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4_000)
 
 
+class SpaceExecutionRequest(SpaceRunRequest):
+    mode: SpaceRunMode = "lean"
+
+
 class AppleTransactionRequest(BaseModel):
     signed_transaction: str = Field(min_length=20, max_length=50_000)
 
@@ -204,12 +364,22 @@ class RecruitmentIngestJob(BaseModel):
     opening_date: date | None = None
     closing_date: date | None = None
     requirements: str = Field(default="", max_length=2_000)
-    tags: list[str] = Field(default_factory=lambda: ["校园招聘"], max_length=20)
+    tags: list[str] = Field(default_factory=list, max_length=20)
     status: Literal["open", "closed"] = "open"
 
 
 class RecruitmentIngestRequest(BaseModel):
     jobs: list[RecruitmentIngestJob] = Field(min_length=1, max_length=100)
+
+
+class RecruitmentWatchCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    url: str = Field(min_length=9, max_length=1_000)
+    keywords: list[str] = Field(min_length=1, max_length=20)
+
+
+class RecruitmentWatchAcknowledgeRequest(BaseModel):
+    change_version: int = Field(ge=0)
 
 
 def current_user(
@@ -234,11 +404,15 @@ User = Annotated[dict, Depends(current_user)]
 
 
 def public_user(user: dict) -> dict:
+    privacy_accepted = bool(user.get("privacy_accepted_at")) and (
+        user.get("privacy_version") == PRIVACY_VERSION
+    )
     return {
         "id": user["id"],
         "username": user["username"],
-        "privacy_accepted": bool(user.get("privacy_accepted_at")),
+        "privacy_accepted": privacy_accepted,
         "privacy_version": user.get("privacy_version"),
+        "required_privacy_version": PRIVACY_VERSION,
         "plan": user.get("plan", "free"),
     }
 
@@ -252,10 +426,13 @@ def token_response(user: dict) -> dict:
 
 
 def require_privacy_consent(user: User) -> dict:
-    if not user.get("privacy_accepted_at"):
+    if (
+        not user.get("privacy_accepted_at")
+        or user.get("privacy_version") != PRIVACY_VERSION
+    ):
         raise HTTPException(
             status_code=428,
-            detail="Privacy consent is required before sending data to OpenAI.",
+            detail="Consent to the current privacy policy is required.",
         )
     return user
 
@@ -336,6 +513,7 @@ def workspaces() -> list[dict]:
 
 @app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
 def register(request: AuthRequest) -> dict:
+    enforce_registration_rate()
     if not request.privacy_accepted:
         raise HTTPException(
             status_code=400,
@@ -409,39 +587,276 @@ def save_recruitment_profile(request: RecruitmentProfileRequest, user: Consented
 def recruitment_jobs(user: User) -> dict:
     profile = database.get_recruitment_profile(user["id"])
     available_jobs = database.list_recruitment_jobs()
+    watch_summary = database.recruitment_watch_summary(user["id"])
+    job_summary = database.recruitment_job_summary()
     jobs = [
         score_job(job, profile)
         for job in available_jobs
         if is_priority_campus_listing(job) or "动态监控" in job.get("tags", [])
     ]
     jobs = [job for job in jobs if job["days_left"] is None or job["days_left"] >= 0]
-    jobs.sort(key=lambda item: (-item["match_score"], item["days_left"] is None, item["days_left"] or 9999))
+    jobs.sort(
+        key=lambda item: (
+            -item["match_score"],
+            item["days_left"] is None,
+            item["days_left"] if item["days_left"] is not None else 9999,
+        )
+    )
+    if watch_summary["total"] == 0:
+        source_message = (
+            f"当前展示 {len(jobs)} 个已核验且未过期岗位；"
+            "尚未创建零 Token 网页监控。"
+        )
+    elif watch_summary["last_checked_at"] is None:
+        source_message = (
+            f"已创建 {watch_summary['total']} 个零 Token 网页监控，等待首次检查；"
+            f"当前展示 {len(jobs)} 个已核验岗位。"
+        )
+    else:
+        source_message = (
+            f"{watch_summary['enabled']} 个零 Token 网页监控最近检查于 "
+            f"{watch_summary['last_checked_at']}；发现 {watch_summary['changed']} 个页面变化，"
+            f"{watch_summary['errors']} 个检查失败。当前展示 {len(jobs)} 个已核验岗位。"
+        )
     return {
         "jobs": jobs,
         "profile": public_recruitment_profile(profile),
         "monitor_pools": PERSONAL_MONITOR_POOLS,
         "data_status": {
             "mode": "verified_dynamic",
-            "message": (
-                f"每 {settings.recruitment_refresh_minutes} 分钟扫描公开线索并接收授权推送；"
-                "仅展示已核验官方直达链接且未过期的校招岗位。"
-            ) if settings.recruitment_refresh_minutes else (
-                "接收授权监控推送；仅展示已核验官方直达链接且未过期的校招岗位。"
-            ),
-            "last_sync": None,
+            "method": "zero_token_http_fingerprint",
+            "message": source_message,
+            "last_sync": watch_summary["last_checked_at"],
+            "last_job_verified_at": job_summary["last_verified_at"],
+            "open_jobs": job_summary["open_jobs"],
+            "watches": watch_summary,
+            "model_tokens_used": 0,
         },
     }
+
+
+@app.get("/api/recruitment/watches")
+def recruitment_watches(user: User) -> dict:
+    watches = database.list_recruitment_watches(user["id"])
+    return {
+        "watches": watches,
+        "summary": database.recruitment_watch_summary(user["id"]),
+        "method": "deterministic_html_fingerprint",
+        "model_tokens_used": 0,
+    }
+
+
+@app.post("/api/recruitment/watches", status_code=status.HTTP_201_CREATED)
+def create_recruitment_watch(
+    request: RecruitmentWatchCreateRequest,
+    user: ConsentedUser,
+) -> dict:
+    try:
+        display_url, fetch_url = normalize_public_https_urls(
+            request.url,
+            resolve_dns=False,
+        )
+    except WatchFetchError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    keywords = list(dict.fromkeys(
+        str(value).strip()[:80]
+        for value in request.keywords
+        if str(value).strip()
+    ))
+    if not keywords:
+        raise HTTPException(status_code=422, detail="请至少填写一个监控关键词。")
+    enforce_watch_create_rate(user["id"])
+    try:
+        watch = database.create_recruitment_watch(
+            user["id"],
+            request.name.strip(),
+            display_url,
+            fetch_url,
+            keywords,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # Baselines use the same single-flight lock and outbound slot guard as all
+    # later checks, so creation cannot race a scheduled refresh.
+    return _refresh_user_watch_sync(
+        user["id"],
+        {**watch, "fetch_url": fetch_url},
+        WATCH_BASELINE_SLOT_TIMEOUT_SECONDS,
+    )
+
+
+def _fetch_watch_with_global_limit(
+    watch: dict,
+    slot_timeout: float = WATCH_FETCH_SLOT_TIMEOUT_SECONDS,
+):
+    acquired = _watch_fetch_slots.acquire(timeout=slot_timeout)
+    if not acquired:
+        raise WatchFetchError("官网监控当前繁忙，请稍后重试。")
+    try:
+        return fetch_watch_page(
+            watch.get("fetch_url") or watch["url"],
+            watch["keywords"],
+        )
+    finally:
+        _watch_fetch_slots.release()
+
+
+def _refresh_user_watch_sync(
+    user_id: int,
+    watch: dict,
+    slot_timeout: float = WATCH_FETCH_SLOT_TIMEOUT_SECONDS,
+) -> dict:
+    with watch_refresh_lock(watch["id"]):
+        try:
+            result = _fetch_watch_with_global_limit(watch, slot_timeout)
+            updated = database.record_recruitment_watch_success(
+                user_id,
+                watch["id"],
+                result.fingerprint,
+                result.keyword_hits,
+                result.http_status,
+            )
+        except WatchFetchError as exc:
+            updated = database.record_recruitment_watch_error(
+                user_id,
+                watch["id"],
+                str(exc),
+            )
+        except Exception:
+            logger.exception("Unexpected recruitment watch refresh failure")
+            updated = database.record_recruitment_watch_error(
+                user_id,
+                watch["id"],
+                "监控页面暂时无法检查。",
+            )
+        if not updated:
+            return {"id": watch["id"], "last_status": "deleted"}
+        return updated
+
+
+async def _refresh_user_watch(user_id: int, watch: dict) -> dict:
+    return await asyncio.to_thread(_refresh_user_watch_sync, user_id, watch)
+
+
+async def _refresh_watch_batch(watches: list[dict]) -> list[dict]:
+    """Run bounded groups so large watch sets do not occupy waiting threads."""
+    results: list[dict] = []
+    for offset in range(0, len(watches), 4):
+        group = watches[offset:offset + 4]
+        results.extend(await asyncio.gather(*(
+            _refresh_user_watch(watch["user_id"], watch)
+            for watch in group
+        )))
+    return results
+
+
+@app.post("/api/recruitment/watches/refresh")
+async def refresh_recruitment_watches(user: ConsentedUser) -> dict:
+    now = time.monotonic()
+    with _watch_refresh_cooldown_guard:
+        last_request = _watch_refresh_last_request.get(user["id"], 0.0)
+        retry_after = WATCH_REFRESH_COOLDOWN_SECONDS - (now - last_request)
+        if retry_after > 0:
+            raise HTTPException(
+                status_code=429,
+                detail="官网变化雷达刷新过于频繁，请稍后重试。",
+                headers={"Retry-After": str(max(1, int(retry_after)))},
+            )
+        _watch_refresh_last_request[user["id"]] = now
+    watches = [
+        watch
+        for watch in database.list_recruitment_watches(user["id"])
+        if watch["enabled"]
+    ]
+    internal_watches = [
+        {
+            **watch,
+            "user_id": user["id"],
+        }
+        for watch in watches
+    ]
+    results = await _refresh_watch_batch(internal_watches)
+    counts = {"baseline": 0, "changed": 0, "unchanged": 0, "error": 0}
+    for item in results:
+        result_status = item.get("last_status")
+        if result_status in counts:
+            counts[result_status] += 1
+    return {
+        "checked": len(results),
+        "counts": counts,
+        "watches": results,
+        "summary": database.recruitment_watch_summary(user["id"]),
+        "refreshed_at": database.utc_now(),
+        "model_tokens_used": 0,
+    }
+
+
+@app.delete("/api/recruitment/watches/{watch_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_recruitment_watch(watch_id: str, user: ConsentedUser) -> Response:
+    if not database.get_recruitment_watch(user["id"], watch_id):
+        raise HTTPException(status_code=404, detail="网页监控不存在。")
+    lock = watch_refresh_lock(watch_id)
+    with lock:
+        if not database.delete_recruitment_watch(user["id"], watch_id):
+            raise HTTPException(status_code=404, detail="网页监控不存在。")
+        with _watch_lock_registry_guard:
+            if _watch_lock_registry.get(watch_id) is lock:
+                _watch_lock_registry.pop(watch_id, None)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/recruitment/watches/{watch_id}/acknowledge")
+def acknowledge_recruitment_watch(
+    watch_id: str,
+    request: RecruitmentWatchAcknowledgeRequest,
+    user: ConsentedUser,
+) -> dict:
+    if not database.get_recruitment_watch(user["id"], watch_id):
+        raise HTTPException(status_code=404, detail="网页监控不存在。")
+    try:
+        with watch_refresh_lock(watch_id):
+            watch = database.acknowledge_recruitment_watch_change(
+                user["id"],
+                watch_id,
+                request.change_version,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not watch:
+        raise HTTPException(status_code=404, detail="网页监控不存在。")
+    return watch
 
 
 @app.post("/api/recruitment/refresh")
 def refresh_recruitment(user: ConsentedUser) -> dict:
     del user
+    with _recruitment_source_refresh_state_guard:
+        age = time.monotonic() - _recruitment_source_last_refresh
+        cached_count = _recruitment_source_last_count
+    if _recruitment_source_last_refresh and age < RECRUITMENT_SOURCE_COOLDOWN_SECONDS:
+        return {
+            "source": "公开招聘页面 + 已配置 API",
+            "count": cached_count,
+            "refreshed_at": database.utc_now(),
+            "cached": True,
+        }
     try:
         count = refresh_recruitment_sources()
+    except RecruitmentRefreshBusy as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="岗位源正在刷新，请稍后重试。",
+            headers={"Retry-After": "15"},
+        ) from exc
     except Exception as exc:
         logger.exception("Recruitment source refresh failed")
         raise HTTPException(status_code=502, detail="招聘源刷新失败，请稍后重试。") from exc
-    return {"source": "公开招聘页面 + 已配置 API", "count": count, "refreshed_at": database.utc_now()}
+    return {
+        "source": "公开招聘页面 + 已配置 API",
+        "count": count,
+        "refreshed_at": database.utc_now(),
+        "cached": False,
+    }
 
 
 @app.post("/api/recruitment/ingest")
@@ -460,13 +875,29 @@ def ingest_recruitment_jobs(
     skipped: list[dict] = []
     today = date.today()
     for item in request.jobs:
-        job_id = f"monitor-{hashlib.sha256(item.official_url.encode()).hexdigest()[:24]}"
+        try:
+            display_url, _ = normalize_public_https_urls(
+                item.official_url,
+                resolve_dns=False,
+            )
+        except WatchFetchError:
+            skipped.append({"title": item.title, "reason": "invalid_official_url"})
+            continue
+        job_id = f"monitor-{hashlib.sha256(display_url.encode()).hexdigest()[:24]}"
         if item.status == "closed" or (item.closing_date and item.closing_date < today):
             database.close_recruitment_job(job_id)
             skipped.append({
                 "title": item.title,
                 "reason": "closed" if item.status == "closed" else "expired",
             })
+            continue
+        candidate = {
+            "title": item.title.strip(),
+            "requirements": item.requirements.strip(),
+            "tags": list(item.tags),
+        }
+        if not is_actionable_recruitment_listing(candidate):
+            skipped.append({"title": item.title, "reason": "not_campus"})
             continue
         job = {
             "id": job_id,
@@ -475,7 +906,7 @@ def ingest_recruitment_jobs(
             "title": item.title.strip(),
             "city": item.city.strip(),
             "industry": item.industry.strip(),
-            "url": item.official_url,
+            "url": display_url,
             "source": item.source.strip(),
             "opening_date": item.opening_date.isoformat() if item.opening_date else None,
             "closing_date": item.closing_date.isoformat() if item.closing_date else None,
@@ -487,9 +918,6 @@ def ingest_recruitment_jobs(
             "status": "open",
         }
         location_text = f"{job['city']} {job['title']}"
-        if not is_actionable_recruitment_listing(job):
-            skipped.append({"title": item.title, "reason": "not_campus"})
-            continue
         if not any(marker in location_text for marker in CORE_LOCATION_MARKERS):
             skipped.append({"title": item.title, "reason": "location_outside_scope"})
             continue
@@ -538,8 +966,23 @@ def delete_account(request: DeleteAccountRequest, user: User) -> Response:
         raise HTTPException(status_code=401, detail="Password is incorrect.")
     if request.confirmation != "DELETE":
         raise HTTPException(status_code=400, detail='Enter "DELETE" to confirm.')
+    watch_ids = [
+        watch["id"]
+        for watch in database.list_recruitment_watches(user["id"])
+    ]
     if not database.delete_user(user["id"]):
         raise HTTPException(status_code=404, detail="Account not found.")
+    with _space_lock_registry_guard:
+        _space_lock_registry.pop(user["id"], None)
+    with _watch_refresh_cooldown_guard:
+        _watch_refresh_last_request.pop(user["id"], None)
+    with _watch_create_rate_guard:
+        _watch_create_requests.pop(user["id"], None)
+    with _model_rate_guard:
+        _model_user_units.pop(user["id"], None)
+    with _watch_lock_registry_guard:
+        for watch_id in watch_ids:
+            _watch_lock_registry.pop(watch_id, None)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -604,7 +1047,10 @@ def upload_document(
         logger.warning("Document parsing failed for %s", filename, exc_info=True)
         raise HTTPException(status_code=400, detail="Document could not be parsed.") from exc
     try:
+        enforce_model_request_rate(user["id"], 1)
         embeddings = create_embeddings([chunk["content"] for chunk in chunks])
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Embedding request failed")
         raise HTTPException(status_code=502, detail="Embedding request failed.") from exc
@@ -676,51 +1122,247 @@ def create_space(request: SpaceCreateRequest, user: ConsentedUser) -> dict:
     )
 
 
-@app.post("/api/spaces/{space_id}/run")
-def run_created_space(
+def prepare_space_execution(
+    space: dict,
+    message: str,
+    mode: SpaceRunMode,
+    user: dict,
+) -> tuple[dict, dict | None]:
+    billing = billing_status(user)
+    space_usage = database.token_usage(user["id"], space["id"])
+    remaining = min(
+        billing["remaining_tokens"],
+        max(0, space["monthly_token_budget"] - space_usage["total_tokens"]),
+    )
+    initial = build_preflight(
+        space,
+        message,
+        mode,
+        remaining,
+        settings.ai_model,
+    )
+    cached = None
+    if mode == "lean":
+        cached = database.find_cached_space_run(
+            space["id"],
+            user["id"],
+            initial["fingerprint"],
+        )
+    preflight = build_preflight(
+        space,
+        message,
+        mode,
+        remaining,
+        settings.ai_model,
+        cache_hit=bool(cached),
+        cached_tokens=(cached or {}).get("usage", {}).get("total_tokens", 0),
+    )
+    if cached:
+        preflight["cached_from_run_id"] = cached["id"]
+    return preflight, cached
+
+
+def execute_space_request(
+    space: dict,
+    request: SpaceExecutionRequest,
+    user: dict,
+) -> dict:
+    preflight, cached = prepare_space_execution(
+        space,
+        request.message,
+        request.mode,
+        user,
+    )
+    if not preflight["allowed"]:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "This AI Space does not have enough remaining Tokens for the "
+                "estimated input and maximum output."
+            ),
+        )
+
+    zero_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    if request.mode == "local":
+        artifact = build_local_capsule(space, request.message)
+        reply = render_local_capsule(artifact)
+        usage = zero_usage
+        run = database.create_space_run(
+            user["id"],
+            space["id"],
+            preflight["fingerprint"],
+            request.mode,
+            "local",
+            request.message,
+            artifact,
+            reply,
+            saved_tokens=0,
+        )
+    elif cached:
+        artifact = cached["artifact"]
+        reply = cached["reply"]
+        usage = zero_usage
+        cached_usage = cached.get("usage", {}).get("total_tokens", 0)
+        run = database.create_space_run(
+            user["id"],
+            space["id"],
+            preflight["fingerprint"],
+            request.mode,
+            "cache",
+            request.message,
+            artifact,
+            reply,
+            saved_tokens=cached_usage,
+            cached_from_run_id=cached["id"],
+        )
+    else:
+        enforce_model_request_rate(user["id"], 1)
+        try:
+            reply, usage = run_space(
+                space["system_prompt"],
+                request.message,
+                max_output_tokens=preflight["max_output_tokens"],
+                mode=request.mode,
+            )
+        except Exception as exc:
+            database.create_space_run(
+                user["id"],
+                space["id"],
+                preflight["fingerprint"],
+                request.mode,
+                request.mode,
+                request.message,
+                {},
+                "",
+                estimated_input_tokens=preflight["estimated_input_tokens"],
+                max_output_tokens=preflight["max_output_tokens"],
+                status="failed",
+            )
+            logger.exception("AI Space request failed")
+            raise HTTPException(
+                status_code=502,
+                detail="OpenAI API request failed.",
+            ) from exc
+        database.record_token_usage(
+            user["id"],
+            space["id"],
+            usage["input_tokens"],
+            usage["output_tokens"],
+            usage["total_tokens"],
+        )
+        artifact = build_model_capsule(
+            space,
+            request.message,
+            reply,
+            request.mode,
+        )
+        run = database.create_space_run(
+            user["id"],
+            space["id"],
+            preflight["fingerprint"],
+            request.mode,
+            request.mode,
+            request.message,
+            artifact,
+            reply,
+            estimated_input_tokens=preflight["estimated_input_tokens"],
+            max_output_tokens=preflight["max_output_tokens"],
+            actual_input_tokens=usage["input_tokens"],
+            actual_output_tokens=usage["output_tokens"],
+            actual_total_tokens=usage["total_tokens"],
+        )
+
+    return {
+        "run_id": run["id"],
+        "space": {
+            key: space[key]
+            for key in ("id", "name", "icon", "theme", "template_id")
+        },
+        "mode": request.mode,
+        "execution_path": run["execution_path"],
+        "cache_hit": run["execution_path"] == "cache",
+        "cached_from_run_id": run.get("cached_from_run_id"),
+        "artifact": artifact,
+        "reply": reply,
+        "usage": usage,
+        "saved_tokens": run["saved_tokens"],
+        "estimated_tokens_saved": preflight["estimated_tokens_saved"],
+        "tokens_saved_kind": preflight["tokens_saved_kind"],
+        "preflight": preflight,
+        "billing": billing_status(user),
+    }
+
+
+@app.post("/api/spaces/{space_id}/preflight")
+def preflight_created_space(
     space_id: str,
-    request: SpaceRunRequest,
+    request: SpaceExecutionRequest,
     user: ConsentedUser,
 ) -> dict:
     space = database.get_space(space_id, user["id"])
     if not space:
         raise HTTPException(status_code=404, detail="AI Space not found.")
-    billing = billing_status(user)
-    space_usage = database.token_usage(user["id"], space_id)
-    remaining = min(
-        billing["remaining_tokens"],
-        max(0, space["monthly_token_budget"] - space_usage["total_tokens"]),
+    preflight, _ = prepare_space_execution(
+        space,
+        request.message,
+        request.mode,
+        user,
     )
-    if remaining < 256:
-        raise HTTPException(
-            status_code=429,
-            detail="This AI Space has reached its monthly Token budget.",
-        )
-    try:
-        reply, usage = run_space(
-            space["system_prompt"],
-            request.message,
-            max_output_tokens=min(600, max(128, remaining // 2)),
-        )
-    except Exception as exc:
-        logger.exception("AI Space request failed")
-        raise HTTPException(status_code=502, detail="OpenAI API request failed.") from exc
-    database.record_token_usage(
-        user["id"],
-        space_id,
-        usage["input_tokens"],
-        usage["output_tokens"],
-        usage["total_tokens"],
-    )
-    return {
-        "space": {
-            key: space[key]
-            for key in ("id", "name", "icon", "theme", "template_id")
-        },
-        "reply": reply,
-        "usage": usage,
-        "billing": billing_status(user),
-    }
+    return preflight
+
+
+@app.post("/api/spaces/{space_id}/runs", status_code=status.HTTP_201_CREATED)
+def run_space_v2(
+    space_id: str,
+    request: SpaceExecutionRequest,
+    user: ConsentedUser,
+) -> dict:
+    space = database.get_space(space_id, user["id"])
+    if not space:
+        raise HTTPException(status_code=404, detail="AI Space not found.")
+    with space_execution_lock(user["id"], space_id):
+        fresh_space = database.get_space(space_id, user["id"])
+        if not fresh_space:
+            raise HTTPException(status_code=404, detail="AI Space not found.")
+        return execute_space_request(fresh_space, request, user)
+
+
+@app.get("/api/spaces/{space_id}/runs")
+def space_run_history(
+    space_id: str,
+    user: User,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[dict]:
+    if not database.get_space(space_id, user["id"]):
+        raise HTTPException(status_code=404, detail="AI Space not found.")
+    return database.list_space_runs(space_id, user["id"], limit)
+
+
+@app.get("/api/spaces/{space_id}/runs/{run_id}")
+def space_run_detail(space_id: str, run_id: str, user: User) -> dict:
+    if not database.get_space(space_id, user["id"]):
+        raise HTTPException(status_code=404, detail="AI Space not found.")
+    run = database.get_space_run(run_id, space_id, user["id"])
+    if not run:
+        raise HTTPException(status_code=404, detail="AI Space run not found.")
+    return run
+
+
+@app.post("/api/spaces/{space_id}/run")
+def run_created_space(
+    space_id: str,
+    request: SpaceExecutionRequest,
+    user: ConsentedUser,
+) -> dict:
+    """Execute a Space; omitted mode remains backward-compatible with lean."""
+    space = database.get_space(space_id, user["id"])
+    if not space:
+        raise HTTPException(status_code=404, detail="AI Space not found.")
+    with space_execution_lock(user["id"], space_id):
+        fresh_space = database.get_space(space_id, user["id"])
+        if not fresh_space:
+            raise HTTPException(status_code=404, detail="AI Space not found.")
+        return execute_space_request(fresh_space, request, user)
 
 
 def cross_exam_source(
@@ -753,6 +1395,7 @@ def cross_exam(request: CrossExamRequest, user: ConsentedUser) -> dict:
         )
 
     try:
+        enforce_model_request_rate(user["id"], 3)
         legal_context = retrieve_context(
             user["id"], request.focus, "legal", 6, 0.0
         )
@@ -843,6 +1486,7 @@ def cross_exam(request: CrossExamRequest, user: ConsentedUser) -> dict:
 @app.post("/api/chat")
 def chat(request: ChatRequest, user: ConsentedUser) -> dict:
     try:
+        enforce_model_request_rate(user["id"], 4)
         session, messages, sources = prepare_chat(user["id"], request)
         reply, tools_used = run_agent(messages, session["workspace"])
         database.append_message(session["id"], "assistant", reply)
@@ -867,6 +1511,7 @@ def sse(event: str, data: dict) -> str:
 @app.post("/api/chat/stream")
 def chat_stream(request: ChatRequest, user: ConsentedUser) -> StreamingResponse:
     try:
+        enforce_model_request_rate(user["id"], 4)
         session, messages, sources = prepare_chat(user["id"], request)
     except HTTPException:
         raise
