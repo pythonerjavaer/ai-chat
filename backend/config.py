@@ -20,6 +20,7 @@ class Settings:
     adzuna_app_id: str
     adzuna_app_key: str
     adzuna_country: str
+    recruitment_refresh_minutes: int
 
 
 def load_settings() -> Settings:
@@ -58,6 +59,7 @@ def load_settings() -> Settings:
         adzuna_app_id=os.getenv("ADZUNA_APP_ID", "").strip(),
         adzuna_app_key=os.getenv("ADZUNA_APP_KEY", "").strip(),
         adzuna_country=os.getenv("ADZUNA_COUNTRY", "gb").strip() or "gb",
+        recruitment_refresh_minutes=max(0, int(os.getenv("RECRUITMENT_REFRESH_MINUTES", "30").strip() or "30")),
     )
 
 

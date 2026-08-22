@@ -27,3 +27,5 @@ services:
         sync: false
       - key: ADZUNA_COUNTRY
         value: gb
+      - key: RECRUITMENT_REFRESH_MINUTES
+        value: 30

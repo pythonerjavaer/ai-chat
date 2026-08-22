@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -60,11 +61,41 @@ logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def refresh_recruitment_sources() -> int:
+    """Refresh public recruitment sources; safe to call from a scheduled worker."""
+    jobs = fetch_public_recruitment_sources()
+    if settings.adzuna_app_id and settings.adzuna_app_key:
+        jobs.extend(fetch_adzuna_jobs())
+    database.upsert_recruitment_jobs(jobs)
+    return len(jobs)
+
+
+async def recruitment_refresh_loop() -> None:
+    while True:
+        try:
+            count = await asyncio.to_thread(refresh_recruitment_sources)
+            logger.info("Scheduled recruitment refresh completed: %s jobs", count)
+        except Exception:
+            logger.exception("Scheduled recruitment refresh failed")
+        await asyncio.sleep(settings.recruitment_refresh_minutes * 60)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.init_db()
     database.seed_recruitment_jobs(SAMPLE_JOBS)
-    yield
+    task = None
+    if settings.recruitment_refresh_minutes > 0:
+        task = asyncio.create_task(recruitment_refresh_loop())
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 PRIVACY_VERSION = "2026-08-21"
@@ -366,14 +397,11 @@ def recruitment_jobs(user: User) -> dict:
 def refresh_recruitment(user: ConsentedUser) -> dict:
     del user
     try:
-        jobs = fetch_public_recruitment_sources()
-        if settings.adzuna_app_id and settings.adzuna_app_key:
-            jobs.extend(fetch_adzuna_jobs())
-        database.upsert_recruitment_jobs(jobs)
+        count = refresh_recruitment_sources()
     except Exception as exc:
         logger.exception("Recruitment source refresh failed")
         raise HTTPException(status_code=502, detail="招聘源刷新失败，请稍后重试。") from exc
-    return {"source": "公开招聘页面 + 已配置 API", "count": len(jobs), "refreshed_at": database.utc_now()}
+    return {"source": "公开招聘页面 + 已配置 API", "count": count, "refreshed_at": database.utc_now()}
 
 
 @app.get("/api/billing/status")

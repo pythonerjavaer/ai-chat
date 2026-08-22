@@ -270,6 +270,7 @@
             <form id="recruitment-form" class="recruitment-form">
               <label class="field compact-field"><span>岗位/职能类型（逗号分隔）</span><input id="recruitment-roles" placeholder="产品，数据，金融科技，风险" /></label>
               <label class="field compact-field"><span>行业偏好</span><input id="recruitment-industries" placeholder="互联网，金融科技，新能源" /></label>
+              <label class="field compact-field"><span>城市偏好（可多选或手动填写）</span><input id="recruitment-locations" placeholder="北京，上海，深圳，香港，可远程" /></label>
               <div class="recruitment-checks"><span>雇主类型</span><label><input type="checkbox" value="互联网企业" />互联网/科技</label><label><input type="checkbox" value="银行/金融" />银行/金融</label><label><input type="checkbox" value="外企" />外企/咨询</label><label><input type="checkbox" value="央国企" />央国企</label></div>
               <button id="recruitment-save" class="primary-button" type="submit"><span>保存筛选并重新匹配</span><b>↗</b></button>
               <p id="recruitment-error" class="form-error" role="alert"></p>
@@ -279,7 +280,7 @@
           </section>
           <section class="recruitment-results">
             <div class="recruitment-results-heading"><div><span class="overline">MATCHED OPPORTUNITIES</span><h3>适合你的秋招岗位</h3></div><button id="recruitment-refresh" class="source-status" type="button">刷新岗位源 ↻</button></div>
-            <div class="recruitment-disclaimer">匹配度是规则化筛选结果；录取率是历史样本估计，不代表个人录取承诺。</div>
+            <div class="recruitment-disclaimer">结果按你的岗位、行业、城市和雇主筛选条件排序；请打开原公告核对资格与截止日期。</div>
             <div id="recruitment-jobs" class="recruitment-jobs"></div>
           </section>
         </div>
