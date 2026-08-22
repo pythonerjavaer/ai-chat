@@ -7,6 +7,7 @@
 ## 已实现
 
 - 用户注册、登录、JWT 鉴权、隐私同意记录与应用内永久删号；用户数据相互隔离。
+- 管理员汇总使用面板：访问 `/?admin=usage` 后以 `ADMIN_DASHBOARD_TOKEN` 解锁，约每 10 秒刷新注册量、活跃量、会话/消息/文档、API 请求、已记录的普通聊天与 AI Space 模型调用及 Token；不查询或展示用户名、消息正文、文档内容、密码、Prompt 或模型回复。内容无关的 API 使用事件最多保存 30 天。
 - SQLite 保存会话、消息、文档文本和向量；本地或 Docker volume 可以持久化，但当前 Render Free 线上实例使用临时文件系统，休眠、重启或重新部署后账号及业务数据可能丢失。工作区之间不会交叉检索资料。
 - 合同与合规、金融研究、通用文档三个工作区。
 - “冰焰交叉审查”独立工作台：把合同机制与财务后果连接成跨域因果碰撞卡，而不是分别生成两份摘要。
@@ -171,9 +172,11 @@ Docker 镜像会在构建阶段执行 Vite 生产构建。运行后，`/` 提供
 
 根目录 `render.yaml` 当前使用 Render Free Web Service，且没有持久化磁盘。它只适合公开演示和小规模测试：空闲后会休眠，实例重新启动、重新部署或重启会清空 SQLite 中的账号、会话、文档、成果胶囊历史和未来雷达岗位数据；休眠期间进程内招聘刷新也不会继续执行。正式上线前必须接入外部持久数据库，或升级服务并使用受支持的持久存储。
 
-部署时必须在 Render 的环境变量页面填写 `OPENAI_API_KEY` 和 `CORS_ORIGINS`；`JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 由 Blueprint 自动生成。`render.yaml` 为未来雷达启用每 6 小时一次的限频 OpenAI 网页搜索；如需零额外模型费用，可将 `RECRUITMENT_WEB_SEARCH_ENABLED` 改为 `false`。真实密钥不得写入仓库。
+部署时必须在 Render 的环境变量页面填写 `OPENAI_API_KEY`、`CORS_ORIGINS` 和一个自行保存的强随机 `ADMIN_DASHBOARD_TOKEN`；`JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 由 Blueprint 自动生成。管理员面板入口是 `/?admin=usage`，Token 只保存在当前页面内存。`render.yaml` 为未来雷达启用每 6 小时一次的限频 OpenAI 网页搜索；如需零额外模型费用，可将 `RECRUITMENT_WEB_SEARCH_ENABLED` 改为 `false`。真实密钥不得写入仓库。
 
 ## 移动端
+
+安卓或 iPhone 浏览器可直接打开同一个 HTTPS Web 地址；分享 `/?start=register` 会自动进入注册模式并定位到可提交的表单。登录后的手机工作台直接显示寒冰域、极光域、烈火域、未来雷达、溯源透镜、造界和共振七个具名入口。
 
 Capacitor 应用 ID 当前为 `com.pythonerjavaer.frostfireai`，正式创建商店记录前应确认它就是最终不可变标识。
 
@@ -207,6 +210,7 @@ npm run ios:open
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `GET` | `/api/health` | 健康检查 |
+| `GET` | `/api/admin/usage` | 使用 `X-Admin-Token` 返回不含用户内容的汇总使用数据 |
 | `GET` | `/api/workspaces` | 工作区与快捷分析配置 |
 | `POST` | `/api/auth/register` | 注册并记录隐私同意 |
 | `POST` | `/api/auth/login` | 登录 |

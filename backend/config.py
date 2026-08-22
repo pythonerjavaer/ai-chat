@@ -26,6 +26,7 @@ class Settings:
     recruitment_web_search_model: str
     recruitment_web_search_interval_minutes: int
     recruitment_web_search_max_tool_calls: int
+    admin_dashboard_token: str
 
 
 def load_settings() -> Settings:
@@ -87,6 +88,7 @@ def load_settings() -> Settings:
                 int(os.getenv("RECRUITMENT_WEB_SEARCH_MAX_TOOL_CALLS", "8").strip() or "8"),
             ),
         ),
+        admin_dashboard_token=os.getenv("ADMIN_DASHBOARD_TOKEN", "").strip(),
     )
 
 

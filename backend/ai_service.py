@@ -584,10 +584,11 @@ def tools_for_workspace(workspace: str) -> list[dict[str, Any]]:
 def run_agent(
     messages: list[dict[str, Any]],
     workspace: str = DEFAULT_WORKSPACE,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], dict[str, int]]:
     working_messages = list(messages)
     tools_used: list[str] = []
     tools = tools_for_workspace(workspace)
+    usage_totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
     for _ in range(MAX_TOOL_ROUNDS + 1):
         response = client.chat.completions.create(
@@ -598,9 +599,23 @@ def run_agent(
             max_completion_tokens=700,
             store=False,
         )
+        response_usage = getattr(response, "usage", None)
+        usage_totals["input_tokens"] += int(
+            getattr(response_usage, "prompt_tokens", 0) or 0
+        )
+        usage_totals["output_tokens"] += int(
+            getattr(response_usage, "completion_tokens", 0) or 0
+        )
+        usage_totals["total_tokens"] += int(
+            getattr(response_usage, "total_tokens", 0) or 0
+        )
         message = response.choices[0].message
         if not message.tool_calls:
-            return message.content or "", list(dict.fromkeys(tools_used))
+            return (
+                message.content or "",
+                list(dict.fromkeys(tools_used)),
+                usage_totals,
+            )
 
         working_messages.append(
             {
@@ -633,6 +648,7 @@ def stream_agent(
     working_messages = list(messages)
     tools_used: list[str] = []
     tools = tools_for_workspace(workspace)
+    usage_totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
     for _ in range(MAX_TOOL_ROUNDS + 1):
         stream = client.chat.completions.create(
@@ -642,12 +658,24 @@ def stream_agent(
             tool_choice="auto",
             max_completion_tokens=700,
             stream=True,
+            stream_options={"include_usage": True},
             store=False,
         )
         text_parts: list[str] = []
         tool_buffers: dict[int, dict[str, str]] = {}
 
         for chunk in stream:
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                usage_totals["input_tokens"] += int(
+                    getattr(chunk_usage, "prompt_tokens", 0) or 0
+                )
+                usage_totals["output_tokens"] += int(
+                    getattr(chunk_usage, "completion_tokens", 0) or 0
+                )
+                usage_totals["total_tokens"] += int(
+                    getattr(chunk_usage, "total_tokens", 0) or 0
+                )
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -671,6 +699,7 @@ def stream_agent(
                 "type": "done",
                 "reply": "".join(text_parts),
                 "tools_used": list(dict.fromkeys(tools_used)),
+                "usage": usage_totals,
             }
             return
 

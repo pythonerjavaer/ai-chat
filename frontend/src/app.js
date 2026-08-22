@@ -71,6 +71,7 @@ const elements = {
   authKicker: $("auth-kicker"), authTitle: $("auth-title"), authDescription: $("auth-description"),
   authSubmit: $("auth-submit"), authError: $("auth-error"), authSwitch: $("auth-switch"),
   authSwitchCopy: $("auth-switch-copy"), privacyRow: $("privacy-row"),
+  authModeLogin: $("auth-mode-login"), authModeRegister: $("auth-mode-register"),
   privacyAccepted: $("privacy-accepted"), username: $("username"), password: $("password"),
   workspaceTabs: $("workspace-tabs"), workspacePanelTitle: $("workspace-panel-title"),
   workspaceEyebrow: $("workspace-eyebrow"), workspaceTitle: $("workspace-title"),
@@ -119,6 +120,14 @@ const elements = {
   homeDeadlineAlerts: $("home-deadline-alerts"), homeAlertTitle: $("home-alert-title"),
   homeAlertList: $("home-alert-list"),
   resonanceDialog: $("resonance-dialog"), traceDialog: $("trace-dialog"), productMoreDialog: $("product-more-dialog"),
+  mobileWorldNavigation: $("mobile-world-navigation"),
+  adminUsageLauncher: $("admin-usage-launcher"), adminUsageDialog: $("admin-usage-dialog"),
+  adminUsageAuth: $("admin-usage-auth"), adminUsageToken: $("admin-usage-token"),
+  adminUsageConnect: $("admin-usage-connect"), adminUsageError: $("admin-usage-error"),
+  adminUsageContent: $("admin-usage-content"), adminUsageStatus: $("admin-usage-status"),
+  adminUsageUpdated: $("admin-usage-updated"), adminUsageCards: $("admin-usage-cards"),
+  adminUsageSeries: $("admin-usage-series"), adminUsageRefresh: $("admin-usage-refresh"),
+  adminUsageLock: $("admin-usage-lock"), adminUsageClose: $("admin-usage-close"),
 };
 
 function activeWorkspace() {
@@ -214,6 +223,10 @@ function setAuthMode(mode) {
   elements.privacyAccepted.required = registering;
   elements.password.autocomplete = registering ? "new-password" : "current-password";
   elements.authError.textContent = "";
+  elements.authModeLogin.classList.toggle("active", !registering);
+  elements.authModeRegister.classList.toggle("active", registering);
+  elements.authModeLogin.setAttribute("aria-selected", String(!registering));
+  elements.authModeRegister.setAttribute("aria-selected", String(registering));
 }
 
 async function authenticate(event) {
@@ -420,6 +433,7 @@ function renderWorkspaceChrome() {
   elements.composerHint.textContent = `${workspace.boundary} 回答中的“来源”表示来源覆盖，不代表结论必然正确。`;
   elements.evidenceTitle.textContent = workspace.lens || "来源";
   document.querySelectorAll(".workspace-tab").forEach((button) => button.classList.toggle("active", button.dataset.workspace === state.workspace));
+  document.querySelectorAll("[data-mobile-workspace]").forEach((button) => button.classList.toggle("active", button.dataset.mobileWorkspace === state.workspace));
   updateEvidence(state.latestEvidence.sources, state.latestEvidence.tools);
 }
 
@@ -1805,8 +1819,161 @@ function updateNetwork() {
   elements.networkStatus.querySelector("b").textContent = online ? "在线" : "离线";
 }
 
+let adminUsageToken = "";
+let adminUsageTimer = null;
+let adminUsageLoading = false;
+
+function metricAt(source, paths, fallback = 0) {
+  for (const path of paths) {
+    const value = path.split(".").reduce((current, key) => current?.[key], source);
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return fallback;
+}
+
+function formatUsageNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value ?? 0);
+  return new Intl.NumberFormat("zh-CN", { notation: numeric >= 100000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(numeric);
+}
+
+function renderAdminUsage(data) {
+  const cards = [
+    ["账号总数", ["totals.users", "totals.total_users", "total_users", "users"]],
+    ["当前活跃 · 15m", ["live.active_users", "live.users"]],
+    ["24h 活跃", ["totals.active_users_24h", "recent.active_users_24h", "active_users_24h"]],
+    ["会话总数", ["totals.sessions", "totals.total_sessions", "total_sessions", "sessions"]],
+    ["消息总数", ["totals.messages", "totals.total_messages", "total_messages", "messages"]],
+    ["文档总数", ["totals.documents", "totals.total_documents", "total_documents", "documents"]],
+    ["API 请求 · 15m", ["live.api_requests", "live.requests"]],
+    ["24h 已记录调用", ["recent.ai_requests_24h", "totals.ai_requests_24h", "ai_requests_24h"]],
+    ["已记录输入 Token", ["totals.input_tokens", "totals.prompt_tokens", "input_tokens", "prompt_tokens"]],
+    ["已记录输出 Token", ["totals.output_tokens", "totals.completion_tokens", "output_tokens", "completion_tokens"]],
+    ["API 错误", ["totals.api_errors", "errors.api_errors"]],
+    ["服务端错误", ["totals.server_errors", "errors.server_errors"]],
+  ];
+  elements.adminUsageCards.replaceChildren();
+  cards.forEach(([label, paths]) => {
+    const article = document.createElement("article");
+    const small = document.createElement("small");
+    const strong = document.createElement("strong");
+    small.textContent = label;
+    strong.textContent = formatUsageNumber(metricAt(data, paths));
+    article.append(small, strong);
+    elements.adminUsageCards.appendChild(article);
+  });
+
+  const series = data.series || data.daily || data.trend || [];
+  elements.adminUsageSeries.replaceChildren();
+  if (!Array.isArray(series) || !series.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "暂无趋势数据；汇总计数仍会每 10 秒更新。";
+    elements.adminUsageSeries.appendChild(empty);
+  } else {
+    series.slice(-14).reverse().forEach((point) => {
+      const row = document.createElement("div");
+      const date = document.createElement("time");
+      const active = document.createElement("span");
+      const messages = document.createElement("span");
+      const requests = document.createElement("span");
+      const tokens = document.createElement("span");
+      date.textContent = point.date || point.day || point.period || "—";
+      active.textContent = `活跃 ${formatUsageNumber(point.active_users ?? point.active ?? 0)}`;
+      messages.textContent = `消息 ${formatUsageNumber(point.messages ?? 0)}`;
+      requests.textContent = `调用 ${formatUsageNumber(point.ai_requests ?? point.requests ?? 0)}`;
+      tokens.textContent = `Token ${formatUsageNumber(point.tokens ?? ((point.input_tokens || 0) + (point.output_tokens || 0)))}`;
+      row.append(date, active, messages, requests, tokens);
+      elements.adminUsageSeries.appendChild(row);
+    });
+  }
+
+  const generatedAt = data.generated_at || data.updated_at || new Date().toISOString();
+  const parsed = new Date(generatedAt);
+  elements.adminUsageUpdated.textContent = Number.isNaN(parsed.getTime()) ? `更新于 ${generatedAt}` : `更新于 ${parsed.toLocaleString("zh-CN")}`;
+}
+
+async function refreshAdminUsage() {
+  if (!adminUsageToken || adminUsageLoading) return false;
+  adminUsageLoading = true;
+  elements.adminUsageStatus.textContent = "正在同步汇总数据…";
+  elements.adminUsageError.textContent = "";
+  elements.adminUsageRefresh.disabled = true;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(`${API_BASE}/admin/usage`, {
+      headers: { "X-Admin-Token": adminUsageToken },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) throw new Error("管理员 Token 不正确或已失效。");
+      throw new Error(`使用数据暂时不可用（HTTP ${response.status}）。`);
+    }
+    renderAdminUsage(await response.json());
+    elements.adminUsageStatus.textContent = "实时连接 · 每 10 秒自动刷新";
+    return true;
+  } catch (error) {
+    elements.adminUsageStatus.textContent = "连接中断";
+    elements.adminUsageError.textContent = error.name === "AbortError" ? "同步超时，请稍后重试。" : error.message;
+    return false;
+  } finally {
+    window.clearTimeout(timeout);
+    adminUsageLoading = false;
+    elements.adminUsageRefresh.disabled = false;
+  }
+}
+
+function stopAdminUsagePolling() {
+  window.clearInterval(adminUsageTimer);
+  adminUsageTimer = null;
+}
+
+function startAdminUsagePolling(refreshNow = true) {
+  stopAdminUsagePolling();
+  if (!adminUsageToken) return;
+  if (refreshNow) refreshAdminUsage();
+  adminUsageTimer = window.setInterval(() => {
+    if (!document.hidden && elements.adminUsageDialog.open) refreshAdminUsage();
+  }, 10000);
+}
+
+function lockAdminUsage() {
+  stopAdminUsagePolling();
+  adminUsageToken = "";
+  elements.adminUsageToken.value = "";
+  elements.adminUsageContent.classList.add("hidden");
+  elements.adminUsageAuth.classList.remove("hidden");
+  elements.adminUsageCards.replaceChildren();
+  elements.adminUsageSeries.replaceChildren();
+  elements.adminUsageError.textContent = "";
+  elements.adminUsageStatus.textContent = "每 10 秒自动刷新";
+}
+
+function openAdminUsage() {
+  if (!elements.adminUsageDialog.open) elements.adminUsageDialog.showModal();
+  if (adminUsageToken) {
+    elements.adminUsageAuth.classList.add("hidden");
+    elements.adminUsageContent.classList.remove("hidden");
+    startAdminUsagePolling();
+  } else {
+    window.setTimeout(() => elements.adminUsageToken.focus(), 80);
+  }
+}
+
+function openRegistrationFromLink() {
+  setAuthMode("register");
+  window.setTimeout(() => {
+    document.querySelector(".auth-card")?.scrollIntoView({
+      behavior: "auto",
+      block: "center",
+    });
+  }, 120);
+}
+
 elements.authForm.addEventListener("submit", authenticate);
 elements.authSwitch.addEventListener("click", () => setAuthMode(state.authMode === "login" ? "register" : "login"));
+elements.authModeLogin.addEventListener("click", () => setAuthMode("login"));
+elements.authModeRegister.addEventListener("click", () => setAuthMode("register"));
 $("new-chat").addEventListener("click", newConversation);
 $("brand-home").addEventListener("click", (event) => { event.preventDefault(); newConversation(); });
 elements.documentInput.addEventListener("change", uploadDocument);
@@ -1824,6 +1991,8 @@ $("recruitment-open").addEventListener("click", openRecruitment);
 $("resonance-open").addEventListener("click", () => openConcept(elements.resonanceDialog));
 $("trace-open").addEventListener("click", () => openConcept(elements.traceDialog));
 $("mobile-recruitment-open").addEventListener("click", openRecruitment);
+$("mobile-trace-open").addEventListener("click", () => openConcept(elements.traceDialog));
+$("mobile-resonance-open").addEventListener("click", () => openConcept(elements.resonanceDialog));
 $("home-alert-open").addEventListener("click", openRecruitment);
 $("recruitment-close").addEventListener("click", () => elements.recruitmentDialog.close());
 elements.recruitmentRefresh.addEventListener("click", refreshRecruitmentSource);
@@ -1859,6 +2028,9 @@ $("knowledge-close").addEventListener("click", closePanels);
 $("mobile-knowledge").addEventListener("click", () => openPanel(elements.knowledgePanel));
 $("open-evidence").addEventListener("click", () => openPanel(elements.knowledgePanel));
 elements.panelBackdrop.addEventListener("click", closePanels);
+document.querySelectorAll("[data-mobile-workspace]").forEach((button) => {
+  button.addEventListener("click", () => changeWorkspace(button.dataset.mobileWorkspace));
+});
 $("settings-button").addEventListener("click", openSettings);
 $("sidebar-settings").addEventListener("click", openSettings);
 $("logout-button").addEventListener("click", () => logout());
@@ -1882,8 +2054,39 @@ window.addEventListener("online", updateNetwork);
 window.addEventListener("offline", updateNetwork);
 window.addEventListener("resize", () => { if (window.innerWidth > 1180) closePanels(); });
 
+elements.adminUsageLauncher.addEventListener("click", openAdminUsage);
+elements.adminUsageClose.addEventListener("click", () => elements.adminUsageDialog.close());
+elements.adminUsageDialog.addEventListener("close", stopAdminUsagePolling);
+elements.adminUsageAuth.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const token = elements.adminUsageToken.value.trim();
+  if (!token) return;
+  adminUsageToken = token;
+  elements.adminUsageConnect.disabled = true;
+  elements.adminUsageConnect.querySelector("span").textContent = "正在验证…";
+  const connected = await refreshAdminUsage();
+  elements.adminUsageConnect.disabled = false;
+  elements.adminUsageConnect.querySelector("span").textContent = "连接实时数据";
+  if (!connected) {
+    adminUsageToken = "";
+    return;
+  }
+  elements.adminUsageToken.value = "";
+  elements.adminUsageAuth.classList.add("hidden");
+  elements.adminUsageContent.classList.remove("hidden");
+  startAdminUsagePolling(false);
+});
+elements.adminUsageRefresh.addEventListener("click", refreshAdminUsage);
+elements.adminUsageLock.addEventListener("click", lockAdminUsage);
+
 (async function bootstrap() {
   updateNetwork();
+  const initialParams = new URLSearchParams(window.location.search);
+  if (initialParams.get("admin") === "usage") {
+    elements.adminUsageLauncher.classList.remove("hidden");
+    window.setTimeout(openAdminUsage, 80);
+  }
+  if (initialParams.get("start") === "register") openRegistrationFromLink();
   state.token = await storage.get(STORAGE_KEYS.token);
   state.workspace = (await storage.get(STORAGE_KEYS.workspace)) || "general";
   if (Capacitor.isNativePlatform() && !configuredApiBase) {

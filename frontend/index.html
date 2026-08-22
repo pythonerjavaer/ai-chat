@@ -42,13 +42,13 @@
           <section class="world-entrances" aria-label="冰焰世界入口">
             <div class="world-entrances-heading"><span class="overline">ENTER YOUR WORLD</span><h2>你的冰焰</h2><p>寒冰定义边界，极光沉淀认知，烈火驱动变化；未来雷达连接现实，造界创造新的世界。</p></div>
             <div class="world-entry-grid">
-              <button class="world-entry frost" type="button" data-launch="legal"><span>01 · FROST</span><strong>寒冰域</strong><p>有些东西决定世界如何运行，也决定什么不能被越过。</p><small>当前从合同、合规、义务、期限与风险开始。</small></button>
-              <button class="world-entry aurora" type="button" data-launch="general"><span>02 · AURORA</span><strong>极光域</strong><p>让散落的信息逐渐形成属于你的知识世界。</p><small>当前从资料、文档、对话与可追溯问答开始。</small></button>
-              <button class="world-entry ember" type="button" data-launch="finance"><span>03 · EMBER</span><strong>烈火域</strong><p>世界不只需要被理解，还需要决定向哪里前进。</p><small>当前从数字、金融、风险、假设与决策分析开始。</small></button>
-              <button class="world-entry radar" type="button" data-launch="recruitment"><span>04 · FUTURE RADAR</span><strong>未来雷达</strong><p>让你的世界，先一步听见未来的回声。</p><small>当前接入企业公开机会、官网变化与关键时间窗。</small></button>
-              <button class="world-entry forge" type="button" data-launch="forge"><span>05 · WORLD FORGE</span><strong>造界</strong><p>当现有世界无法定义你，就创造一个新的。</p><small>为它赋予目标、规则、边界与自己的运行方式。</small></button>
-              <button class="world-entry forming" type="button" data-launch="resonance"><span>06 · RESONANCE</span><strong>共振</strong><p>一个世界发生的变化，从来不会只停留在一个世界。</p><small>连接不同世界，让变化、冲突与可能性彼此传播。 · FORMING</small></button>
-              <button class="world-entry forming" type="button" data-launch="trace"><span>07 · TRACE LENS</span><strong>溯源透镜</strong><p>任何重要判断，都应该能够找到它的来路。</p><small>看见一个结论从哪里来，又经历了什么才成为现在的样子。 · FORMING</small></button>
+              <button class="world-entry frost" type="button" data-launch="legal"><i class="world-entry-icon" aria-hidden="true">§</i><span>01 · FROST</span><strong>寒冰域</strong><p>有些东西决定世界如何运行，也决定什么不能被越过。</p><small>当前从合同、合规、义务、期限与风险开始。</small></button>
+              <button class="world-entry aurora" type="button" data-launch="general"><i class="world-entry-icon" aria-hidden="true">✦</i><span>02 · AURORA</span><strong>极光域</strong><p>让散落的信息逐渐形成属于你的知识世界。</p><small>当前从资料、文档、对话与可追溯问答开始。</small></button>
+              <button class="world-entry ember" type="button" data-launch="finance"><i class="world-entry-icon" aria-hidden="true">↗</i><span>03 · EMBER</span><strong>烈火域</strong><p>世界不只需要被理解，还需要决定向哪里前进。</p><small>当前从数字、金融、风险、假设与决策分析开始。</small></button>
+              <button class="world-entry radar" type="button" data-launch="recruitment"><i class="world-entry-icon" aria-hidden="true">◉</i><span>04 · FUTURE RADAR</span><strong>未来雷达</strong><p>让你的世界，先一步听见未来的回声。</p><small>当前接入企业公开机会、官网变化与关键时间窗。</small></button>
+              <button class="world-entry forge" type="button" data-launch="forge"><i class="world-entry-icon" aria-hidden="true">＋</i><span>05 · WORLD FORGE</span><strong>造界</strong><p>当现有世界无法定义你，就创造一个新的。</p><small>为它赋予目标、规则、边界与自己的运行方式。</small></button>
+              <button class="world-entry forming" type="button" data-launch="resonance"><i class="world-entry-icon" aria-hidden="true">≈</i><span>06 · RESONANCE</span><strong>共振</strong><p>一个世界发生的变化，从来不会只停留在一个世界。</p><small>连接不同世界，让变化、冲突与可能性彼此传播。 · FORMING</small></button>
+              <button class="world-entry forming" type="button" data-launch="trace"><i class="world-entry-icon" aria-hidden="true">◎</i><span>07 · TRACE LENS</span><strong>溯源透镜</strong><p>任何重要判断，都应该能够找到它的来路。</p><small>看见一个结论从哪里来，又经历了什么才成为现在的样子。 · FORMING</small></button>
             </div>
           </section>
           <div class="landing-footer-note"><span class="note-dot"></span> 你的资料、对话与雷达坐标以账号为边界，彼此隔离</div>
@@ -56,6 +56,10 @@
 
         <div class="auth-panel">
           <div id="auth-card" class="auth-card">
+            <div class="auth-mode-tabs" role="tablist" aria-label="选择登录或注册">
+              <button id="auth-mode-login" class="active" type="button" role="tab" aria-selected="true">登录已有账号</button>
+              <button id="auth-mode-register" type="button" role="tab" aria-selected="false">注册新账号</button>
+            </div>
             <div class="auth-heading">
               <span id="auth-kicker">继续工作</span>
               <h2 id="auth-title">进入工作空间</h2>
@@ -112,6 +116,16 @@
         </div>
       </header>
 
+      <nav id="mobile-world-navigation" class="mobile-world-navigation mobile-only" aria-label="冰焰世界与能力入口">
+        <button type="button" data-mobile-workspace="legal"><b aria-hidden="true">§</b><span>寒冰域</span></button>
+        <button type="button" data-mobile-workspace="general"><b aria-hidden="true">✦</b><span>极光域</span></button>
+        <button type="button" data-mobile-workspace="finance"><b aria-hidden="true">↗</b><span>烈火域</span></button>
+        <button id="mobile-recruitment-open" type="button"><b class="radar-glyph" aria-hidden="true"></b><span>未来雷达</span></button>
+        <button id="mobile-trace-open" type="button"><b class="trace-glyph" aria-hidden="true"><i></i></b><span>溯源透镜</span></button>
+        <button id="mobile-studio-open" type="button"><b aria-hidden="true">＋</b><span>造界<small>AI SPACE</small></span></button>
+        <button id="mobile-resonance-open" type="button"><b aria-hidden="true">≈</b><span>共振</span></button>
+      </nav>
+
       <div id="scene-arrival" class="scene-arrival" aria-hidden="true">
         <span id="scene-arrival-eyebrow">AURORA</span>
         <strong id="scene-arrival-title">极光域</strong>
@@ -163,11 +177,8 @@
 
           <div class="composer-wrap">
             <nav class="mobile-action-dock mobile-only" aria-label="移动端功能入口">
-              <button id="mobile-studio-open" type="button"><b>＋</b><span>造界</span></button>
-              <button id="mobile-recruitment-open" type="button"><b class="radar-glyph" aria-hidden="true"></b><span>未来雷达</span></button>
-              <button type="button" data-concept-open="trace-dialog"><b class="trace-glyph" aria-hidden="true"><i></i></b><span>溯源透镜</span></button>
-              <button id="mobile-more-open" type="button"><b>⋯</b><span>更多</span></button>
-              <button id="mobile-knowledge" type="button"><b>◇</b><span>资料</span></button>
+              <button id="mobile-more-open" type="button"><b>⋯</b><span>更多能力</span></button>
+              <button id="mobile-knowledge" type="button"><b>◇</b><span>资料库</span></button>
             </nav>
             <form id="chat-form" class="composer">
               <button id="composer-upload" class="composer-icon" type="button" aria-label="上传文档">＋</button>
@@ -396,6 +407,27 @@
         <div class="consent-actions"><a href="/privacy.html" target="_blank" class="soft-button">查看隐私政策</a><button id="accept-consent" class="primary-button" type="button"><span>同意并继续</span><b>→</b></button></div>
         <button id="consent-logout" class="text-button" type="button">不同意并退出登录</button>
       </div>
+    </dialog>
+
+    <button id="admin-usage-launcher" class="admin-usage-launcher hidden" type="button" aria-label="打开管理员使用概览">使用概览</button>
+    <dialog id="admin-usage-dialog" class="admin-usage-dialog">
+      <section class="admin-usage-shell">
+        <header>
+          <div><span class="overline">PRIVATE OPERATIONS CONSOLE</span><h2>实时使用概览</h2><p>只显示汇总计数与趋势，不读取或展示任何用户消息内容。</p></div>
+          <button id="admin-usage-close" class="icon-button" type="button" aria-label="关闭使用概览">×</button>
+        </header>
+        <form id="admin-usage-auth" class="admin-usage-auth">
+          <label class="field"><span>管理员 Token</span><input id="admin-usage-token" type="password" autocomplete="off" spellcheck="false" placeholder="仅保存在当前页面内存" required /></label>
+          <button id="admin-usage-connect" class="primary-button" type="submit"><span>连接实时数据</span><b>→</b></button>
+          <p id="admin-usage-error" class="form-error" role="alert"></p>
+        </form>
+        <div id="admin-usage-content" class="admin-usage-content hidden">
+          <div class="admin-usage-toolbar"><div><i></i><span id="admin-usage-status">每 10 秒自动刷新</span><small id="admin-usage-updated">尚未同步</small></div><div><button id="admin-usage-refresh" type="button">立即刷新</button><button id="admin-usage-lock" type="button">锁定</button></div></div>
+          <div id="admin-usage-cards" class="admin-usage-cards" aria-live="polite"></div>
+          <section class="admin-usage-trend"><div><span class="overline">RECENT ACTIVITY</span><h3>近期使用趋势</h3></div><div id="admin-usage-series" class="admin-usage-series"></div></section>
+          <p class="admin-usage-privacy">数据边界：账号数、活跃量、会话/消息/文档数量与模型调用、Token 汇总。Token 与模型调用目前统计普通聊天和 AI Space，不包含文档嵌入、双域审查或未来雷达网页搜索；这里不会请求或显示消息正文、文档内容、用户名或密码。</p>
+        </div>
+      </section>
     </dialog>
 
     <div id="toast" class="toast hidden" role="status"></div>
