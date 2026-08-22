@@ -209,6 +209,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .recruitment-monitor-card summary { color: #9edfff; cursor: pointer; font-size: 9px; }
 .recruitment-monitor-card details small { margin-top: 8px; }
 .recruitment-watch-form { display: grid; gap: 10px; margin: 0 0 12px; padding: 13px; border: 1px solid rgba(96,221,190,.17); border-radius: 13px; background: linear-gradient(145deg, rgba(34,161,141,.08), rgba(30,114,170,.05)); }
+.watch-form-hint { color: #86a8a7; font-size: 8px; line-height: 1.55; }
 .watch-add-button { min-height: 38px; display: flex; align-items: center; justify-content: space-between; padding: 0 7px 0 12px; color: #dffdf3; border: 1px solid rgba(103,226,194,.26); border-radius: 10px; background: rgba(35,177,144,.16); cursor: pointer; font-size: 9px; font-weight: 800; }
 .watch-add-button b { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 7px; background: rgba(55,214,172,.12); font-size: 13px; }
 .watch-add-button:disabled { opacity: .5; cursor: wait; }
@@ -245,9 +246,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .job-tier-summary-item { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 9px 10px; border: 1px solid rgba(255,255,255,.09); border-radius: 10px; background: rgba(255,255,255,.025); }
 .job-tier-summary-item b { font-size: 13px; }
 .job-tier-summary-item small { color: #879aa8; font-size: 9px; }
-.job-tier-summary-item.T0, .job-tier-summary-item.T1 { color: #ffc59c; border-color: rgba(255,143,90,.2); }
-.job-tier-summary-item.T2 { color: #b9d6ff; border-color: rgba(111,170,255,.2); }
+.job-tier-summary-item.T0, .job-tier-summary-item.T0-5, .job-tier-summary-item.T1, .job-tier-summary-item.T1-5 { color: #ffc59c; border-color: rgba(255,143,90,.2); }
+.job-tier-summary-item.T2, .job-tier-summary-item.T2-5 { color: #b9d6ff; border-color: rgba(111,170,255,.2); }
 .job-tier-summary-item.T3 { color: #9ce4c1; border-color: rgba(91,214,155,.2); }
+.job-tier-legend { margin: 0 0 4px; color: #879ba8; font-size: 9px; line-height: 1.55; }
 .recruitment-tier-group { display: grid; gap: 10px; padding-top: 7px; }
 .recruitment-tier-heading { display: flex; align-items: center; gap: 9px; padding: 5px 2px 0; }
 .recruitment-tier-heading span { color: #91a6b4; font-size: 10px; }
@@ -257,8 +259,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .job-card-top > div { display: flex; align-items: center; gap: 8px; }
 .job-rank { display: flex !important; align-items: center; gap: 7px; }
 .job-tier { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 850; letter-spacing: .02em; }
-.job-tier.T0, .job-tier.T1 { color: #ffc59c; border: 1px solid rgba(255,143,90,.25); background: rgba(255,109,49,.1); }
-.job-tier.T2 { color: #b9d6ff; border: 1px solid rgba(111,170,255,.25); background: rgba(80,137,226,.1); }
+.job-tier.T0, .job-tier.T0-5, .job-tier.T1, .job-tier.T1-5 { color: #ffc59c; border: 1px solid rgba(255,143,90,.25); background: rgba(255,109,49,.1); }
+.job-tier.T2, .job-tier.T2-5 { color: #b9d6ff; border: 1px solid rgba(111,170,255,.25); background: rgba(80,137,226,.1); }
 .job-tier.T3 { color: #9ce4c1; border: 1px solid rgba(91,214,155,.25); background: rgba(55,171,116,.1); }
 .job-company { color: #eaf8ff; font-size: 12px; font-weight: 800; }
 .job-type { padding: 3px 6px; color: #9fd8e9; border: 1px solid rgba(109,203,236,.17); border-radius: 5px; background: rgba(75,187,222,.08); font-size: 8px; }

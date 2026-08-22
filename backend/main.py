@@ -49,7 +49,7 @@ from .space_engine import (
     build_preflight,
     render_local_capsule,
 )
-from .recruitment import score_job
+from .recruitment import TIER_DEFINITIONS, score_job
 from .recruitment_search import (
     WEB_SEARCH_SOURCE,
     WEB_SEARCH_STATE_KEY,
@@ -449,9 +449,10 @@ class RecruitmentIngestRequest(BaseModel):
 
 
 class RecruitmentWatchCreateRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    url: str = Field(min_length=9, max_length=1_000)
-    keywords: list[str] = Field(min_length=1, max_length=20)
+    company_name: str | None = Field(default=None, max_length=120)
+    name: str | None = Field(default=None, max_length=80)
+    url: str | None = Field(default=None, max_length=1_000)
+    keywords: list[str] = Field(default_factory=list, max_length=20)
 
 
 class RecruitmentWatchAcknowledgeRequest(BaseModel):
@@ -691,7 +692,7 @@ def recruitment_jobs(user: User) -> dict:
     verified_jobs = len(jobs) - public_source_leads
     tier_counts = {
         tier: sum(job.get("tier_code") == tier for job in jobs)
-        for tier in ("T0", "T1", "T2", "T3")
+        for tier in (definition["code"] for definition in TIER_DEFINITIONS)
     }
     web_search_state = database.get_system_state(WEB_SEARCH_STATE_KEY) or {
         "status": "disabled" if not settings.recruitment_web_search_enabled else "pending"
@@ -713,16 +714,16 @@ def recruitment_jobs(user: User) -> dict:
     )
     if watch_summary["total"] == 0:
         source_message = (
-            inventory_copy + "尚未创建零 Token 网页监控。"
+            inventory_copy + "尚未创建零 Token 企业动态监控。"
         )
     elif watch_summary["last_checked_at"] is None:
         source_message = (
-            f"已创建 {watch_summary['total']} 个零 Token 网页监控，等待首次检查；"
+            f"已创建 {watch_summary['total']} 个零 Token 企业动态监控，等待首次检查；"
             + inventory_copy
         )
     else:
         source_message = (
-            f"{watch_summary['enabled']} 个零 Token 网页监控最近检查于 "
+            f"{watch_summary['enabled']} 个零 Token 企业动态监控最近检查于 "
             f"{watch_summary['last_checked_at']}；发现 {watch_summary['changed']} 个页面变化，"
             f"{watch_summary['errors']} 个检查失败。{inventory_copy}"
         )
@@ -740,6 +741,7 @@ def recruitment_jobs(user: User) -> dict:
             "verified_jobs": verified_jobs,
             "public_source_leads": public_source_leads,
             "tier_counts": tier_counts,
+            "tier_definitions": list(TIER_DEFINITIONS),
             "web_search": web_search_state,
             "watches": watch_summary,
             "model_tokens_used": int(web_search_state.get("total_tokens", 0) or 0),
@@ -753,7 +755,7 @@ def recruitment_watches(user: User) -> dict:
     return {
         "watches": watches,
         "summary": database.recruitment_watch_summary(user["id"]),
-        "method": "deterministic_html_fingerprint",
+        "method": "deterministic_pool_or_html_fingerprint",
         "model_tokens_used": 0,
     }
 
@@ -763,33 +765,49 @@ def create_recruitment_watch(
     request: RecruitmentWatchCreateRequest,
     user: ConsentedUser,
 ) -> dict:
-    try:
-        display_url, fetch_url = normalize_public_https_urls(
-            request.url,
-            resolve_dns=False,
-        )
-    except WatchFetchError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    keywords = list(dict.fromkeys(
-        str(value).strip()[:80]
-        for value in request.keywords
-        if str(value).strip()
-    ))
-    if not keywords:
-        raise HTTPException(status_code=422, detail="请至少填写一个监控关键词。")
+    company_name = str(request.company_name or "").strip()[:120]
+    watch_type = "page"
+    if company_name and not request.url:
+        watch_type = "company"
+        display_url = f"company://{hashlib.sha256(company_name.casefold().encode()).hexdigest()[:32]}"
+        fetch_url = display_url
+        keywords = [company_name]
+        watch_name = f"{company_name} · 校招动态"
+    else:
+        if not request.name or not request.url:
+            raise HTTPException(status_code=422, detail="请只填写企业名称，或提供完整的公开招聘页监控信息。")
+        try:
+            display_url, fetch_url = normalize_public_https_urls(
+                request.url,
+                resolve_dns=False,
+            )
+        except WatchFetchError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        keywords = list(dict.fromkeys(
+            str(value).strip()[:80]
+            for value in request.keywords
+            if str(value).strip()
+        ))
+        if not keywords:
+            raise HTTPException(status_code=422, detail="请至少填写一个监控关键词。")
+        watch_name = request.name.strip()
     enforce_watch_create_rate(user["id"])
     try:
         watch = database.create_recruitment_watch(
             user["id"],
-            request.name.strip(),
+            watch_name,
             display_url,
             fetch_url,
             keywords,
+            watch_type=watch_type,
+            company_name=company_name,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     # Baselines use the same single-flight lock and outbound slot guard as all
     # later checks, so creation cannot race a scheduled refresh.
+    if watch_type == "company":
+        return _refresh_company_watch_sync(user["id"], {**watch, "company_name": company_name})
     return _refresh_user_watch_sync(
         user["id"],
         {**watch, "fetch_url": fetch_url},
@@ -813,11 +831,46 @@ def _fetch_watch_with_global_limit(
         _watch_fetch_slots.release()
 
 
+def _refresh_company_watch_sync(user_id: int, watch: dict) -> dict:
+    """Fingerprint matching open jobs for a company-only watch."""
+    company_name = str(watch.get("company_name") or watch.get("name") or "").strip()
+    folded = company_name.casefold()
+    matching = [
+        job for job in database.list_recruitment_jobs()
+        if folded in str(job.get("company", "")).casefold()
+        or str(job.get("company", "")).casefold() in folded
+    ]
+    snapshot = [
+        {
+            "id": job.get("id"),
+            "title": job.get("title"),
+            "requirements": job.get("requirements"),
+            "closing_date": job.get("closing_date"),
+            "status": job.get("status"),
+            "url": job.get("url"),
+        }
+        for job in sorted(matching, key=lambda item: str(item.get("id", "")))
+    ]
+    fingerprint = hashlib.sha256(
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    hits = [str(job.get("title", "校招岗位")) for job in matching[:6]]
+    return database.record_recruitment_watch_success(
+        user_id,
+        watch["id"],
+        fingerprint,
+        hits,
+        200,
+    ) or {"id": watch["id"], "last_status": "deleted"}
+
+
 def _refresh_user_watch_sync(
     user_id: int,
     watch: dict,
     slot_timeout: float = WATCH_FETCH_SLOT_TIMEOUT_SECONDS,
 ) -> dict:
+    if watch.get("watch_type") == "company":
+        return _refresh_company_watch_sync(user_id, watch)
     with watch_refresh_lock(watch["id"]):
         try:
             result = _fetch_watch_with_global_limit(watch, slot_timeout)
@@ -906,11 +959,11 @@ async def refresh_recruitment_watches(user: ConsentedUser) -> dict:
 @app.delete("/api/recruitment/watches/{watch_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_recruitment_watch(watch_id: str, user: ConsentedUser) -> Response:
     if not database.get_recruitment_watch(user["id"], watch_id):
-        raise HTTPException(status_code=404, detail="网页监控不存在。")
+        raise HTTPException(status_code=404, detail="动态监控不存在。")
     lock = watch_refresh_lock(watch_id)
     with lock:
         if not database.delete_recruitment_watch(user["id"], watch_id):
-            raise HTTPException(status_code=404, detail="网页监控不存在。")
+            raise HTTPException(status_code=404, detail="动态监控不存在。")
         with _watch_lock_registry_guard:
             if _watch_lock_registry.get(watch_id) is lock:
                 _watch_lock_registry.pop(watch_id, None)
@@ -924,7 +977,7 @@ def acknowledge_recruitment_watch(
     user: ConsentedUser,
 ) -> dict:
     if not database.get_recruitment_watch(user["id"], watch_id):
-        raise HTTPException(status_code=404, detail="网页监控不存在。")
+        raise HTTPException(status_code=404, detail="动态监控不存在。")
     try:
         with watch_refresh_lock(watch_id):
             watch = database.acknowledge_recruitment_watch_change(
@@ -935,7 +988,7 @@ def acknowledge_recruitment_watch(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not watch:
-        raise HTTPException(status_code=404, detail="网页监控不存在。")
+        raise HTTPException(status_code=404, detail="动态监控不存在。")
     return watch
 
 
