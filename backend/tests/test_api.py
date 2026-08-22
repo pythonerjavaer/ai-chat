@@ -532,6 +532,7 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         assert "match_score" in first
         assert "estimated_rate" not in first
         assert "historical_rate" not in first
+        assert "tier_label" not in first
         assert "days_left" in first
         assert first["tier_code"] in {"T0", "T1", "T2", "T3"}
         assert "composite_fit" not in first

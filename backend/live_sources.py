@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -12,6 +13,20 @@ PUBLIC_RECRUITMENT_SOURCES = [
     {"name": "国资小新", "url": "https://www.gdpdd.com/s/xiaoxin/index.html", "employer_type": "央国企"},
     {"name": "银行招聘网", "url": "https://yhks.cn/", "employer_type": "银行/金融"},
 ]
+
+# Navigation/category links are not job postings.  They often look like
+# "江门招聘" or "校园招聘" and must never be shown as an actionable vacancy.
+GENERIC_RECRUITMENT_TITLE = re.compile(
+    r"^(?:20\d{2}年?|\d{4}届)?[\u4e00-\u9fffA-Za-z·\-]{0,14}?(?:校园招聘|秋招|校招|招聘公告|招聘信息|招聘)$"
+)
+
+
+def is_actionable_recruitment_listing(job: dict) -> bool:
+    title = re.sub(r"\s+", "", str(job.get("title", "")))
+    if not title or GENERIC_RECRUITMENT_TITLE.fullmatch(title):
+        return False
+    city = str(job.get("city", ""))
+    return "招聘" not in city
 
 
 # Personal monitoring scope migrated from the owner's existing ChatGPT autumn
@@ -105,13 +120,16 @@ def fetch_public_recruitment_sources() -> list[dict]:
                     "id": f"public-{source['name']}-{hashlib.sha1(url.encode()).hexdigest()[:16]}",
                     "company": title.split("202")[0].strip(" ·-") or source["name"],
                     "employer_type": source["employer_type"],
-                    "title": title[:180], "city": "待查看公告", "industry": "",
+                    "title": title[:180], "city": "地点待公告确认", "industry": "",
                     "url": url, "source": source["name"], "opening_date": None,
                     "closing_date": None, "requirements": "请打开原文核对专业、毕业年份、截止日期和投递入口。",
                     "tags": [source["employer_type"], "公开来源"],
                     "historical_applicants": None, "historical_offers": None,
                     "last_verified_at": datetime.now(timezone.utc).isoformat(), "status": "open",
                 })
+                if not is_actionable_recruitment_listing(jobs[-1]):
+                    jobs.pop()
+                    continue
                 if index > 80:
                     break
         except Exception:

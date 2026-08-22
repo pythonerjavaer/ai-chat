@@ -82,13 +82,13 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         reasons.append("雇主类型匹配")
     score = min(98, score)
     if score >= 85:
-        tier_code, tier_label = "T0", "顶级冲刺"
+        tier_code = "T0"
     elif score >= 72:
-        tier_code, tier_label = "T1", "冲刺"
+        tier_code = "T1"
     elif score >= 58:
-        tier_code, tier_label = "T2", "主力"
+        tier_code = "T2"
     else:
-        tier_code, tier_label = "T3", "保底"
+        tier_code = "T3"
     closing_date = job.get("closing_date")
     days_left = None
     if closing_date:
@@ -101,6 +101,5 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         "match_score": score,
         "match_reasons": reasons or ["当前未设置筛选条件，按最新岗位展示"],
         "tier_code": tier_code,
-        "tier_label": tier_label,
         "days_left": days_left,
     }
