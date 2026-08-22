@@ -1629,7 +1629,7 @@ def cross_exam(request: CrossExamRequest, user: ConsentedUser) -> dict:
         "analysis_id": f"FF-{fingerprint.upper()}",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "focus": request.focus,
-        "headline": result.get("headline", "冰火交叉审查"),
+        "headline": result.get("headline", "冰焰交叉审查"),
         "executive_summary": result.get("executive_summary", ""),
         "collisions": collisions,
         "stress_scenarios": result.get("stress_scenarios", []),
