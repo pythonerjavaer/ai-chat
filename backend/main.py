@@ -341,7 +341,7 @@ async def lifespan(_: FastAPI):
 PRIVACY_VERSION = "2026-08-22"
 
 
-app = FastAPI(title="FrostFire Space API", version="4.1.0", lifespan=lifespan)
+app = FastAPI(title="Bingyan API", version="4.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
