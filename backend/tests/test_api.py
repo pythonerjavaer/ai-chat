@@ -723,7 +723,7 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         assert jobs.status_code == 200
         payload = jobs.json()
         assert payload["data_status"]["mode"] == "verified_dynamic"
-        assert len(payload["monitor_pools"]) == 3
+        assert len(payload["monitor_pools"]) == 8
         assert payload["jobs"]
         titles = {job["title"] for job in payload["jobs"]}
         assert "拼多多 2027届校园招聘提前批" in titles

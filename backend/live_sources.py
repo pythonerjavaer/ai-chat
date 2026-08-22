@@ -13,6 +13,11 @@ from .recruitment_watch import fetch_watch_page
 
 
 PUBLIC_RECRUITMENT_SOURCES = [
+    {
+        "name": "国聘网",
+        "url": "https://job.iguopin.com/jobList?campus_nature=&channel=campus&key_word=&nature_cn=",
+        "employer_type": "央国企",
+    },
     {"name": "国资小新", "url": "https://www.gdpdd.com/s/xiaoxin/index.html", "employer_type": "央国企"},
     {"name": "银行招聘网", "url": "https://yhks.cn/", "employer_type": "银行/金融"},
 ]
@@ -60,8 +65,8 @@ CURATED_CAMPUS_JOBS = [
         "company": "九坤投资", "employer_type": "量化私募",
         "title": f"【梧桐计划】{title}", "city": city, "industry": "量化金融",
         "url": f"https://app.mokahr.com/campus_apply/ubiquantrecruit/37031#/job/{job_id}",
-        "source": "九坤投资官方 Moka 校招系统", "opening_date": "2026-07-28", "closing_date": "2027-07-28",
-        "requirements": "九坤 2027 届梧桐计划；官方系统当前显示项目投递窗口至 2027 年 7 月 28 日，未发现 8 月 26 日单岗硬截止。",
+        "source": "九坤投资官方 Moka 校招系统", "opening_date": "2026-07-28", "closing_date": None,
+        "requirements": "九坤 2027 届梧桐计划；当前官方岗位页未确认统一硬截止日期，显示为开放岗位，不进入截止预警。",
         "tags": ["2027届", "校园招聘", "梧桐计划", "量化"], "historical_applicants": None,
         "historical_offers": None, "last_verified_at": _VERIFIED_AT, "status": "open",
     }
@@ -110,43 +115,82 @@ def _extract_deadline(url: str) -> str | None:
 # employer currently has an open role.
 PERSONAL_MONITOR_POOLS = [
     {
-        "id": "state_owned_full",
-        "name": "央国企重点秋招",
-        "focus": "正式秋招、提前批、预招聘、留学生专场、补录；总部、子公司、研究院与直属机构",
+        "id": "state_energy_resources",
+        "name": "央企能源与资源",
+        "focus": "能源、矿产、化工、核工业与国家级资源集团的校园招聘、提前批和免笔试政策",
+        "employers": [
+            "中国石油", "中国石化", "中国海油", "国家能源集团", "国家电网", "中国华能",
+            "华电集团", "大唐集团", "国家电投", "中国核工业集团", "中国核建", "中国能建",
+            "中国电建", "中国煤炭科工", "中国有色矿业", "中国黄金",
+        ],
+    },
+    {
+        "id": "state_tech_transport",
+        "name": "央企科技、通信与交通",
+        "focus": "通信运营商、航天军工、电子科技、铁路航空与央企研究院的高信号岗位",
+        "employers": [
+            "中国移动", "中国电信", "中国联通", "中国铁塔", "中国电子", "中国电科",
+            "中国电子科技集团", "中国航天科技", "中国航天科工", "航空工业", "中国商飞",
+            "中国铁路", "国家铁路局", "中国交通建设", "中国一汽", "中国兵器工业集团",
+            "中国信通院", "中国科学院", "中国船舶集团", "中国兵器装备集团",
+        ],
+    },
+    {
+        "id": "policy_and_major_banks",
+        "name": "政策性金融与国有大行",
+        "focus": "政策行、国有六大行及总部金融科技、风控、管培和研究岗位",
         "employers": [
             "中国人民银行", "国家开发银行", "中国进出口银行", "中国农业发展银行",
             "工商银行", "农业银行", "中国银行", "建设银行", "交通银行", "邮储银行",
-            "国家能源集团", "国家电网", "中国石油", "中国石化", "中国海油",
-            "中国移动", "中国电信", "中国联通", "中国航天科技", "中国航天科工",
-            "中国电科", "中国东方资产", "中储粮", "中国一汽", "航空工业",
-            "中国铁塔", "国机集团", "中国宝武", "中国商飞", "中国信通院",
-            "中国投资有限责任公司", "中国保利", "中国盐业",
         ],
     },
     {
-        "id": "tech_finance_global",
-        "name": "大厂·金融·外企",
-        "focus": "FinTech、Data、AI Application、Product、Risk、Quant Analytics、Strategy、管培",
+        "id": "securities_funds_asset",
+        "name": "券商、基金与资管",
+        "focus": "头部券商、基金、AMC 与资管机构的研究、投行、风控、产品和金融科技岗位",
         "employers": [
-            "腾讯", "阿里巴巴", "字节跳动", "百度", "拼多多", "蚂蚁集团",
             "中信证券", "中金公司", "华泰证券", "国泰海通", "中信建投", "招商证券",
-            "广发证券", "申万宏源", "银河证券", "光大证券", "平安证券", "华金证券",
-            "易方达", "华夏基金", "嘉实基金", "南方基金", "汇添富", "富国基金",
-            "幻方", "九坤", "明汯", "衍复", "灵均", "宽德", "高瓴", "红杉中国",
-            "J.P. Morgan", "Goldman Sachs", "Morgan Stanley", "UBS", "Citi", "HSBC",
-            "Standard Chartered", "Macquarie", "BlackRock", "Kearney 科尔尼", "KPMG", "Deloitte", "PwC",
-            "EY", "Accenture", "Microsoft", "Google", "Amazon/AWS", "Apple", "NVIDIA",
+            "广发证券", "申万宏源", "银河证券", "光大证券", "东方证券", "长城证券",
+            "中信资产", "东方资产", "中国华融", "易方达", "华夏基金", "嘉实基金",
+            "南方基金", "汇添富", "富国基金",
         ],
     },
     {
-        "id": "policy_banks_pingan",
-        "name": "政策行与平安专项",
-        "focus": "截止日期、滚动筛选、英语门槛、笔面试安排、总行/总部与金融科技岗位",
+        "id": "insurance_fintech",
+        "name": "保险与综合金融",
+        "focus": "头部保险、再保险、银行保险和综合金融科技岗位；与政策金融分开维护",
         "employers": [
-            "国家开发银行", "中国进出口银行", "中国农业发展银行", "中国平安",
-            "平安银行", "平安产险", "平安理财", "平安养老险", "平安科技",
-            "金融壹账通", "陆金所控股", "平安银行信用卡中心", "平安银行汽车消费金融中心",
+            "中国人保", "中国人寿", "中国太平", "中国再保险", "中国平安", "平安银行",
+            "平安科技", "平安产险", "平安养老险", "平安理财", "太平洋保险", "新华保险",
         ],
+    },
+    {
+        "id": "internet_tech_scale",
+        "name": "互联网大厂与中厂",
+        "focus": "互联网、AI、数据、产品、策略、风控与金融科技的校园岗位，不把城市招聘分类页当岗位",
+        "employers": [
+            "腾讯", "阿里巴巴", "字节跳动", "百度", "拼多多", "蚂蚁集团", "美团",
+            "京东", "小米", "网易", "快手", "滴滴", "携程", "华为", "科大讯飞",
+            "同程旅行", "得物", "B站", "金山办公", "小红书",
+        ],
+    },
+    {
+        "id": "consumer_global_consulting",
+        "name": "快消、外企与咨询",
+        "focus": "快消、消费品牌、外企、四大与战略咨询的管培、商业分析、市场和职能岗位",
+        "employers": [
+            "宝洁", "联合利华", "欧莱雅", "雀巢", "玛氏", "可口可乐", "百事", "耐克",
+            "强生", "星巴克", "麦当劳", "Kearney 科尔尼", "麦肯锡", "波士顿咨询",
+            "德勤", "普华永道", "毕马威", "安永", "埃森哲", "Microsoft", "Google",
+            "Amazon/AWS", "Apple", "NVIDIA", "J.P. Morgan", "Goldman Sachs", "Morgan Stanley",
+            "UBS", "Citi", "HSBC", "BlackRock",
+        ],
+    },
+    {
+        "id": "quant_private_capital",
+        "name": "量化与私募",
+        "focus": "仅保留有明确校园职位和官方投递链接的量化、私募和研究岗位；不把远期开放窗口当截止预警",
+        "employers": ["九坤", "九坤投资", "幻方", "明汯", "衍复", "灵均", "宽德", "高瓴", "红杉中国"],
     },
 ]
 
@@ -175,6 +219,26 @@ def is_priority_campus_listing(job: dict) -> bool:
         return False
     location_text = f"{job.get('city', '')} {job.get('title', '')}"
     return any(marker in location_text for marker in CORE_LOCATION_MARKERS)
+
+
+def is_priority_public_source_lead(job: dict) -> bool:
+    """Allow high-signal public leads even when the index omits city.
+
+    Public aggregators often expose the employer and campus title first, while
+    the detailed city and closing date live on the linked announcement.  Keep
+    such cards visible but label them ``待打开核对``; generic category links and
+    lower-priority city pages still fail the employer/title checks.
+    """
+    if not is_actionable_recruitment_listing(job):
+        return False
+    title = str(job.get("title", "")).lower()
+    company = str(job.get("company", "")).lower()
+    if not any(employer in f"{title} {company}" for employer in PRIORITY_EMPLOYERS):
+        return False
+    city = str(job.get("city", ""))
+    if city in {"", "地点待公告确认"}:
+        return True
+    return any(marker in f"{city} {title}" for marker in CORE_LOCATION_MARKERS)
 
 
 class _RecruitmentLinkParser(HTMLParser):
@@ -228,11 +292,11 @@ def fetch_public_recruitment_sources() -> list[dict]:
                     "title": title[:180], "city": "地点待公告确认", "industry": "",
                     "url": url, "source": source["name"], "opening_date": None,
                     "closing_date": None, "requirements": "请打开原文核对专业、毕业年份、截止日期和投递入口。",
-                    "tags": [source["employer_type"], "公开来源"],
+                    "tags": [source["employer_type"], "公开来源", "待打开核对"],
                     "historical_applicants": None, "historical_offers": None,
-                    "last_verified_at": datetime.now(timezone.utc).isoformat(), "status": "discovery",
+                    "last_verified_at": datetime.now(timezone.utc).isoformat(), "status": "open",
                 })
-                if not is_priority_campus_listing(jobs[-1]):
+                if not is_priority_public_source_lead(jobs[-1]):
                     jobs.pop()
                     continue
                 if index > 80:
@@ -285,6 +349,6 @@ def fetch_adzuna_jobs(query: str = "graduate", location: str = "") -> list[dict]
             "historical_applicants": None,
             "historical_offers": None,
             "last_verified_at": datetime.now(timezone.utc).isoformat(),
-            "status": "discovery",
+            "status": "open",
         })
     return jobs
