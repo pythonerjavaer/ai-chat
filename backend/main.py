@@ -36,7 +36,7 @@ from .ai_service import (
 )
 from .platform import SPACE_TEMPLATES, plan_limits
 from .recruitment import SAMPLE_JOBS, score_job
-from .live_sources import fetch_adzuna_jobs
+from .live_sources import fetch_adzuna_jobs, fetch_public_recruitment_sources
 from .config import settings
 from .security import (
     create_access_token,
@@ -359,8 +359,8 @@ def recruitment_jobs(user: User) -> dict:
         "jobs": jobs,
         "profile": profile,
         "data_status": {
-            "mode": "live" if settings.adzuna_app_id and settings.adzuna_app_key else "sample",
-            "message": "岗位来自已配置的官方/授权源。" if settings.adzuna_app_id and settings.adzuna_app_key else "当前为示例岗位数据；配置官方 API 或合规数据供应商后才会实时更新。",
+            "mode": "live" if any(item.get("source") not in ("示例岗位，等待接入官方源", "示例数据") for item in database.list_recruitment_jobs()) else "sample",
+            "message": "岗位来自公开招聘页面或已配置的官方/授权源，打开来源核验原文。" if any(item.get("source") not in ("示例岗位，等待接入官方源", "示例数据") for item in database.list_recruitment_jobs()) else "当前为示例岗位数据；点击刷新岗位源获取公开招聘页面数据。",
             "last_sync": None,
         },
     }
@@ -369,15 +369,15 @@ def recruitment_jobs(user: User) -> dict:
 @app.post("/api/recruitment/refresh")
 def refresh_recruitment(user: ConsentedUser) -> dict:
     del user
-    if not settings.adzuna_app_id or not settings.adzuna_app_key:
-        raise HTTPException(status_code=503, detail="尚未配置官方招聘 API 凭证。")
     try:
-        jobs = fetch_adzuna_jobs()
+        jobs = fetch_public_recruitment_sources()
+        if settings.adzuna_app_id and settings.adzuna_app_key:
+            jobs.extend(fetch_adzuna_jobs())
         database.upsert_recruitment_jobs(jobs)
     except Exception as exc:
         logger.exception("Recruitment source refresh failed")
         raise HTTPException(status_code=502, detail="招聘源刷新失败，请稍后重试。") from exc
-    return {"source": "Adzuna API", "count": len(jobs), "refreshed_at": database.utc_now()}
+    return {"source": "公开招聘页面 + 已配置 API", "count": len(jobs), "refreshed_at": database.utc_now()}
 
 
 @app.get("/api/billing/status")

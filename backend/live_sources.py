@@ -1,9 +1,76 @@
+import hashlib
 import json
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 
 from .config import settings
+
+
+PUBLIC_RECRUITMENT_SOURCES = [
+    {"name": "国资小新", "url": "https://www.gdpdd.com/s/xiaoxin/index.html", "employer_type": "央国企"},
+    {"name": "银行招聘网", "url": "https://yhks.cn/", "employer_type": "银行/金融"},
+]
+
+
+class _RecruitmentLinkParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links: list[tuple[str, str]] = []
+        self.href = ""
+        self.text: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self.href = dict(attrs).get("href", "")
+            self.text = []
+
+    def handle_data(self, data):
+        if self.href:
+            self.text.append(data.strip())
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self.href:
+            title = " ".join(part for part in self.text if part).strip()
+            if title:
+                self.links.append((title, self.href))
+            self.href = ""
+            self.text = []
+
+
+def fetch_public_recruitment_sources() -> list[dict]:
+    jobs: list[dict] = []
+    keywords = ("校园招聘", "秋招", "校招", "招聘公告", "招聘")
+    for source in PUBLIC_RECRUITMENT_SOURCES:
+        try:
+            request = urllib.request.Request(
+                source["url"], headers={"User-Agent": "FrostFire-Autumn-Radar/1.0"}
+            )
+            with urllib.request.urlopen(request, timeout=12) as response:
+                html = response.read().decode("utf-8", errors="ignore")
+            parser = _RecruitmentLinkParser()
+            parser.feed(html)
+            for index, (title, href) in enumerate(parser.links):
+                if not any(keyword in title for keyword in keywords):
+                    continue
+                url = urllib.parse.urljoin(source["url"], href)
+                jobs.append({
+                    "id": f"public-{source['name']}-{hashlib.sha1(url.encode()).hexdigest()[:16]}",
+                    "company": title.split("202")[0].strip(" ·-") or source["name"],
+                    "employer_type": source["employer_type"],
+                    "title": title[:180], "city": "待查看公告", "industry": "",
+                    "url": url, "source": source["name"], "opening_date": None,
+                    "closing_date": None, "requirements": "请打开原文核对专业、毕业年份、截止日期和投递入口。",
+                    "tags": [source["employer_type"], "公开来源"],
+                    "historical_applicants": None, "historical_offers": None,
+                    "last_verified_at": datetime.now(timezone.utc).isoformat(), "status": "open",
+                })
+                if index > 80:
+                    break
+        except Exception:
+            continue
+    return jobs
 
 
 def fetch_adzuna_jobs(query: str = "graduate", location: str = "") -> list[dict]:
