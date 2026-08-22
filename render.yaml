@@ -2,12 +2,8 @@ services:
   - type: web
     name: frostfire-ai
     runtime: docker
-    plan: starter
+    plan: free
     healthCheckPath: /api/health
-    disk:
-      name: frostfire-data
-      mountPath: /app/backend/data
-      sizeGB: 1
     envVars:
       - key: DATABASE_PATH
         value: /app/backend/data/ai_chat.db
