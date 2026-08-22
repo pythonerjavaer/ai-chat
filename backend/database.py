@@ -122,6 +122,8 @@ def init_db() -> None:
                 undergraduate_school_tier TEXT NOT NULL DEFAULT '',
                 master_major TEXT NOT NULL DEFAULT '',
                 master_school_tier TEXT NOT NULL DEFAULT '',
+                undergraduate_school TEXT NOT NULL DEFAULT '',
+                master_school TEXT NOT NULL DEFAULT '',
                 composite_interest INTEGER NOT NULL DEFAULT 0,
                 graduation_year INTEGER,
                 availability_start TEXT,
@@ -207,6 +209,8 @@ def init_db() -> None:
             ("undergraduate_school_tier", "TEXT NOT NULL DEFAULT ''"),
             ("master_major", "TEXT NOT NULL DEFAULT ''"),
             ("master_school_tier", "TEXT NOT NULL DEFAULT ''"),
+            ("undergraduate_school", "TEXT NOT NULL DEFAULT ''"),
+            ("master_school", "TEXT NOT NULL DEFAULT ''"),
             ("composite_interest", "INTEGER NOT NULL DEFAULT 0"),
         ):
             _ensure_column(connection, "recruitment_profiles", column, declaration)
@@ -436,6 +440,7 @@ def get_recruitment_profile(user_id: int) -> dict[str, Any]:
             "experience_level": "", "skill_tags": [], "language_level": "",
             "undergraduate_major": "", "undergraduate_school_tier": "",
             "master_major": "", "master_school_tier": "", "composite_interest": False,
+            "undergraduate_school": "", "master_school": "",
             "availability_start": None, "availability_end": None,
         }
     item = dict(row)
@@ -462,6 +467,7 @@ def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str,
         profile.get("language_level", ""), profile.get("graduation_year"),
         profile.get("undergraduate_major", ""), profile.get("undergraduate_school_tier", ""),
         profile.get("master_major", ""), profile.get("master_school_tier", ""),
+        profile.get("undergraduate_school", ""), profile.get("master_school", ""),
         int(bool(profile.get("composite_interest", False))),
         profile.get("availability_start"), profile.get("availability_end"), now,
     )
@@ -473,9 +479,9 @@ def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str,
                  background, education_level, major_category, school_tier,
                  experience_level, skill_tags, language_level, graduation_year,
                  undergraduate_major, undergraduate_school_tier, master_major,
-                 master_school_tier, composite_interest, availability_start,
-                 availability_end, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 master_school_tier, undergraduate_school, master_school,
+                 composite_interest, availability_start, availability_end, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 desired_roles=excluded.desired_roles, industries=excluded.industries,
                 locations=excluded.locations, employer_types=excluded.employer_types,
@@ -487,6 +493,8 @@ def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str,
                 undergraduate_school_tier=excluded.undergraduate_school_tier,
                 master_major=excluded.master_major, master_school_tier=excluded.master_school_tier,
                 composite_interest=excluded.composite_interest,
+                undergraduate_school=excluded.undergraduate_school,
+                master_school=excluded.master_school,
                 availability_start=excluded.availability_start,
                 availability_end=excluded.availability_end, updated_at=excluded.updated_at
             """,

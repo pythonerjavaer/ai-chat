@@ -159,6 +159,8 @@ class RecruitmentProfileRequest(BaseModel):
     undergraduate_school_tier: str = Field(default="", max_length=40)
     master_major: str = Field(default="", max_length=60)
     master_school_tier: str = Field(default="", max_length=40)
+    undergraduate_school: str = Field(default="", max_length=120)
+    master_school: str = Field(default="", max_length=120)
     composite_interest: bool = False
     graduation_year: int | None = Field(default=None, ge=2020, le=2100)
     availability_start: str | None = Field(default=None, max_length=10)

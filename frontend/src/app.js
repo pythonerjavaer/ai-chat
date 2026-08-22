@@ -102,6 +102,7 @@ const elements = {
   recruitmentDialog: $("recruitment-dialog"), recruitmentForm: $("recruitment-form"),
   recruitmentRoles: $("recruitment-roles"), recruitmentIndustries: $("recruitment-industries"),
   recruitmentLocations: $("recruitment-locations"), recruitmentBackground: $("recruitment-background"),
+  recruitmentUndergraduateSchool: $("recruitment-undergraduate-school"), recruitmentMasterSchool: $("recruitment-master-school"),
   recruitmentStart: $("recruitment-start"), recruitmentEnd: $("recruitment-end"),
   recruitmentJobs: $("recruitment-jobs"), recruitmentStatus: $("recruitment-source-status"),
   recruitmentRefresh: $("recruitment-refresh"),
@@ -1005,6 +1006,8 @@ function renderRecruitmentProfile(profile) {
   elements.recruitmentIndustries.value = (profile.industries || []).join("，");
   elements.recruitmentLocations.value = (profile.locations || []).join("，");
   elements.recruitmentBackground.value = profile.background || "";
+  elements.recruitmentUndergraduateSchool.value = profile.undergraduate_school || "";
+  elements.recruitmentMasterSchool.value = profile.master_school || "";
   elements.recruitmentStart.value = profile.availability_start || "";
   elements.recruitmentEnd.value = profile.availability_end || "";
   document.querySelectorAll(".recruitment-checks input").forEach((input) => {
@@ -1089,6 +1092,8 @@ async function saveRecruitment(event) {
         undergraduate_school_tier: choice("undergraduate_school_tier"),
         master_major: choice("master_major"),
         master_school_tier: choice("master_school_tier"),
+        undergraduate_school: elements.recruitmentUndergraduateSchool.value.trim(),
+        master_school: elements.recruitmentMasterSchool.value.trim(),
         composite_interest: choices("composite_interest").includes("true"),
         graduation_year: null,
         availability_start: elements.recruitmentStart.value || null,
