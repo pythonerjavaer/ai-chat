@@ -35,6 +35,7 @@ from .ai_service import (
     stream_agent,
 )
 from .platform import SPACE_TEMPLATES, plan_limits
+from .recruitment import SAMPLE_JOBS, score_job
 from .config import settings
 from .security import (
     create_access_token,
@@ -57,6 +58,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.init_db()
+    database.seed_recruitment_jobs(SAMPLE_JOBS)
     yield
 
 
@@ -138,6 +140,17 @@ class SpaceRunRequest(BaseModel):
 
 class AppleTransactionRequest(BaseModel):
     signed_transaction: str = Field(min_length=20, max_length=50_000)
+
+
+class RecruitmentProfileRequest(BaseModel):
+    desired_roles: list[str] = Field(default_factory=list, max_length=12)
+    industries: list[str] = Field(default_factory=list, max_length=8)
+    locations: list[str] = Field(default_factory=list, max_length=12)
+    employer_types: list[str] = Field(default_factory=list, max_length=6)
+    background: str = Field(default="", max_length=4_000)
+    graduation_year: int | None = Field(default=None, ge=2020, le=2100)
+    availability_start: str | None = Field(default=None, max_length=10)
+    availability_end: str | None = Field(default=None, max_length=10)
 
 
 def current_user(
@@ -309,6 +322,35 @@ def platform_templates() -> list[dict]:
         {"id": template_id, **template}
         for template_id, template in SPACE_TEMPLATES.items()
     ]
+
+
+@app.get("/api/recruitment/profile")
+def recruitment_profile(user: User) -> dict:
+    return database.get_recruitment_profile(user["id"])
+
+
+@app.put("/api/recruitment/profile")
+def save_recruitment_profile(request: RecruitmentProfileRequest, user: ConsentedUser) -> dict:
+    payload = request.model_dump()
+    for key in ("desired_roles", "industries", "locations", "employer_types"):
+        payload[key] = [str(value).strip()[:80] for value in payload[key] if str(value).strip()]
+    return database.save_recruitment_profile(user["id"], payload)
+
+
+@app.get("/api/recruitment/jobs")
+def recruitment_jobs(user: User) -> dict:
+    profile = database.get_recruitment_profile(user["id"])
+    jobs = [score_job(job, profile) for job in database.list_recruitment_jobs()]
+    jobs.sort(key=lambda item: (-item["match_score"], item["days_left"] is None, item["days_left"] or 9999))
+    return {
+        "jobs": jobs,
+        "profile": profile,
+        "data_status": {
+            "mode": "sample",
+            "message": "当前为演示岗位数据；接入企业官网、官方招聘 API 或合规数据供应商后才会实时更新。",
+            "last_sync": None,
+        },
+    }
 
 
 @app.get("/api/billing/status")

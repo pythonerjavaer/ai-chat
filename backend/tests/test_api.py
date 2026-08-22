@@ -508,6 +508,34 @@ def test_ai_space_studio_usage_and_billing_boundaries(monkeypatch):
         assert apple.status_code == 503
 
 
+def test_recruitment_profile_matching_and_deadline_metadata():
+    with TestClient(main.app) as client:
+        token, _ = register(client, "recruiter")
+        profile = client.put(
+            "/api/recruitment/profile",
+            headers=auth(token),
+            json={
+                "desired_roles": ["产品经理"],
+                "industries": ["互联网"],
+                "locations": ["北京"],
+                "employer_types": ["互联网企业"],
+                "background": "计算机专业，有产品实习经历",
+                "availability_start": "2026-09-01",
+                "availability_end": "2026-12-31",
+            },
+        )
+        assert profile.status_code == 200
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token))
+        assert jobs.status_code == 200
+        payload = jobs.json()
+        assert payload["data_status"]["mode"] == "sample"
+        assert payload["jobs"]
+        first = payload["jobs"][0]
+        assert "match_score" in first
+        assert "estimated_rate" in first
+        assert "days_left" in first
+
+
 def test_docx_extraction_preserves_readable_content():
     from docx import Document
 

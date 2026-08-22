@@ -84,9 +84,10 @@
           <span><strong>冰焰智研</strong><small>FROSTFIRE AI</small></span>
         </a>
         <nav id="workspace-tabs" class="workspace-tabs" aria-label="切换工作区"></nav>
-        <div class="header-actions">
-          <span id="network-status" class="network-status"><i></i><b>在线</b></span>
-          <button id="studio-open" class="studio-launch" type="button" aria-label="打开 AI Space Studio"><span>＋</span><b>AI Space</b></button>
+          <div class="header-actions">
+            <span id="network-status" class="network-status"><i></i><b>在线</b></span>
+            <button id="recruitment-open" class="recruitment-launch" type="button" aria-label="打开秋招雷达"><span>◒</span><b>秋招雷达</b></button>
+            <button id="studio-open" class="studio-launch" type="button" aria-label="打开 AI Space Studio"><span>＋</span><b>AI Space</b></button>
           <button id="knowledge-toggle" class="icon-button tablet-only" type="button" aria-label="打开资料库">◇</button>
           <button id="settings-button" class="profile-button" type="button" aria-label="账号与设置">
             <span id="avatar">A</span><b id="current-username">account</b><i>⌄</i>
@@ -252,6 +253,35 @@
               <button id="runner-send" class="studio-run-button" type="button"><span>运行一次</span><b>→</b></button>
               <div id="runner-output" class="runner-output">每一次运行都会显示实际 Token 消耗；Space 达到预算后会停止调用模型。</div>
             </section>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="recruitment-dialog" class="recruitment-dialog">
+      <div class="recruitment-shell">
+        <header class="recruitment-header">
+          <div><span class="overline">AUTUMN RECRUITING RADAR</span><h2>秋招雷达</h2><p>把岗位偏好、个人背景和截止日期放在同一张决策面板里。</p></div>
+          <button id="recruitment-close" class="icon-button" type="button" aria-label="关闭秋招雷达">×</button>
+        </header>
+        <div class="recruitment-body">
+          <section class="recruitment-profile-panel">
+            <div class="recruitment-section-heading"><span>01</span><div><strong>定义你的求职画像</strong><small>支持自定义岗位方向、城市、雇主类型和背景。</small></div></div>
+            <form id="recruitment-form" class="recruitment-form">
+              <label class="field compact-field"><span>目标岗位（逗号分隔）</span><input id="recruitment-roles" placeholder="产品经理，数据分析，软件工程" /></label>
+              <label class="field compact-field"><span>行业偏好</span><input id="recruitment-industries" placeholder="互联网，金融科技，新能源" /></label>
+              <label class="field compact-field"><span>城市偏好</span><input id="recruitment-locations" placeholder="北京，上海，深圳，可远程" /></label>
+              <div class="recruitment-checks"><span>雇主类型</span><label><input type="checkbox" value="互联网企业" />互联网</label><label><input type="checkbox" value="外企" />外企</label><label><input type="checkbox" value="央国企" />央国企</label></div>
+              <label class="field compact-field"><span>个人背景</span><textarea id="recruitment-background" rows="4" placeholder="学历、专业、实习、技能、语言、项目和期望限制…"></textarea></label>
+              <div class="recruitment-dates"><label class="field compact-field"><span>可入职开始</span><input id="recruitment-start" type="date" /></label><label class="field compact-field"><span>可入职截止</span><input id="recruitment-end" type="date" /></label></div>
+              <button class="primary-button" type="submit"><span>保存画像并重新匹配</span><b>↗</b></button>
+              <p id="recruitment-error" class="form-error" role="alert"></p>
+            </form>
+          </section>
+          <section class="recruitment-results">
+            <div class="recruitment-results-heading"><div><span class="overline">MATCHED OPPORTUNITIES</span><h3>适合你的秋招岗位</h3></div><span id="recruitment-source-status" class="source-status">读取中…</span></div>
+            <div class="recruitment-disclaimer">匹配度是规则化筛选结果；录取率是历史样本估计，不代表个人录取承诺。</div>
+            <div id="recruitment-jobs" class="recruitment-jobs"></div>
           </section>
         </div>
       </div>

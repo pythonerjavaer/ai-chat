@@ -105,6 +105,39 @@ def init_db() -> None:
                 FOREIGN KEY (space_id) REFERENCES spaces(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS recruitment_profiles (
+                user_id INTEGER PRIMARY KEY,
+                desired_roles TEXT NOT NULL DEFAULT '[]',
+                industries TEXT NOT NULL DEFAULT '[]',
+                locations TEXT NOT NULL DEFAULT '[]',
+                employer_types TEXT NOT NULL DEFAULT '[]',
+                background TEXT NOT NULL DEFAULT '',
+                graduation_year INTEGER,
+                availability_start TEXT,
+                availability_end TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS recruitment_jobs (
+                id TEXT PRIMARY KEY,
+                company TEXT NOT NULL,
+                employer_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                city TEXT NOT NULL DEFAULT '',
+                industry TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL,
+                opening_date TEXT,
+                closing_date TEXT,
+                requirements TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '[]',
+                historical_applicants INTEGER,
+                historical_offers INTEGER,
+                last_verified_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open'
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sessions_user_updated
                 ON sessions(user_id, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -147,6 +180,10 @@ def init_db() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_token_usage_user_period "
             "ON token_usage(user_id, period)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recruitment_jobs_deadline "
+            "ON recruitment_jobs(status, closing_date)"
         )
 
 
@@ -358,6 +395,96 @@ def delete_user(user_id: int) -> bool:
     with connect() as connection:
         cursor = connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
     return cursor.rowcount > 0
+
+
+def get_recruitment_profile(user_id: int) -> dict[str, Any]:
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM recruitment_profiles WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    if not row:
+        return {
+            "user_id": user_id,
+            "desired_roles": [], "industries": [], "locations": [],
+            "employer_types": [], "background": "", "graduation_year": None,
+            "availability_start": None, "availability_end": None,
+        }
+    item = dict(row)
+    for key in ("desired_roles", "industries", "locations", "employer_types"):
+        try:
+            item[key] = json.loads(item[key])
+        except (TypeError, json.JSONDecodeError):
+            item[key] = []
+    return item
+
+
+def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str, Any]:
+    now = utc_now()
+    values = (
+        user_id,
+        json.dumps(profile.get("desired_roles", []), ensure_ascii=False),
+        json.dumps(profile.get("industries", []), ensure_ascii=False),
+        json.dumps(profile.get("locations", []), ensure_ascii=False),
+        json.dumps(profile.get("employer_types", []), ensure_ascii=False),
+        profile.get("background", ""), profile.get("graduation_year"),
+        profile.get("availability_start"), profile.get("availability_end"), now,
+    )
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO recruitment_profiles
+                (user_id, desired_roles, industries, locations, employer_types,
+                 background, graduation_year, availability_start, availability_end, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                desired_roles=excluded.desired_roles, industries=excluded.industries,
+                locations=excluded.locations, employer_types=excluded.employer_types,
+                background=excluded.background, graduation_year=excluded.graduation_year,
+                availability_start=excluded.availability_start,
+                availability_end=excluded.availability_end, updated_at=excluded.updated_at
+            """,
+            values,
+        )
+    return get_recruitment_profile(user_id)
+
+
+def list_recruitment_jobs() -> list[dict[str, Any]]:
+    with connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM recruitment_jobs ORDER BY closing_date IS NULL, closing_date"
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["tags"] = json.loads(item["tags"])
+        except (TypeError, json.JSONDecodeError):
+            item["tags"] = []
+        result.append(item)
+    return result
+
+
+def seed_recruitment_jobs(jobs: list[dict[str, Any]]) -> None:
+    with connect() as connection:
+        for job in jobs:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO recruitment_jobs
+                    (id, company, employer_type, title, city, industry, url, source,
+                     opening_date, closing_date, requirements, tags, historical_applicants,
+                     historical_offers, last_verified_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job["id"], job["company"], job["employer_type"], job["title"],
+                    job.get("city", ""), job.get("industry", ""), job.get("url", ""),
+                    job.get("source", "示例数据"), job.get("opening_date"),
+                    job.get("closing_date"), job.get("requirements", ""),
+                    json.dumps(job.get("tags", []), ensure_ascii=False),
+                    job.get("historical_applicants"), job.get("historical_offers"),
+                    job.get("last_verified_at", utc_now()), job.get("status", "open"),
+                ),
+            )
 
 
 def create_session(
