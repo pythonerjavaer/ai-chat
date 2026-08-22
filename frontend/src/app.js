@@ -75,6 +75,8 @@ const elements = {
   workspaceTabs: $("workspace-tabs"), workspacePanelTitle: $("workspace-panel-title"),
   workspaceEyebrow: $("workspace-eyebrow"), workspaceTitle: $("workspace-title"),
   workspaceHeroCopy: $("workspace-hero-copy"), workspaceIndicator: $("workspace-indicator"),
+  sceneArrival: $("scene-arrival"), sceneArrivalEyebrow: $("scene-arrival-eyebrow"),
+  sceneArrivalTitle: $("scene-arrival-title"), sceneArrivalCopy: $("scene-arrival-copy"),
   heroSymbol: $("hero-symbol"), lensLabel: $("lens-label"), lensScore: $("lens-score"),
   sessionList: $("session-list"), sessionCount: $("session-count"), documentList: $("document-list"),
   documentCount: $("document-count"), documentInput: $("document-input"), knowledgeTitle: $("knowledge-title"),
@@ -142,6 +144,29 @@ function activeWorkspace() {
 async function haptic() {
   if (!Capacitor.isNativePlatform()) return;
   try { await Haptics.impact({ style: ImpactStyle.Light }); } catch (_) {}
+}
+
+const sceneEntryTimers = new WeakMap();
+
+function playSceneEntry(target, duration = 2100) {
+  if (!target) return;
+  window.clearTimeout(sceneEntryTimers.get(target));
+  target.classList.remove("scene-entering");
+  void target.offsetWidth;
+  target.classList.add("scene-entering");
+  sceneEntryTimers.set(target, window.setTimeout(() => {
+    target.classList.remove("scene-entering");
+    sceneEntryTimers.delete(target);
+  }, duration));
+}
+
+function playWorkspaceEntry(workspaceId) {
+  const meta = WORKSPACE_META[workspaceId] || WORKSPACE_META.general;
+  elements.appView.dataset.scene = workspaceId;
+  elements.sceneArrivalEyebrow.textContent = meta.eyebrow;
+  elements.sceneArrivalTitle.textContent = meta.themeName;
+  elements.sceneArrivalCopy.textContent = meta.hero;
+  playSceneEntry(elements.appView, 2400);
 }
 
 async function api(path, options = {}) {
@@ -251,6 +276,7 @@ async function enterApp() {
   await loadWorkspaces();
   await Promise.all([loadSessions(), loadDocuments(), loadHomeRecruitmentAlerts()]);
   newConversation();
+  playWorkspaceEntry(state.workspace);
   const pendingLaunch = state.pendingLaunch;
   state.pendingLaunch = null;
   if (pendingLaunch) window.setTimeout(() => launchProduct(pendingLaunch), 0);
@@ -406,6 +432,7 @@ async function changeWorkspace(workspaceId) {
   await haptic();
   renderWorkspaceTabs();
   newConversation();
+  playWorkspaceEntry(workspaceId);
   try {
     await loadDocuments();
   } catch (error) {
@@ -494,6 +521,7 @@ function newConversation() {
 async function openSession(session) {
   try {
     const messages = await api(`/sessions/${session.id}/messages`);
+    const previousWorkspace = state.workspace;
     state.sessionId = session.id;
     state.workspace = session.workspace || "general";
     await storage.set(STORAGE_KEYS.workspace, state.workspace);
@@ -505,6 +533,7 @@ async function openSession(session) {
     messages.forEach((message) => appendMessage(message.role, message.content));
     renderSessions();
     closePanels();
+    if (state.workspace !== previousWorkspace) playWorkspaceEntry(state.workspace);
     elements.chatWindow.scrollTop = elements.chatWindow.scrollHeight;
   } catch (error) { showToast(translateError(error.message)); }
 }
@@ -698,7 +727,10 @@ function setCrossExamCounts() {
 async function openCrossExam() {
   closePanels();
   elements.crossExamError.textContent = "";
-  if (!elements.crossExamDialog.open) elements.crossExamDialog.showModal();
+  if (!elements.crossExamDialog.open) {
+    elements.crossExamDialog.showModal();
+    playSceneEntry(elements.crossExamDialog);
+  }
   elements.crossLegalCount.textContent = "检查中…";
   elements.crossFinanceCount.textContent = "检查中…";
   elements.crossExamRun.disabled = true;
@@ -1011,7 +1043,10 @@ async function refreshStudio() {
 async function openStudio() {
   closePanels();
   elements.spaceFormError.textContent = "";
-  if (!elements.studioDialog.open) elements.studioDialog.showModal();
+  if (!elements.studioDialog.open) {
+    elements.studioDialog.showModal();
+    playSceneEntry(elements.studioDialog);
+  }
   try {
     await refreshStudio();
     const template = selectedSpaceTemplate();
@@ -1026,7 +1061,10 @@ async function openStudio() {
 
 function openConcept(dialog) {
   closePanels();
-  if (!dialog.open) dialog.showModal();
+  if (!dialog.open) {
+    dialog.showModal();
+    playSceneEntry(dialog);
+  }
 }
 
 function closeConcept(dialogId) {
@@ -1049,6 +1087,7 @@ async function launchProduct(product) {
   }
   if (WORKSPACE_ORDER.includes(product)) {
     if (product !== state.workspace) await changeWorkspace(product);
+    else playWorkspaceEntry(product);
     return;
   }
   if (product === "recruitment") return openRecruitment();
@@ -1568,7 +1607,10 @@ async function refreshRecruitmentSource() {
 
 async function openRecruitment() {
   elements.recruitmentError.textContent = "";
-  elements.recruitmentDialog.showModal();
+  if (!elements.recruitmentDialog.open) {
+    elements.recruitmentDialog.showModal();
+    playSceneEntry(elements.recruitmentDialog);
+  }
   await refreshRecruitment();
 }
 
