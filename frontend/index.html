@@ -87,7 +87,7 @@
       </div>
     </section>
 
-    <section id="app-view" class="app-view hidden">
+    <section id="app-view" class="app-view hidden" data-scene="general">
       <header class="app-header">
         <button id="mobile-menu" class="icon-button mobile-only" type="button" aria-label="打开对话列表">☰</button>
         <a class="brand compact" href="#" id="brand-home">
@@ -96,18 +96,27 @@
         </a>
         <div class="primary-navigation">
           <nav id="workspace-tabs" class="workspace-tabs" aria-label="切换工作区"></nav>
-          <button id="recruitment-open" class="recruitment-launch" type="button" aria-label="打开未来雷达"><span class="radar-glyph" aria-hidden="true"></span><b>未来雷达</b></button>
+          <div class="signal-navigation" aria-label="现实信号与来源工具">
+            <button id="recruitment-open" class="recruitment-launch" type="button" aria-label="打开未来雷达"><span class="radar-glyph" aria-hidden="true"></span><b>未来雷达</b></button>
+            <button id="trace-open" class="trace-launch" type="button" aria-label="打开溯源透镜"><span class="trace-glyph" aria-hidden="true"><i></i></span><b>溯源透镜</b></button>
+          </div>
         </div>
         <div class="header-actions">
             <span id="network-status" class="network-status"><i></i><b>在线</b></span>
             <button id="studio-open" class="studio-launch" type="button" aria-label="打开造界"><span>＋</span><b>造界</b></button>
-            <details class="product-more-menu"><summary>更多 <i>⌄</i></summary><div><button id="resonance-open" type="button"><span>≈</span><b>共振</b><small>RESONANCE · FORMING</small></button><button id="trace-open" type="button"><span>◇</span><b>溯源透镜</b><small>TRACE LENS · FORMING</small></button><button id="cross-exam-open" type="button"><span>⟁</span><b>双域审查</b><small>保留的实验能力</small></button></div></details>
+            <details class="product-more-menu"><summary>更多 <i>⌄</i></summary><div><button id="resonance-open" type="button"><span>≈</span><b>共振</b><small>RESONANCE · FORMING</small></button><button id="cross-exam-open" type="button"><span>⟁</span><b>双域审查</b><small>保留的实验能力</small></button></div></details>
           <button id="knowledge-toggle" class="icon-button tablet-only" type="button" aria-label="打开资料库">◇</button>
           <button id="settings-button" class="profile-button" type="button" aria-label="账号与设置">
             <span id="avatar">A</span><b id="current-username">account</b><i>⌄</i>
           </button>
         </div>
       </header>
+
+      <div id="scene-arrival" class="scene-arrival" aria-hidden="true">
+        <span id="scene-arrival-eyebrow">AURORA</span>
+        <strong id="scene-arrival-title">极光域</strong>
+        <small id="scene-arrival-copy">让散落的信息逐渐形成属于你的知识世界。</small>
+      </div>
 
       <div class="studio-grid">
         <aside id="conversation-panel" class="side-panel conversation-panel">
@@ -156,6 +165,7 @@
             <nav class="mobile-action-dock mobile-only" aria-label="移动端功能入口">
               <button id="mobile-studio-open" type="button"><b>＋</b><span>造界</span></button>
               <button id="mobile-recruitment-open" type="button"><b class="radar-glyph" aria-hidden="true"></b><span>未来雷达</span></button>
+              <button type="button" data-concept-open="trace-dialog"><b class="trace-glyph" aria-hidden="true"><i></i></b><span>溯源透镜</span></button>
               <button id="mobile-more-open" type="button"><b>⋯</b><span>更多</span></button>
               <button id="mobile-knowledge" type="button"><b>◇</b><span>资料</span></button>
             </nav>
@@ -193,7 +203,7 @@
       <div id="panel-backdrop" class="panel-backdrop hidden"></div>
     </section>
 
-    <dialog id="cross-exam-dialog" class="cross-exam-dialog">
+    <dialog id="cross-exam-dialog" class="cross-exam-dialog" data-scene="cross-exam">
       <div class="crossfire-shell">
         <header class="crossfire-header">
           <div class="crossfire-title">
@@ -242,7 +252,7 @@
       </div>
     </dialog>
 
-    <dialog id="studio-dialog" class="studio-dialog">
+    <dialog id="studio-dialog" class="studio-dialog" data-scene="forge">
       <div class="space-studio-shell">
         <header class="space-studio-header">
           <div><span class="overline">WORLD FORGE</span><h2>造界</h2><p>创造一个只属于你的智能世界。</p></div>
@@ -291,8 +301,9 @@
       </div>
     </dialog>
 
-    <dialog id="recruitment-dialog" class="recruitment-dialog">
+    <dialog id="recruitment-dialog" class="recruitment-dialog" data-scene="radar">
       <div class="recruitment-shell">
+        <div class="radar-atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
         <header class="recruitment-header">
           <div><span class="overline">FUTURE SIGNAL RADAR</span><h2>未来雷达</h2><p>扫描公开信源中的机会坐标、规则与时间窗；所有信号均可回到原始公告核验。</p></div>
           <button id="recruitment-close" class="icon-button" type="button" aria-label="关闭未来雷达">×</button>
@@ -339,7 +350,7 @@
       </section>
     </dialog>
 
-    <dialog id="resonance-dialog" class="concept-dialog">
+    <dialog id="resonance-dialog" class="concept-dialog" data-scene="resonance">
       <section class="concept-shell">
         <header><div><span class="overline">RESONANCE</span><h2>共振</h2><p>当世界彼此连接，改变才真正开始传播。</p></div><button class="icon-button" type="button" data-close-concept="resonance-dialog" aria-label="关闭共振">×</button></header>
         <div class="concept-flow" aria-label="共振正在形成的路径"><article><span>01</span><h3>变化</h3><p>一个新的事实进入世界。</p></article><i>↓</i><article><span>02</span><h3>传播</h3><p>它开始影响其他目标、规则与状态。</p></article><i>↓</i><article><span>03</span><h3>分叉</h3><p>新的可能性由此出现。</p></article></div>
@@ -347,8 +358,9 @@
       </section>
     </dialog>
 
-    <dialog id="trace-dialog" class="concept-dialog">
+    <dialog id="trace-dialog" class="concept-dialog" data-scene="trace">
       <section class="concept-shell trace-concept">
+        <div class="trace-atmosphere" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
         <header><div><span class="overline">TRACE LENS</span><h2>溯源透镜</h2><p>看见一个结论从哪里来，又经历了什么才成为现在的样子。</p></div><button class="icon-button" type="button" data-close-concept="trace-dialog" aria-label="关闭溯源透镜">×</button></header>
         <div class="concept-trace" aria-label="溯源路径"><span>来源</span><i>↓</i><span>世界</span><i>↓</i><span>变化</span><i>↓</i><span>判断</span></div>
         <footer><span>每一步，都应该可以被重新找到。</span><b>TRACE SYSTEM FORMING</b></footer>
