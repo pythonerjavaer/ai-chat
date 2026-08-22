@@ -547,6 +547,14 @@ def purge_legacy_recruitment_samples() -> None:
         )
 
 
+def close_recruitment_job(job_id: str) -> None:
+    with connect() as connection:
+        connection.execute(
+            "UPDATE recruitment_jobs SET status = 'closed', last_verified_at = ? WHERE id = ?",
+            (utc_now(), job_id),
+        )
+
+
 def seed_recruitment_jobs(jobs: list[dict[str, Any]]) -> None:
     with connect() as connection:
         for job in jobs:

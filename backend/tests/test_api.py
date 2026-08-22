@@ -580,6 +580,17 @@ def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs():
         jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
         assert any(job["title"] == "2099届校园招聘数据岗" for job in jobs)
         assert not any(job["title"] == "2020届校园招聘岗位" for job in jobs)
+        closed = client.post(
+            "/api/recruitment/ingest",
+            headers={"X-Recruitment-Token": "test-recruitment-ingest-token"},
+            json={"jobs": [{**payload["jobs"][0], "status": "closed"}]},
+        )
+        assert closed.status_code == 200
+        assert closed.json()["skipped"] == [
+            {"title": "2099届校园招聘数据岗", "reason": "closed"}
+        ]
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
+        assert not any(job["title"] == "2099届校园招聘数据岗" for job in jobs)
 
 
 def test_docx_extraction_preserves_readable_content():

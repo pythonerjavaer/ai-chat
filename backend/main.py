@@ -6,7 +6,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     Depends,
@@ -205,6 +205,7 @@ class RecruitmentIngestJob(BaseModel):
     closing_date: date | None = None
     requirements: str = Field(default="", max_length=2_000)
     tags: list[str] = Field(default_factory=lambda: ["校园招聘"], max_length=20)
+    status: Literal["open", "closed"] = "open"
 
 
 class RecruitmentIngestRequest(BaseModel):
@@ -421,7 +422,12 @@ def recruitment_jobs(user: User) -> dict:
         "monitor_pools": PERSONAL_MONITOR_POOLS,
         "data_status": {
             "mode": "verified_dynamic",
-            "message": "每 30 分钟扫描公开线索并接收授权推送；仅展示已核验官方直达链接且未过期的校招岗位。",
+            "message": (
+                f"每 {settings.recruitment_refresh_minutes} 分钟扫描公开线索并接收授权推送；"
+                "仅展示已核验官方直达链接且未过期的校招岗位。"
+            ) if settings.recruitment_refresh_minutes else (
+                "接收授权监控推送；仅展示已核验官方直达链接且未过期的校招岗位。"
+            ),
             "last_sync": None,
         },
     }
@@ -454,11 +460,16 @@ def ingest_recruitment_jobs(
     skipped: list[dict] = []
     today = date.today()
     for item in request.jobs:
-        if item.closing_date and item.closing_date < today:
-            skipped.append({"title": item.title, "reason": "expired"})
+        job_id = f"monitor-{hashlib.sha256(item.official_url.encode()).hexdigest()[:24]}"
+        if item.status == "closed" or (item.closing_date and item.closing_date < today):
+            database.close_recruitment_job(job_id)
+            skipped.append({
+                "title": item.title,
+                "reason": "closed" if item.status == "closed" else "expired",
+            })
             continue
         job = {
-            "id": f"monitor-{hashlib.sha256(item.official_url.encode()).hexdigest()[:24]}",
+            "id": job_id,
             "company": item.company.strip(),
             "employer_type": item.employer_type.strip(),
             "title": item.title.strip(),

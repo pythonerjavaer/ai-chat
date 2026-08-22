@@ -70,3 +70,7 @@ components:
           type: array
           items:
             type: string
+        status:
+          type: string
+          enum: [open, closed]
+          default: open
