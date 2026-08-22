@@ -41,7 +41,7 @@ from .live_sources import (
     PERSONAL_MONITOR_POOLS,
     fetch_adzuna_jobs,
     fetch_public_recruitment_sources,
-    is_actionable_recruitment_listing,
+    is_priority_campus_listing,
 )
 from .config import settings
 from .security import (
@@ -383,7 +383,7 @@ def recruitment_jobs(user: User) -> dict:
     jobs = [
         score_job(job, profile)
         for job in database.list_recruitment_jobs()
-        if is_actionable_recruitment_listing(job)
+        if is_priority_campus_listing(job)
     ]
     jobs.sort(key=lambda item: (-item["match_score"], item["days_left"] is None, item["days_left"] or 9999))
     return {

@@ -112,6 +112,32 @@ PERSONAL_MONITOR_POOLS = [
     },
 ]
 
+# Only high-priority destination cities are shown.  An announcement whose
+# location is not disclosed is not promoted into the pool unless it is clearly
+# a national/head-office role.
+CORE_LOCATION_MARKERS = {
+    "北京", "上海", "广州", "深圳", "天津", "重庆", "杭州", "南京", "武汉", "成都", "西安",
+    "郑州", "长沙", "合肥", "济南", "福州", "厦门", "南昌", "石家庄", "太原", "沈阳", "大连",
+    "长春", "哈尔滨", "海口", "昆明", "贵阳", "南宁", "兰州", "西宁", "银川", "乌鲁木齐",
+    "拉萨", "呼和浩特", "香港", "澳门", "全国", "总部", "远程",
+}
+PRIORITY_EMPLOYERS = {
+    employer.lower()
+    for pool in PERSONAL_MONITOR_POOLS
+    for employer in pool["employers"]
+}
+
+
+def is_priority_campus_listing(job: dict) -> bool:
+    if not is_actionable_recruitment_listing(job):
+        return False
+    title = str(job.get("title", "")).lower()
+    company = str(job.get("company", "")).lower()
+    if not any(employer in f"{title} {company}" for employer in PRIORITY_EMPLOYERS):
+        return False
+    location_text = f"{job.get('city', '')} {job.get('title', '')}"
+    return any(marker in location_text for marker in CORE_LOCATION_MARKERS)
+
 
 class _RecruitmentLinkParser(HTMLParser):
     def __init__(self):
@@ -165,7 +191,7 @@ def fetch_public_recruitment_sources() -> list[dict]:
                     "historical_applicants": None, "historical_offers": None,
                     "last_verified_at": datetime.now(timezone.utc).isoformat(), "status": "open",
                 })
-                if not is_actionable_recruitment_listing(jobs[-1]):
+                if not is_priority_campus_listing(jobs[-1]):
                     jobs.pop()
                     continue
                 if index > 80:
