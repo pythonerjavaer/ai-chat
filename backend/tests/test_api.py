@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import tempfile
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.message import Message
 from io import BytesIO
 from pathlib import Path
@@ -13,6 +13,7 @@ os.environ["OPENAI_API_KEY"] = "test-key"
 os.environ["JWT_SECRET"] = "test-secret-that-is-long-enough-for-tests"
 os.environ["DATABASE_PATH"] = str(TEST_DIRECTORY / "test.db")
 os.environ["RECRUITMENT_INGEST_TOKEN"] = "test-recruitment-ingest-token"
+os.environ["ADMIN_DASHBOARD_TOKEN"] = "test-admin-dashboard-token"
 os.environ["RECRUITMENT_REFRESH_MINUTES"] = "0"
 
 from fastapi.testclient import TestClient
@@ -87,6 +88,138 @@ def test_authentication_and_user_isolation():
         assert forbidden.status_code == 404
 
 
+def test_admin_usage_is_token_protected_aggregate_only():
+    with TestClient(main.app) as client:
+        missing = client.get("/api/admin/usage")
+        assert missing.status_code == 401
+        wrong = client.get(
+            "/api/admin/usage",
+            headers={"X-Admin-Token": "wrong-token"},
+        )
+        assert wrong.status_code == 401
+
+        _, user = register(client, "admin-metrics-user")
+        session = database.create_session(user["id"], title="Sensitive title")
+        database.append_message(session["id"], "user", "TOP SECRET CHAT BODY")
+        database.append_message(session["id"], "assistant", "PRIVATE MODEL REPLY")
+        database.create_document(
+            user["id"],
+            "private-document.md",
+            "CONFIDENTIAL DOCUMENT CONTENT",
+            [{"content": "CONFIDENTIAL CHUNK", "page": None}],
+            [[1.0, 0.0]],
+        )
+        space = database.create_space(
+            user["id"],
+            "Private Space",
+            "Private description",
+            "X",
+            "mono",
+            "blank",
+            "PRIVATE SYSTEM PROMPT",
+            10_000,
+        )
+        database.create_space_run(
+            user["id"],
+            space["id"],
+            "fingerprint",
+            "lean",
+            "lean",
+            "PRIVATE SPACE INPUT",
+            {},
+            "PRIVATE SPACE OUTPUT",
+            actual_input_tokens=17,
+            actual_output_tokens=5,
+            actual_total_tokens=22,
+        )
+        database.record_token_usage(user["id"], space["id"], 17, 5, 22)
+
+        response = client.get(
+            "/api/admin/usage?hours=24&bucket_minutes=60",
+            headers={"X-Admin-Token": "test-admin-dashboard-token"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["totals"]["users"] >= 1
+        assert payload["totals"]["active_users_24h"] >= 1
+        assert payload["totals"]["sessions"] >= 1
+        assert payload["totals"]["messages"] >= 2
+        assert payload["totals"]["documents"] >= 1
+        assert payload["totals"]["ai_requests"] >= 2
+        assert payload["totals"]["input_tokens"] >= 17
+        assert payload["recent"]["registrations_24h"] >= 1
+        assert payload["recent"]["messages_24h"] >= 2
+        assert payload["recent"]["ai_requests_24h"] >= 2
+        assert payload["series"]
+        serialized = response.text
+        for secret in (
+            "TOP SECRET CHAT BODY",
+            "PRIVATE MODEL REPLY",
+            "CONFIDENTIAL DOCUMENT CONTENT",
+            "CONFIDENTIAL CHUNK",
+            "PRIVATE SYSTEM PROMPT",
+            "PRIVATE SPACE INPUT",
+            "PRIVATE SPACE OUTPUT",
+            "correct-horse-123",
+        ):
+            assert secret not in serialized
+
+
+def test_admin_usage_unconfigured_does_not_break_health(monkeypatch):
+    unconfigured = vars(main.settings).copy()
+    unconfigured["admin_dashboard_token"] = ""
+    monkeypatch.setattr(
+        main,
+        "settings",
+        SimpleNamespace(**unconfigured),
+    )
+    with TestClient(main.app) as client:
+        unavailable = client.get(
+            "/api/admin/usage",
+            headers={"X-Admin-Token": "anything"},
+        )
+        assert unavailable.status_code == 503
+        assert client.get("/api/health").status_code == 200
+
+
+def test_api_usage_events_expire_after_retention_window():
+    expired_at = (
+        datetime.now(timezone.utc)
+        - timedelta(days=database.API_USAGE_RETENTION_DAYS + 1)
+    ).isoformat()
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO api_usage_events
+                (user_id, method, route, status_code, duration_ms, created_at)
+            VALUES (NULL, 'GET', '/api/expired-test', 200, 1, ?)
+            """,
+            (expired_at,),
+        )
+    database.record_api_usage_event(None, "GET", "/api/current-test", 200, 1)
+    with database.connect() as connection:
+        expired_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM api_usage_events WHERE route = ?",
+            ("/api/expired-test",),
+        ).fetchone()["count"]
+    assert expired_count == 0
+
+
+def test_api_usage_event_detaches_deleted_or_missing_user():
+    database.record_api_usage_event(999_999_999, "DELETE", "/api/auth/account", 204, 2)
+    with database.connect() as connection:
+        row = connection.execute(
+            """
+            SELECT user_id, status_code
+            FROM api_usage_events
+            WHERE route = '/api/auth/account'
+            ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+    assert row["user_id"] is None
+    assert row["status_code"] == 204
+
+
 def test_privacy_consent_and_account_deletion():
     with TestClient(main.app) as client:
         rejected = client.post(
@@ -154,11 +287,15 @@ def test_persistent_chat_and_session_history(monkeypatch):
     monkeypatch.setattr(
         main,
         "run_agent",
-        lambda *_: ("Persisted assistant reply", ["calculate"]),
+        lambda *_: (
+            "Persisted assistant reply",
+            ["calculate"],
+            {"input_tokens": 31, "output_tokens": 9, "total_tokens": 40},
+        ),
     )
 
     with TestClient(main.app) as client:
-        token, _ = register(client, "persistent-user")
+        token, user = register(client, "persistent-user")
         response = client.post(
             "/api/chat",
             headers=auth(token),
@@ -168,6 +305,11 @@ def test_persistent_chat_and_session_history(monkeypatch):
         payload = response.json()
         assert payload["reply"] == "Persisted assistant reply"
         assert payload["tools_used"] == ["calculate"]
+        assert database.model_token_usage(user["id"])["total_tokens"] == 40
+        assert database.token_usage(user["id"])["total_tokens"] == 0
+        billing = client.get("/api/billing/status", headers=auth(token))
+        assert billing.status_code == 200
+        assert billing.json()["remaining_tokens"] == billing.json()["limits"]["monthly_tokens"]
 
         messages = client.get(
             f"/api/sessions/{payload['session_id']}/messages",
@@ -241,12 +383,13 @@ def test_streaming_chat_persists_final_reply(monkeypatch):
             "type": "done",
             "reply": "Hello world",
             "tools_used": ["get_current_time"],
+            "usage": {"input_tokens": 20, "output_tokens": 4, "total_tokens": 24},
         }
 
     monkeypatch.setattr(main, "stream_agent", fake_stream)
 
     with TestClient(main.app) as client:
-        token, _ = register(client, "stream-user")
+        token, user = register(client, "stream-user")
         response = client.post(
             "/api/chat/stream",
             headers=auth(token),
@@ -257,6 +400,8 @@ def test_streaming_chat_persists_final_reply(monkeypatch):
         assert "event: token" in response.text
         assert "Hello world" not in response.text
         assert "get_current_time" in response.text
+        assert database.model_token_usage(user["id"])["total_tokens"] == 24
+        assert database.token_usage(user["id"])["total_tokens"] == 0
 
         session_id = next(
             line.split('"session_id": "', 1)[1].split('"', 1)[0]

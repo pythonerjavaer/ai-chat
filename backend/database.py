@@ -2,7 +2,7 @@ import json
 import math
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .config import settings
@@ -10,6 +10,7 @@ from .workspaces import DEFAULT_WORKSPACE, validate_workspace
 
 
 SPACE_RUN_HISTORY_LIMIT = 100
+API_USAGE_RETENTION_DAYS = 30
 
 
 def utc_now() -> str:
@@ -208,6 +209,17 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS api_usage_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                method TEXT NOT NULL,
+                route TEXT NOT NULL,
+                status_code INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sessions_user_updated
                 ON sessions(user_id, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -270,6 +282,14 @@ def init_db() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_recruitment_watches_user_updated "
             "ON recruitment_watches(user_id, updated_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_api_usage_events_created "
+            "ON api_usage_events(created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_api_usage_events_user_created "
+            "ON api_usage_events(user_id, created_at)"
         )
         for column, declaration in (
             ("education_level", "TEXT NOT NULL DEFAULT ''"),
@@ -485,7 +505,9 @@ def usage_period() -> str:
 
 def token_usage(user_id: int, space_id: str | None = None) -> dict[str, int]:
     parameters: list[Any] = [user_id, usage_period()]
-    space_filter = ""
+    # This ledger powers AI Space budgets. General chat usage is intentionally
+    # excluded so monitoring cannot silently consume a Space subscription cap.
+    space_filter = "AND space_id IS NOT NULL"
     if space_id:
         space_filter = "AND space_id = ?"
         parameters.append(space_id)
@@ -503,9 +525,25 @@ def token_usage(user_id: int, space_id: str | None = None) -> dict[str, int]:
     return {key: int(row[key]) for key in row.keys()}
 
 
+def model_token_usage(user_id: int) -> dict[str, int]:
+    """Return every recorded model token, including general chat and AI Space."""
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(total_tokens), 0) AS total_tokens
+            FROM token_usage
+            WHERE user_id = ? AND period = ?
+            """,
+            (user_id, usage_period()),
+        ).fetchone()
+    return {key: int(row[key]) for key in row.keys()}
+
+
 def record_token_usage(
     user_id: int,
-    space_id: str,
+    space_id: str | None,
     input_tokens: int,
     output_tokens: int,
     total_tokens: int,
@@ -527,6 +565,448 @@ def record_token_usage(
                 utc_now(),
             ),
         )
+def record_api_usage_event(
+    user_id: int | None,
+    method: str,
+    route: str,
+    status_code: int,
+    duration_ms: int,
+) -> None:
+    """Persist content-free request metadata for aggregate operations metrics."""
+    safe_route = route[:160] if route.startswith("/api/") else "/api/unknown"
+    with connect() as connection:
+        tracked_user_id = user_id
+        if user_id is not None:
+            exists = connection.execute(
+                "SELECT 1 FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if not exists:
+                tracked_user_id = None
+        connection.execute(
+            """
+            INSERT INTO api_usage_events
+                (user_id, method, route, status_code, duration_ms, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tracked_user_id,
+                method.upper()[:12],
+                safe_route,
+                max(100, min(int(status_code), 599)),
+                max(0, min(int(duration_ms), 3_600_000)),
+                utc_now(),
+            ),
+        )
+        retention_cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=API_USAGE_RETENTION_DAYS)
+        ).isoformat()
+        connection.execute(
+            "DELETE FROM api_usage_events WHERE created_at < ?",
+            (retention_cutoff,),
+        )
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def aggregate_admin_usage(
+    hours: int = 24,
+    bucket_minutes: int = 60,
+) -> dict[str, Any]:
+    """Return aggregate product usage without selecting user-generated content."""
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(hours=hours)
+    live_start = now - timedelta(minutes=15)
+    bucket_seconds = bucket_minutes * 60
+    bucket_count = max(1, math.ceil((now - window_start).total_seconds() / bucket_seconds))
+    buckets: list[dict[str, Any]] = []
+    bucket_users: list[set[int]] = []
+    bucket_sessions: list[set[str]] = []
+    for index in range(bucket_count):
+        start = window_start + timedelta(seconds=index * bucket_seconds)
+        end = min(now, start + timedelta(seconds=bucket_seconds))
+        buckets.append(
+            {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "registrations": 0,
+                "active_users": 0,
+                "sessions_created": 0,
+                "active_sessions": 0,
+                "messages": 0,
+                "chat_calls": 0,
+                "assistant_messages": 0,
+                "space_calls": 0,
+                "ai_requests": 0,
+                "successful_space_calls": 0,
+                "failed_space_calls": 0,
+                "api_requests": 0,
+                "api_errors": 0,
+                "server_errors": 0,
+                "average_latency_ms": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "_latency_total": 0,
+            }
+        )
+        bucket_users.append(set())
+        bucket_sessions.append(set())
+
+    def bucket_index(created_at: str) -> tuple[int, datetime] | None:
+        parsed = _parse_timestamp(created_at)
+        if parsed is None or parsed < window_start or parsed > now:
+            return None
+        index = min(
+            bucket_count - 1,
+            int((parsed - window_start).total_seconds() // bucket_seconds),
+        )
+        return index, parsed
+
+    active_users: set[int] = set()
+    active_sessions: set[str] = set()
+    live_users: set[int] = set()
+    live_sessions: set[str] = set()
+    live = {
+        "window_minutes": 15,
+        "active_users": 0,
+        "active_sessions": 0,
+        "api_requests": 0,
+        "chat_calls": 0,
+        "space_calls": 0,
+        "ai_requests": 0,
+        "errors": 0,
+    }
+
+    with connect() as connection:
+        totals_row = connection.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM users) AS registered_users,
+                (SELECT COUNT(*) FROM sessions) AS sessions,
+                (SELECT COUNT(*) FROM messages) AS messages,
+                (SELECT COUNT(*) FROM documents) AS documents,
+                (SELECT COUNT(*) FROM messages WHERE role = 'user') AS chat_calls,
+                (SELECT COUNT(*) FROM space_runs) AS space_calls,
+                ((SELECT COUNT(*) FROM messages WHERE role = 'user') +
+                 (SELECT COUNT(*) FROM space_runs
+                  WHERE execution_path IN ('lean', 'deep'))) AS ai_requests,
+                (SELECT COUNT(*) FROM space_runs WHERE status = 'failed') AS failed_space_calls,
+                (SELECT COUNT(*) FROM api_usage_events) AS api_requests,
+                (SELECT COUNT(*) FROM api_usage_events WHERE status_code >= 400) AS api_errors,
+                (SELECT COUNT(*) FROM api_usage_events WHERE status_code >= 500) AS server_errors
+            """
+        ).fetchone()
+        token_row = connection.execute(
+            """
+            SELECT COUNT(*) AS usage_records,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(total_tokens), 0) AS total_tokens
+            FROM token_usage
+            """
+        ).fetchone()
+        watch_error_row = connection.execute(
+            "SELECT COUNT(*) AS count FROM recruitment_watches WHERE last_status = 'error'"
+        ).fetchone()
+        first_event_row = connection.execute(
+            "SELECT MIN(created_at) AS created_at FROM api_usage_events"
+        ).fetchone()
+        cutoff_24h = (now - timedelta(hours=24)).isoformat()
+        recent_24h_row = connection.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM users WHERE created_at >= ?) AS registrations,
+                (SELECT COUNT(*) FROM sessions WHERE updated_at >= ?) AS active_sessions,
+                (SELECT COUNT(*) FROM messages WHERE created_at >= ?) AS messages,
+                ((SELECT COUNT(*) FROM messages
+                  WHERE role = 'user' AND created_at >= ?) +
+                 (SELECT COUNT(*) FROM space_runs
+                  WHERE execution_path IN ('lean', 'deep') AND created_at >= ?))
+                    AS ai_requests
+            """,
+            (cutoff_24h, cutoff_24h, cutoff_24h, cutoff_24h, cutoff_24h),
+        ).fetchone()
+        active_users_24h_row = connection.execute(
+            """
+            SELECT COUNT(DISTINCT user_id) AS count
+            FROM (
+                SELECT sessions.user_id AS user_id
+                FROM messages
+                JOIN sessions ON sessions.id = messages.session_id
+                WHERE messages.created_at >= ?
+                UNION
+                SELECT user_id FROM sessions WHERE updated_at >= ?
+                UNION
+                SELECT user_id FROM space_runs WHERE created_at >= ?
+                UNION
+                SELECT user_id FROM api_usage_events
+                WHERE user_id IS NOT NULL AND created_at >= ?
+            )
+            """,
+            (cutoff_24h, cutoff_24h, cutoff_24h, cutoff_24h),
+        ).fetchone()
+
+        users = connection.execute(
+            "SELECT id, created_at FROM users WHERE created_at >= ?",
+            (window_start.isoformat(),),
+        ).fetchall()
+        sessions = connection.execute(
+            """
+            SELECT id, user_id, created_at, updated_at
+            FROM sessions
+            WHERE created_at >= ? OR updated_at >= ?
+            """,
+            (window_start.isoformat(), window_start.isoformat()),
+        ).fetchall()
+        messages = connection.execute(
+            """
+            SELECT messages.session_id, sessions.user_id, messages.role,
+                   messages.created_at
+            FROM messages
+            JOIN sessions ON sessions.id = messages.session_id
+            WHERE messages.created_at >= ?
+            """,
+            (window_start.isoformat(),),
+        ).fetchall()
+        space_runs = connection.execute(
+            """
+            SELECT user_id, status, execution_path, created_at
+            FROM space_runs
+            WHERE created_at >= ?
+            """,
+            (window_start.isoformat(),),
+        ).fetchall()
+        token_records = connection.execute(
+            """
+            SELECT user_id, input_tokens, output_tokens, total_tokens, created_at
+            FROM token_usage
+            WHERE created_at >= ?
+            """,
+            (window_start.isoformat(),),
+        ).fetchall()
+        api_events = connection.execute(
+            """
+            SELECT user_id, status_code, duration_ms, created_at
+            FROM api_usage_events
+            WHERE created_at >= ?
+            """,
+            (window_start.isoformat(),),
+        ).fetchall()
+
+    for row in users:
+        located = bucket_index(row["created_at"])
+        if located:
+            buckets[located[0]]["registrations"] += 1
+
+    for row in sessions:
+        created = bucket_index(row["created_at"])
+        if created:
+            buckets[created[0]]["sessions_created"] += 1
+        updated = bucket_index(row["updated_at"])
+        if updated:
+            index, parsed = updated
+            user_id = int(row["user_id"])
+            session_id = str(row["id"])
+            bucket_users[index].add(user_id)
+            bucket_sessions[index].add(session_id)
+            active_users.add(user_id)
+            active_sessions.add(session_id)
+            if parsed >= live_start:
+                live_users.add(user_id)
+                live_sessions.add(session_id)
+
+    for row in messages:
+        located = bucket_index(row["created_at"])
+        if not located:
+            continue
+        index, parsed = located
+        user_id = int(row["user_id"])
+        session_id = str(row["session_id"])
+        buckets[index]["messages"] += 1
+        if row["role"] == "user":
+            buckets[index]["chat_calls"] += 1
+            buckets[index]["ai_requests"] += 1
+            if parsed >= live_start:
+                live["chat_calls"] += 1
+                live["ai_requests"] += 1
+        else:
+            buckets[index]["assistant_messages"] += 1
+        bucket_users[index].add(user_id)
+        bucket_sessions[index].add(session_id)
+        active_users.add(user_id)
+        active_sessions.add(session_id)
+        if parsed >= live_start:
+            live_users.add(user_id)
+            live_sessions.add(session_id)
+
+    for row in space_runs:
+        located = bucket_index(row["created_at"])
+        if not located:
+            continue
+        index, parsed = located
+        user_id = int(row["user_id"])
+        buckets[index]["space_calls"] += 1
+        status_value = str(row["status"])
+        is_model_call = row["execution_path"] in {"lean", "deep"}
+        if is_model_call:
+            buckets[index]["ai_requests"] += 1
+        if status_value == "failed":
+            buckets[index]["failed_space_calls"] += 1
+        elif status_value == "completed":
+            buckets[index]["successful_space_calls"] += 1
+        bucket_users[index].add(user_id)
+        active_users.add(user_id)
+        if parsed >= live_start:
+            live_users.add(user_id)
+            live["space_calls"] += 1
+            if is_model_call:
+                live["ai_requests"] += 1
+            if status_value == "failed":
+                live["errors"] += 1
+
+    for row in token_records:
+        located = bucket_index(row["created_at"])
+        if not located:
+            continue
+        index, parsed = located
+        user_id = int(row["user_id"])
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            buckets[index][key] += int(row[key] or 0)
+        bucket_users[index].add(user_id)
+        active_users.add(user_id)
+        if parsed >= live_start:
+            live_users.add(user_id)
+
+    for row in api_events:
+        located = bucket_index(row["created_at"])
+        if not located:
+            continue
+        index, parsed = located
+        status_code = int(row["status_code"])
+        buckets[index]["api_requests"] += 1
+        buckets[index]["_latency_total"] += int(row["duration_ms"] or 0)
+        if status_code >= 400:
+            buckets[index]["api_errors"] += 1
+            if parsed >= live_start:
+                live["errors"] += 1
+        if status_code >= 500:
+            buckets[index]["server_errors"] += 1
+        if row["user_id"] is not None:
+            user_id = int(row["user_id"])
+            bucket_users[index].add(user_id)
+            active_users.add(user_id)
+            if parsed >= live_start:
+                live_users.add(user_id)
+        if parsed >= live_start:
+            live["api_requests"] += 1
+
+    for index, bucket in enumerate(buckets):
+        bucket["active_users"] = len(bucket_users[index])
+        bucket["active_sessions"] = len(bucket_sessions[index])
+        if bucket["api_requests"]:
+            bucket["average_latency_ms"] = round(
+                bucket["_latency_total"] / bucket["api_requests"]
+            )
+        bucket.pop("_latency_total", None)
+
+    live["active_users"] = len(live_users)
+    live["active_sessions"] = len(live_sessions)
+    recent = {
+        "registrations": sum(item["registrations"] for item in buckets),
+        "active_users": len(active_users),
+        "sessions_created": sum(item["sessions_created"] for item in buckets),
+        "active_sessions": len(active_sessions),
+        "messages": sum(item["messages"] for item in buckets),
+        "chat_calls": sum(item["chat_calls"] for item in buckets),
+        "space_calls": sum(item["space_calls"] for item in buckets),
+        "ai_requests": sum(item["ai_requests"] for item in buckets),
+        "api_requests": sum(item["api_requests"] for item in buckets),
+        "api_errors": sum(item["api_errors"] for item in buckets),
+        "server_errors": sum(item["server_errors"] for item in buckets),
+        "input_tokens": sum(item["input_tokens"] for item in buckets),
+        "output_tokens": sum(item["output_tokens"] for item in buckets),
+        "total_tokens": sum(item["total_tokens"] for item in buckets),
+    }
+    totals = {key: int(totals_row[key] or 0) for key in totals_row.keys()}
+    totals["users"] = totals["registered_users"]
+    totals["active_users_24h"] = int(active_users_24h_row["count"] or 0)
+    totals["active_sessions_24h"] = int(recent_24h_row["active_sessions"] or 0)
+    totals["input_tokens"] = int(token_row["input_tokens"] or 0)
+    totals["output_tokens"] = int(token_row["output_tokens"] or 0)
+    totals["total_tokens"] = int(token_row["total_tokens"] or 0)
+    totals["token_usage"] = {
+        key: int(token_row[key] or 0)
+        for key in ("usage_records", "input_tokens", "output_tokens", "total_tokens")
+    }
+    recent.update(
+        {
+            "registrations_24h": int(recent_24h_row["registrations"] or 0),
+            "messages_24h": int(recent_24h_row["messages"] or 0),
+            "ai_requests_24h": int(recent_24h_row["ai_requests"] or 0),
+        }
+    )
+    series = [
+        {
+            "date": item["start"],
+            "active_users": item["active_users"],
+            "messages": item["messages"],
+            "ai_requests": item["ai_requests"],
+            "tokens": item["total_tokens"],
+        }
+        for item in buckets
+    ]
+    return {
+        "generated_at": now.isoformat(),
+        "window": {
+            "hours": hours,
+            "bucket_minutes": bucket_minutes,
+            "start": window_start.isoformat(),
+            "end": now.isoformat(),
+        },
+        "totals": totals,
+        "recent": recent,
+        "live": live,
+        "buckets": buckets,
+        "series": series,
+        "errors": {
+            "api_errors": totals["api_errors"],
+            "server_errors": totals["server_errors"],
+            "failed_space_calls": totals["failed_space_calls"],
+            "recruitment_watches_currently_failing": int(watch_error_row["count"] or 0),
+        },
+        "data_coverage": {
+            "api_requests_since": first_event_row["created_at"],
+            "ai_request_scope": (
+                "User chat prompts plus AI Space lean/deep model executions."
+            ),
+            "token_scope": (
+                "Recorded AI Space calls and chat calls whose OpenAI response "
+                "included usage metadata."
+            ),
+            "chat_token_usage_available": True,
+            "latency_scope": (
+                "HTTP response creation time; streaming duration is not included."
+            ),
+            "privacy": (
+                "Aggregate counts and request metadata only; message, document, "
+                "password, prompt and response content are never returned."
+            ),
+            "api_event_retention_days": API_USAGE_RETENTION_DAYS,
+            "api_error_scope": (
+                "Errors emitted after an SSE response has started are not reflected "
+                "in HTTP status aggregates."
+            ),
+        },
+    }
 
 
 def _public_space_run(row: sqlite3.Row | None) -> dict[str, Any] | None:

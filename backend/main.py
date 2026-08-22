@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import secrets
 import threading
 import time
@@ -338,7 +339,7 @@ async def lifespan(_: FastAPI):
                 pass
 
 
-PRIVACY_VERSION = "2026-08-22"
+PRIVACY_VERSION = "2026-08-22.2"
 
 
 app = FastAPI(title="Bingyan API", version="4.1.0", lifespan=lifespan)
@@ -353,14 +354,42 @@ app.add_middleware(
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    response = await call_next(request)
+    started_at = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        _record_api_usage(request, 500, started_at)
+        raise
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+    _record_api_usage(request, response.status_code, started_at)
     return response
+
+
+def _record_api_usage(request: Request, status_code: int, started_at: float) -> None:
+    """Best-effort telemetry: endpoint metadata only, never bodies or headers."""
+    if not request.url.path.startswith("/api/") or request.url.path in {
+        "/api/health",
+        "/api/admin/usage",
+    }:
+        return
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None) or "/api/unknown"
+    duration_ms = round((time.perf_counter() - started_at) * 1_000)
+    try:
+        database.record_api_usage_event(
+            getattr(request.state, "user_id", None),
+            request.method,
+            route_path,
+            status_code,
+            duration_ms,
+        )
+    except Exception:
+        logger.exception("API usage metadata could not be recorded")
 
 
 class AuthRequest(BaseModel):
@@ -460,6 +489,7 @@ class RecruitmentWatchAcknowledgeRequest(BaseModel):
 
 
 def current_user(
+    request: Request,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
@@ -474,6 +504,7 @@ def current_user(
         user = None
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired access token.")
+    request.state.user_id = user["id"]
     return user
 
 
@@ -583,13 +614,43 @@ def health() -> dict:
     return {"status": "ok", "version": app.version}
 
 
+def require_admin_dashboard_token(
+    token: Annotated[
+        str | None,
+        Header(alias="X-Admin-Token"),
+    ] = None,
+) -> None:
+    configured_token = settings.admin_dashboard_token
+    if not configured_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin usage dashboard is not configured.",
+        )
+    if not token or not secrets.compare_digest(token, configured_token):
+        raise HTTPException(status_code=401, detail="Invalid admin dashboard token.")
+
+
+@app.get("/api/admin/usage")
+def admin_usage(
+    _: Annotated[None, Depends(require_admin_dashboard_token)],
+    hours: int = Query(default=24, ge=1, le=720),
+    bucket_minutes: int = Query(default=60, ge=5, le=1_440),
+) -> dict:
+    if math.ceil(hours * 60 / bucket_minutes) > 1_000:
+        raise HTTPException(
+            status_code=422,
+            detail="Requested window creates too many buckets; increase bucket_minutes.",
+        )
+    return database.aggregate_admin_usage(hours, bucket_minutes)
+
+
 @app.get("/api/workspaces")
 def workspaces() -> list[dict]:
     return public_workspace_config()
 
 
 @app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
-def register(request: AuthRequest) -> dict:
+def register(request: AuthRequest, raw_request: Request) -> dict:
     enforce_registration_rate()
     if not request.privacy_accepted:
         raise HTTPException(
@@ -604,14 +665,16 @@ def register(request: AuthRequest) -> dict:
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    raw_request.state.user_id = user["id"]
     return token_response(user)
 
 
 @app.post("/api/auth/login")
-def login(request: AuthRequest) -> dict:
+def login(request: AuthRequest, raw_request: Request) -> dict:
     user = database.get_user_by_username(request.username.strip())
     if not user or not verify_password(request.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
+    raw_request.state.user_id = user["id"]
     return token_response(user)
 
 
@@ -1655,7 +1718,21 @@ def chat(request: ChatRequest, user: ConsentedUser) -> dict:
     try:
         enforce_model_request_rate(user["id"], 4)
         session, messages, sources = prepare_chat(user["id"], request)
-        reply, tools_used = run_agent(messages, session["workspace"])
+        agent_result = run_agent(messages, session["workspace"])
+        reply, tools_used = agent_result[:2]
+        usage = (
+            agent_result[2]
+            if len(agent_result) > 2
+            else {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        )
+        if usage.get("total_tokens", 0):
+            database.record_token_usage(
+                user["id"],
+                None,
+                int(usage.get("input_tokens", 0)),
+                int(usage.get("output_tokens", 0)),
+                int(usage.get("total_tokens", 0)),
+            )
         database.append_message(session["id"], "assistant", reply)
         return {
             "reply": reply,
@@ -1705,6 +1782,15 @@ def chat_stream(request: ChatRequest, user: ConsentedUser) -> StreamingResponse:
                     yield sse("tool", {"name": event["name"]})
                 elif event["type"] == "done":
                     reply = event["reply"] or "".join(reply_parts)
+                    usage = event.get("usage") or {}
+                    if usage.get("total_tokens", 0):
+                        database.record_token_usage(
+                            user["id"],
+                            None,
+                            int(usage.get("input_tokens", 0)),
+                            int(usage.get("output_tokens", 0)),
+                            int(usage.get("total_tokens", 0)),
+                        )
                     database.append_message(session["id"], "assistant", reply)
                     yield sse(
                         "done",
