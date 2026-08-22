@@ -1377,11 +1377,13 @@ function renderRecruitmentMonitors(pools = []) {
 
 function renderRecruitmentDeadlineAlerts(jobs) {
   elements.recruitmentDeadlineAlerts.replaceChildren();
-  const urgent = jobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 7);
-  const dated = jobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0);
+  const reviewJobs = jobs.filter((job) => (job.tags || []).includes("待官方核验"));
+  const verifiedJobs = jobs.filter((job) => !(job.tags || []).includes("待官方核验"));
+  const urgent = verifiedJobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 7);
+  const dated = verifiedJobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0);
   const heading = document.createElement("strong");
   heading.textContent = urgent.length
-    ? `网申截止预警 · ${urgent.length} 个校招岗位将在 7 天内截止`
+    ? `网申截止预警 · ${urgent.length} 个已核验校招岗位将在 7 天内截止`
     : dated.length
       ? "网申截止预警 · 暂无 7 天内到期的已核验校招岗位"
       : "网申截止预警 · 暂无公告明确标注截止日期，刷新后将自动核验";
@@ -1395,6 +1397,12 @@ function renderRecruitmentDeadlineAlerts(jobs) {
     list.appendChild(item);
   });
   elements.recruitmentDeadlineAlerts.append(heading, list);
+  if (reviewJobs.length) {
+    const note = document.createElement("small");
+    note.className = "recruitment-review-note";
+    note.textContent = `另有 ${reviewJobs.length} 个候选岗位保留在列表中，因岗位称谓尚未被官方原文确认，不计入截止预警。`;
+    elements.recruitmentDeadlineAlerts.append(note);
+  }
 }
 
 function renderRecruitmentJobs(jobs) {
@@ -1441,6 +1449,9 @@ function renderRecruitmentJobs(jobs) {
       makeElement("span", "job-company", job.company || "招聘单位"),
       makeElement("span", "job-type", job.employer_type || "重点雇主"),
     );
+    if ((job.tags || []).includes("待官方核验")) {
+      labels.append(makeElement("span", "job-verification", "待官方核验"));
+    }
     const rank = makeElement("div", "job-rank");
     rank.appendChild(makeElement("span", `job-tier ${tierCode.replace(".", "-")}`, tierCode));
     top.append(labels, rank);

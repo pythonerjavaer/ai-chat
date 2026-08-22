@@ -328,6 +328,7 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .job-tier.T3 { color: #9ce4c1; border: 1px solid rgba(91,214,155,.25); background: rgba(55,171,116,.1); }
 .job-company { color: #eaf8ff; font-size: 12px; font-weight: 800; }
 .job-type { padding: 3px 6px; color: #9fd8e9; border: 1px solid rgba(109,203,236,.17); border-radius: 5px; background: rgba(75,187,222,.08); font-size: 8px; }
+.job-verification { padding: 3px 6px; color: #ffd39b; border: 1px solid rgba(255,180,96,.24); border-radius: 5px; background: rgba(255,142,58,.09); font-size: 8px; }
 .job-score { color: #8ee4bc; font-size: 11px; font-weight: 800; }
 .recruitment-job-card h4 { margin: 11px 0 5px; font-size: 14px; }
 .job-meta, .job-requirements { margin: 0; color: #8fa3b5; font-size: 10px; line-height: 1.55; }
@@ -335,6 +336,7 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .job-card-bottom { margin-top: 13px; padding-top: 11px; border-top: 1px solid rgba(255,255,255,.07); color: #8196a7; font-size: 9px; }
 .job-card-bottom strong { color: #ffd28d; font-size: 10px; }
 .job-card-bottom a { color: #9edfff; font-size: 9px; }
+.recruitment-review-note { display: block; margin-top: 8px; color: #c9a578; font-size: 9px; line-height: 1.5; }
 .job-watch-button { min-height: 32px; padding: 0 10px; color: #bff9e8; border: 1px solid rgba(99,222,184,.22); border-radius: 8px; background: rgba(48,177,139,.08); cursor: pointer; font-size: 9px; font-weight: 700; }
 .job-watch-button:hover { border-color: rgba(99,222,184,.42); background: rgba(48,177,139,.14); }
 .job-watch-button:disabled { cursor: wait; opacity: .55; }
@@ -754,7 +756,11 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; backg
 .concept-menu-grid { display: grid; gap: 6px; margin-top: 22px; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.02); }
 
 @media (max-width: 1180px) {
-  .app-header { grid-template-columns: 220px 1fr 190px; }
+  .app-header { grid-template-columns: 170px minmax(0,1fr) auto; gap: 8px; }
+  .header-actions { min-width: max-content; gap: 7px; }
+  .recruitment-launch, .studio-launch { width: 36px; min-width: 36px; justify-content: center; gap: 0; padding: 0; }
+  .recruitment-launch b, .studio-launch b { display: none; }
+  .recruitment-launch span, .studio-launch > span { flex: 0 0 auto; }
   .knowledge-panel { position: fixed; z-index: 21; top: calc(68px + env(safe-area-inset-top)); right: 0; bottom: 0; width: 310px; transform: translateX(105%); box-shadow: -18px 0 60px rgba(0,0,0,.34); transition: transform .28s ease; }
   .knowledge-panel.open { transform: translateX(0); }
   .studio-grid { grid-template-columns: 250px minmax(0,1fr); }

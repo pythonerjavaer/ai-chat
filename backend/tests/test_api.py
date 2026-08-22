@@ -1159,7 +1159,7 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
     assert result.failed_pools == ()
 
 
-def test_web_search_rejects_unsupported_policy_bank_management_trainee_claims():
+def test_web_search_marks_policy_bank_management_trainee_claims_for_review():
     base = {
         "city": "北京",
         "industry": "金融",
@@ -1169,16 +1169,18 @@ def test_web_search_rejects_unsupported_policy_bank_management_trainee_claims():
         "requirements": "面向应届毕业生的校园招聘",
         "category": "银行/金融",
     }
-    assert recruitment_search._normalize_job({
+    agriculture_job = recruitment_search._normalize_job({
         **base,
         "company": "中国农业发展银行",
         "title": "2026年管培生招聘",
-    }) is None
-    assert recruitment_search._normalize_job({
+    })
+    central_bank_job = recruitment_search._normalize_job({
         **base,
         "company": "中国人民银行",
         "title": "2026年管理培训生招聘",
-    }) is None
+    })
+    assert agriculture_job and "待官方核验" in agriculture_job["tags"]
+    assert central_bank_job and "待官方核验" in central_bank_job["tags"]
 
 
 def test_web_search_discards_candidate_with_unreadable_link(monkeypatch):

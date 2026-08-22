@@ -52,11 +52,9 @@ EMPLOYER_TYPE_BY_NAME = {
 }
 
 # These institutions publish campus and affiliated-unit recruitment under
-# specific official notices.  A generic "management trainee" label for either
-# institution is not an official job family and has repeatedly produced false
-# positives from search snippets.  Keep this narrowly scoped: it does not
-# suppress recruitment by their separately named affiliates.
-UNSUPPORTED_MANAGEMENT_TRAINEE_EMPLOYERS = {
+# specific official notices. A management-trainee label may be real, but it
+# must not be presented as an official fact without the exact source wording.
+MANAGEMENT_TRAINEE_REVIEW_EMPLOYERS = {
     "中国人民银行",
     "人行",
     "中国农业发展银行",
@@ -129,7 +127,7 @@ category 固定填写：{category}
 3. official_url 必须是企业招聘官网或企业授权 ATS 的直接 HTTPS 链接，不得填搜索结果页、公众号转载、社交媒体或臆造链接。
 4. opening_date / closing_date 只有原文明确写明时才填写 YYYY-MM-DD，否则为 null；不得把发布日期当截止日期。
 5. city 未公告时写“地点待公告确认”。requirements 简洁记录毕业年份、学历、专业、语言或笔试门槛；无法确认时明确写“待官方原文核对”。
-6. 中国人民银行和中国农业发展银行只能使用其官方公告中的实际岗位名称；不得把笼统校园招聘或所属单位招聘改写成“管培生”。
+6. 中国人民银行和中国农业发展银行只能使用官方原文中的实际岗位名称；不得自行把笼统校园招聘或所属单位招聘改写成“管培生”。如果原文确实使用该称谓，保留原称并标记“待官方核验”。
 7. 最多返回 {MAX_JOBS_PER_CATEGORY} 条，优先最新和截止日期较近的岗位。
 """.strip()
 
@@ -153,14 +151,14 @@ def _priority_employer(company: str) -> str | None:
     return max(matches, key=len) if matches else None
 
 
-def _is_unsupported_management_trainee_claim(company: str, title: str) -> bool:
+def _needs_management_trainee_review(company: str, title: str) -> bool:
     normalized_company = re.sub(r"\s+", "", company).casefold()
     normalized_title = re.sub(r"\s+", "", title).casefold()
     return (
         ("管培" in normalized_title or "管理培训生" in normalized_title)
         and any(
             employer in normalized_company
-            for employer in UNSUPPORTED_MANAGEMENT_TRAINEE_EMPLOYERS
+            for employer in MANAGEMENT_TRAINEE_REVIEW_EMPLOYERS
         )
     )
 
@@ -203,8 +201,7 @@ def _normalize_job(item: dict[str, Any]) -> dict[str, Any] | None:
     if not employer_key:
         return None
     title = re.sub(r"\s+", " ", str(item.get("title", ""))).strip()[:240]
-    if _is_unsupported_management_trainee_claim(company, title):
-        return None
+    needs_management_review = _needs_management_trainee_review(company, title)
     campus_text = f"{title} {item.get('requirements', '')}".lower()
     if not title or not any(
         marker in campus_text
@@ -223,6 +220,9 @@ def _normalize_job(item: dict[str, Any]) -> dict[str, Any] | None:
     observed_at = datetime.now(timezone.utc).isoformat()
     job_id = f"web-{hashlib.sha256(official_url.encode()).hexdigest()[:24]}"
     requirements = re.sub(r"\s+", " ", str(item.get("requirements", ""))).strip()[:1200]
+    tags = ["校园招聘", "动态监控", "AI网页搜索", "待打开核对", category]
+    if needs_management_review:
+        tags.append("待官方核验")
     return {
         "id": job_id,
         "company": company,
@@ -235,7 +235,7 @@ def _normalize_job(item: dict[str, Any]) -> dict[str, Any] | None:
         "opening_date": _date_or_none(item.get("opening_date")),
         "closing_date": closing_date,
         "requirements": requirements or "AI 网页搜索发现；请打开企业官方原文核对申请条件。",
-        "tags": ["校园招聘", "动态监控", "AI网页搜索", "待打开核对", category],
+        "tags": tags,
         "historical_applicants": None,
         "historical_offers": None,
         "last_verified_at": observed_at,

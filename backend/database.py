@@ -1132,15 +1132,30 @@ def purge_legacy_recruitment_samples() -> None:
                OR company LIKE '九坤%'
                OR source LIKE '九坤%'
                OR (
-                    company IN ('中国人民银行', '人行', '中国农业发展银行', '农发行')
-                    AND title LIKE '%管培%'
-               )
-               OR (
                     source = 'OpenAI 网页搜索'
                     AND tags NOT LIKE '%链接已验证%'
                )
             """
         )
+        review_rows = connection.execute(
+            """
+            SELECT id, tags
+            FROM recruitment_jobs
+            WHERE company IN ('中国人民银行', '人行', '中国农业发展银行', '农发行')
+              AND (title LIKE '%管培%' OR title LIKE '%管理培训生%')
+            """
+        ).fetchall()
+        for row in review_rows:
+            try:
+                tags = json.loads(row["tags"] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                tags = []
+            if "待官方核验" not in tags:
+                tags.append("待官方核验")
+            connection.execute(
+                "UPDATE recruitment_jobs SET tags = ? WHERE id = ?",
+                (json.dumps(tags, ensure_ascii=False), row["id"]),
+            )
 
 
 def close_recruitment_job(job_id: str) -> None:
