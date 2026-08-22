@@ -273,9 +273,9 @@
               <label class="field compact-field"><span>城市偏好</span><input id="recruitment-locations" placeholder="北京，上海，深圳，可远程" /></label>
               <div class="recruitment-checks"><span>雇主类型</span><label><input type="checkbox" value="互联网企业" />互联网</label><label><input type="checkbox" value="外企" />外企</label><label><input type="checkbox" value="央国企" />央国企</label></div>
               <div class="recruitment-quiz-group"><span>最高学历</span><div class="recruitment-options" data-choice-group="education_level"><label><input type="radio" name="education_level" value="本科" />本科</label><label><input type="radio" name="education_level" value="硕士" />硕士</label><label><input type="radio" name="education_level" value="博士" />博士</label><label><input type="radio" name="education_level" value="其他" />其他</label></div></div>
-              <label class="field compact-field"><span>本科专业（可写辅修/方向）</span><input id="recruitment-undergraduate-major" maxlength="120" placeholder="例如：计算机科学与技术（辅修经济学，数据科学方向）" /></label>
+              <label class="field compact-field"><span>本科专业（可写辅修/方向）</span><input id="recruitment-undergraduate-major" maxlength="120" /></label>
               <label class="field compact-field"><span>本科院校名称</span><input id="recruitment-undergraduate-school" maxlength="120" /></label>
-              <label class="field compact-field"><span>硕士专业（可写研究方向/辅修）</span><input id="recruitment-master-major" maxlength="120" placeholder="例如：金融科技（机器学习与风险管理方向）" /></label>
+              <label class="field compact-field"><span>硕士专业（可写研究方向/辅修）</span><input id="recruitment-master-major" maxlength="120" /></label>
               <label class="field compact-field"><span>硕士院校名称</span><input id="recruitment-master-school" maxlength="120" /></label>
               <div class="recruitment-quiz-group"><span>复合型专业意向</span><div class="recruitment-options" data-choice-group="composite_interest"><label><input type="checkbox" name="composite_interest" value="true" />希望系统优先推荐能结合本科+硕士的岗位</label></div></div>
               <div class="recruitment-quiz-group"><span>相关经历</span><div class="recruitment-options" data-choice-group="experience_level"><label><input type="radio" name="experience_level" value="无实习" />无实习</label><label><input type="radio" name="experience_level" value="1段实习" />1段实习</label><label><input type="radio" name="experience_level" value="2段及以上实习" />2段及以上实习</label><label><input type="radio" name="experience_level" value="全职/转行" />全职/转行</label></div></div>
@@ -283,7 +283,7 @@
               <div class="recruitment-quiz-group"><span>语言能力</span><div class="recruitment-options" data-choice-group="language_level"><label><input type="radio" name="language_level" value="中文为主" />中文为主</label><label><input type="radio" name="language_level" value="英语可工作" />英语可工作</label><label><input type="radio" name="language_level" value="双语/海外经历" />双语/海外经历</label></div></div>
               <label class="field compact-field"><span>补充背景（可选）</span><textarea id="recruitment-background" rows="2" placeholder="证书、项目成果、行业限制等…"></textarea></label>
               <div class="recruitment-dates"><label class="field compact-field"><span>可入职开始</span><input id="recruitment-start" type="date" /></label><label class="field compact-field"><span>可入职截止</span><input id="recruitment-end" type="date" /></label></div>
-              <button class="primary-button" type="submit"><span>保存画像并重新匹配</span><b>↗</b></button>
+              <button id="recruitment-save" class="primary-button" type="submit"><span>保存画像并重新匹配</span><b>↗</b></button>
               <p id="recruitment-error" class="form-error" role="alert"></p>
             </form>
           </section>

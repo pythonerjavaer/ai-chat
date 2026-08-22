@@ -106,7 +106,7 @@ const elements = {
   recruitmentUndergraduateMajor: $("recruitment-undergraduate-major"), recruitmentMasterMajor: $("recruitment-master-major"),
   recruitmentStart: $("recruitment-start"), recruitmentEnd: $("recruitment-end"),
   recruitmentJobs: $("recruitment-jobs"), recruitmentStatus: $("recruitment-source-status"),
-  recruitmentRefresh: $("recruitment-refresh"),
+  recruitmentRefresh: $("recruitment-refresh"), recruitmentSave: $("recruitment-save"),
   recruitmentError: $("recruitment-error"),
 };
 
@@ -1073,6 +1073,12 @@ async function openRecruitment() {
 
 async function saveRecruitment(event) {
   event.preventDefault();
+  const saveButton = elements.recruitmentSave;
+  const saveLabel = saveButton?.querySelector("span");
+  if (saveButton) saveButton.disabled = true;
+  if (saveLabel) saveLabel.textContent = "匹配中…";
+  elements.recruitmentError.textContent = "";
+  elements.recruitmentStatus.textContent = "正在保存画像并匹配岗位…";
   const employerTypes = [...document.querySelectorAll(".recruitment-checks input:checked")].map((input) => input.value);
   const choice = (key) => document.querySelector(`[data-choice-group="${key}"] input:checked`)?.value || "";
   const choices = (key) => [...document.querySelectorAll(`[data-choice-group="${key}"] input:checked`)].map((input) => input.value);
@@ -1104,12 +1110,21 @@ async function saveRecruitment(event) {
       }),
     });
     state.recruitmentProfile = profile;
-    const data = await api("/recruitment/jobs");
+    const data = await Promise.race([
+      api("/recruitment/jobs"),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("岗位匹配请求超时，请稍后重试。")), 12000)),
+    ]);
     state.recruitmentJobs = data.jobs || [];
     renderRecruitmentJobs(state.recruitmentJobs);
     elements.recruitmentStatus.textContent = data.data_status?.mode === "sample" ? "演示数据 · 待接入实时源" : "实时同步";
     showToast("求职画像已保存，岗位匹配已更新。", 3500);
-  } catch (error) { elements.recruitmentError.textContent = translateError(error.message); }
+  } catch (error) {
+    elements.recruitmentError.textContent = translateError(error.message);
+    elements.recruitmentStatus.textContent = "保存未完成，可稍后重试";
+  } finally {
+    if (saveButton) saveButton.disabled = false;
+    if (saveLabel) saveLabel.textContent = "保存画像并重新匹配";
+  }
 }
 
 function parseSseBlock(block) {
