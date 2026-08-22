@@ -525,9 +525,13 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         jobs = client.get("/api/recruitment/jobs", headers=auth(token))
         assert jobs.status_code == 200
         payload = jobs.json()
-        assert payload["data_status"]["mode"] == "sample"
+        assert payload["data_status"]["mode"] == "live"
         assert len(payload["monitor_pools"]) == 3
         assert payload["jobs"]
+        titles = {job["title"] for job in payload["jobs"]}
+        assert "拼多多 2027届校园招聘提前批" in titles
+        assert "2027 Business Analyst (General Practice)_Campus" in titles
+        assert sum("梧桐计划" in title for title in titles) == 8
         first = payload["jobs"][0]
         assert "match_score" in first
         assert "estimated_rate" not in first

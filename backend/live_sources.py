@@ -16,6 +16,55 @@ PUBLIC_RECRUITMENT_SOURCES = [
     {"name": "银行招聘网", "url": "https://yhks.cn/", "employer_type": "银行/金融"},
 ]
 
+_VERIFIED_AT = "2026-08-22T00:00:00+00:00"
+_UBIQUANT_WUTONG_JOBS = [
+    ("Quantitative Risk Analyst", "北京 / 上海", "f3b2fbfe-4e46-49c1-80f1-64e513fe27a2"),
+    ("AI工程师", "北京 / 上海", "e297d656-563c-483f-a1f0-f0460a508c52"),
+    ("策略组合管理开发工程师", "北京 / 上海", "373d7781-469c-47d1-ad48-965949db3fec"),
+    ("AI算法研究员", "北京 / 上海", "f607c4bc-bee9-4830-834a-4ca52e103288"),
+    ("Quant Developer", "北京 / 上海", "2a839667-ccf5-4fb6-aab9-46d7d4d14822"),
+    ("量化实现工程师", "北京 / 上海", "65a74b93-a309-449f-a73f-730b01e65c13"),
+    ("数据科学家", "北京", "c5ff9856-cc93-4860-a9ee-ee33fa12ac28"),
+    ("量化策略研究员", "北京", "f2aa2bc2-7a59-4823-aa04-8fc020290b9d"),
+]
+
+# Official campus openings whose dates and direct ATS links were manually
+# verified. Generic public listing pages do not reliably expose these fields.
+CURATED_CAMPUS_JOBS = [
+    {
+        "id": "curated-pdd-2027-early",
+        "company": "拼多多", "employer_type": "互联网企业",
+        "title": "拼多多 2027届校园招聘提前批", "city": "上海", "industry": "互联网",
+        "url": "https://careers.pddglobalhr.com/campus/grad",
+        "source": "拼多多校园招聘官网", "opening_date": "2026-07-06", "closing_date": "2026-08-23",
+        "requirements": "面向毕业时间为 2026 年 9 月至 2027 年 8 月的 2027 届应届生；8 月 23 日截止，建议立即投递。",
+        "tags": ["2027届", "校园招聘", "提前批"], "historical_applicants": None,
+        "historical_offers": None, "last_verified_at": _VERIFIED_AT, "status": "open",
+    },
+    {
+        "id": "curated-kearney-2027-ba",
+        "company": "Kearney 科尔尼", "employer_type": "外企",
+        "title": "2027 Business Analyst (General Practice)_Campus", "city": "上海 / 北京", "industry": "咨询",
+        "url": "https://kearney.taleo.net/careersection/01c/jobdetail.ftl?job=006JY",
+        "source": "科尔尼官方 Taleo + 官方校招公告", "opening_date": "2026-08-03", "closing_date": "2026-08-24",
+        "requirements": "面向 2027 届国内外本硕博，专业不限；官方校招公告明确 8 月 24 日 09:00（北京时间）截止。",
+        "tags": ["2027届", "校园招聘", "咨询", "Business Analyst"], "historical_applicants": None,
+        "historical_offers": None, "last_verified_at": _VERIFIED_AT, "status": "open",
+    },
+] + [
+    {
+        "id": f"curated-ubiquant-wutong-{job_id}",
+        "company": "九坤投资", "employer_type": "量化私募",
+        "title": f"【梧桐计划】{title}", "city": city, "industry": "量化金融",
+        "url": f"https://app.mokahr.com/campus_apply/ubiquantrecruit/37031#/job/{job_id}",
+        "source": "九坤投资官方 Moka 校招系统", "opening_date": "2026-07-28", "closing_date": "2027-07-28",
+        "requirements": "九坤 2027 届梧桐计划；官方系统当前显示项目投递窗口至 2027 年 7 月 28 日，未发现 8 月 26 日单岗硬截止。",
+        "tags": ["2027届", "校园招聘", "梧桐计划", "量化"], "historical_applicants": None,
+        "historical_offers": None, "last_verified_at": _VERIFIED_AT, "status": "open",
+    }
+    for title, city, job_id in _UBIQUANT_WUTONG_JOBS
+]
+
 # Navigation/category links are not job postings.  They often look like
 # "江门招聘" or "校园招聘" and must never be shown as an actionable vacancy.
 GENERIC_RECRUITMENT_TITLE = re.compile(
@@ -96,7 +145,7 @@ PERSONAL_MONITOR_POOLS = [
             "易方达", "华夏基金", "嘉实基金", "南方基金", "汇添富", "富国基金",
             "幻方", "九坤", "明汯", "衍复", "灵均", "宽德", "高瓴", "红杉中国",
             "J.P. Morgan", "Goldman Sachs", "Morgan Stanley", "UBS", "Citi", "HSBC",
-            "Standard Chartered", "Macquarie", "BlackRock", "KPMG", "Deloitte", "PwC",
+            "Standard Chartered", "Macquarie", "BlackRock", "Kearney 科尔尼", "KPMG", "Deloitte", "PwC",
             "EY", "Accenture", "Microsoft", "Google", "Amazon/AWS", "Apple", "NVIDIA",
         ],
     },

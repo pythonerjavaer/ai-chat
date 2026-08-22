@@ -38,6 +38,7 @@ from .ai_service import (
 from .platform import SPACE_TEMPLATES, plan_limits
 from .recruitment import SAMPLE_JOBS, score_job
 from .live_sources import (
+    CURATED_CAMPUS_JOBS,
     PERSONAL_MONITOR_POOLS,
     fetch_adzuna_jobs,
     fetch_public_recruitment_sources,
@@ -64,7 +65,8 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 def refresh_recruitment_sources() -> int:
     """Refresh public recruitment sources; safe to call from a scheduled worker."""
-    jobs = fetch_public_recruitment_sources()
+    jobs = [dict(job) for job in CURATED_CAMPUS_JOBS]
+    jobs.extend(fetch_public_recruitment_sources())
     if settings.adzuna_app_id and settings.adzuna_app_key:
         jobs.extend(fetch_adzuna_jobs())
     database.upsert_recruitment_jobs(jobs)
@@ -84,7 +86,7 @@ async def recruitment_refresh_loop() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.init_db()
-    database.seed_recruitment_jobs(SAMPLE_JOBS)
+    database.seed_recruitment_jobs([*SAMPLE_JOBS, *CURATED_CAMPUS_JOBS])
     task = None
     if settings.recruitment_refresh_minutes > 0:
         task = asyncio.create_task(recruitment_refresh_loop())
@@ -385,6 +387,7 @@ def recruitment_jobs(user: User) -> dict:
         for job in database.list_recruitment_jobs()
         if is_priority_campus_listing(job)
     ]
+    jobs = [job for job in jobs if job["days_left"] is None or job["days_left"] >= 0]
     jobs.sort(key=lambda item: (-item["match_score"], item["days_left"] is None, item["days_left"] or 9999))
     return {
         "jobs": jobs,

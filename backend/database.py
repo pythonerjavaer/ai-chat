@@ -553,8 +553,11 @@ def upsert_recruitment_jobs(jobs: list[dict[str, Any]]) -> None:
                      historical_offers, last_verified_at, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
-                    company=excluded.company, title=excluded.title, city=excluded.city,
-                    url=excluded.url, requirements=excluded.requirements,
+                    company=excluded.company, employer_type=excluded.employer_type,
+                    title=excluded.title, city=excluded.city, industry=excluded.industry,
+                    url=excluded.url, source=excluded.source,
+                    opening_date=excluded.opening_date, closing_date=excluded.closing_date,
+                    requirements=excluded.requirements, tags=excluded.tags,
                     last_verified_at=excluded.last_verified_at, status=excluded.status
                 """,
                 (
