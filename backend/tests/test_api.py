@@ -1143,8 +1143,8 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
     )
     monkeypatch.setattr(
         recruitment_search,
-        "_official_candidate_link_is_readable",
-        lambda _url: True,
+        "_inspect_official_candidate_page",
+        lambda _job: recruitment_search.CandidatePageEvidence(True, True),
     )
     result = recruitment_search.search_current_recruitment_jobs(
         SimpleNamespace(responses=FakeResponses())
@@ -1154,6 +1154,8 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
     assert result.jobs[0]["employer_type"] == "互联网企业"
     assert "动态监控" in result.jobs[0]["tags"]
     assert "链接已验证" in result.jobs[0]["tags"]
+    assert "标题已验证" in result.jobs[0]["tags"]
+    assert "待官方核验" not in result.jobs[0]["tags"]
     assert result.tool_calls == 1
     assert result.total_tokens == 960
     assert result.failed_pools == ()
@@ -1214,8 +1216,8 @@ def test_web_search_discards_candidate_with_unreadable_link(monkeypatch):
     )
     monkeypatch.setattr(
         recruitment_search,
-        "_official_candidate_link_is_readable",
-        lambda _url: False,
+        "_inspect_official_candidate_page",
+        lambda _job: recruitment_search.CandidatePageEvidence(False, False),
     )
     result = recruitment_search.search_current_recruitment_jobs(
         SimpleNamespace(responses=FakeResponses())

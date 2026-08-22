@@ -111,6 +111,14 @@ class WebRecruitmentSearchResult:
     failed_pools: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class CandidatePageEvidence:
+    """Deterministic evidence collected from the supplied original page."""
+
+    readable: bool
+    title_confirmed: bool
+
+
 def _search_prompt(pool: dict[str, Any]) -> str:
     today = date.today().isoformat()
     employers = "、".join(pool["employers"])
@@ -176,23 +184,32 @@ def _safe_official_url(value: str) -> str | None:
     return display_url
 
 
-def _official_candidate_link_is_readable(url: str) -> bool:
-    """Keep a web-search candidate only when its supplied HTTPS page opens.
+def _evidence_key(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
+
+
+def _inspect_official_candidate_page(job: dict[str, Any]) -> CandidatePageEvidence:
+    """Open the supplied page and check whether its body supports the title.
 
     This is deliberately deterministic and sends no page contents to an AI
-    provider. It rejects dead links, redirects to unsafe addresses, and pages
-    that do not return readable HTML/text before a candidate reaches users.
+    provider. A reachable page is preserved as a candidate, but it is only
+    promoted to verified when the claimed title is present in the page body.
     """
     try:
         result = fetch_watch_page(
-            url,
+            job["url"],
             (),
             timeout_seconds=6,
             max_bytes=500_000,
         )
     except (OSError, ValueError, WatchFetchError):
-        return False
-    return bool(result.text)
+        return CandidatePageEvidence(readable=False, title_confirmed=False)
+    page_key = _evidence_key(result.text)
+    title_key = _evidence_key(str(job.get("title", "")))
+    return CandidatePageEvidence(
+        readable=bool(page_key),
+        title_confirmed=bool(title_key and title_key in page_key),
+    )
 
 
 def _normalize_job(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -283,13 +300,20 @@ def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSear
         if not isinstance(item, dict):
             continue
         job = _normalize_job(item)
-        if (
-            not job
-            or job["url"] in seen_urls
-            or not _official_candidate_link_is_readable(job["url"])
-        ):
+        if not job or job["url"] in seen_urls:
+            continue
+        evidence = _inspect_official_candidate_page(job)
+        if not evidence.readable:
             continue
         job["tags"].append("链接已验证")
+        if evidence.title_confirmed:
+            job["tags"].append("标题已验证")
+            job["tags"] = [
+                tag for tag in job["tags"]
+                if tag not in {"待官方核验", "待打开核对"}
+            ]
+        elif "待官方核验" not in job["tags"]:
+            job["tags"].append("待官方核验")
         seen_urls.add(job["url"])
         normalized.append(job)
     tool_calls = sum(

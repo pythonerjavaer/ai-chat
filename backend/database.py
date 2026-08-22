@@ -1135,14 +1135,20 @@ def purge_legacy_recruitment_samples() -> None:
                     source = 'OpenAI 网页搜索'
                     AND tags NOT LIKE '%链接已验证%'
                )
+               OR (
+                    source = 'OpenAI 网页搜索'
+                    AND company IN ('中国人民银行', '人行', '中国农业发展银行', '农发行')
+                    AND (title LIKE '%管培%' OR title LIKE '%管理培训生%')
+                    AND tags NOT LIKE '%标题已验证%'
+               )
             """
         )
         review_rows = connection.execute(
             """
             SELECT id, tags
             FROM recruitment_jobs
-            WHERE company IN ('中国人民银行', '人行', '中国农业发展银行', '农发行')
-              AND (title LIKE '%管培%' OR title LIKE '%管理培训生%')
+            WHERE source = 'OpenAI 网页搜索'
+              AND tags NOT LIKE '%标题已验证%'
             """
         ).fetchall()
         for row in review_rows:

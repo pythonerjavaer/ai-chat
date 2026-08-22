@@ -237,8 +237,8 @@ function translateError(message) {
     "The requested Space token budget exceeds your plan limit.": "这个世界的 Token 上限超过当前方案允许范围。",
     "This AI Space has reached its monthly Token budget.": "这个世界已达到本月 Token 上限。",
     "This run would exceed the AI Space monthly token budget.": "这次演化的预估消耗会超过世界的月度 Token 预算，模型尚未被调用。",
-    "Only public HTTPS recruitment pages can be watched.": "只支持公开的 HTTPS 企业招聘页面。",
-    "This address is not allowed for recruitment monitoring.": "这个地址不能加入监控，请使用企业公开招聘官网。",
+    "Only public HTTPS recruitment pages can be watched.": "只支持公开的 HTTPS 企业机会页面。",
+    "This address is not allowed for recruitment monitoring.": "这个地址不能加入哨站，请使用企业公开官网。",
     "Consent to the current privacy policy is required.": "请先同意当前版本的隐私政策。",
   };
   return known[message] || message;
@@ -291,7 +291,7 @@ function renderHomeRecruitmentAlerts(jobs, watches = state.recruitmentWatches) {
     return;
   }
   const labels = [];
-  if (urgent.length) labels.push(`${urgent.length} 个网申临近截止`);
+  if (urgent.length) labels.push(`${urgent.length} 个关键时间窗正在收束`);
   if (changedWatches.length) labels.push(`${changedWatches.length} 个官网有变化`);
   elements.homeAlertTitle.textContent = labels.join(" · ");
   urgent.forEach((job) => {
@@ -301,8 +301,8 @@ function renderHomeRecruitmentAlerts(jobs, watches = state.recruitmentWatches) {
     link.rel = "noreferrer";
     const urgency = job.days_left === 0 ? "今天截止" : `剩 ${job.days_left} 天`;
     link.append(
-      makeElement("span", "", job.company || "招聘单位"),
-      makeElement("strong", "", job.title || "校招岗位"),
+      makeElement("span", "", job.company || "机会发布方"),
+      makeElement("strong", "", job.title || "机会信号"),
       makeElement("b", "", urgency),
     );
     elements.homeAlertList.appendChild(link);
@@ -314,7 +314,7 @@ function renderHomeRecruitmentAlerts(jobs, watches = state.recruitmentWatches) {
     link.rel = "noreferrer";
     link.append(
       makeElement("span", "", "官网变化"),
-      makeElement("strong", "", watch.name || "招聘页面"),
+      makeElement("strong", "", watch.name || "公开信号页"),
       makeElement("b", "", "去核对 ↗"),
     );
     elements.homeAlertList.appendChild(link);
@@ -1263,7 +1263,7 @@ function recruitmentWatchStatus(watch) {
 function renderRecruitmentWatches(watches = []) {
   elements.recruitmentWatchList.replaceChildren();
   if (!watches.length) {
-    elements.recruitmentWatchList.appendChild(makeElement("small", "", "尚未添加企业监控。填写企业名称即可跟踪岗位池变化。"));
+    elements.recruitmentWatchList.appendChild(makeElement("small", "", "尚未建立企业信号哨站。填写企业名称，即可追踪公开机会池的变化。"));
     return;
   }
   watches.forEach((watch) => {
@@ -1273,15 +1273,15 @@ function renderRecruitmentWatches(watches = []) {
     const copy = document.createElement("div");
     if (watch.watch_type === "company") {
       copy.append(
-        makeElement("strong", "", watch.company_name || watch.name || "企业岗位池"),
-        makeElement("small", "watch-target-copy", "校招岗位池动态监控"),
+        makeElement("strong", "", watch.company_name || watch.name || "企业机会池"),
+        makeElement("small", "watch-target-copy", "公开机会信号追踪"),
       );
     } else {
       const link = makeElement("a", "", watch.url || "");
       link.href = watch.url;
       link.target = "_blank";
       link.rel = "noreferrer";
-      copy.append(makeElement("strong", "", watch.name || "招聘官网"), link);
+      copy.append(makeElement("strong", "", watch.name || "企业公开页面"), link);
     }
     const actions = makeElement("div", "watch-card-actions");
     if (watchHasFreshChange(watch)) {
@@ -1303,7 +1303,7 @@ function renderRecruitmentWatches(watches = []) {
     const keywordList = Array.isArray(watch.keywords) ? watch.keywords : [];
     const excerpt = watch.excerpt || watch.change_excerpt || (
       watch.watch_type === "company"
-        ? (keywordList.length ? `已在岗位池中跟踪：${keywordList.join(" · ")}` : "新岗位进入池子后自动提示。")
+        ? (keywordList.length ? `已在机会池中追踪：${keywordList.join(" · ")}` : "新机会进入信号池后自动提示。")
         : (keywordList.length ? `关注：${keywordList.join(" · ")}` : "系统只比较公开网页文本指纹，不调用模型。")
     );
     card.append(top, statuses, makeElement("p", "", excerpt));
@@ -1383,10 +1383,10 @@ function renderRecruitmentDeadlineAlerts(jobs) {
   const dated = verifiedJobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0);
   const heading = document.createElement("strong");
   heading.textContent = urgent.length
-    ? `网申截止预警 · ${urgent.length} 个已核验校招岗位将在 7 天内截止`
+    ? `时间窗预警 · ${urgent.length} 个已核验机会将在 7 天内关闭`
     : dated.length
-      ? "网申截止预警 · 暂无 7 天内到期的已核验校招岗位"
-      : "网申截止预警 · 暂无公告明确标注截止日期，刷新后将自动核验";
+      ? "时间窗预警 · 暂无 7 天内关闭的已核验机会"
+      : "时间窗预警 · 暂无原始公告明确标注截止日期，刷新后将自动核验";
   const list = document.createElement("div");
   urgent.forEach((job) => {
     const item = document.createElement("a");
@@ -1400,7 +1400,7 @@ function renderRecruitmentDeadlineAlerts(jobs) {
   if (reviewJobs.length) {
     const note = document.createElement("small");
     note.className = "recruitment-review-note";
-    note.textContent = `另有 ${reviewJobs.length} 个候选岗位保留在列表中，因岗位称谓尚未被官方原文确认，不计入截止预警。`;
+    note.textContent = `另有 ${reviewJobs.length} 个候选信号保留在列表中；名称尚未被原始公告正文确认，因此不进入时间窗预警。`;
     elements.recruitmentDeadlineAlerts.append(note);
   }
 }
@@ -1408,7 +1408,7 @@ function renderRecruitmentDeadlineAlerts(jobs) {
 function renderRecruitmentJobs(jobs) {
   elements.recruitmentJobs.replaceChildren();
   if (!jobs.length) {
-    elements.recruitmentJobs.innerHTML = '<div class="empty-list">暂时没有匹配岗位。调整筛选或刷新岗位源后再试。</div>';
+    elements.recruitmentJobs.innerHTML = '<div class="empty-list">暂时没有与你共振的机会信号。调整坐标或刷新公开信源后再试。</div>';
     return;
   }
   const availableJobs = jobs.filter((job) => /^https:\/\//.test(job.url || ""));
@@ -1436,7 +1436,7 @@ function renderRecruitmentJobs(jobs) {
     if (!tierJobs.length) return;
     const group = makeElement("section", "recruitment-tier-group");
     const heading = makeElement("div", "recruitment-tier-heading");
-    heading.append(makeElement("strong", `job-tier ${tier.replace(".", "-")}`, tier), makeElement("span", "", `${tierJobs.length} 个匹配岗位`));
+    heading.append(makeElement("strong", `job-tier ${tier.replace(".", "-")}`, tier), makeElement("span", "", `${tierJobs.length} 个匹配信号`));
     group.appendChild(heading);
     tierJobs.forEach((job) => {
     const card = document.createElement("article");
@@ -1446,7 +1446,7 @@ function renderRecruitmentJobs(jobs) {
     const top = makeElement("div", "job-card-top");
     const labels = document.createElement("div");
     labels.append(
-      makeElement("span", "job-company", job.company || "招聘单位"),
+      makeElement("span", "job-company", job.company || "机会发布方"),
       makeElement("span", "job-type", job.employer_type || "重点雇主"),
     );
     if ((job.tags || []).includes("待官方核验")) {
@@ -1456,14 +1456,14 @@ function renderRecruitmentJobs(jobs) {
     rank.appendChild(makeElement("span", `job-tier ${tierCode.replace(".", "-")}`, tierCode));
     top.append(labels, rank);
     const bottom = makeElement("div", "job-card-bottom");
-    const officialLink = makeElement("a", "", "打开校招公告 ↗");
+    const officialLink = makeElement("a", "", "打开原始公告 ↗");
     officialLink.href = job.url;
     officialLink.target = "_blank";
     officialLink.rel = "noreferrer";
     bottom.appendChild(officialLink);
     card.append(
       top,
-      makeElement("h4", "", job.title || "校招岗位"),
+      makeElement("h4", "", job.title || "机会信号"),
       makeElement("p", "job-meta", `${job.city || "地点待确认"} · ${job.industry || "行业待确认"} · ${deadline}`),
       makeElement("p", "job-requirements", job.requirements || "请打开官方公告核对申请条件。"),
       bottom,
@@ -1496,7 +1496,7 @@ async function addRecruitmentWatchFromJob(job, button) {
     showToast(
       createdWatch.last_status === "error"
         ? "已加入动态雷达；官网暂时无法建立基线，可稍后重试。"
-        : "已开始跟踪此校招公告；页面变化会在首页待核对区提示。",
+        : "已开始追踪这条原始公告；页面变化会在首页待核对区提示。",
       5000,
     );
   } catch (error) {
@@ -1522,10 +1522,10 @@ async function refreshRecruitment() {
     renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
     renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
     renderRecruitmentMonitors(data.monitor_pools || []);
-    setRecruitmentStatus(data.data_status?.message || "已读取动态岗位源");
+    setRecruitmentStatus(data.data_status?.message || "已接收公开信号源");
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
-    setRecruitmentStatus("岗位源加载失败");
+    setRecruitmentStatus("公开信号源加载失败");
   }
 }
 
@@ -1545,7 +1545,7 @@ async function refreshRecruitmentSource() {
       ? sourceResult.cached
         ? "沿用 60 秒内的公开源结果"
         : `读取 ${Number(sourceResult.count || 0).toLocaleString()} 条公开源候选`
-      : "公开岗位源本次未完成";
+      : "公开信号源本次未完成";
     const webSearch = sourceResult?.web_search;
     const webSearchCopy = webSearch?.status === "success"
       ? `AI 网页搜索发现 ${Number(webSearch.jobs || 0)} 条候选`
@@ -1557,7 +1557,7 @@ async function refreshRecruitmentSource() {
         ? `${sourceCopy}；${webSearchCopy}；官网变化雷达已刷新。`
         : jobsOk
           ? `${sourceCopy}；${webSearchCopy}；官网变化雷达本次未完成。`
-          : "官网变化雷达已刷新；公开岗位源本次未完成。",
+          : "官网变化雷达已刷新；公开信号源本次未完成。",
       4500,
     );
   } catch (error) {
@@ -1579,7 +1579,7 @@ async function saveRecruitment(event) {
   if (saveButton) saveButton.disabled = true;
   if (saveLabel) saveLabel.textContent = "匹配中…";
   elements.recruitmentError.textContent = "";
-  setRecruitmentStatus("正在保存筛选并匹配岗位…");
+  setRecruitmentStatus("正在校准坐标并匹配机会信号…");
   const employerTypes = [...document.querySelectorAll(".recruitment-checks input:checked")].map((input) => input.value);
   try {
     const profile = await api("/recruitment/profile", {
@@ -1601,14 +1601,14 @@ async function saveRecruitment(event) {
     renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
     renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
     renderRecruitmentMonitors(data.monitor_pools || []);
-    setRecruitmentStatus(data.data_status?.message || "已读取动态岗位源");
-    showToast("筛选已保存，岗位匹配已更新。", 3500);
+    setRecruitmentStatus(data.data_status?.message || "已接收公开信号源");
+    showToast("坐标已保存，机会匹配已更新。", 3500);
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
     setRecruitmentStatus("保存未完成，可稍后重试");
   } finally {
     if (saveButton) saveButton.disabled = false;
-    if (saveLabel) saveLabel.textContent = "保存筛选并重新匹配";
+    if (saveLabel) saveLabel.textContent = "保存坐标并重新扫描";
   }
 }
 

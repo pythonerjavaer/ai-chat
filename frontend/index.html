@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#07111f" />
-    <meta name="description" content="冰焰：合同合规、金融文档与校园招聘机会的证据驱动 AI 工作台。" />
+    <meta name="description" content="冰焰：连接专业研究、公开机会与可验证信源的私人智能工作台。" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icons/icon-192.webp" type="image/webp" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
@@ -45,13 +45,13 @@
               <button class="world-entry frost" type="button" data-launch="legal"><span>01 · FROST</span><strong>寒冰域</strong><p>有些东西决定世界如何运行，也决定什么不能被越过。</p><small>当前从合同、合规、义务、期限与风险开始。</small></button>
               <button class="world-entry aurora" type="button" data-launch="general"><span>02 · AURORA</span><strong>极光域</strong><p>让散落的信息逐渐形成属于你的知识世界。</p><small>当前从资料、文档、对话与可追溯问答开始。</small></button>
               <button class="world-entry ember" type="button" data-launch="finance"><span>03 · EMBER</span><strong>烈火域</strong><p>世界不只需要被理解，还需要决定向哪里前进。</p><small>当前从数字、金融、风险、假设与决策分析开始。</small></button>
-              <button class="world-entry radar" type="button" data-launch="recruitment"><span>04 · FUTURE RADAR</span><strong>未来雷达</strong><p>让你的世界感知正在到来的变化。</p><small>当前首先连接校园招聘机会、企业动态与截止日期。</small></button>
+              <button class="world-entry radar" type="button" data-launch="recruitment"><span>04 · FUTURE RADAR</span><strong>未来雷达</strong><p>让你的世界，先一步听见未来的回声。</p><small>当前接入企业公开机会、官网变化与关键时间窗。</small></button>
               <button class="world-entry forge" type="button" data-launch="forge"><span>05 · WORLD FORGE</span><strong>造界</strong><p>当现有世界无法定义你，就创造一个新的。</p><small>为它赋予目标、规则、边界与自己的运行方式。</small></button>
               <button class="world-entry forming" type="button" data-launch="resonance"><span>06 · RESONANCE</span><strong>共振</strong><p>一个世界发生的变化，从来不会只停留在一个世界。</p><small>连接不同世界，让变化、冲突与可能性彼此传播。 · FORMING</small></button>
               <button class="world-entry forming" type="button" data-launch="trace"><span>07 · TRACE LENS</span><strong>溯源透镜</strong><p>任何重要判断，都应该能够找到它的来路。</p><small>看见一个结论从哪里来，又经历了什么才成为现在的样子。 · FORMING</small></button>
             </div>
           </section>
-          <div class="landing-footer-note"><span class="note-dot"></span> 资料、对话与未来雷达均按账号隔离</div>
+          <div class="landing-footer-note"><span class="note-dot"></span> 你的资料、对话与雷达坐标以账号为边界，彼此隔离</div>
         </div>
 
         <div class="auth-panel">
@@ -59,7 +59,7 @@
             <div class="auth-heading">
               <span id="auth-kicker">继续工作</span>
               <h2 id="auth-title">进入工作空间</h2>
-              <p id="auth-description">你的对话、资料与未来雷达筛选会按账号隔离。</p>
+              <p id="auth-description">你的对话、资料与雷达坐标均按账号隔离。</p>
             </div>
             <form id="auth-form" novalidate>
               <label class="field">
@@ -94,10 +94,12 @@
           <span class="brand-mark"><i></i><b></b></span>
           <span><strong>冰焰</strong><small>FROSTFIRE</small></span>
         </a>
-        <nav id="workspace-tabs" class="workspace-tabs" aria-label="切换工作区"></nav>
-          <div class="header-actions">
+        <div class="primary-navigation">
+          <nav id="workspace-tabs" class="workspace-tabs" aria-label="切换工作区"></nav>
+          <button id="recruitment-open" class="recruitment-launch" type="button" aria-label="打开未来雷达"><span class="radar-glyph" aria-hidden="true"></span><b>未来雷达</b></button>
+        </div>
+        <div class="header-actions">
             <span id="network-status" class="network-status"><i></i><b>在线</b></span>
-            <button id="recruitment-open" class="recruitment-launch" type="button" aria-label="打开未来雷达"><span>◎</span><b>未来雷达</b></button>
             <button id="studio-open" class="studio-launch" type="button" aria-label="打开造界"><span>＋</span><b>造界</b></button>
             <details class="product-more-menu"><summary>更多 <i>⌄</i></summary><div><button id="resonance-open" type="button"><span>≈</span><b>共振</b><small>RESONANCE · FORMING</small></button><button id="trace-open" type="button"><span>◇</span><b>溯源透镜</b><small>TRACE LENS · FORMING</small></button><button id="cross-exam-open" type="button"><span>⟁</span><b>双域审查</b><small>保留的实验能力</small></button></div></details>
           <button id="knowledge-toggle" class="icon-button tablet-only" type="button" aria-label="打开资料库">◇</button>
@@ -136,7 +138,7 @@
           </div>
 
           <section id="home-deadline-alerts" class="home-deadline-alerts hidden" aria-live="polite">
-            <div class="home-alert-heading"><div><span>DEADLINE ALERT</span><strong id="home-alert-title">校园岗位网申即将截止</strong></div><button id="home-alert-open" type="button">查看未来雷达 ↗</button></div>
+            <div class="home-alert-heading"><div><span>TIME WINDOW ALERT</span><strong id="home-alert-title">关键时间窗正在收束</strong></div><button id="home-alert-open" type="button">进入未来雷达 ↗</button></div>
             <div id="home-alert-list" class="home-alert-list"></div>
           </section>
 
@@ -151,6 +153,12 @@
           <div id="chat-window" class="chat-window" aria-live="polite"></div>
 
           <div class="composer-wrap">
+            <nav class="mobile-action-dock mobile-only" aria-label="移动端功能入口">
+              <button id="mobile-studio-open" type="button"><b>＋</b><span>造界</span></button>
+              <button id="mobile-recruitment-open" type="button"><b class="radar-glyph" aria-hidden="true"></b><span>未来雷达</span></button>
+              <button id="mobile-more-open" type="button"><b>⋯</b><span>更多</span></button>
+              <button id="mobile-knowledge" type="button"><b>◇</b><span>资料</span></button>
+            </nav>
             <form id="chat-form" class="composer">
               <button id="composer-upload" class="composer-icon" type="button" aria-label="上传文档">＋</button>
               <textarea id="message-input" rows="1" maxlength="12000" placeholder="发送消息，或询问已上传的资料…"></textarea>
@@ -182,12 +190,6 @@
           <div class="boundary-card"><span>i</span><p id="workspace-boundary">请核对关键事实与来源。</p></div>
         </aside>
       </div>
-      <nav class="mobile-action-dock mobile-only" aria-label="移动端功能入口">
-        <button id="mobile-studio-open" type="button"><b>＋</b><span>造界</span></button>
-        <button id="mobile-recruitment-open" type="button"><b>◎</b><span>未来雷达</span></button>
-        <button id="mobile-more-open" type="button"><b>⋯</b><span>更多</span></button>
-        <button id="mobile-knowledge" type="button"><b>◇</b><span>资料</span></button>
-      </nav>
       <div id="panel-backdrop" class="panel-backdrop hidden"></div>
     </section>
 
@@ -292,33 +294,33 @@
     <dialog id="recruitment-dialog" class="recruitment-dialog">
       <div class="recruitment-shell">
         <header class="recruitment-header">
-          <div><span class="overline">FUTURE OPPORTUNITY RADAR</span><h2>未来雷达</h2><p>集中查看校园招聘机会、官方公告、岗位条件与截止日期。</p></div>
+          <div><span class="overline">FUTURE SIGNAL RADAR</span><h2>未来雷达</h2><p>扫描公开信源中的机会坐标、规则与时间窗；所有信号均可回到原始公告核验。</p></div>
           <button id="recruitment-close" class="icon-button" type="button" aria-label="关闭未来雷达">×</button>
         </header>
         <div class="recruitment-body">
           <section class="recruitment-profile-panel">
-            <div class="recruitment-section-heading"><span>01</span><div><strong>只保留必要筛选</strong><small>岗位/职能类型、雇主类型和行业偏好都可以只填一部分。</small></div></div>
+            <div class="recruitment-section-heading"><span>01</span><div><strong>校准你的未来坐标</strong><small>方向、雇主、行业与城市均可按需填写；留白不会阻断扫描。</small></div></div>
             <form id="recruitment-form" class="recruitment-form">
-              <label class="field compact-field"><span>岗位/职能类型（逗号分隔）</span><input id="recruitment-roles" placeholder="产品，数据，金融科技，风险" /></label>
+              <label class="field compact-field"><span>目标方向 / 职能（逗号分隔）</span><input id="recruitment-roles" placeholder="产品，数据，金融科技，风险" /></label>
               <label class="field compact-field"><span>行业偏好</span><input id="recruitment-industries" placeholder="互联网，金融科技，新能源" /></label>
               <label class="field compact-field"><span>城市偏好（可多选或手动填写）</span><input id="recruitment-locations" placeholder="北京，上海，深圳，香港，可远程" /></label>
-              <div class="recruitment-checks"><span>监控分类（可多选）</span><label><input type="checkbox" value="央国企" />央企能源/资源</label><label><input type="checkbox" value="央国企科技" />央企科技/通信</label><label><input type="checkbox" value="银行/金融" />政策行/国有大行</label><label><input type="checkbox" value="券商/基金" />券商/基金/资管</label><label><input type="checkbox" value="保险/综合金融" />保险/综合金融</label><label><input type="checkbox" value="互联网企业" />互联网大厂/中厂</label><label><input type="checkbox" value="快消/消费" />快消/消费</label><label><input type="checkbox" value="外企/咨询" />外企/咨询</label><label><input type="checkbox" value="量化私募" />量化/私募</label></div>
-              <button id="recruitment-save" class="primary-button" type="submit"><span>保存筛选并重新匹配</span><b>↗</b></button>
+              <div class="recruitment-checks"><span>信号星域（可多选）</span><label><input type="checkbox" value="央国企" />央企能源/资源</label><label><input type="checkbox" value="央国企科技" />央企科技/通信</label><label><input type="checkbox" value="银行/金融" />政策行/国有大行</label><label><input type="checkbox" value="券商/基金" />券商/基金/资管</label><label><input type="checkbox" value="保险/综合金融" />保险/综合金融</label><label><input type="checkbox" value="互联网企业" />互联网大厂/中厂</label><label><input type="checkbox" value="快消/消费" />快消/消费</label><label><input type="checkbox" value="外企/咨询" />外企/咨询</label><label><input type="checkbox" value="量化私募" />量化/私募</label></div>
+              <button id="recruitment-save" class="primary-button" type="submit"><span>保存坐标并重新扫描</span><b>↗</b></button>
               <p id="recruitment-error" class="form-error" role="alert"></p>
             </form>
-            <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>我的企业动态雷达</strong><small>只填企业名称即可。系统跟踪该企业进入岗位池的新校招岗位、截止日期与变化；不调用 AI。</small></div></div>
+            <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>企业信号哨站</strong><small>只需输入企业名称。系统会追踪机会池中的新增信号、截止时间窗与公告变化；此过程不调用 AI。</small></div></div>
             <form id="recruitment-watch-form" class="recruitment-watch-form">
               <label class="field compact-field"><span>企业名称</span><input id="recruitment-watch-company" maxlength="120" placeholder="例如：中信期货、Babycare、平安银行" required /></label>
-              <small class="watch-form-hint">只需填写企业名称；系统会在当前校招岗位池中跟踪该企业的新岗位、截止日期和公告变化，不额外消耗 Token。</small>
-              <button id="recruitment-watch-add" class="watch-add-button" type="submit"><span>加入动态雷达</span><b>＋</b></button>
+              <small class="watch-form-hint">只需填写企业名称；系统会在当前机会池中追踪新增机会、截止时间窗与公告变化，不额外消耗 Token。</small>
+              <button id="recruitment-watch-add" class="watch-add-button" type="submit"><span>建立信号哨站</span><b>＋</b></button>
             </form>
-            <div id="recruitment-watch-list" class="recruitment-watch-list"><small>尚未添加官方页面。</small></div>
-            <div class="recruitment-section-heading monitor-heading"><span>03</span><div><strong>平台重点监控范围</strong><small>这是搜索范围，不代表每家单位当前都有开放岗位；请以可点击的官方公告为准。</small></div></div>
+            <div id="recruitment-watch-list" class="recruitment-watch-list"><small>尚未建立企业信号哨站。</small></div>
+            <div class="recruitment-section-heading monitor-heading"><span>03</span><div><strong>雷达星图</strong><small>这里定义信号扫描范围，不代表每家机构当前均有开放机会；请以可访问的原始公告为准。</small></div></div>
             <div id="recruitment-monitor-pools" class="recruitment-monitor-pools"></div>
           </section>
           <section class="recruitment-results">
-            <div class="recruitment-results-heading"><div><span class="overline">MATCHED OPPORTUNITIES</span><h3>适合你的校园机会</h3><small id="recruitment-source-status" class="recruitment-source-copy">正在读取岗位源…</small></div><button id="recruitment-refresh" class="source-status" type="button">刷新未来雷达 ↻</button></div>
-            <div class="recruitment-disclaimer">结果按你的岗位、行业、城市和雇主筛选条件排序；请打开原公告核对资格与截止日期。</div>
+            <div class="recruitment-results-heading"><div><span class="overline">MATCHED SIGNALS</span><h3>与你共振的机会信号</h3><small id="recruitment-source-status" class="recruitment-source-copy">正在接收公开信号…</small></div><button id="recruitment-refresh" class="source-status" type="button">刷新信号 ↻</button></div>
+            <div class="recruitment-disclaimer">信号按方向、行业、城市与雇主坐标排序；请打开原始公告核对资格与时间窗。</div>
             <section id="recruitment-deadline-alerts" class="recruitment-deadline-alerts" aria-live="polite"></section>
             <div id="recruitment-jobs" class="recruitment-jobs"></div>
           </section>
@@ -378,7 +380,7 @@
     <dialog id="consent-dialog" class="modal consent-modal">
       <div class="modal-shell">
         <span class="modal-symbol">◇</span><h2>继续前需要确认数据处理方式</h2>
-        <p>聊天消息与文档片段会发送至 OpenAI API；造界的节能/深度模式还会发送该世界的规则与本次任务。零 Token 规则整理、精确缓存复用和招聘网页指纹比较不调用 OpenAI。请阅读隐私政策后决定是否继续。</p>
+        <p>聊天消息与文档片段会发送至 OpenAI API；造界的节能/深度模式还会发送该世界的规则与本次任务。零 Token 规则整理、精确缓存复用和公开机会页面的文本指纹比较不调用 OpenAI。请阅读隐私政策后决定是否继续。</p>
         <div class="consent-actions"><a href="/privacy.html" target="_blank" class="soft-button">查看隐私政策</a><button id="accept-consent" class="primary-button" type="button"><span>同意并继续</span><b>→</b></button></div>
         <button id="consent-logout" class="text-button" type="button">不同意并退出登录</button>
       </div>
