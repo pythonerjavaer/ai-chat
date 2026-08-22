@@ -1351,7 +1351,24 @@ function renderRecruitmentJobs(jobs) {
     elements.recruitmentJobs.innerHTML = '<div class="empty-list">暂时没有匹配岗位。调整筛选或刷新岗位源后再试。</div>';
     return;
   }
-  jobs.filter((job) => /^https:\/\//.test(job.url || "")).forEach((job) => {
+  const availableJobs = jobs.filter((job) => /^https:\/\//.test(job.url || ""));
+  const tierOrder = ["T0", "T1", "T2", "T3"];
+  const tierSummary = makeElement("div", "job-tier-summary");
+  tierOrder.forEach((tier) => {
+    const count = availableJobs.filter((job) => job.tier_code === tier).length;
+    const badge = makeElement("span", `job-tier-summary-item ${tier}`);
+    badge.append(makeElement("b", "", tier), makeElement("small", "", `${count} 个岗位`));
+    tierSummary.appendChild(badge);
+  });
+  elements.recruitmentJobs.appendChild(tierSummary);
+  tierOrder.forEach((tier) => {
+    const tierJobs = availableJobs.filter((job) => (job.tier_code || "T3") === tier);
+    if (!tierJobs.length) return;
+    const group = makeElement("section", "recruitment-tier-group");
+    const heading = makeElement("div", "recruitment-tier-heading");
+    heading.append(makeElement("strong", `job-tier ${tier}`, tier), makeElement("span", "", `${tierJobs.length} 个匹配岗位`));
+    group.appendChild(heading);
+    tierJobs.forEach((job) => {
     const card = document.createElement("article");
     card.className = "recruitment-job-card";
     const deadline = job.days_left == null ? "截止日期待官方确认" : (job.days_left === 0 ? "今天截止" : `${job.days_left} 天后截止`);
@@ -1382,7 +1399,9 @@ function renderRecruitmentJobs(jobs) {
     watchButton.type = "button";
     watchButton.addEventListener("click", () => addRecruitmentWatchFromJob(job, watchButton));
     bottom.appendChild(watchButton);
-    elements.recruitmentJobs.appendChild(card);
+      group.appendChild(card);
+    });
+    elements.recruitmentJobs.appendChild(group);
   });
 }
 
@@ -1454,11 +1473,17 @@ async function refreshRecruitmentSource() {
         ? "沿用 60 秒内的公开源结果"
         : `读取 ${Number(sourceResult.count || 0).toLocaleString()} 条公开源候选`
       : "公开岗位源本次未完成";
+    const webSearch = sourceResult?.web_search;
+    const webSearchCopy = webSearch?.status === "success"
+      ? `AI 网页搜索发现 ${Number(webSearch.jobs || 0)} 条候选`
+      : webSearch?.status === "error"
+        ? "AI 网页搜索本轮未完成"
+        : "AI 网页搜索按低频周期运行";
     showToast(
       jobsOk && watchesOk
-        ? `${sourceCopy}；官网变化雷达已刷新。`
+        ? `${sourceCopy}；${webSearchCopy}；官网变化雷达已刷新。`
         : jobsOk
-          ? `${sourceCopy}；官网变化雷达本次未完成。`
+          ? `${sourceCopy}；${webSearchCopy}；官网变化雷达本次未完成。`
           : "官网变化雷达已刷新；公开岗位源本次未完成。",
       4500,
     );

@@ -28,5 +28,13 @@ services:
         value: gb
       - key: RECRUITMENT_REFRESH_MINUTES
         value: 30
+      - key: RECRUITMENT_WEB_SEARCH_ENABLED
+        value: true
+      - key: RECRUITMENT_WEB_SEARCH_MODEL
+        value: gpt-4o-mini
+      - key: RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES
+        value: 360
+      - key: RECRUITMENT_WEB_SEARCH_MAX_TOOL_CALLS
+        value: 8
       - key: RECRUITMENT_INGEST_TOKEN
         generateValue: true

@@ -241,12 +241,22 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .recruitment-deadline-alerts div { display: grid; gap: 5px; }
 .recruitment-deadline-alerts a { color: #fff0dc; font-size: 10px; line-height: 1.45; }
 .recruitment-jobs { display: grid; gap: 10px; }
+.job-tier-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 4px; }
+.job-tier-summary-item { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 9px 10px; border: 1px solid rgba(255,255,255,.09); border-radius: 10px; background: rgba(255,255,255,.025); }
+.job-tier-summary-item b { font-size: 13px; }
+.job-tier-summary-item small { color: #879aa8; font-size: 9px; }
+.job-tier-summary-item.T0, .job-tier-summary-item.T1 { color: #ffc59c; border-color: rgba(255,143,90,.2); }
+.job-tier-summary-item.T2 { color: #b9d6ff; border-color: rgba(111,170,255,.2); }
+.job-tier-summary-item.T3 { color: #9ce4c1; border-color: rgba(91,214,155,.2); }
+.recruitment-tier-group { display: grid; gap: 10px; padding-top: 7px; }
+.recruitment-tier-heading { display: flex; align-items: center; gap: 9px; padding: 5px 2px 0; }
+.recruitment-tier-heading span { color: #91a6b4; font-size: 10px; }
 .recruitment-job-card { padding: 15px 16px; border: 1px solid rgba(160,214,241,.13); border-radius: 15px; background: rgba(255,255,255,.026); transition: border .2s, transform .2s, background .2s; }
 .recruitment-job-card:hover { transform: translateY(-1px); border-color: rgba(125,219,255,.35); background: rgba(93,199,235,.045); }
 .job-card-top, .job-card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .job-card-top > div { display: flex; align-items: center; gap: 8px; }
 .job-rank { display: flex !important; align-items: center; gap: 7px; }
-.job-tier { padding: 3px 6px; border-radius: 5px; font-size: 8px; font-weight: 800; }
+.job-tier { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 850; letter-spacing: .02em; }
 .job-tier.T0, .job-tier.T1 { color: #ffc59c; border: 1px solid rgba(255,143,90,.25); background: rgba(255,109,49,.1); }
 .job-tier.T2 { color: #b9d6ff; border: 1px solid rgba(111,170,255,.25); background: rgba(80,137,226,.1); }
 .job-tier.T3 { color: #9ce4c1; border: 1px solid rgba(91,214,155,.25); background: rgba(55,171,116,.1); }
@@ -749,6 +759,7 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; backg
   .recruitment-body { display: block; overflow-y: auto; }
   .recruitment-profile-panel { min-height: auto; overflow: visible; border-right: 0; border-bottom: 1px solid rgba(255,255,255,.075); }
   .recruitment-results { min-height: 520px; overflow: visible; padding: 19px; }
+  .job-tier-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 520px) {
