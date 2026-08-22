@@ -1118,7 +1118,7 @@ def list_recruitment_jobs() -> list[dict[str, Any]]:
 
 
 def purge_legacy_recruitment_samples() -> None:
-    """Remove prototype vacancies while retaining refreshable public-source rows."""
+    """Remove prototype vacancies and known unsupported role claims."""
     with connect() as connection:
         connection.execute(
             """
@@ -1131,6 +1131,14 @@ def purge_legacy_recruitment_samples() -> None:
                OR source IN ('示例岗位，等待接入官方源', '示例数据')
                OR company LIKE '九坤%'
                OR source LIKE '九坤%'
+               OR (
+                    company IN ('中国人民银行', '人行', '中国农业发展银行', '农发行')
+                    AND title LIKE '%管培%'
+               )
+               OR (
+                    source = 'OpenAI 网页搜索'
+                    AND tags NOT LIKE '%链接已验证%'
+               )
             """
         )
 

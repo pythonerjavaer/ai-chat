@@ -1141,6 +1141,11 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
         "PERSONAL_MONITOR_POOLS",
         recruitment_search.PERSONAL_MONITOR_POOLS[:1],
     )
+    monkeypatch.setattr(
+        recruitment_search,
+        "_official_candidate_link_is_readable",
+        lambda _url: True,
+    )
     result = recruitment_search.search_current_recruitment_jobs(
         SimpleNamespace(responses=FakeResponses())
     )
@@ -1148,9 +1153,72 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
     assert result.jobs[0]["company"] == "拼多多"
     assert result.jobs[0]["employer_type"] == "互联网企业"
     assert "动态监控" in result.jobs[0]["tags"]
+    assert "链接已验证" in result.jobs[0]["tags"]
     assert result.tool_calls == 1
     assert result.total_tokens == 960
     assert result.failed_pools == ()
+
+
+def test_web_search_rejects_unsupported_policy_bank_management_trainee_claims():
+    base = {
+        "city": "北京",
+        "industry": "金融",
+        "official_url": "https://example.com/campus/role",
+        "opening_date": None,
+        "closing_date": "2099-09-01",
+        "requirements": "面向应届毕业生的校园招聘",
+        "category": "银行/金融",
+    }
+    assert recruitment_search._normalize_job({
+        **base,
+        "company": "中国农业发展银行",
+        "title": "2026年管培生招聘",
+    }) is None
+    assert recruitment_search._normalize_job({
+        **base,
+        "company": "中国人民银行",
+        "title": "2026年管理培训生招聘",
+    }) is None
+
+
+def test_web_search_discards_candidate_with_unreadable_link(monkeypatch):
+    payload = {
+        "jobs": [{
+            "company": "拼多多",
+            "title": "2027届校园招聘产品策略岗",
+            "city": "上海",
+            "industry": "互联网",
+            "official_url": "https://careers.pddglobalhr.com/campus/grad/product",
+            "opening_date": "2026-08-20",
+            "closing_date": "2099-09-01",
+            "requirements": "面向2027届毕业生",
+            "category": "互联网企业",
+        }]
+    }
+
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                output_text=__import__("json").dumps(payload),
+                output=[SimpleNamespace(type="web_search_call")],
+                usage=SimpleNamespace(input_tokens=8, output_tokens=2, total_tokens=10),
+                model="gpt-4o-mini",
+            )
+
+    monkeypatch.setattr(
+        recruitment_search,
+        "PERSONAL_MONITOR_POOLS",
+        recruitment_search.PERSONAL_MONITOR_POOLS[:1],
+    )
+    monkeypatch.setattr(
+        recruitment_search,
+        "_official_candidate_link_is_readable",
+        lambda _url: False,
+    )
+    result = recruitment_search.search_current_recruitment_jobs(
+        SimpleNamespace(responses=FakeResponses())
+    )
+    assert result.jobs == []
 
 
 def test_web_search_keeps_successful_pools_when_one_pool_fails(monkeypatch):

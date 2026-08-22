@@ -12,7 +12,11 @@ from openai import OpenAI
 
 from .config import settings
 from .live_sources import PERSONAL_MONITOR_POOLS, PRIORITY_EMPLOYERS
-from .recruitment_watch import WatchFetchError, normalize_public_https_urls
+from .recruitment_watch import (
+    WatchFetchError,
+    fetch_watch_page,
+    normalize_public_https_urls,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +49,18 @@ EMPLOYER_TYPE_BY_NAME = {
     employer.lower(): EMPLOYER_TYPE_BY_POOL[pool["id"]]
     for pool in PERSONAL_MONITOR_POOLS
     for employer in pool["employers"]
+}
+
+# These institutions publish campus and affiliated-unit recruitment under
+# specific official notices.  A generic "management trainee" label for either
+# institution is not an official job family and has repeatedly produced false
+# positives from search snippets.  Keep this narrowly scoped: it does not
+# suppress recruitment by their separately named affiliates.
+UNSUPPORTED_MANAGEMENT_TRAINEE_EMPLOYERS = {
+    "中国人民银行",
+    "人行",
+    "中国农业发展银行",
+    "农发行",
 }
 
 SEARCH_RESULT_SCHEMA = {
@@ -113,7 +129,8 @@ category 固定填写：{category}
 3. official_url 必须是企业招聘官网或企业授权 ATS 的直接 HTTPS 链接，不得填搜索结果页、公众号转载、社交媒体或臆造链接。
 4. opening_date / closing_date 只有原文明确写明时才填写 YYYY-MM-DD，否则为 null；不得把发布日期当截止日期。
 5. city 未公告时写“地点待公告确认”。requirements 简洁记录毕业年份、学历、专业、语言或笔试门槛；无法确认时明确写“待官方原文核对”。
-6. 最多返回 {MAX_JOBS_PER_CATEGORY} 条，优先最新和截止日期较近的岗位。
+6. 中国人民银行和中国农业发展银行只能使用其官方公告中的实际岗位名称；不得把笼统校园招聘或所属单位招聘改写成“管培生”。
+7. 最多返回 {MAX_JOBS_PER_CATEGORY} 条，优先最新和截止日期较近的岗位。
 """.strip()
 
 
@@ -136,6 +153,18 @@ def _priority_employer(company: str) -> str | None:
     return max(matches, key=len) if matches else None
 
 
+def _is_unsupported_management_trainee_claim(company: str, title: str) -> bool:
+    normalized_company = re.sub(r"\s+", "", company).casefold()
+    normalized_title = re.sub(r"\s+", "", title).casefold()
+    return (
+        ("管培" in normalized_title or "管理培训生" in normalized_title)
+        and any(
+            employer in normalized_company
+            for employer in UNSUPPORTED_MANAGEMENT_TRAINEE_EMPLOYERS
+        )
+    )
+
+
 def _safe_official_url(value: str) -> str | None:
     try:
         display_url, _ = normalize_public_https_urls(value, resolve_dns=False)
@@ -149,12 +178,33 @@ def _safe_official_url(value: str) -> str | None:
     return display_url
 
 
+def _official_candidate_link_is_readable(url: str) -> bool:
+    """Keep a web-search candidate only when its supplied HTTPS page opens.
+
+    This is deliberately deterministic and sends no page contents to an AI
+    provider. It rejects dead links, redirects to unsafe addresses, and pages
+    that do not return readable HTML/text before a candidate reaches users.
+    """
+    try:
+        result = fetch_watch_page(
+            url,
+            (),
+            timeout_seconds=6,
+            max_bytes=500_000,
+        )
+    except (OSError, ValueError, WatchFetchError):
+        return False
+    return bool(result.text)
+
+
 def _normalize_job(item: dict[str, Any]) -> dict[str, Any] | None:
     company = str(item.get("company", "")).strip()[:120]
     employer_key = _priority_employer(company)
     if not employer_key:
         return None
     title = re.sub(r"\s+", " ", str(item.get("title", ""))).strip()[:240]
+    if _is_unsupported_management_trainee_claim(company, title):
+        return None
     campus_text = f"{title} {item.get('requirements', '')}".lower()
     if not title or not any(
         marker in campus_text
@@ -233,8 +283,13 @@ def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSear
         if not isinstance(item, dict):
             continue
         job = _normalize_job(item)
-        if not job or job["url"] in seen_urls:
+        if (
+            not job
+            or job["url"] in seen_urls
+            or not _official_candidate_link_is_readable(job["url"])
+        ):
             continue
+        job["tags"].append("链接已验证")
         seen_urls.add(job["url"])
         normalized.append(job)
     tool_calls = sum(
