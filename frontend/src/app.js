@@ -1306,6 +1306,14 @@ $("recruitment-open").addEventListener("click", openRecruitment);
 $("recruitment-close").addEventListener("click", () => elements.recruitmentDialog.close());
 elements.recruitmentRefresh.addEventListener("click", refreshRecruitmentSource);
 elements.recruitmentForm.addEventListener("submit", saveRecruitment);
+$(`recruitment-dialog`).addEventListener("change", (event) => {
+  if (!event.target.matches('[data-choice-group="composite_interest"] input')) return;
+  // Keep the profile pane anchored when the hidden checkbox changes state.
+  const panel = document.querySelector(".recruitment-profile-panel");
+  if (!panel) return;
+  const top = panel.scrollTop;
+  requestAnimationFrame(() => { panel.scrollTop = top; });
+});
 $("studio-open-secondary").addEventListener("click", openStudio);
 $("mobile-studio-open").addEventListener("click", openStudio);
 $("studio-close").addEventListener("click", () => elements.studioDialog.close());
