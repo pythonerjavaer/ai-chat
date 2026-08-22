@@ -62,6 +62,9 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
     industries = _words(profile.get("industries"))
     locations = _words(profile.get("locations"))
     employer_types = _words(profile.get("employer_types"))
+    skill_tags = _words(profile.get("skill_tags"))
+    undergraduate_major = str(profile.get("undergraduate_major", "")).lower()
+    master_major = str(profile.get("master_major", "")).lower()
     haystack = " ".join(
         str(job.get(key, "")) for key in ("title", "company", "city", "industry", "requirements", "tags")
     ).lower()
@@ -81,13 +84,34 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         score += 8
         reasons.append("地点偏好匹配")
     if profile.get("background"):
+        score += 2
+        reasons.append("已纳入补充背景")
+    if skill_tags and any(word in haystack for word in skill_tags):
+        score += 8
+        reasons.append("技能标签匹配")
+    if profile.get("education_level"):
         score += 3
-        reasons.append("已纳入个人背景评估")
+        reasons.append("学历条件已结构化")
+    if profile.get("language_level") and any(word in haystack for word in ("英语", "english", "海外", "国际")):
+        score += 4
+        reasons.append("语言条件匹配")
+    composite = bool(profile.get("composite_interest")) and bool(undergraduate_major and master_major and undergraduate_major != master_major)
+    if composite:
+        score += 6
+        reasons.append("本科+硕士可形成复合型专业")
     score = min(98, score)
     applicants = job.get("historical_applicants") or 0
     offers = job.get("historical_offers") or 0
     historical_rate = (offers / applicants * 100) if applicants else None
     estimated_rate = min(95.0, max(0.5, (historical_rate or 3.0) * (0.55 + score / 100)))
+    if score >= 85:
+        tier_code, tier_label = "T0", "顶级冲刺"
+    elif score >= 72:
+        tier_code, tier_label = "T1", "冲刺"
+    elif score >= 58:
+        tier_code, tier_label = "T2", "主力"
+    else:
+        tier_code, tier_label = "T3", "保底"
     closing_date = job.get("closing_date")
     days_left = None
     if closing_date:
@@ -101,5 +125,8 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         "match_reasons": reasons or ["建议补充岗位方向和个人背景后重新评估"],
         "historical_rate": round(historical_rate, 2) if historical_rate is not None else None,
         "estimated_rate": round(estimated_rate, 2),
+        "tier_code": tier_code,
+        "tier_label": tier_label,
+        "composite_fit": composite,
         "days_left": days_left,
     }

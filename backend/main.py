@@ -155,6 +155,11 @@ class RecruitmentProfileRequest(BaseModel):
     experience_level: str = Field(default="", max_length=40)
     skill_tags: list[str] = Field(default_factory=list, max_length=16)
     language_level: str = Field(default="", max_length=40)
+    undergraduate_major: str = Field(default="", max_length=60)
+    undergraduate_school_tier: str = Field(default="", max_length=40)
+    master_major: str = Field(default="", max_length=60)
+    master_school_tier: str = Field(default="", max_length=40)
+    composite_interest: bool = False
     graduation_year: int | None = Field(default=None, ge=2020, le=2100)
     availability_start: str | None = Field(default=None, max_length=10)
     availability_end: str | None = Field(default=None, max_length=10)

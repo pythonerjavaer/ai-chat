@@ -208,6 +208,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .recruitment-job-card:hover { transform: translateY(-1px); border-color: rgba(125,219,255,.35); background: rgba(93,199,235,.045); }
 .job-card-top, .job-card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .job-card-top > div { display: flex; align-items: center; gap: 8px; }
+.job-rank { display: flex !important; align-items: center; gap: 7px; }
+.job-tier { padding: 3px 6px; border-radius: 5px; font-size: 8px; font-weight: 800; }
+.job-tier.T0, .job-tier.T1 { color: #ffc59c; border: 1px solid rgba(255,143,90,.25); background: rgba(255,109,49,.1); }
+.job-tier.T2 { color: #b9d6ff; border: 1px solid rgba(111,170,255,.25); background: rgba(80,137,226,.1); }
+.job-tier.T3 { color: #9ce4c1; border: 1px solid rgba(91,214,155,.25); background: rgba(55,171,116,.1); }
 .job-company { color: #eaf8ff; font-size: 12px; font-weight: 800; }
 .job-type { padding: 3px 6px; color: #9fd8e9; border: 1px solid rgba(109,203,236,.17); border-radius: 5px; background: rgba(75,187,222,.08); font-size: 8px; }
 .job-score { color: #8ee4bc; font-size: 11px; font-weight: 800; }

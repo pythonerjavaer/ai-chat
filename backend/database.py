@@ -118,6 +118,11 @@ def init_db() -> None:
                 experience_level TEXT NOT NULL DEFAULT '',
                 skill_tags TEXT NOT NULL DEFAULT '[]',
                 language_level TEXT NOT NULL DEFAULT '',
+                undergraduate_major TEXT NOT NULL DEFAULT '',
+                undergraduate_school_tier TEXT NOT NULL DEFAULT '',
+                master_major TEXT NOT NULL DEFAULT '',
+                master_school_tier TEXT NOT NULL DEFAULT '',
+                composite_interest INTEGER NOT NULL DEFAULT 0,
                 graduation_year INTEGER,
                 availability_start TEXT,
                 availability_end TEXT,
@@ -198,6 +203,11 @@ def init_db() -> None:
             ("experience_level", "TEXT NOT NULL DEFAULT ''"),
             ("skill_tags", "TEXT NOT NULL DEFAULT '[]'"),
             ("language_level", "TEXT NOT NULL DEFAULT ''"),
+            ("undergraduate_major", "TEXT NOT NULL DEFAULT ''"),
+            ("undergraduate_school_tier", "TEXT NOT NULL DEFAULT ''"),
+            ("master_major", "TEXT NOT NULL DEFAULT ''"),
+            ("master_school_tier", "TEXT NOT NULL DEFAULT ''"),
+            ("composite_interest", "INTEGER NOT NULL DEFAULT 0"),
         ):
             _ensure_column(connection, "recruitment_profiles", column, declaration)
 
@@ -424,6 +434,8 @@ def get_recruitment_profile(user_id: int) -> dict[str, Any]:
             "employer_types": [], "background": "", "graduation_year": None,
             "education_level": "", "major_category": "", "school_tier": "",
             "experience_level": "", "skill_tags": [], "language_level": "",
+            "undergraduate_major": "", "undergraduate_school_tier": "",
+            "master_major": "", "master_school_tier": "", "composite_interest": False,
             "availability_start": None, "availability_end": None,
         }
     item = dict(row)
@@ -448,6 +460,9 @@ def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str,
         profile.get("experience_level", ""),
         json.dumps(profile.get("skill_tags", []), ensure_ascii=False),
         profile.get("language_level", ""), profile.get("graduation_year"),
+        profile.get("undergraduate_major", ""), profile.get("undergraduate_school_tier", ""),
+        profile.get("master_major", ""), profile.get("master_school_tier", ""),
+        int(bool(profile.get("composite_interest", False))),
         profile.get("availability_start"), profile.get("availability_end"), now,
     )
     with connect() as connection:
@@ -457,8 +472,10 @@ def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str,
                 (user_id, desired_roles, industries, locations, employer_types,
                  background, education_level, major_category, school_tier,
                  experience_level, skill_tags, language_level, graduation_year,
-                 availability_start, availability_end, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 undergraduate_major, undergraduate_school_tier, master_major,
+                 master_school_tier, composite_interest, availability_start,
+                 availability_end, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 desired_roles=excluded.desired_roles, industries=excluded.industries,
                 locations=excluded.locations, employer_types=excluded.employer_types,
@@ -466,6 +483,10 @@ def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str,
                 education_level=excluded.education_level, major_category=excluded.major_category,
                 school_tier=excluded.school_tier, experience_level=excluded.experience_level,
                 skill_tags=excluded.skill_tags, language_level=excluded.language_level,
+                undergraduate_major=excluded.undergraduate_major,
+                undergraduate_school_tier=excluded.undergraduate_school_tier,
+                master_major=excluded.master_major, master_school_tier=excluded.master_school_tier,
+                composite_interest=excluded.composite_interest,
                 availability_start=excluded.availability_start,
                 availability_end=excluded.availability_end, updated_at=excluded.updated_at
             """,

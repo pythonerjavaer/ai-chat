@@ -1013,7 +1013,7 @@ function renderRecruitmentProfile(profile) {
   document.querySelectorAll("[data-choice-group]").forEach((group) => {
     const key = group.dataset.choiceGroup;
     const values = Array.isArray(profile[key]) ? profile[key] : [profile[key]];
-    group.querySelectorAll("input").forEach((input) => { input.checked = values.includes(input.value); });
+    group.querySelectorAll("input").forEach((input) => { input.checked = values.map(String).includes(input.value); });
   });
 }
 
@@ -1028,7 +1028,7 @@ function renderRecruitmentJobs(jobs) {
     card.className = "recruitment-job-card";
     const rate = job.estimated_rate == null ? "—" : `${job.estimated_rate}%`;
     const deadline = job.days_left == null ? "截止日期待确认" : job.days_left < 0 ? "已过截止日期" : `${job.days_left} 天后截止`;
-    card.innerHTML = `<div class="job-card-top"><div><span class="job-company">${DOMPurify.sanitize(job.company)}</span><span class="job-type">${DOMPurify.sanitize(job.employer_type)}</span></div><span class="job-score">${job.match_score}% 匹配</span></div><h4>${DOMPurify.sanitize(job.title)}</h4><p class="job-meta">${DOMPurify.sanitize(job.city)} · ${DOMPurify.sanitize(job.industry)} · ${deadline}</p><p class="job-requirements">${DOMPurify.sanitize(job.requirements)}</p><div class="job-card-bottom"><span>历史录取率 ${job.historical_rate == null ? "暂无" : `${job.historical_rate}%`}</span><strong>你的估计录取率 ${rate}</strong><a href="${DOMPurify.sanitize(job.url || "#")}" target="_blank" rel="noreferrer">查看来源 ↗</a></div>`;
+    card.innerHTML = `<div class="job-card-top"><div><span class="job-company">${DOMPurify.sanitize(job.company)}</span><span class="job-type">${DOMPurify.sanitize(job.employer_type)}</span></div><div class="job-rank"><span class="job-tier ${DOMPurify.sanitize(job.tier_code || "T3")}">${DOMPurify.sanitize(job.tier_code || "T3")} ${DOMPurify.sanitize(job.tier_label || "保底")}</span><span class="job-score">${job.match_score}% 匹配</span></div></div><h4>${DOMPurify.sanitize(job.title)}</h4><p class="job-meta">${DOMPurify.sanitize(job.city)} · ${DOMPurify.sanitize(job.industry)} · ${deadline}</p><p class="job-requirements">${DOMPurify.sanitize(job.requirements)}</p><div class="job-card-bottom"><span>历史录取率 ${job.historical_rate == null ? "暂无" : `${job.historical_rate}%`}</span><strong>你的估计录取率 ${rate}</strong><a href="${DOMPurify.sanitize(job.url || "#")}" target="_blank" rel="noreferrer">查看来源 ↗</a></div>`;
     elements.recruitmentJobs.appendChild(card);
   });
 }
@@ -1085,6 +1085,11 @@ async function saveRecruitment(event) {
         experience_level: choice("experience_level"),
         skill_tags: choices("skill_tags"),
         language_level: choice("language_level"),
+        undergraduate_major: choice("undergraduate_major"),
+        undergraduate_school_tier: choice("undergraduate_school_tier"),
+        master_major: choice("master_major"),
+        master_school_tier: choice("master_school_tier"),
+        composite_interest: choices("composite_interest").includes("true"),
         graduation_year: null,
         availability_start: elements.recruitmentStart.value || null,
         availability_end: elements.recruitmentEnd.value || null,
