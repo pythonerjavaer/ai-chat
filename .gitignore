@@ -28,6 +28,17 @@ backend/data/
 node_modules/
 .parcel-cache/
 .vite/
+frontend/dist/
+frontend/android/.gradle/
+frontend/android/local.properties
+frontend/android/app/build/
+frontend/android/build/
+frontend/ios/App/DerivedData/
+frontend/ios/DerivedData/
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
 
 # Editors and operating systems
 .DS_Store

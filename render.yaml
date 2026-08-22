@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: frostfire-ai
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    disk:
+      name: frostfire-data
+      mountPath: /app/backend/data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_PATH
+        value: /app/backend/data/ai_chat.db
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: AI_MODEL
+        value: gpt-4o-mini
+      - key: EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: CORS_ORIGINS
+        sync: false
+      - key: ADZUNA_APP_ID
+        sync: false
+      - key: ADZUNA_APP_KEY
+        sync: false
+      - key: ADZUNA_COUNTRY
+        value: gb
+      - key: RECRUITMENT_REFRESH_MINUTES
+        value: 30
+      - key: RECRUITMENT_INGEST_TOKEN
+        generateValue: true

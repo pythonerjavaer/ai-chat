@@ -10,6 +10,7 @@ TEST_DIRECTORY = Path(tempfile.mkdtemp(prefix="ai-chat-tests-"))
 os.environ["OPENAI_API_KEY"] = "test-key"
 os.environ["JWT_SECRET"] = "test-secret-that-is-long-enough-for-tests"
 os.environ["DATABASE_PATH"] = str(TEST_DIRECTORY / "test.db")
+os.environ["RECRUITMENT_INGEST_TOKEN"] = "test-recruitment-ingest-token"
 
 from fastapi.testclient import TestClient
 
@@ -29,7 +30,11 @@ from backend.ai_service import (
 def register(client: TestClient, username: str) -> tuple[str, dict]:
     response = client.post(
         "/api/auth/register",
-        json={"username": username, "password": "correct-horse-123"},
+        json={
+            "username": username,
+            "password": "correct-horse-123",
+            "privacy_accepted": True,
+        },
     )
     assert response.status_code == 201
     payload = response.json()
@@ -45,7 +50,11 @@ def test_authentication_and_user_isolation():
         alice_token, _ = register(client, "alice")
         duplicate = client.post(
             "/api/auth/register",
-            json={"username": "ALICE", "password": "correct-horse-123"},
+            json={
+                "username": "ALICE",
+                "password": "correct-horse-123",
+                "privacy_accepted": True,
+            },
         )
         assert duplicate.status_code == 409
 
@@ -70,6 +79,44 @@ def test_authentication_and_user_isolation():
             headers=auth(bob_token),
         )
         assert forbidden.status_code == 404
+
+
+def test_privacy_consent_and_account_deletion():
+    with TestClient(main.app) as client:
+        rejected = client.post(
+            "/api/auth/register",
+            json={"username": "no-consent", "password": "correct-horse-123"},
+        )
+        assert rejected.status_code == 400
+
+        token, user = register(client, "delete-me")
+        profile = client.get("/api/auth/me", headers=auth(token)).json()
+        assert profile["privacy_accepted"] is True
+
+        created = client.post(
+            "/api/sessions",
+            headers=auth(token),
+            json={"title": "Private history"},
+        )
+        assert created.status_code == 201
+
+        wrong_password = client.request(
+            "DELETE",
+            "/api/auth/account",
+            headers=auth(token),
+            json={"password": "wrong-password", "confirmation": "DELETE"},
+        )
+        assert wrong_password.status_code == 401
+
+        deleted = client.request(
+            "DELETE",
+            "/api/auth/account",
+            headers=auth(token),
+            json={"password": "correct-horse-123", "confirmation": "DELETE"},
+        )
+        assert deleted.status_code == 204
+        assert database.get_user_by_id(user["id"]) is None
+        assert database.get_session(created.json()["id"], user["id"]) is None
 
 
 def test_persistent_chat_and_session_history(monkeypatch):
@@ -287,6 +334,263 @@ def test_professional_workspaces_isolate_sessions_documents_and_prompts(monkeypa
         assert "calculate_financial_metric" in {
             tool["function"]["name"] for tool in tools_for_workspace("finance")
         }
+
+
+def test_cross_exam_links_legal_and_finance_evidence(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "create_embeddings",
+        lambda chunks: [[1.0, 0.0] for _ in chunks],
+    )
+
+    with TestClient(main.app) as client:
+        token, _ = register(client, "cross-exam-user")
+        legal_upload = client.post(
+            "/api/documents",
+            headers=auth(token),
+            data={"workspace": "legal"},
+            files={
+                "file": (
+                    "subscription.md",
+                    "The agreement renews automatically and fees rise by 8%.",
+                    "text/markdown",
+                )
+            },
+        )
+        finance_upload = client.post(
+            "/api/documents",
+            headers=auth(token),
+            data={"workspace": "finance"},
+            files={
+                "file": (
+                    "forecast.md",
+                    "Operating costs are expected to increase next year.",
+                    "text/markdown",
+                )
+            },
+        )
+        assert legal_upload.status_code == 201
+        assert finance_upload.status_code == 201
+
+        def fake_context(_user_id, _query, workspace, *_args):
+            if workspace == "legal":
+                return [{
+                    "document_id": legal_upload.json()["id"],
+                    "name": "subscription.md",
+                    "content": "The agreement renews automatically and fees rise by 8%.",
+                    "page": None,
+                    "score": 0.91,
+                }]
+            return [{
+                "document_id": finance_upload.json()["id"],
+                "name": "forecast.md",
+                "content": "Operating costs are expected to increase next year.",
+                "page": None,
+                "score": 0.88,
+            }]
+
+        monkeypatch.setattr(main, "retrieve_context", fake_context)
+        monkeypatch.setattr(
+            main,
+            "run_cross_exam",
+            lambda *_: {
+                "headline": "续约条款可能放大成本压力",
+                "executive_summary": "合同升级机制与成本预测形成交叉风险。",
+                "collisions": [{
+                    "title": "自动续约与成本上行",
+                    "severity": "high",
+                    "confidence": 86,
+                    "legal_mechanism": "自动续约并上调费用。",
+                    "financial_consequence": "预计成本压力可能被放大。",
+                    "why_it_matters": "预算可能未覆盖合同升级。",
+                    "legal_source_ids": ["L1"],
+                    "finance_source_ids": ["F1", "F99"],
+                    "missing_evidence": "缺少终止通知窗口。",
+                    "next_action": "核对终止窗口并更新预算。",
+                }],
+                "stress_scenarios": [
+                    {
+                        "name": name,
+                        "trigger": "示例触发条件",
+                        "impact_chain": "示例影响链",
+                        "early_warning": "示例预警",
+                        "response": "示例响应",
+                    }
+                    for name in ["Base", "Downside", "Breakpoint"]
+                ],
+                "blind_spots": ["缺少终止窗口信息"],
+            },
+        )
+
+        response = client.post(
+            "/api/cross-exam",
+            headers=auth(token),
+            json={"focus": "检查合同对成本和现金流的影响"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["analysis_id"].startswith("FF-")
+        assert payload["document_counts"] == {"legal": 1, "finance": 1}
+        assert [item["source_id"] for item in payload["collisions"][0]["evidence"]] == [
+            "L1",
+            "F1",
+        ]
+        assert payload["method"]["name"] == "Clause-to-Cashflow Cross-Examination"
+
+        missing_token, _ = register(client, "cross-exam-missing")
+        missing = client.post(
+            "/api/cross-exam",
+            headers=auth(missing_token),
+            json={"focus": "检查跨域影响"},
+        )
+        assert missing.status_code == 409
+
+
+def test_ai_space_studio_usage_and_billing_boundaries(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "run_space",
+        lambda *_args, **_kwargs: (
+            "A concise project plan.",
+            {"input_tokens": 120, "output_tokens": 80, "total_tokens": 200},
+        ),
+    )
+
+    with TestClient(main.app) as client:
+        token, _ = register(client, "space-owner")
+        templates = client.get("/api/platform/templates").json()
+        assert {item["id"] for item in templates} >= {
+            "project_engineer",
+            "workflow_designer",
+            "document_oracle",
+            "blank",
+        }
+
+        created = client.post(
+            "/api/spaces",
+            headers=auth(token),
+            json={
+                "name": "My Project Engineer",
+                "description": "Plans and verifies product work.",
+                "template_id": "project_engineer",
+                "monthly_token_budget": 1_000,
+            },
+        )
+        assert created.status_code == 201
+        space_id = created.json()["id"]
+        assert created.json()["theme"] == "forge"
+
+        run = client.post(
+            f"/api/spaces/{space_id}/run",
+            headers=auth(token),
+            json={"message": "Plan a token-efficient MVP."},
+        )
+        assert run.status_code == 200
+        assert run.json()["reply"] == "A concise project plan."
+        assert run.json()["usage"]["total_tokens"] == 200
+        assert run.json()["billing"]["usage"]["total_tokens"] == 200
+
+        listed = client.get("/api/spaces", headers=auth(token)).json()
+        assert listed[0]["usage"]["total_tokens"] == 200
+
+        second_token, _ = register(client, "space-visitor")
+        hidden = client.post(
+            f"/api/spaces/{space_id}/run",
+            headers=auth(second_token),
+            json={"message": "Try to access another account."},
+        )
+        assert hidden.status_code == 404
+
+        apple = client.post(
+            "/api/billing/apple/verify",
+            headers=auth(token),
+            json={"signed_transaction": "x" * 20},
+        )
+        assert apple.status_code == 503
+
+
+def test_recruitment_profile_matching_and_deadline_metadata():
+    with TestClient(main.app) as client:
+        token, _ = register(client, "recruiter")
+        profile = client.put(
+            "/api/recruitment/profile",
+            headers=auth(token),
+            json={
+                "desired_roles": ["产品经理"],
+                "industries": ["互联网"],
+                "employer_types": ["互联网企业"],
+            },
+        )
+        assert profile.status_code == 200
+        assert set(profile.json()) == {"desired_roles", "industries", "locations", "employer_types"}
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token))
+        assert jobs.status_code == 200
+        payload = jobs.json()
+        assert payload["data_status"]["mode"] == "verified_dynamic"
+        assert len(payload["monitor_pools"]) == 3
+        assert payload["jobs"]
+        titles = {job["title"] for job in payload["jobs"]}
+        assert "拼多多 2027届校园招聘提前批" in titles
+        assert "2027 Business Analyst (General Practice)_Campus" in titles
+        assert sum("梧桐计划" in title for title in titles) == 8
+        assert all(job["url"].startswith("https://") for job in payload["jobs"])
+        assert not any(job["id"].startswith("sample-") for job in payload["jobs"])
+        first = payload["jobs"][0]
+        assert "match_score" in first
+        assert "estimated_rate" not in first
+        assert "historical_rate" not in first
+        assert "tier_label" not in first
+        assert "days_left" in first
+        assert first["tier_code"] in {"T0", "T1", "T2", "T3"}
+        assert "composite_fit" not in first
+
+
+def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs():
+    payload = {
+        "jobs": [
+            {
+                "company": "测试重点机构",
+                "title": "2099届校园招聘数据岗",
+                "city": "北京",
+                "official_url": "https://example.com/campus/data-2099",
+                "closing_date": "2099-08-25",
+                "tags": ["校园招聘", "数据"],
+            },
+            {
+                "company": "过期机构",
+                "title": "2020届校园招聘岗位",
+                "city": "上海",
+                "official_url": "https://example.com/campus/expired",
+                "closing_date": "2020-08-01",
+            },
+        ]
+    }
+    with TestClient(main.app) as client:
+        unauthorized = client.post("/api/recruitment/ingest", json=payload)
+        assert unauthorized.status_code == 401
+        result = client.post(
+            "/api/recruitment/ingest",
+            headers={"X-Recruitment-Token": "test-recruitment-ingest-token"},
+            json=payload,
+        )
+        assert result.status_code == 200
+        assert result.json()["accepted"] == 1
+        assert result.json()["skipped"] == [{"title": "2020届校园招聘岗位", "reason": "expired"}]
+        token, _ = register(client, "dynamic-recruiter")
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
+        assert any(job["title"] == "2099届校园招聘数据岗" for job in jobs)
+        assert not any(job["title"] == "2020届校园招聘岗位" for job in jobs)
+        closed = client.post(
+            "/api/recruitment/ingest",
+            headers={"X-Recruitment-Token": "test-recruitment-ingest-token"},
+            json={"jobs": [{**payload["jobs"][0], "status": "closed"}]},
+        )
+        assert closed.status_code == 200
+        assert closed.json()["skipped"] == [
+            {"title": "2099届校园招聘数据岗", "reason": "closed"}
+        ]
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
+        assert not any(job["title"] == "2099届校园招聘数据岗" for job in jobs)
 
 
 def test_docx_extraction_preserves_readable_content():

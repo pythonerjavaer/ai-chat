@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+!.env.example
+**/__pycache__
+**/.venv
+**/node_modules
+**/dist
+**/build
+backend/data
+frontend/android
+frontend/ios
+*.db
+*.log

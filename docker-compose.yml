@@ -1,0 +1,17 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - backend/.env
+    environment:
+      DATABASE_PATH: /app/backend/data/ai_chat.db
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    volumes:
+      - ai-chat-data:/app/backend/data
+
+volumes:
+  ai-chat-data:

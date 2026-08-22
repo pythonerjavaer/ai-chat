@@ -1,0 +1,76 @@
+openapi: 3.1.0
+info:
+  title: FrostFire Recruitment Monitor Ingest
+  version: 1.0.0
+  description: Push verified campus vacancies into the autumn-recruiting radar.
+servers:
+  - url: https://YOUR_RENDER_DOMAIN
+paths:
+  /api/recruitment/ingest:
+    post:
+      operationId: ingestRecruitmentJobs
+      summary: Push verified campus vacancies
+      security:
+        - recruitmentToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jobs]
+              properties:
+                jobs:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    $ref: '#/components/schemas/RecruitmentJob'
+      responses:
+        '200':
+          description: Accepted jobs and skipped records with reasons.
+        '401':
+          description: Missing or invalid monitor token.
+components:
+  securitySchemes:
+    recruitmentToken:
+      type: apiKey
+      in: header
+      name: X-Recruitment-Token
+  schemas:
+    RecruitmentJob:
+      type: object
+      required: [company, title, city, official_url]
+      properties:
+        company:
+          type: string
+        title:
+          type: string
+        city:
+          type: string
+        employer_type:
+          type: string
+        industry:
+          type: string
+        official_url:
+          type: string
+          format: uri
+          pattern: '^https://'
+        source:
+          type: string
+        opening_date:
+          type: string
+          format: date
+        closing_date:
+          type: string
+          format: date
+        requirements:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [open, closed]
+          default: open

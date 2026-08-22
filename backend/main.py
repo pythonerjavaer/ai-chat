@@ -1,14 +1,21 @@
+import asyncio
+import hashlib
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
-from typing import Annotated
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Annotated, Literal
 
 from fastapi import (
     Depends,
     FastAPI,
     File,
     Form,
+    Header,
     HTTPException,
+    Request,
     Response,
     UploadFile,
     status,
@@ -16,6 +23,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import database
@@ -25,7 +33,20 @@ from .ai_service import (
     extract_document,
     retrieve_context,
     run_agent,
+    run_cross_exam,
+    run_space,
     stream_agent,
+)
+from .platform import SPACE_TEMPLATES, plan_limits
+from .recruitment import score_job
+from .live_sources import (
+    CORE_LOCATION_MARKERS,
+    CURATED_CAMPUS_JOBS,
+    PERSONAL_MONITOR_POOLS,
+    fetch_adzuna_jobs,
+    fetch_public_recruitment_sources,
+    is_actionable_recruitment_listing,
+    is_priority_campus_listing,
 )
 from .config import settings
 from .security import (
@@ -46,13 +67,49 @@ logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def refresh_recruitment_sources() -> int:
+    """Refresh public recruitment sources; safe to call from a scheduled worker."""
+    jobs = [dict(job) for job in CURATED_CAMPUS_JOBS]
+    jobs.extend(fetch_public_recruitment_sources())
+    if settings.adzuna_app_id and settings.adzuna_app_key:
+        jobs.extend(fetch_adzuna_jobs())
+    database.upsert_recruitment_jobs(jobs)
+    return len(jobs)
+
+
+async def recruitment_refresh_loop() -> None:
+    while True:
+        try:
+            count = await asyncio.to_thread(refresh_recruitment_sources)
+            logger.info("Scheduled recruitment refresh completed: %s jobs", count)
+        except Exception:
+            logger.exception("Scheduled recruitment refresh failed")
+        await asyncio.sleep(settings.recruitment_refresh_minutes * 60)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.init_db()
-    yield
+    database.purge_legacy_recruitment_samples()
+    database.seed_recruitment_jobs(CURATED_CAMPUS_JOBS)
+    task = None
+    if settings.recruitment_refresh_minutes > 0:
+        task = asyncio.create_task(recruitment_refresh_loop())
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
-app = FastAPI(title="AI Chat API", version="3.0.0", lifespan=lifespan)
+PRIVACY_VERSION = "2026-08-21"
+
+
+app = FastAPI(title="FrostFire AI API", version="4.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -62,9 +119,31 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 class AuthRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50, pattern=r"^[\w.-]+$")
     password: str = Field(min_length=8, max_length=128)
+    privacy_accepted: bool = False
+
+
+class PrivacyConsentRequest(BaseModel):
+    accepted: bool
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=128)
+    confirmation: str
 
 
 class SessionRequest(BaseModel):
@@ -76,6 +155,61 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=12_000)
     session_id: str | None = None
     workspace: Workspace | None = None
+
+
+class CrossExamRequest(BaseModel):
+    focus: str = Field(
+        default=(
+            "识别合同条款如何影响收入确认、现金流、成本、续约和下行风险，"
+            "并指出相互矛盾、证据缺口与最需要验证的事项。"
+        ),
+        min_length=4,
+        max_length=800,
+    )
+
+
+class SpaceCreateRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=60)
+    description: str = Field(default="", max_length=240)
+    template_id: str = Field(default="blank", max_length=40)
+    system_prompt: str = Field(default="", max_length=8_000)
+    icon: str = Field(default="", max_length=4)
+    theme: str = Field(default="", max_length=20)
+    monthly_token_budget: int | None = Field(default=None, ge=1_000, le=100_000)
+
+
+class SpaceRunRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4_000)
+
+
+class AppleTransactionRequest(BaseModel):
+    signed_transaction: str = Field(min_length=20, max_length=50_000)
+
+
+class RecruitmentProfileRequest(BaseModel):
+    desired_roles: list[str] = Field(default_factory=list, max_length=12)
+    industries: list[str] = Field(default_factory=list, max_length=8)
+    locations: list[str] = Field(default_factory=list, max_length=12)
+    employer_types: list[str] = Field(default_factory=list, max_length=6)
+
+
+class RecruitmentIngestJob(BaseModel):
+    company: str = Field(min_length=1, max_length=120)
+    title: str = Field(min_length=2, max_length=240)
+    city: str = Field(min_length=1, max_length=120)
+    employer_type: str = Field(default="重点雇主", max_length=60)
+    industry: str = Field(default="", max_length=80)
+    official_url: str = Field(pattern=r"^https://", max_length=1_000)
+    source: str = Field(default="动态监控 API", max_length=120)
+    opening_date: date | None = None
+    closing_date: date | None = None
+    requirements: str = Field(default="", max_length=2_000)
+    tags: list[str] = Field(default_factory=lambda: ["校园招聘"], max_length=20)
+    status: Literal["open", "closed"] = "open"
+
+
+class RecruitmentIngestRequest(BaseModel):
+    jobs: list[RecruitmentIngestJob] = Field(min_length=1, max_length=100)
 
 
 def current_user(
@@ -99,11 +233,55 @@ def current_user(
 User = Annotated[dict, Depends(current_user)]
 
 
+def public_user(user: dict) -> dict:
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "privacy_accepted": bool(user.get("privacy_accepted_at")),
+        "privacy_version": user.get("privacy_version"),
+        "plan": user.get("plan", "free"),
+    }
+
+
 def token_response(user: dict) -> dict:
     return {
         "access_token": create_access_token(user["id"], user["username"]),
         "token_type": "bearer",
-        "user": {"id": user["id"], "username": user["username"]},
+        "user": public_user(user),
+    }
+
+
+def require_privacy_consent(user: User) -> dict:
+    if not user.get("privacy_accepted_at"):
+        raise HTTPException(
+            status_code=428,
+            detail="Privacy consent is required before sending data to OpenAI.",
+        )
+    return user
+
+
+ConsentedUser = Annotated[dict, Depends(require_privacy_consent)]
+
+
+def billing_status(user: dict) -> dict:
+    plan = user.get("plan", "free")
+    limits = plan_limits(plan)
+    usage = database.token_usage(user["id"])
+    return {
+        "plan": plan,
+        "period": database.usage_period(),
+        "usage": usage,
+        "limits": limits,
+        "remaining_tokens": max(0, limits["monthly_tokens"] - usage["total_tokens"]),
+        "space_count": database.count_spaces(user["id"]),
+        "apple_store": {
+            "status": "configuration_required",
+            "product_id": None,
+            "message": (
+                "Create subscription products in App Store Connect and enable "
+                "server-side transaction verification before turning on purchases."
+            ),
+        },
     }
 
 
@@ -158,10 +336,16 @@ def workspaces() -> list[dict]:
 
 @app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
 def register(request: AuthRequest) -> dict:
+    if not request.privacy_accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="You must accept the privacy policy before creating an account.",
+        )
     try:
         user = database.create_user(
             request.username.strip(),
             hash_password(request.password),
+            PRIVACY_VERSION,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -178,7 +362,185 @@ def login(request: AuthRequest) -> dict:
 
 @app.get("/api/auth/me")
 def me(user: User) -> dict:
-    return {"id": user["id"], "username": user["username"]}
+    return public_user(user)
+
+
+@app.get("/api/legal/disclosures")
+def legal_disclosures() -> dict:
+    return {
+        "privacy_version": PRIVACY_VERSION,
+        "third_party_ai": "OpenAI API",
+        "legal_boundary": "Document review assistance, not legal advice.",
+        "finance_boundary": "Research assistance, not personalized investment advice.",
+    }
+
+
+@app.get("/api/platform/templates")
+def platform_templates() -> list[dict]:
+    return [
+        {"id": template_id, **template}
+        for template_id, template in SPACE_TEMPLATES.items()
+    ]
+
+
+def public_recruitment_profile(profile: dict) -> dict:
+    return {
+        "desired_roles": profile.get("desired_roles", []),
+        "industries": profile.get("industries", []),
+        "locations": profile.get("locations", []),
+        "employer_types": profile.get("employer_types", []),
+    }
+
+
+@app.get("/api/recruitment/profile")
+def recruitment_profile(user: User) -> dict:
+    return public_recruitment_profile(database.get_recruitment_profile(user["id"]))
+
+
+@app.put("/api/recruitment/profile")
+def save_recruitment_profile(request: RecruitmentProfileRequest, user: ConsentedUser) -> dict:
+    payload = request.model_dump()
+    for key in ("desired_roles", "industries", "locations", "employer_types"):
+        payload[key] = [str(value).strip()[:80] for value in payload[key] if str(value).strip()]
+    return public_recruitment_profile(database.save_recruitment_profile(user["id"], payload))
+
+
+@app.get("/api/recruitment/jobs")
+def recruitment_jobs(user: User) -> dict:
+    profile = database.get_recruitment_profile(user["id"])
+    available_jobs = database.list_recruitment_jobs()
+    jobs = [
+        score_job(job, profile)
+        for job in available_jobs
+        if is_priority_campus_listing(job) or "动态监控" in job.get("tags", [])
+    ]
+    jobs = [job for job in jobs if job["days_left"] is None or job["days_left"] >= 0]
+    jobs.sort(key=lambda item: (-item["match_score"], item["days_left"] is None, item["days_left"] or 9999))
+    return {
+        "jobs": jobs,
+        "profile": public_recruitment_profile(profile),
+        "monitor_pools": PERSONAL_MONITOR_POOLS,
+        "data_status": {
+            "mode": "verified_dynamic",
+            "message": (
+                f"每 {settings.recruitment_refresh_minutes} 分钟扫描公开线索并接收授权推送；"
+                "仅展示已核验官方直达链接且未过期的校招岗位。"
+            ) if settings.recruitment_refresh_minutes else (
+                "接收授权监控推送；仅展示已核验官方直达链接且未过期的校招岗位。"
+            ),
+            "last_sync": None,
+        },
+    }
+
+
+@app.post("/api/recruitment/refresh")
+def refresh_recruitment(user: ConsentedUser) -> dict:
+    del user
+    try:
+        count = refresh_recruitment_sources()
+    except Exception as exc:
+        logger.exception("Recruitment source refresh failed")
+        raise HTTPException(status_code=502, detail="招聘源刷新失败，请稍后重试。") from exc
+    return {"source": "公开招聘页面 + 已配置 API", "count": count, "refreshed_at": database.utc_now()}
+
+
+@app.post("/api/recruitment/ingest")
+def ingest_recruitment_jobs(
+    request: RecruitmentIngestRequest,
+    ingest_token: Annotated[str | None, Header(alias="X-Recruitment-Token")] = None,
+) -> dict:
+    """Receive normalized campus jobs from an authorized external monitor."""
+    configured_token = settings.recruitment_ingest_token
+    if not configured_token:
+        raise HTTPException(status_code=503, detail="Recruitment ingest is not configured.")
+    if not ingest_token or not secrets.compare_digest(ingest_token, configured_token):
+        raise HTTPException(status_code=401, detail="Invalid recruitment ingest token.")
+
+    accepted: list[dict] = []
+    skipped: list[dict] = []
+    today = date.today()
+    for item in request.jobs:
+        job_id = f"monitor-{hashlib.sha256(item.official_url.encode()).hexdigest()[:24]}"
+        if item.status == "closed" or (item.closing_date and item.closing_date < today):
+            database.close_recruitment_job(job_id)
+            skipped.append({
+                "title": item.title,
+                "reason": "closed" if item.status == "closed" else "expired",
+            })
+            continue
+        job = {
+            "id": job_id,
+            "company": item.company.strip(),
+            "employer_type": item.employer_type.strip(),
+            "title": item.title.strip(),
+            "city": item.city.strip(),
+            "industry": item.industry.strip(),
+            "url": item.official_url,
+            "source": item.source.strip(),
+            "opening_date": item.opening_date.isoformat() if item.opening_date else None,
+            "closing_date": item.closing_date.isoformat() if item.closing_date else None,
+            "requirements": item.requirements.strip(),
+            "tags": list(dict.fromkeys([*item.tags, "校园招聘", "动态监控"])),
+            "historical_applicants": None,
+            "historical_offers": None,
+            "last_verified_at": database.utc_now(),
+            "status": "open",
+        }
+        location_text = f"{job['city']} {job['title']}"
+        if not is_actionable_recruitment_listing(job):
+            skipped.append({"title": item.title, "reason": "not_campus"})
+            continue
+        if not any(marker in location_text for marker in CORE_LOCATION_MARKERS):
+            skipped.append({"title": item.title, "reason": "location_outside_scope"})
+            continue
+        accepted.append(job)
+
+    if accepted:
+        database.upsert_recruitment_jobs(accepted)
+    return {
+        "accepted": len(accepted),
+        "skipped": skipped,
+        "received_at": database.utc_now(),
+    }
+
+
+@app.get("/api/billing/status")
+def billing(user: User) -> dict:
+    return billing_status(user)
+
+
+@app.post("/api/billing/apple/verify")
+def verify_apple_transaction(_: AppleTransactionRequest, user: User) -> dict:
+    del user
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "Apple subscription verification is not configured. Configure App Store "
+            "Connect product IDs and server credentials before enabling purchases."
+        ),
+    )
+
+
+@app.post("/api/auth/privacy-consent")
+def accept_privacy(request: PrivacyConsentRequest, user: User) -> dict:
+    if not request.accepted:
+        raise HTTPException(status_code=400, detail="Consent was not accepted.")
+    updated = database.record_privacy_consent(user["id"], PRIVACY_VERSION)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return public_user(updated)
+
+
+@app.delete("/api/auth/account", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(request: DeleteAccountRequest, user: User) -> Response:
+    stored_user = database.get_user_by_username(user["username"])
+    if not stored_user or not verify_password(request.password, stored_user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Password is incorrect.")
+    if request.confirmation != "DELETE":
+        raise HTTPException(status_code=400, detail='Enter "DELETE" to confirm.')
+    if not database.delete_user(user["id"]):
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/api/sessions")
@@ -216,7 +578,7 @@ def documents(user: User, workspace: Workspace | None = None) -> list[dict]:
 
 @app.post("/api/documents", status_code=status.HTTP_201_CREATED)
 def upload_document(
-    user: User,
+    user: ConsentedUser,
     file: UploadFile = File(...),
     workspace: str = Form(DEFAULT_WORKSPACE),
 ) -> dict:
@@ -264,8 +626,222 @@ def remove_document(document_id: str, user: User) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@app.get("/api/spaces")
+def spaces(user: User) -> list[dict]:
+    items = database.list_spaces(user["id"])
+    return [
+        {
+            **item,
+            "usage": database.token_usage(user["id"], item["id"]),
+        }
+        for item in items
+    ]
+
+
+@app.post("/api/spaces", status_code=status.HTTP_201_CREATED)
+def create_space(request: SpaceCreateRequest, user: ConsentedUser) -> dict:
+    template = SPACE_TEMPLATES.get(request.template_id)
+    if not template:
+        raise HTTPException(status_code=422, detail="Unsupported space template.")
+    plan = user.get("plan", "free")
+    limits = plan_limits(plan)
+    if database.count_spaces(user["id"]) >= limits["max_spaces"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Your current plan has reached its AI Space limit.",
+        )
+    requested_budget = request.monthly_token_budget or limits["max_space_tokens"]
+    if requested_budget > limits["max_space_tokens"]:
+        raise HTTPException(
+            status_code=403,
+            detail="The requested Space token budget exceeds your plan limit.",
+        )
+    system_prompt = request.system_prompt.strip() or template["system_prompt"]
+    description = request.description.strip() or template["description"]
+    name = request.name.strip()
+    if len(system_prompt) < 12:
+        raise HTTPException(
+            status_code=422,
+            detail="A Space needs at least 12 characters of operating rules.",
+        )
+    return database.create_space(
+        user["id"],
+        name,
+        description,
+        request.icon.strip() or template["icon"],
+        request.theme.strip() or template["theme"],
+        request.template_id,
+        system_prompt,
+        requested_budget,
+    )
+
+
+@app.post("/api/spaces/{space_id}/run")
+def run_created_space(
+    space_id: str,
+    request: SpaceRunRequest,
+    user: ConsentedUser,
+) -> dict:
+    space = database.get_space(space_id, user["id"])
+    if not space:
+        raise HTTPException(status_code=404, detail="AI Space not found.")
+    billing = billing_status(user)
+    space_usage = database.token_usage(user["id"], space_id)
+    remaining = min(
+        billing["remaining_tokens"],
+        max(0, space["monthly_token_budget"] - space_usage["total_tokens"]),
+    )
+    if remaining < 256:
+        raise HTTPException(
+            status_code=429,
+            detail="This AI Space has reached its monthly Token budget.",
+        )
+    try:
+        reply, usage = run_space(
+            space["system_prompt"],
+            request.message,
+            max_output_tokens=min(600, max(128, remaining // 2)),
+        )
+    except Exception as exc:
+        logger.exception("AI Space request failed")
+        raise HTTPException(status_code=502, detail="OpenAI API request failed.") from exc
+    database.record_token_usage(
+        user["id"],
+        space_id,
+        usage["input_tokens"],
+        usage["output_tokens"],
+        usage["total_tokens"],
+    )
+    return {
+        "space": {
+            key: space[key]
+            for key in ("id", "name", "icon", "theme", "template_id")
+        },
+        "reply": reply,
+        "usage": usage,
+        "billing": billing_status(user),
+    }
+
+
+def cross_exam_source(
+    source_id: str,
+    workspace: str,
+    item: dict,
+) -> dict:
+    return {
+        "source_id": source_id,
+        "workspace": workspace,
+        "document_id": item["document_id"],
+        "name": item["name"],
+        "page": item.get("page"),
+        "score": item["score"],
+        "excerpt": item["content"],
+    }
+
+
+@app.post("/api/cross-exam")
+def cross_exam(request: CrossExamRequest, user: ConsentedUser) -> dict:
+    legal_documents = database.list_documents(user["id"], "legal")
+    finance_documents = database.list_documents(user["id"], "finance")
+    if not legal_documents or not finance_documents:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cross-examination requires at least one document in both the "
+                "legal and finance workspaces."
+            ),
+        )
+
+    try:
+        legal_context = retrieve_context(
+            user["id"], request.focus, "legal", 6, 0.0
+        )
+        finance_context = retrieve_context(
+            user["id"], request.focus, "finance", 6, 0.0
+        )
+        if not legal_context or not finance_context:
+            raise HTTPException(
+                status_code=422,
+                detail="No readable evidence chunks were found in one of the workspaces.",
+            )
+        result = run_cross_exam(request.focus, legal_context, finance_context)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Cross-examination request failed")
+        raise HTTPException(
+            status_code=502,
+            detail="OpenAI API could not complete the cross-examination.",
+        ) from exc
+
+    sources = [
+        *[
+            cross_exam_source(f"L{index}", "legal", item)
+            for index, item in enumerate(legal_context, start=1)
+        ],
+        *[
+            cross_exam_source(f"F{index}", "finance", item)
+            for index, item in enumerate(finance_context, start=1)
+        ],
+    ]
+    source_map = {source["source_id"]: source for source in sources}
+    collisions: list[dict] = []
+    for collision in result.get("collisions", []):
+        requested_ids = [
+            *collision.get("legal_source_ids", []),
+            *collision.get("finance_source_ids", []),
+        ]
+        collisions.append(
+            {
+                **collision,
+                "evidence": [
+                    source_map[source_id]
+                    for source_id in dict.fromkeys(requested_ids)
+                    if source_id in source_map
+                ],
+            }
+        )
+
+    fingerprint_input = json.dumps(
+        {
+            "version": 1,
+            "focus": request.focus,
+            "documents": sorted(
+                document["id"]
+                for document in [*legal_documents, *finance_documents]
+            ),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    fingerprint = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()[:16]
+    return {
+        "analysis_id": f"FF-{fingerprint.upper()}",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "focus": request.focus,
+        "headline": result.get("headline", "冰火交叉审查"),
+        "executive_summary": result.get("executive_summary", ""),
+        "collisions": collisions,
+        "stress_scenarios": result.get("stress_scenarios", []),
+        "blind_spots": result.get("blind_spots", []),
+        "sources": sources,
+        "document_counts": {
+            "legal": len(legal_documents),
+            "finance": len(finance_documents),
+        },
+        "method": {
+            "name": "Clause-to-Cashflow Cross-Examination",
+            "version": 1,
+            "confidence_definition": "Evidence coverage, not factual certainty.",
+            "professional_boundary": (
+                "Document and research assistance only; not legal or investment advice."
+            ),
+        },
+    }
+
+
 @app.post("/api/chat")
-def chat(request: ChatRequest, user: User) -> dict:
+def chat(request: ChatRequest, user: ConsentedUser) -> dict:
     try:
         session, messages, sources = prepare_chat(user["id"], request)
         reply, tools_used = run_agent(messages, session["workspace"])
@@ -289,7 +865,7 @@ def sse(event: str, data: dict) -> str:
 
 
 @app.post("/api/chat/stream")
-def chat_stream(request: ChatRequest, user: User) -> StreamingResponse:
+def chat_stream(request: ChatRequest, user: ConsentedUser) -> StreamingResponse:
     try:
         session, messages, sources = prepare_chat(user["id"], request)
     except HTTPException:
@@ -336,4 +912,13 @@ def chat_stream(request: ChatRequest, user: User) -> StreamingResponse:
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if FRONTEND_DIST.is_dir():
+    app.mount(
+        "/",
+        StaticFiles(directory=FRONTEND_DIST, html=True),
+        name="frontend",
     )
