@@ -15,9 +15,9 @@ const STORAGE_KEYS = {
 };
 const WORKSPACE_ORDER = ["legal", "general", "finance"];
 const WORKSPACE_META = {
-  legal: { symbol: "§", eyebrow: "FROST LEGAL DESK", themeName: "寒冰工作台" },
-  general: { symbol: "✦", eyebrow: "AURORA KNOWLEDGE DESK", themeName: "极光工作台" },
-  finance: { symbol: "↗", eyebrow: "EMBER FINANCE DESK", themeName: "烈火工作台" },
+  legal: { symbol: "§", eyebrow: "FROST", themeName: "寒冰域", label: "寒冰域", hero: "有些东西决定世界如何运行，也决定什么不能被越过。", description: "当前从合同、合规、义务、期限与风险开始。", lens: "来源" },
+  general: { symbol: "✦", eyebrow: "AURORA", themeName: "极光域", label: "极光域", hero: "让散落的信息逐渐形成属于你的知识世界。", description: "当前从资料、文档、对话与可追溯问答开始。", lens: "来源" },
+  finance: { symbol: "↗", eyebrow: "EMBER", themeName: "烈火域", label: "烈火域", hero: "世界不只需要被理解，还需要决定向哪里前进。", description: "当前从数字、金融、风险、假设与决策分析开始。", lens: "来源" },
 };
 
 const storage = {
@@ -62,6 +62,7 @@ const state = {
   recruitmentProfile: null,
   recruitmentJobs: [],
   recruitmentWatches: [],
+  pendingLaunch: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -115,10 +116,11 @@ const elements = {
   recruitmentWatchAdd: $("recruitment-watch-add"), recruitmentWatchList: $("recruitment-watch-list"),
   homeDeadlineAlerts: $("home-deadline-alerts"), homeAlertTitle: $("home-alert-title"),
   homeAlertList: $("home-alert-list"),
+  resonanceDialog: $("resonance-dialog"), traceDialog: $("trace-dialog"), productMoreDialog: $("product-more-dialog"),
 };
 
 function activeWorkspace() {
-  return state.workspaces.find((item) => item.id === state.workspace) || {
+  const rawWorkspace = state.workspaces.find((item) => item.id === state.workspace) || {
     id: "general",
     label: "通用文档",
     description: "围绕个人资料进行可追溯的问答与总结。",
@@ -126,6 +128,14 @@ function activeWorkspace() {
     hero: "把散落的信息，凝成可验证的洞见。",
     lens: "来源覆盖",
     quick_actions: [],
+  };
+  const meta = WORKSPACE_META[state.workspace] || WORKSPACE_META.general;
+  return {
+    ...rawWorkspace,
+    label: meta.label,
+    hero: meta.hero,
+    description: meta.description,
+    lens: meta.lens,
   };
 }
 
@@ -221,12 +231,12 @@ function translateError(message) {
     "Password is incorrect.": "密码不正确。",
     'Enter "DELETE" to confirm.': "请输入 DELETE 确认。",
     "OpenAI API request failed.": "OpenAI API 暂时未能完成请求，请稍后重试。",
-    "OpenAI API could not complete the cross-examination.": "OpenAI API 暂时未能完成冰焰交叉审查，请稍后重试。",
-    "Cross-examination requires at least one document in both the legal and finance workspaces.": "请先在寒冰工作台和烈火工作台各上传至少一份资料。",
-    "Your current plan has reached its AI Space limit.": "当前方案已达到 AI Space 数量上限。",
-    "The requested Space token budget exceeds your plan limit.": "这个 Space 的 Token 上限超过当前方案允许范围。",
-    "This AI Space has reached its monthly Token budget.": "这个 AI Space 已达到本月 Token 上限。",
-    "This run would exceed the AI Space monthly token budget.": "这次运行的预估消耗会超过本月 Token 预算，模型尚未被调用。",
+    "OpenAI API could not complete the cross-examination.": "OpenAI API 暂时未能完成双域审查，请稍后重试。",
+    "Cross-examination requires at least one document in both the legal and finance workspaces.": "请先在寒冰域和烈火域各上传至少一份资料。",
+    "Your current plan has reached its AI Space limit.": "当前方案已达到可创造世界数量上限。",
+    "The requested Space token budget exceeds your plan limit.": "这个世界的 Token 上限超过当前方案允许范围。",
+    "This AI Space has reached its monthly Token budget.": "这个世界已达到本月 Token 上限。",
+    "This run would exceed the AI Space monthly token budget.": "这次演化的预估消耗会超过世界的月度 Token 预算，模型尚未被调用。",
     "Only public HTTPS recruitment pages can be watched.": "只支持公开的 HTTPS 企业招聘页面。",
     "This address is not allowed for recruitment monitoring.": "这个地址不能加入监控，请使用企业公开招聘官网。",
     "Consent to the current privacy policy is required.": "请先同意当前版本的隐私政策。",
@@ -241,6 +251,9 @@ async function enterApp() {
   await loadWorkspaces();
   await Promise.all([loadSessions(), loadDocuments(), loadHomeRecruitmentAlerts()]);
   newConversation();
+  const pendingLaunch = state.pendingLaunch;
+  state.pendingLaunch = null;
+  if (pendingLaunch) window.setTimeout(() => launchProduct(pendingLaunch), 0);
   if (!state.user.privacy_accepted && !elements.consentDialog.open) elements.consentDialog.showModal();
 }
 
@@ -351,7 +364,7 @@ function renderWorkspaceTabs() {
     const symbol = document.createElement("i");
     symbol.textContent = WORKSPACE_META[workspaceId].symbol;
     const label = document.createElement("span");
-    label.textContent = workspace.label;
+    label.textContent = WORKSPACE_META[workspaceId].label;
     button.append(symbol, label);
     button.addEventListener("click", () => changeWorkspace(workspaceId));
     elements.workspaceTabs.appendChild(button);
@@ -369,7 +382,7 @@ function renderWorkspaceChrome() {
   elements.workspaceHeroCopy.textContent = workspace.hero || workspace.description;
   elements.workspaceIndicator.textContent = meta.themeName;
   elements.heroSymbol.textContent = meta.symbol;
-  elements.lensLabel.textContent = workspace.lens || "来源覆盖";
+  elements.lensLabel.textContent = workspace.lens || "来源";
   elements.knowledgeTitle.textContent = `${workspace.label}资料库`;
   elements.uploadLabel.textContent = `投放到${meta.themeName}`;
   elements.workspaceBoundary.textContent = `${workspace.boundary} 文档片段和消息会由 OpenAI API 处理。`;
@@ -378,8 +391,8 @@ function renderWorkspaceChrome() {
     : state.workspace === "finance"
       ? "询问指标变化、计算口径、假设或风险…"
       : "发送消息，或询问已上传的资料…";
-  elements.composerHint.textContent = `${workspace.boundary} 回答中的“证据透镜”表示来源覆盖，不代表结论必然正确。`;
-  elements.evidenceTitle.textContent = workspace.lens || "证据透镜";
+  elements.composerHint.textContent = `${workspace.boundary} 回答中的“来源”表示来源覆盖，不代表结论必然正确。`;
+  elements.evidenceTitle.textContent = workspace.lens || "来源";
   document.querySelectorAll(".workspace-tab").forEach((button) => button.classList.toggle("active", button.dataset.workspace === state.workspace));
   updateEvidence(state.latestEvidence.sources, state.latestEvidence.tools);
 }
@@ -678,7 +691,7 @@ function setCrossExamCounts() {
   elements.crossFinanceCount.textContent = `${financeCount} 份资料`;
   elements.crossExamRun.disabled = state.crossExamRunning || !legalCount || !financeCount;
   if (!legalCount || !financeCount) {
-    elements.crossExamError.textContent = "请先在寒冰工作台和烈火工作台各上传至少一份资料。";
+    elements.crossExamError.textContent = "请先在寒冰域和烈火域各上传至少一份资料。";
   }
 }
 
@@ -725,7 +738,7 @@ function renderCrossExamResult(result) {
   const summary = makeElement("div");
   summary.append(
     makeElement("span", "overline", "CROSS-EXAM VERDICT"),
-    makeElement("h3", "", result.headline || "冰焰交叉审查结果"),
+    makeElement("h3", "", result.headline || "双域审查结果"),
     makeElement("p", "", result.executive_summary || ""),
   );
   const passport = makeElement("div", "analysis-passport");
@@ -862,7 +875,7 @@ async function runCrossExam() {
     const failed = makeElement("div", "cross-empty-state");
     failed.append(
       makeElement("i", "", "!"),
-      makeElement("h3", "", "本次交叉审查未完成"),
+    makeElement("h3", "", "本次双域审查未完成"),
       makeElement("p", "", translateError(error.message)),
     );
     elements.crossExamResults.replaceChildren(failed);
@@ -915,8 +928,8 @@ function renderBilling() {
   const plan = billing.plan === "pro" ? "Pro" : "Free";
   const used = billing.usage?.total_tokens || 0;
   const total = billing.limits?.monthly_tokens || 0;
-  elements.billingPlan.textContent = `${plan} · ${billing.space_count}/${billing.limits?.max_spaces || 0} Spaces`;
-  elements.billingUsage.textContent = `Space ${used.toLocaleString()} / ${total.toLocaleString()} Tokens · ${billing.period}`;
+  elements.billingPlan.textContent = `${plan} · ${billing.space_count}/${billing.limits?.max_spaces || 0} 个世界`;
+  elements.billingUsage.textContent = `世界 ${used.toLocaleString()} / ${total.toLocaleString()} Tokens · ${billing.period}`;
   const spaceLimit = billing.limits?.max_space_tokens || 10_000;
   [...elements.spaceBudget.options].forEach((option) => {
     option.disabled = Number(option.value) > spaceLimit;
@@ -930,7 +943,7 @@ function renderSpaces() {
     elements.spaceList.appendChild(makeElement(
       "div",
       "space-empty",
-      "还没有成果胶囊。选择一种成果类型，系统会把你的方法、预算与历史更新放在一起。",
+      "还没有世界。选择一个世界原型，为它定义目标、规则与可演化的记录。",
     ));
     return;
   }
@@ -970,7 +983,7 @@ function selectSpace(spaceId, preserveOutput = false) {
   const used = space.usage?.total_tokens || 0;
   elements.runnerBudget.textContent = `${used.toLocaleString()} / ${space.monthly_token_budget.toLocaleString()} Tokens`;
   if (!preserveOutput) {
-    elements.runnerOutput.textContent = "描述这次要新增、改变或验证的内容。系统会先给出 Token 飞行计划，再决定走零 Token、缓存或模型路径。";
+    elements.runnerOutput.textContent = "描述这个世界要新增、改变或验证的内容。系统会先给出 Token 飞行计划，再决定走零 Token、缓存或模型路径。";
   }
   renderSpaces();
   loadSpaceHistory();
@@ -1011,6 +1024,37 @@ async function openStudio() {
   }
 }
 
+function openConcept(dialog) {
+  closePanels();
+  if (!dialog.open) dialog.showModal();
+}
+
+function closeConcept(dialogId) {
+  const dialog = $(dialogId);
+  if (dialog?.open) dialog.close();
+}
+
+async function launchProduct(product) {
+  if (product === "resonance") return openConcept(elements.resonanceDialog);
+  if (product === "trace") return openConcept(elements.traceDialog);
+  if (!state.token) {
+    state.pendingLaunch = product;
+    if (WORKSPACE_ORDER.includes(product)) {
+      state.workspace = product;
+      await storage.set(STORAGE_KEYS.workspace, product);
+    }
+    document.querySelector(".auth-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    showToast("登录后即可进入这个世界。", 3200);
+    return;
+  }
+  if (WORKSPACE_ORDER.includes(product)) {
+    if (product !== state.workspace) await changeWorkspace(product);
+    return;
+  }
+  if (product === "recruitment") return openRecruitment();
+  if (product === "forge") return openStudio();
+}
+
 async function createSpace(event) {
   event.preventDefault();
   elements.spaceFormError.textContent = "";
@@ -1037,13 +1081,13 @@ async function createSpace(event) {
     elements.spaceRules.value = template.system_prompt;
     await refreshStudio();
     selectSpace(created.id);
-    showToast("成果胶囊已创建，现在可以预检第一项任务。", 5000);
+    showToast("世界已创造，现在可以预检第一项演化。", 5000);
     await haptic();
   } catch (error) {
     elements.spaceFormError.textContent = translateError(error.message);
   } finally {
     elements.spaceCreate.disabled = false;
-    elements.spaceCreate.querySelector("span").textContent = "创建成果胶囊";
+    elements.spaceCreate.querySelector("span").textContent = "创造";
   }
 }
 
@@ -1053,7 +1097,7 @@ function activeRunnerMode() {
 
 function updateRunnerModeCopy() {
   const mode = activeRunnerMode();
-  const labels = { local: "生成零 Token 胶囊", lean: "执行节能更新", deep: "执行深度重算" };
+  const labels = { local: "零 Token 整理", lean: "执行节能演化", deep: "执行深度重算" };
   elements.runnerSend.querySelector("span").textContent = labels[mode] || labels.lean;
   scheduleSpacePreflight();
 }
@@ -1081,7 +1125,7 @@ async function previewActiveSpace() {
       body: JSON.stringify({ message, mode }),
     });
     const route = preview.execution_path || preview.path || preview.route || (mode === "local" ? "local" : "ai");
-    const routeLabels = { local: "零 Token · 规则成果胶囊", cache: "缓存命中 · 直接复用", lean: "节能更新 · 单次模型调用", deep: "深度重算 · 单次模型调用", ai: "模型执行" };
+  const routeLabels = { local: "零 Token · 规则整理", cache: "缓存命中 · 直接复用", lean: "节能演化 · 单次模型调用", deep: "深度重算 · 单次模型调用", ai: "模型执行" };
     const inputEstimate = preview.estimated_input_tokens ?? preview.estimated_input ?? preview.input_tokens ?? 0;
     const outputCeiling = preview.max_output_tokens ?? preview.output_ceiling ?? 0;
     const cacheHit = Boolean(preview.cache_hit || route === "cache");
@@ -1131,7 +1175,7 @@ async function loadSpaceHistory() {
     const data = await api(`/spaces/${encodeURIComponent(state.activeSpaceId)}/runs`);
     renderSpaceHistory(data.runs || data || []);
   } catch (_) {
-    renderSpaceHistory([]);
+      renderSpaceHistory([]);
   }
 }
 
@@ -1143,7 +1187,7 @@ async function runActiveSpace() {
   const mode = activeRunnerMode();
   elements.runnerSend.disabled = true;
   elements.runnerSend.querySelector("span").textContent = mode === "local" ? "正在规则整理…" : "正在执行…";
-  elements.runnerOutput.textContent = mode === "local" ? "正在整理零 Token 成果胶囊…" : "正在按飞行计划执行；已先通过保守预算门槛…";
+  elements.runnerOutput.textContent = mode === "local" ? "正在零 Token 整理这个世界…" : "正在按飞行计划演化；已先通过保守预算门槛…";
   try {
     const result = await api(`/spaces/${encodeURIComponent(spaceId)}/run`, {
       method: "POST",
@@ -1724,6 +1768,8 @@ elements.messageInput.addEventListener("keydown", (event) => {
 $("composer-upload").addEventListener("click", () => elements.documentInput.click());
 $("studio-open").addEventListener("click", openStudio);
 $("recruitment-open").addEventListener("click", openRecruitment);
+$("resonance-open").addEventListener("click", () => openConcept(elements.resonanceDialog));
+$("trace-open").addEventListener("click", () => openConcept(elements.traceDialog));
 $("mobile-recruitment-open").addEventListener("click", openRecruitment);
 $("home-alert-open").addEventListener("click", openRecruitment);
 $("recruitment-close").addEventListener("click", () => elements.recruitmentDialog.close());
@@ -1732,6 +1778,7 @@ elements.recruitmentForm.addEventListener("submit", saveRecruitment);
 elements.recruitmentWatchForm.addEventListener("submit", addRecruitmentWatch);
 $("studio-open-secondary").addEventListener("click", openStudio);
 $("mobile-studio-open").addEventListener("click", openStudio);
+$("mobile-more-open").addEventListener("click", () => openConcept(elements.productMoreDialog));
 $("studio-close").addEventListener("click", () => elements.studioDialog.close());
 elements.spaceForm.addEventListener("submit", createSpace);
 elements.runnerSend.addEventListener("click", runActiveSpace);
@@ -1740,7 +1787,10 @@ document.querySelectorAll('input[name="runner-mode"]').forEach((input) => input.
 elements.runnerHistoryRefresh.addEventListener("click", loadSpaceHistory);
 $("billing-upgrade").addEventListener("click", explainBillingSetup);
 $("cross-exam-open").addEventListener("click", openCrossExam);
-$("mobile-cross-exam-open").addEventListener("click", openCrossExam);
+$("more-cross-exam-open").addEventListener("click", () => {
+  closeConcept("product-more-dialog");
+  openCrossExam();
+});
 $("cross-exam-close").addEventListener("click", () => elements.crossExamDialog.close());
 elements.crossExamRun.addEventListener("click", runCrossExam);
 document.querySelectorAll("[data-cross-focus]").forEach((button) => {
@@ -1763,6 +1813,18 @@ $("show-delete-account").addEventListener("click", () => elements.deleteAccountF
 $("confirm-delete-account").addEventListener("click", deleteAccount);
 $("accept-consent").addEventListener("click", acceptPrivacyConsent);
 $("consent-logout").addEventListener("click", () => logout());
+document.querySelectorAll("[data-launch]").forEach((button) => {
+  button.addEventListener("click", () => launchProduct(button.dataset.launch));
+});
+document.querySelectorAll("[data-concept-open]").forEach((button) => {
+  button.addEventListener("click", () => {
+    closeConcept("product-more-dialog");
+    openConcept($(button.dataset.conceptOpen));
+  });
+});
+document.querySelectorAll("[data-close-concept]").forEach((button) => {
+  button.addEventListener("click", () => closeConcept(button.dataset.closeConcept));
+});
 window.addEventListener("online", updateNetwork);
 window.addEventListener("offline", updateNetwork);
 window.addEventListener("resize", () => { if (window.innerWidth > 1180) closePanels(); });
