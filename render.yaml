@@ -21,3 +21,9 @@ services:
         value: text-embedding-3-small
       - key: CORS_ORIGINS
         sync: false
+      - key: ADZUNA_APP_ID
+        sync: false
+      - key: ADZUNA_APP_KEY
+        sync: false
+      - key: ADZUNA_COUNTRY
+        value: gb
