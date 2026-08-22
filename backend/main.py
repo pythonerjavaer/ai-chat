@@ -701,15 +701,15 @@ def recruitment_jobs(user: User) -> dict:
     if web_search_state.get("status") == "success":
         web_search_copy = (
             f"AI 网页搜索最近发现 {web_search_state.get('jobs', 0)} 条候选，"
-            "均标记为待打开核对。"
+            "系统已逐条执行链接与标题正文证据核验。"
         )
     elif web_search_state.get("status") == "error":
         web_search_copy = "AI 网页搜索本轮未完成，已保留上一轮岗位。"
     elif web_search_state.get("status") == "pending":
         web_search_copy = "AI 网页搜索等待首次运行。"
     inventory_copy = (
-        f"当前展示 {len(jobs)} 个未过期校招岗位；"
-        f"已核验 {verified_jobs} 个，公开源待核对 {public_source_leads} 个。"
+        f"当前接收 {len(jobs)} 个仍在时间窗内的机会信号；"
+        f"正文证据已核验 {verified_jobs} 个，公开源待核对 {public_source_leads} 个。"
         f"{web_search_copy}"
     )
     if watch_summary["total"] == 0:
@@ -772,7 +772,7 @@ def create_recruitment_watch(
         display_url = f"company://{hashlib.sha256(company_name.casefold().encode()).hexdigest()[:32]}"
         fetch_url = display_url
         keywords = [company_name]
-        watch_name = f"{company_name} · 校招动态"
+        watch_name = f"{company_name} · 机会信号"
     else:
         if not request.name or not request.url:
             raise HTTPException(status_code=422, detail="请只填写企业名称，或提供完整的公开招聘页监控信息。")
@@ -854,7 +854,7 @@ def _refresh_company_watch_sync(user_id: int, watch: dict) -> dict:
     fingerprint = hashlib.sha256(
         json.dumps(snapshot, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
-    hits = [str(job.get("title", "校招岗位")) for job in matching[:6]]
+    hits = [str(job.get("title", "机会信号")) for job in matching[:6]]
     return database.record_recruitment_watch_success(
         user_id,
         watch["id"],
@@ -1000,7 +1000,7 @@ def refresh_recruitment(user: ConsentedUser) -> dict:
         cached_count = _recruitment_source_last_count
     if _recruitment_source_last_refresh and age < RECRUITMENT_SOURCE_COOLDOWN_SECONDS:
         return {
-            "source": "公开招聘页面 + AI 网页搜索 + 已配置 API",
+            "source": "公开机会页面 + 低频 AI 补漏 + 已配置 API",
             "count": cached_count,
             "refreshed_at": database.utc_now(),
             "cached": True,
@@ -1011,14 +1011,14 @@ def refresh_recruitment(user: ConsentedUser) -> dict:
     except RecruitmentRefreshBusy as exc:
         raise HTTPException(
             status_code=429,
-            detail="岗位源正在刷新，请稍后重试。",
+            detail="公开信号源正在刷新，请稍后重试。",
             headers={"Retry-After": "15"},
         ) from exc
     except Exception as exc:
         logger.exception("Recruitment source refresh failed")
-        raise HTTPException(status_code=502, detail="招聘源刷新失败，请稍后重试。") from exc
+        raise HTTPException(status_code=502, detail="公开信号源刷新失败，请稍后重试。") from exc
     return {
-        "source": "公开招聘页面 + AI 网页搜索 + 已配置 API",
+        "source": "公开机会页面 + 低频 AI 补漏 + 已配置 API",
         "count": count,
         "refreshed_at": database.utc_now(),
         "cached": False,
