@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: FrostFire Space Opportunity Monitor Ingest
+  title: Bingyan Opportunity Monitor Ingest
   version: 1.0.0
   description: Push verified campus vacancies into the Future Opportunity Radar.
 servers:
