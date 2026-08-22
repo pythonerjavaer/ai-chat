@@ -221,7 +221,7 @@ function translateError(message) {
     "Password is incorrect.": "密码不正确。",
     'Enter "DELETE" to confirm.': "请输入 DELETE 确认。",
     "OpenAI API request failed.": "OpenAI API 暂时未能完成请求，请稍后重试。",
-    "OpenAI API could not complete the cross-examination.": "OpenAI API 暂时未能完成冰火交叉审查，请稍后重试。",
+    "OpenAI API could not complete the cross-examination.": "OpenAI API 暂时未能完成冰焰交叉审查，请稍后重试。",
     "Cross-examination requires at least one document in both the legal and finance workspaces.": "请先在寒冰工作台和烈火工作台各上传至少一份资料。",
     "Your current plan has reached its AI Space limit.": "当前方案已达到 AI Space 数量上限。",
     "The requested Space token budget exceeds your plan limit.": "这个 Space 的 Token 上限超过当前方案允许范围。",
@@ -725,7 +725,7 @@ function renderCrossExamResult(result) {
   const summary = makeElement("div");
   summary.append(
     makeElement("span", "overline", "CROSS-EXAM VERDICT"),
-    makeElement("h3", "", result.headline || "冰火交叉审查结果"),
+    makeElement("h3", "", result.headline || "冰焰交叉审查结果"),
     makeElement("p", "", result.executive_summary || ""),
   );
   const passport = makeElement("div", "analysis-passport");
