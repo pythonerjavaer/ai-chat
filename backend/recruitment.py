@@ -18,6 +18,26 @@ EMPLOYER_TYPE_ALIASES: dict[str, set[str]] = {
     "量化私募": {"量化私募", "量化", "私募"},
 }
 
+# Tiers are deliberately deterministic and explainable.  They are a fit
+# priority, not a probability of receiving an offer.
+TIER_DEFINITIONS: tuple[dict[str, Any], ...] = (
+    {"code": "T0", "min_score": 90, "label": "强匹配", "description": "岗位方向、行业/雇主与城市等多项核心条件同时命中"},
+    {"code": "T0.5", "min_score": 85, "label": "高匹配", "description": "核心方向高度匹配，仍需核对具体门槛"},
+    {"code": "T1", "min_score": 78, "label": "主力", "description": "岗位方向与至少一项偏好明确匹配"},
+    {"code": "T1.5", "min_score": 72, "label": "较主力", "description": "方向基本匹配，但城市或行业信息不完整"},
+    {"code": "T2", "min_score": 64, "label": "可投", "description": "具备部分匹配信号，建议结合公告筛选"},
+    {"code": "T2.5", "min_score": 56, "label": "观察", "description": "弱匹配或信息不足，仅在岗位条件合适时考虑"},
+    {"code": "T3", "min_score": 0, "label": "低匹配", "description": "暂未命中核心偏好，不进入优先投递队列"},
+)
+
+
+def tier_for_score(score: int) -> str:
+    safe_score = max(0, min(100, int(score)))
+    for definition in TIER_DEFINITIONS:
+        if safe_score >= definition["min_score"]:
+            return definition["code"]
+    return "T3"
+
 
 def _words(values: Any) -> set[str]:
     if not isinstance(values, list):
@@ -54,14 +74,7 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         score += 12
         reasons.append("雇主类型匹配")
     score = min(98, score)
-    if score >= 85:
-        tier_code = "T0"
-    elif score >= 72:
-        tier_code = "T1"
-    elif score >= 58:
-        tier_code = "T2"
-    else:
-        tier_code = "T3"
+    tier_code = tier_for_score(score)
     closing_date = job.get("closing_date")
     days_left = None
     if closing_date:

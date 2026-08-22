@@ -311,6 +311,18 @@ def init_db() -> None:
             "fetch_url",
             "TEXT",
         )
+        _ensure_column(
+            connection,
+            "recruitment_watches",
+            "watch_type",
+            "TEXT NOT NULL DEFAULT 'page'",
+        )
+        _ensure_column(
+            connection,
+            "recruitment_watches",
+            "company_name",
+            "TEXT NOT NULL DEFAULT ''",
+        )
         connection.execute(
             "UPDATE recruitment_watches SET fetch_url = url "
             "WHERE fetch_url IS NULL OR fetch_url = ''"
@@ -779,6 +791,8 @@ def _public_recruitment_watch(row: sqlite3.Row | dict[str, Any]) -> dict[str, An
     item.pop("user_id", None)
     item.pop("last_fingerprint", None)
     item.pop("fetch_url", None)
+    if item.get("watch_type") == "company":
+        item["url"] = ""
     return item
 
 
@@ -788,6 +802,9 @@ def create_recruitment_watch(
     url: str,
     fetch_url: str,
     keywords: list[str],
+    *,
+    watch_type: str = "page",
+    company_name: str = "",
 ) -> dict[str, Any]:
     watch_id = str(uuid.uuid4())
     now = utc_now()
@@ -799,12 +816,13 @@ def create_recruitment_watch(
                 (user_id,),
             ).fetchone()["count"]
             if int(count) >= 12:
-                raise ValueError("每个账号最多创建 12 个网页监控。")
+                raise ValueError("每个账号最多创建 12 个企业/官网动态监控。")
             connection.execute(
                 """
                 INSERT INTO recruitment_watches
-                    (id, user_id, name, url, fetch_url, keywords, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, user_id, name, url, fetch_url, keywords, watch_type, company_name,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     watch_id,
@@ -813,6 +831,8 @@ def create_recruitment_watch(
                     url,
                     fetch_url,
                     json.dumps(keywords, ensure_ascii=False),
+                    watch_type,
+                    company_name,
                     now,
                     now,
                 ),
@@ -1109,6 +1129,8 @@ def purge_legacy_recruitment_samples() -> None:
                 'sample-state-tech-2026'
             )
                OR source IN ('示例岗位，等待接入官方源', '示例数据')
+               OR company LIKE '九坤%'
+               OR source LIKE '九坤%'
             """
         )
 

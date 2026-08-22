@@ -295,11 +295,10 @@
               <button id="recruitment-save" class="primary-button" type="submit"><span>保存筛选并重新匹配</span><b>↗</b></button>
               <p id="recruitment-error" class="form-error" role="alert"></p>
             </form>
-            <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>我的官网变化雷达</strong><small>添加企业官方校招页。系统比较网页指纹，页面变化时提醒；整个过程不调用 AI。</small></div></div>
+            <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>我的企业动态雷达</strong><small>只填企业名称即可。系统跟踪该企业进入岗位池的新校招岗位、截止日期与变化；不调用 AI。</small></div></div>
             <form id="recruitment-watch-form" class="recruitment-watch-form">
-              <label class="field compact-field"><span>监控名称</span><input id="recruitment-watch-name" maxlength="80" placeholder="例如：字节跳动 2027 校招" required /></label>
-              <label class="field compact-field"><span>企业官方招聘页（HTTPS）</span><input id="recruitment-watch-url" type="url" maxlength="1000" placeholder="https://jobs.example.com/campus" required /></label>
-              <label class="field compact-field"><span>重点关键词（至少一个，逗号分隔）</span><input id="recruitment-watch-keywords" maxlength="240" placeholder="产品经理，数据，2027届" required /></label>
+              <label class="field compact-field"><span>企业名称</span><input id="recruitment-watch-company" maxlength="120" placeholder="例如：中信期货、Babycare、平安银行" required /></label>
+              <small class="watch-form-hint">只需填写企业名称；系统会在当前校招岗位池中跟踪该企业的新岗位、截止日期和公告变化，不额外消耗 Token。</small>
               <button id="recruitment-watch-add" class="watch-add-button" type="submit"><span>加入动态雷达</span><b>＋</b></button>
             </form>
             <div id="recruitment-watch-list" class="recruitment-watch-list"><small>尚未添加官方页面。</small></div>

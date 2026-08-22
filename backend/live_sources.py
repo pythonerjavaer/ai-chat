@@ -25,17 +25,6 @@ MAX_PUBLIC_SOURCE_BYTES = 1_500_000
 MAX_ADZUNA_BYTES = 2_000_000
 
 _VERIFIED_AT = "2026-08-22T00:00:00+00:00"
-_UBIQUANT_WUTONG_JOBS = [
-    ("Quantitative Risk Analyst", "北京 / 上海", "f3b2fbfe-4e46-49c1-80f1-64e513fe27a2"),
-    ("AI工程师", "北京 / 上海", "e297d656-563c-483f-a1f0-f0460a508c52"),
-    ("策略组合管理开发工程师", "北京 / 上海", "373d7781-469c-47d1-ad48-965949db3fec"),
-    ("AI算法研究员", "北京 / 上海", "f607c4bc-bee9-4830-834a-4ca52e103288"),
-    ("Quant Developer", "北京 / 上海", "2a839667-ccf5-4fb6-aab9-46d7d4d14822"),
-    ("量化实现工程师", "北京 / 上海", "65a74b93-a309-449f-a73f-730b01e65c13"),
-    ("数据科学家", "北京", "c5ff9856-cc93-4860-a9ee-ee33fa12ac28"),
-    ("量化策略研究员", "北京", "f2aa2bc2-7a59-4823-aa04-8fc020290b9d"),
-]
-
 # Official campus openings whose dates and direct ATS links were manually
 # verified. Generic public listing pages do not reliably expose these fields.
 CURATED_CAMPUS_JOBS = [
@@ -59,18 +48,6 @@ CURATED_CAMPUS_JOBS = [
         "tags": ["2027届", "校园招聘", "咨询", "Business Analyst"], "historical_applicants": None,
         "historical_offers": None, "last_verified_at": _VERIFIED_AT, "status": "open",
     },
-] + [
-    {
-        "id": f"curated-ubiquant-wutong-{job_id}",
-        "company": "九坤投资", "employer_type": "量化私募",
-        "title": f"【梧桐计划】{title}", "city": city, "industry": "量化金融",
-        "url": f"https://app.mokahr.com/campus_apply/ubiquantrecruit/37031#/job/{job_id}",
-        "source": "九坤投资官方 Moka 校招系统", "opening_date": "2026-07-28", "closing_date": None,
-        "requirements": "九坤 2027 届梧桐计划；当前官方岗位页未确认统一硬截止日期，显示为开放岗位，不进入截止预警。",
-        "tags": ["2027届", "校园招聘", "梧桐计划", "量化"], "historical_applicants": None,
-        "historical_offers": None, "last_verified_at": _VERIFIED_AT, "status": "open",
-    }
-    for title, city, job_id in _UBIQUANT_WUTONG_JOBS
 ]
 
 # Navigation/category links are not job postings.  They often look like
@@ -190,7 +167,7 @@ PERSONAL_MONITOR_POOLS = [
         "id": "quant_private_capital",
         "name": "量化与私募",
         "focus": "仅保留有明确校园职位和官方投递链接的量化、私募和研究岗位；不把远期开放窗口当截止预警",
-        "employers": ["九坤", "九坤投资", "幻方", "明汯", "衍复", "灵均", "宽德", "高瓴", "红杉中国"],
+        "employers": ["幻方", "明汯", "衍复", "灵均", "宽德", "高瓴", "红杉中国"],
     },
 ]
 

@@ -724,13 +724,15 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         assert jobs.status_code == 200
         payload = jobs.json()
         assert payload["data_status"]["mode"] == "hybrid_live"
-        assert set(payload["data_status"]["tier_counts"]) == {"T0", "T1", "T2", "T3"}
+        assert set(payload["data_status"]["tier_counts"]) == {
+            "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3",
+        }
         assert len(payload["monitor_pools"]) == 8
         assert payload["jobs"]
         titles = {job["title"] for job in payload["jobs"]}
         assert "拼多多 2027届校园招聘提前批" in titles
         assert "2027 Business Analyst (General Practice)_Campus" in titles
-        assert sum("梧桐计划" in title for title in titles) == 8
+        assert not any("梧桐计划" in title for title in titles)
         assert all(job["url"].startswith("https://") for job in payload["jobs"])
         assert not any(job["id"].startswith("sample-") for job in payload["jobs"])
         first = payload["jobs"][0]
@@ -739,7 +741,7 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         assert "historical_rate" not in first
         assert "tier_label" not in first
         assert "days_left" in first
-        assert first["tier_code"] in {"T0", "T1", "T2", "T3"}
+        assert first["tier_code"] in {"T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3"}
         assert "composite_fit" not in first
 
 
@@ -1005,7 +1007,7 @@ def test_recruitment_watch_preserves_fragment_links_and_enforces_cap(monkeypatch
                 "/api/recruitment/watches",
                 headers=auth(token),
                 json={
-                    "name": f"九坤岗位 {index}",
+                    "name": f"目标企业岗位 {index}",
                     "url": f"https://app.mokahr.com/campus_apply/example#/job/{index}",
                     "keywords": [f"岗位 {index}"],
                 },
@@ -1024,6 +1026,23 @@ def test_recruitment_watch_preserves_fragment_links_and_enforces_cap(monkeypatch
             },
         )
         assert over_cap.status_code == 409
+
+
+def test_company_only_watch_uses_recruitment_pool_without_url_or_keywords():
+    with TestClient(main.app) as client:
+        token, _ = register(client, "company-watch-owner")
+        created = client.post(
+            "/api/recruitment/watches",
+            headers=auth(token),
+            json={"company_name": "拼多多"},
+        )
+        assert created.status_code == 201
+        item = created.json()
+        assert item["watch_type"] == "company"
+        assert item["company_name"] == "拼多多"
+        assert item["url"] == ""
+        assert item["last_status"] == "baseline"
+        assert "校园招聘提前批" in item["last_keyword_hits"][0]
 
 
 def test_recruitment_jobs_sort_today_deadline_before_tomorrow(monkeypatch):

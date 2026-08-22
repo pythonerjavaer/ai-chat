@@ -111,8 +111,7 @@ const elements = {
   recruitmentRefresh: $("recruitment-refresh"), recruitmentSave: $("recruitment-save"),
   recruitmentError: $("recruitment-error"), recruitmentMonitorPools: $("recruitment-monitor-pools"),
   recruitmentDeadlineAlerts: $("recruitment-deadline-alerts"),
-  recruitmentWatchForm: $("recruitment-watch-form"), recruitmentWatchName: $("recruitment-watch-name"),
-  recruitmentWatchUrl: $("recruitment-watch-url"), recruitmentWatchKeywords: $("recruitment-watch-keywords"),
+  recruitmentWatchForm: $("recruitment-watch-form"), recruitmentWatchCompany: $("recruitment-watch-company"),
   recruitmentWatchAdd: $("recruitment-watch-add"), recruitmentWatchList: $("recruitment-watch-list"),
   homeDeadlineAlerts: $("home-deadline-alerts"), homeAlertTitle: $("home-alert-title"),
   homeAlertList: $("home-alert-list"),
@@ -1220,7 +1219,7 @@ function recruitmentWatchStatus(watch) {
 function renderRecruitmentWatches(watches = []) {
   elements.recruitmentWatchList.replaceChildren();
   if (!watches.length) {
-    elements.recruitmentWatchList.appendChild(makeElement("small", "", "尚未添加官网。你可以先加入最关心企业的官方校招页。"));
+    elements.recruitmentWatchList.appendChild(makeElement("small", "", "尚未添加企业监控。填写企业名称即可跟踪岗位池变化。"));
     return;
   }
   watches.forEach((watch) => {
@@ -1228,11 +1227,18 @@ function renderRecruitmentWatches(watches = []) {
     card.className = `watch-card${watchHasFreshChange(watch) ? " changed" : ""}`;
     const top = makeElement("div", "watch-card-top");
     const copy = document.createElement("div");
-    const link = makeElement("a", "", watch.url || "");
-    link.href = watch.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    copy.append(makeElement("strong", "", watch.name || "招聘官网"), link);
+    if (watch.watch_type === "company") {
+      copy.append(
+        makeElement("strong", "", watch.company_name || watch.name || "企业岗位池"),
+        makeElement("small", "watch-target-copy", "校招岗位池动态监控"),
+      );
+    } else {
+      const link = makeElement("a", "", watch.url || "");
+      link.href = watch.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      copy.append(makeElement("strong", "", watch.name || "招聘官网"), link);
+    }
     const actions = makeElement("div", "watch-card-actions");
     if (watchHasFreshChange(watch)) {
       const acknowledge = makeElement("button", "watch-acknowledge", "已核对");
@@ -1251,7 +1257,11 @@ function renderRecruitmentWatches(watches = []) {
     const checkedAt = watch.last_checked_at ? new Date(watch.last_checked_at).toLocaleString("zh-CN", { hour12: false }) : "尚未检查";
     statuses.appendChild(makeElement("span", "", checkedAt));
     const keywordList = Array.isArray(watch.keywords) ? watch.keywords : [];
-    const excerpt = watch.excerpt || watch.change_excerpt || (keywordList.length ? `关注：${keywordList.join(" · ")}` : "系统只比较公开网页文本指纹，不调用模型。" );
+    const excerpt = watch.excerpt || watch.change_excerpt || (
+      watch.watch_type === "company"
+        ? (keywordList.length ? `已在岗位池中跟踪：${keywordList.join(" · ")}` : "新岗位进入池子后自动提示。")
+        : (keywordList.length ? `关注：${keywordList.join(" · ")}` : "系统只比较公开网页文本指纹，不调用模型。")
+    );
     card.append(top, statuses, makeElement("p", "", excerpt));
     elements.recruitmentWatchList.appendChild(card);
   });
@@ -1268,9 +1278,7 @@ async function addRecruitmentWatch(event) {
       method: "POST",
       timeoutMs: 12000,
       body: JSON.stringify({
-        name: elements.recruitmentWatchName.value.trim(),
-        url: elements.recruitmentWatchUrl.value.trim(),
-        keywords: splitRecruitmentValues(elements.recruitmentWatchKeywords.value),
+        company_name: elements.recruitmentWatchCompany.value.trim(),
       }),
     });
     elements.recruitmentWatchForm.reset();
@@ -1352,27 +1360,37 @@ function renderRecruitmentJobs(jobs) {
     return;
   }
   const availableJobs = jobs.filter((job) => /^https:\/\//.test(job.url || ""));
-  const tierOrder = ["T0", "T1", "T2", "T3"];
+  const tierDefinitions = [
+    ["T0", "强匹配", "90–98"], ["T0.5", "高匹配", "85–89"],
+    ["T1", "主力", "78–84"], ["T1.5", "较主力", "72–77"],
+    ["T2", "可投", "64–71"], ["T2.5", "观察", "56–63"], ["T3", "低匹配", "0–55"],
+  ];
+  const tierOrder = tierDefinitions.map(([code]) => code);
   const tierSummary = makeElement("div", "job-tier-summary");
-  tierOrder.forEach((tier) => {
+  tierDefinitions.forEach(([tier, label, range]) => {
     const count = availableJobs.filter((job) => job.tier_code === tier).length;
-    const badge = makeElement("span", `job-tier-summary-item ${tier}`);
-    badge.append(makeElement("b", "", tier), makeElement("small", "", `${count} 个岗位`));
+    const tierClass = tier.replace(".", "-");
+    const badge = makeElement("span", `job-tier-summary-item ${tierClass}`);
+    badge.title = `${label}：匹配分 ${range}`;
+    badge.append(makeElement("b", "", tier), makeElement("small", "", `${label} · ${count}`));
     tierSummary.appendChild(badge);
   });
   elements.recruitmentJobs.appendChild(tierSummary);
+  elements.recruitmentJobs.appendChild(
+    makeElement("p", "job-tier-legend", "分层规则：T0 强匹配 ≥90 · T0.5 高匹配 85–89 · T1 主力 78–84 · T1.5 较主力 72–77 · T2 可投 64–71 · T2.5 观察 56–63 · T3 低匹配 ≤55；这是匹配优先级，不是录取概率。"),
+  );
   tierOrder.forEach((tier) => {
     const tierJobs = availableJobs.filter((job) => (job.tier_code || "T3") === tier);
     if (!tierJobs.length) return;
     const group = makeElement("section", "recruitment-tier-group");
     const heading = makeElement("div", "recruitment-tier-heading");
-    heading.append(makeElement("strong", `job-tier ${tier}`, tier), makeElement("span", "", `${tierJobs.length} 个匹配岗位`));
+    heading.append(makeElement("strong", `job-tier ${tier.replace(".", "-")}`, tier), makeElement("span", "", `${tierJobs.length} 个匹配岗位`));
     group.appendChild(heading);
     tierJobs.forEach((job) => {
     const card = document.createElement("article");
     card.className = "recruitment-job-card";
     const deadline = job.days_left == null ? "截止日期待官方确认" : (job.days_left === 0 ? "今天截止" : `${job.days_left} 天后截止`);
-    const tierCode = ["T0", "T1", "T2", "T3"].includes(job.tier_code) ? job.tier_code : "T3";
+    const tierCode = tierOrder.includes(job.tier_code) ? job.tier_code : "T3";
     const top = makeElement("div", "job-card-top");
     const labels = document.createElement("div");
     labels.append(
@@ -1380,7 +1398,7 @@ function renderRecruitmentJobs(jobs) {
       makeElement("span", "job-type", job.employer_type || "重点雇主"),
     );
     const rank = makeElement("div", "job-rank");
-    rank.appendChild(makeElement("span", `job-tier ${tierCode}`, tierCode));
+    rank.appendChild(makeElement("span", `job-tier ${tierCode.replace(".", "-")}`, tierCode));
     top.append(labels, rank);
     const bottom = makeElement("div", "job-card-bottom");
     const officialLink = makeElement("a", "", "打开校招公告 ↗");
