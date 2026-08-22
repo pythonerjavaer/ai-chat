@@ -9,6 +9,9 @@ from .config import settings
 from .workspaces import DEFAULT_WORKSPACE, validate_workspace
 
 
+SPACE_RUN_HISTORY_LIMIT = 100
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -105,6 +108,31 @@ def init_db() -> None:
                 FOREIGN KEY (space_id) REFERENCES spaces(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS space_runs (
+                id TEXT PRIMARY KEY,
+                space_id TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                fingerprint TEXT NOT NULL,
+                requested_mode TEXT NOT NULL,
+                execution_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                input_text TEXT NOT NULL,
+                artifact TEXT NOT NULL DEFAULT '{}',
+                reply TEXT NOT NULL DEFAULT '',
+                estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+                max_output_tokens INTEGER NOT NULL DEFAULT 0,
+                actual_input_tokens INTEGER NOT NULL DEFAULT 0,
+                actual_output_tokens INTEGER NOT NULL DEFAULT 0,
+                actual_total_tokens INTEGER NOT NULL DEFAULT 0,
+                saved_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_from_run_id TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY (space_id) REFERENCES spaces(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (cached_from_run_id) REFERENCES space_runs(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS recruitment_profiles (
                 user_id INTEGER PRIMARY KEY,
                 desired_roles TEXT NOT NULL DEFAULT '[]',
@@ -151,6 +179,29 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'open'
             );
 
+            CREATE TABLE IF NOT EXISTS recruitment_watches (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                fetch_url TEXT,
+                keywords TEXT NOT NULL DEFAULT '[]',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_fingerprint TEXT,
+                last_status TEXT NOT NULL DEFAULT 'pending',
+                last_http_status INTEGER,
+                last_keyword_hits TEXT NOT NULL DEFAULT '[]',
+                last_error TEXT,
+                last_checked_at TEXT,
+                last_changed_at TEXT,
+                change_pending INTEGER NOT NULL DEFAULT 0,
+                change_version INTEGER NOT NULL DEFAULT 0,
+                change_acknowledged_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sessions_user_updated
                 ON sessions(user_id, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -195,8 +246,24 @@ def init_db() -> None:
             "ON token_usage(user_id, period)"
         )
         connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_space_runs_space_created "
+            "ON space_runs(space_id, user_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_space_runs_cache "
+            "ON space_runs(space_id, user_id, fingerprint, status)"
+        )
+        connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_recruitment_jobs_deadline "
             "ON recruitment_jobs(status, closing_date)"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_recruitment_watches_user_url "
+            "ON recruitment_watches(user_id, url)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recruitment_watches_user_updated "
+            "ON recruitment_watches(user_id, updated_at DESC)"
         )
         for column, declaration in (
             ("education_level", "TEXT NOT NULL DEFAULT ''"),
@@ -214,6 +281,44 @@ def init_db() -> None:
             ("composite_interest", "INTEGER NOT NULL DEFAULT 0"),
         ):
             _ensure_column(connection, "recruitment_profiles", column, declaration)
+        added_change_pending = _ensure_column(
+            connection,
+            "recruitment_watches",
+            "change_pending",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        _ensure_column(
+            connection,
+            "recruitment_watches",
+            "change_acknowledged_at",
+            "TEXT",
+        )
+        added_change_version = _ensure_column(
+            connection,
+            "recruitment_watches",
+            "change_version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        _ensure_column(
+            connection,
+            "recruitment_watches",
+            "fetch_url",
+            "TEXT",
+        )
+        connection.execute(
+            "UPDATE recruitment_watches SET fetch_url = url "
+            "WHERE fetch_url IS NULL OR fetch_url = ''"
+        )
+        if added_change_pending:
+            connection.execute(
+                "UPDATE recruitment_watches SET change_pending = 1 "
+                "WHERE last_status = 'changed'"
+            )
+        if added_change_version:
+            connection.execute(
+                "UPDATE recruitment_watches SET change_version = 1 "
+                "WHERE last_status = 'changed' OR change_pending = 1"
+            )
 
 
 def _ensure_column(
@@ -221,13 +326,15 @@ def _ensure_column(
     table: str,
     column: str,
     declaration: str,
-) -> None:
+) -> bool:
     columns = {
         row["name"]
         for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
     }
     if column not in columns:
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+        return True
+    return False
 
 
 def create_user(
@@ -404,6 +511,157 @@ def record_token_usage(
         )
 
 
+def _public_space_run(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    item = dict(row)
+    try:
+        item["artifact"] = json.loads(item.get("artifact") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        item["artifact"] = {}
+    item["message"] = item.pop("input_text", "")
+    item.pop("user_id", None)
+    item["usage"] = {
+        "input_tokens": int(item.pop("actual_input_tokens", 0) or 0),
+        "output_tokens": int(item.pop("actual_output_tokens", 0) or 0),
+        "total_tokens": int(item.pop("actual_total_tokens", 0) or 0),
+    }
+    return item
+
+
+def create_space_run(
+    user_id: int,
+    space_id: str,
+    fingerprint: str,
+    requested_mode: str,
+    execution_path: str,
+    input_text: str,
+    artifact: dict[str, Any],
+    reply: str,
+    estimated_input_tokens: int = 0,
+    max_output_tokens: int = 0,
+    actual_input_tokens: int = 0,
+    actual_output_tokens: int = 0,
+    actual_total_tokens: int = 0,
+    saved_tokens: int = 0,
+    cached_from_run_id: str | None = None,
+    status: str = "completed",
+) -> dict[str, Any]:
+    run_id = str(uuid.uuid4())
+    now = utc_now()
+    completed_at = now if status in {"completed", "failed"} else None
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO space_runs
+                (id, space_id, user_id, fingerprint, requested_mode,
+                 execution_path, status, input_text, artifact, reply,
+                 estimated_input_tokens, max_output_tokens,
+                 actual_input_tokens, actual_output_tokens, actual_total_tokens,
+                 saved_tokens, cached_from_run_id, created_at, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                space_id,
+                user_id,
+                fingerprint,
+                requested_mode,
+                execution_path,
+                status,
+                input_text,
+                json.dumps(artifact, ensure_ascii=False),
+                reply,
+                max(0, estimated_input_tokens),
+                max(0, max_output_tokens),
+                max(0, actual_input_tokens),
+                max(0, actual_output_tokens),
+                max(0, actual_total_tokens),
+                max(0, saved_tokens),
+                cached_from_run_id,
+                now,
+                completed_at,
+            ),
+        )
+        connection.execute(
+            """
+            DELETE FROM space_runs
+            WHERE space_id = ? AND user_id = ?
+              AND id NOT IN (
+                  SELECT id FROM space_runs
+                  WHERE space_id = ? AND user_id = ?
+                  ORDER BY created_at DESC
+                  LIMIT ?
+              )
+            """,
+            (
+                space_id,
+                user_id,
+                space_id,
+                user_id,
+                SPACE_RUN_HISTORY_LIMIT,
+            ),
+        )
+    return get_space_run(run_id, space_id, user_id) or {}
+
+
+def get_space_run(
+    run_id: str,
+    space_id: str,
+    user_id: int,
+) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM space_runs
+            WHERE id = ? AND space_id = ? AND user_id = ?
+            """,
+            (run_id, space_id, user_id),
+        ).fetchone()
+    return _public_space_run(row)
+
+
+def find_cached_space_run(
+    space_id: str,
+    user_id: int,
+    fingerprint: str,
+) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM space_runs
+            WHERE space_id = ? AND user_id = ? AND fingerprint = ?
+              AND status = 'completed' AND execution_path IN ('lean', 'deep')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (space_id, user_id, fingerprint),
+        ).fetchone()
+    return _public_space_run(row)
+
+
+def list_space_runs(
+    space_id: str,
+    user_id: int,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit), 100))
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM space_runs
+            WHERE space_id = ? AND user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (space_id, user_id, safe_limit),
+        ).fetchall()
+    return [item for row in rows if (item := _public_space_run(row))]
+
+
 def record_privacy_consent(user_id: int, privacy_version: str) -> dict[str, Any] | None:
     accepted_at = utc_now()
     with connect() as connection:
@@ -501,6 +759,281 @@ def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str,
             values,
         )
     return get_recruitment_profile(user_id)
+
+
+def _public_recruitment_watch(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    for key in ("keywords", "last_keyword_hits"):
+        try:
+            item[key] = json.loads(item.get(key) or "[]")
+        except (TypeError, json.JSONDecodeError):
+            item[key] = []
+    item["enabled"] = bool(item.get("enabled"))
+    item["change_pending"] = bool(item.get("change_pending"))
+    item.pop("user_id", None)
+    item.pop("last_fingerprint", None)
+    item.pop("fetch_url", None)
+    return item
+
+
+def create_recruitment_watch(
+    user_id: int,
+    name: str,
+    url: str,
+    fetch_url: str,
+    keywords: list[str],
+) -> dict[str, Any]:
+    watch_id = str(uuid.uuid4())
+    now = utc_now()
+    try:
+        with connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            count = connection.execute(
+                "SELECT COUNT(*) AS count FROM recruitment_watches WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()["count"]
+            if int(count) >= 12:
+                raise ValueError("每个账号最多创建 12 个网页监控。")
+            connection.execute(
+                """
+                INSERT INTO recruitment_watches
+                    (id, user_id, name, url, fetch_url, keywords, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    watch_id,
+                    user_id,
+                    name,
+                    url,
+                    fetch_url,
+                    json.dumps(keywords, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("该监控网址已经存在。") from exc
+    watch = get_recruitment_watch(user_id, watch_id)
+    if not watch:
+        raise RuntimeError("Recruitment watch was not created.")
+    return watch
+
+
+def list_recruitment_watches(user_id: int) -> list[dict[str, Any]]:
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM recruitment_watches
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [_public_recruitment_watch(row) for row in rows]
+
+
+def list_enabled_recruitment_watches(
+    *,
+    due_before: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return internal watch rows for the in-process scheduler."""
+    parameters: list[Any] = []
+    due_filter = ""
+    if due_before:
+        due_filter = "AND (last_checked_at IS NULL OR last_checked_at <= ?)"
+        parameters.append(due_before)
+    parameters.append(max(1, min(int(limit), 500)))
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT * FROM recruitment_watches
+            WHERE enabled = 1
+            {due_filter}
+            ORDER BY COALESCE(last_checked_at, created_at), created_at
+            LIMIT ?
+            """,
+            parameters,
+        ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["keywords"] = json.loads(item.get("keywords") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            item["keywords"] = []
+        result.append(item)
+    return result
+
+
+def get_recruitment_watch(user_id: int, watch_id: str) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM recruitment_watches WHERE id = ? AND user_id = ?",
+            (watch_id, user_id),
+        ).fetchone()
+    return _public_recruitment_watch(row) if row else None
+
+
+def delete_recruitment_watch(user_id: int, watch_id: str) -> bool:
+    with connect() as connection:
+        cursor = connection.execute(
+            "DELETE FROM recruitment_watches WHERE id = ? AND user_id = ?",
+            (watch_id, user_id),
+        )
+    return cursor.rowcount > 0
+
+
+def record_recruitment_watch_success(
+    user_id: int,
+    watch_id: str,
+    fingerprint: str,
+    hits: list[str],
+    http_status: int,
+) -> dict[str, Any] | None:
+    now = utc_now()
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT last_fingerprint, last_changed_at, change_pending, change_version
+            FROM recruitment_watches
+            WHERE id = ? AND user_id = ?
+            """,
+            (watch_id, user_id),
+        ).fetchone()
+        if not row:
+            return None
+        previous = row["last_fingerprint"]
+        if previous is None:
+            result_status = "baseline"
+        elif previous == fingerprint:
+            result_status = "unchanged"
+        else:
+            result_status = "changed"
+        changed_at = now if result_status == "changed" else row["last_changed_at"]
+        change_pending = 1 if result_status == "changed" else int(row["change_pending"] or 0)
+        change_version = int(row["change_version"] or 0)
+        if result_status == "changed":
+            change_version += 1
+        connection.execute(
+            """
+            UPDATE recruitment_watches
+            SET last_fingerprint = ?, last_status = ?, last_http_status = ?,
+                last_keyword_hits = ?, last_error = NULL, last_checked_at = ?,
+                last_changed_at = ?, change_pending = ?, change_version = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (
+                fingerprint,
+                result_status,
+                http_status,
+                json.dumps(hits, ensure_ascii=False),
+                now,
+                changed_at,
+                change_pending,
+                change_version,
+                now,
+                watch_id,
+                user_id,
+            ),
+        )
+    return get_recruitment_watch(user_id, watch_id)
+
+
+def record_recruitment_watch_error(
+    user_id: int,
+    watch_id: str,
+    error: str,
+) -> dict[str, Any] | None:
+    now = utc_now()
+    with connect() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE recruitment_watches
+            SET last_status = 'error', last_http_status = NULL, last_error = ?,
+                last_checked_at = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (error[:300], now, now, watch_id, user_id),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_recruitment_watch(user_id, watch_id)
+
+
+def acknowledge_recruitment_watch_change(
+    user_id: int,
+    watch_id: str,
+    expected_version: int,
+) -> dict[str, Any] | None:
+    now = utc_now()
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT change_pending, change_version FROM recruitment_watches "
+            "WHERE id = ? AND user_id = ?",
+            (watch_id, user_id),
+        ).fetchone()
+        if not row:
+            return None
+        if int(row["change_version"] or 0) != expected_version:
+            raise ValueError("官网在你打开提醒后又发生了变化，请先查看最新版本。")
+        if not bool(row["change_pending"]):
+            return get_recruitment_watch(user_id, watch_id)
+        cursor = connection.execute(
+            """
+            UPDATE recruitment_watches
+            SET change_pending = 0, change_acknowledged_at = ?, updated_at = ?
+            WHERE id = ? AND user_id = ? AND change_version = ?
+            """,
+            (now, now, watch_id, user_id, expected_version),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_recruitment_watch(user_id, watch_id)
+
+
+def recruitment_watch_summary(user_id: int) -> dict[str, Any]:
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS enabled,
+                SUM(CASE WHEN change_pending = 1 THEN 1 ELSE 0 END) AS changed,
+                SUM(CASE WHEN last_status = 'error' THEN 1 ELSE 0 END) AS errors,
+                MAX(last_checked_at) AS last_checked_at,
+                MAX(last_changed_at) AS last_changed_at
+            FROM recruitment_watches
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    return {
+        "total": int(row["total"] or 0),
+        "enabled": int(row["enabled"] or 0),
+        "changed": int(row["changed"] or 0),
+        "errors": int(row["errors"] or 0),
+        "last_checked_at": row["last_checked_at"],
+        "last_changed_at": row["last_changed_at"],
+    }
+
+
+def recruitment_job_summary() -> dict[str, Any]:
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT
+                SUM(CASE WHEN status = 'open'
+                          AND (closing_date IS NULL OR closing_date >= DATE('now'))
+                         THEN 1 ELSE 0 END) AS open_jobs,
+                MAX(last_verified_at) AS last_verified_at
+            FROM recruitment_jobs
+            """
+        ).fetchone()
+    return {
+        "open_jobs": int(row["open_jobs"] or 0),
+        "last_verified_at": row["last_verified_at"],
+    }
 
 
 def list_recruitment_jobs() -> list[dict[str, Any]]:

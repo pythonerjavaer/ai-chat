@@ -9,12 +9,15 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 
 from .config import settings
+from .recruitment_watch import fetch_watch_page
 
 
 PUBLIC_RECRUITMENT_SOURCES = [
     {"name": "国资小新", "url": "https://www.gdpdd.com/s/xiaoxin/index.html", "employer_type": "央国企"},
     {"name": "银行招聘网", "url": "https://yhks.cn/", "employer_type": "银行/金融"},
 ]
+MAX_PUBLIC_SOURCE_BYTES = 1_500_000
+MAX_ADZUNA_BYTES = 2_000_000
 
 _VERIFIED_AT = "2026-08-22T00:00:00+00:00"
 _UBIQUANT_WUTONG_JOBS = [
@@ -85,24 +88,11 @@ def is_actionable_recruitment_listing(job: dict) -> bool:
     return any(marker in campus_text for marker in ("校园招聘", "秋招", "校招", "应届", "毕业生", "届", "graduate", "campus"))
 
 
-class _TextParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.parts: list[str] = []
-
-    def handle_data(self, data):
-        self.parts.append(data)
-
-
 def _extract_deadline(url: str) -> str | None:
     """Return an explicitly labelled application deadline from a public notice."""
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": "FrostFire-Autumn-Radar/1.0"})
-        with urllib.request.urlopen(request, timeout=6) as response:
-            html = response.read().decode("utf-8", errors="ignore")
-        parser = _TextParser()
-        parser.feed(html)
-        text = re.sub(r"\s+", "", " ".join(parser.parts))
+        result = fetch_watch_page(url, (), timeout_seconds=6)
+        text = re.sub(r"\s+", "", result.text)
         match = re.search(
             r"(?:报名|网申|投递|申请).{0,24}?(?:截止|截至|截止时间).{0,12}?((20\d{2})年)?(\d{1,2})月(\d{1,2})日",
             text,
@@ -121,7 +111,7 @@ def _extract_deadline(url: str) -> str | None:
 PERSONAL_MONITOR_POOLS = [
     {
         "id": "state_owned_full",
-        "name": "央国企全量秋招",
+        "name": "央国企重点秋招",
         "focus": "正式秋招、提前批、预招聘、留学生专场、补录；总部、子公司、研究院与直属机构",
         "employers": [
             "中国人民银行", "国家开发银行", "中国进出口银行", "中国农业发展银行",
@@ -221,7 +211,10 @@ def fetch_public_recruitment_sources() -> list[dict]:
                 source["url"], headers={"User-Agent": "FrostFire-Autumn-Radar/1.0"}
             )
             with urllib.request.urlopen(request, timeout=12) as response:
-                html = response.read().decode("utf-8", errors="ignore")
+                payload = response.read(MAX_PUBLIC_SOURCE_BYTES + 1)
+                if len(payload) > MAX_PUBLIC_SOURCE_BYTES:
+                    raise ValueError("Recruitment source response is too large.")
+                html = payload.decode("utf-8", errors="ignore")
             parser = _RecruitmentLinkParser()
             parser.feed(html)
             for index, (title, href) in enumerate(parser.links):
@@ -270,7 +263,10 @@ def fetch_adzuna_jobs(query: str = "graduate", location: str = "") -> list[dict]
     url = f"https://api.adzuna.com/v1/api/jobs/{settings.adzuna_country}/search/1?{params}"
     request = urllib.request.Request(url, headers={"User-Agent": "FrostFire-Autumn-Radar/1.0"})
     with urllib.request.urlopen(request, timeout=12) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+        raw = response.read(MAX_ADZUNA_BYTES + 1)
+        if len(raw) > MAX_ADZUNA_BYTES:
+            raise ValueError("Adzuna response is too large.")
+        payload = json.loads(raw.decode("utf-8"))
     jobs = []
     for item in payload.get("results", []):
         jobs.append({

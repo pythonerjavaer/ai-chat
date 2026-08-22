@@ -61,7 +61,7 @@
               </label>
               <label id="privacy-row" class="privacy-check hidden">
                 <input id="privacy-accepted" type="checkbox" />
-                <span>我已阅读并同意<a href="/privacy.html" target="_blank">隐私政策</a>与<a href="/terms.html" target="_blank">使用条款</a>，知悉消息和文档片段会发送至 OpenAI API 处理。</span>
+                <span>我已阅读并同意<a href="/privacy.html" target="_blank">隐私政策</a>与<a href="/terms.html" target="_blank">使用条款</a>，知悉聊天消息、文档片段，以及 AI Space 节能/深度模式的规则与任务会发送至 OpenAI API 处理。</span>
               </label>
               <button id="auth-submit" class="primary-button" type="submit"><span>登录</span><b>→</b></button>
               <p id="auth-error" class="form-error" role="alert"></p>
@@ -171,8 +171,12 @@
           <div class="boundary-card"><span>i</span><p id="workspace-boundary">请核对关键事实与来源。</p></div>
         </aside>
       </div>
-      <button id="mobile-studio-open" class="mobile-cross-button mobile-only" type="button">＋ 创建 AI Space</button>
-      <button id="mobile-knowledge" class="mobile-vault-button mobile-only" type="button">◇ 资料与证据</button>
+      <nav class="mobile-action-dock mobile-only" aria-label="移动端功能入口">
+        <button id="mobile-studio-open" type="button"><b>＋</b><span>Space</span></button>
+        <button id="mobile-recruitment-open" type="button"><b>◒</b><span>秋招</span></button>
+        <button id="mobile-cross-exam-open" type="button"><b>⟁</b><span>交叉审查</span></button>
+        <button id="mobile-knowledge" type="button"><b>◇</b><span>资料</span></button>
+      </nav>
       <div id="panel-backdrop" class="panel-backdrop hidden"></div>
     </section>
 
@@ -228,24 +232,24 @@
     <dialog id="studio-dialog" class="studio-dialog">
       <div class="space-studio-shell">
         <header class="space-studio-header">
-          <div><span class="overline">AI SPACE STUDIO</span><h2>把你的方法，变成可以运行的 AI</h2><p>模板是起点；规则、成本和体验由你定义。</p></div>
+          <div><span class="overline">OUTCOME CAPSULE STUDIO</span><h2>让 AI 维护成果，而不是重复聊天</h2><p>调用前看预算、重复任务直接复用、零 Token 模式先把目标变成可执行胶囊。</p></div>
           <button id="studio-close" class="icon-button" type="button" aria-label="关闭 AI Space Studio">×</button>
         </header>
         <div class="space-studio-body">
           <section class="space-builder">
             <div class="billing-summary">
-              <div><span class="overline">TOKEN CONTROL</span><strong id="billing-plan">Free</strong><small id="billing-usage">正在读取用量…</small></div>
+              <div><span class="overline">AI SPACE TOKEN CONTROL</span><strong id="billing-plan">Free</strong><small id="billing-usage">正在读取 Space 用量…</small></div>
               <button id="billing-upgrade" class="soft-button" type="button">Pro 订阅</button>
             </div>
             <form id="space-form" class="space-form">
-              <div class="form-heading"><span>01</span><div><strong>选择起点</strong><small>选择模板后仍可完全重写规则。</small></div></div>
+              <div class="form-heading"><span>01</span><div><strong>选择成果类型</strong><small>从一个可复用成果开始，而不是从空白 Prompt 开始。</small></div></div>
               <div id="space-template-grid" class="space-template-grid" aria-label="AI Space 模板"></div>
-              <div class="form-heading"><span>02</span><div><strong>定义你的 Space</strong><small>每个 Space 有独立规则与 Token 预算。</small></div></div>
+              <div class="form-heading"><span>02</span><div><strong>定义成果胶囊</strong><small>规则会被复用，每个 Space 有独立的保守 Token 预算门槛。</small></div></div>
               <label class="field compact-field"><span>名称</span><input id="space-name" maxlength="60" placeholder="例如：我的产品工程师" required /></label>
               <label class="field compact-field"><span>它帮助谁解决什么</span><input id="space-description" maxlength="240" placeholder="例如：把产品需求拆成可交付任务" /></label>
-              <label class="field compact-field"><span>操作规则</span><textarea id="space-rules" rows="5" maxlength="8000" placeholder="说明角色、边界、输出格式、判断标准…"></textarea></label>
+              <label class="field compact-field"><span>成功标准与边界</span><textarea id="space-rules" rows="5" maxlength="8000" placeholder="写清目标、判断标准、必须保留的约束和最终成果格式…"></textarea></label>
               <label class="field compact-field"><span>每月 Token 上限</span><select id="space-budget"><option value="3000">3,000 · 极省模式</option><option value="6000" selected>6,000 · 日常模式</option><option value="10000">10,000 · 深度模式</option></select></label>
-              <button id="space-create" class="primary-button" type="submit"><span>创建可运行的 AI Space</span><b>＋</b></button>
+              <button id="space-create" class="primary-button" type="submit"><span>创建成果胶囊</span><b>＋</b></button>
               <p id="space-form-error" class="form-error" role="alert"></p>
             </form>
           </section>
@@ -253,10 +257,21 @@
             <div class="canvas-heading"><div><span class="overline">YOUR OPERATING SPACES</span><h3>已创建的 AI Space</h3></div><span id="space-count" class="space-count">0</span></div>
             <div id="space-list" class="space-list"></div>
             <section id="space-runner" class="space-runner hidden" aria-live="polite">
-              <div class="runner-heading"><div><span id="runner-icon" class="runner-icon">✦</span><div><small>SPACE SANDBOX</small><strong id="runner-name">选择一个 Space</strong></div></div><span id="runner-budget">—</span></div>
-              <textarea id="runner-input" rows="3" maxlength="4000" placeholder="给这个 AI Space 一项具体任务…"></textarea>
-              <button id="runner-send" class="studio-run-button" type="button"><span>运行一次</span><b>→</b></button>
-              <div id="runner-output" class="runner-output">每一次运行都会显示实际 Token 消耗；Space 达到预算后会停止调用模型。</div>
+              <div class="runner-heading"><div><span id="runner-icon" class="runner-icon">✦</span><div><small>OUTCOME CAPSULE</small><strong id="runner-name">选择一个 Space</strong></div></div><span id="runner-budget">—</span></div>
+              <textarea id="runner-input" rows="3" maxlength="4000" placeholder="描述这次要新增、改变或验证的内容…"></textarea>
+              <div class="runner-modes" aria-label="执行模式">
+                <label><input type="radio" name="runner-mode" value="local" /><span><b>零 Token</b><small>规则生成成果胶囊</small></span></label>
+                <label><input type="radio" name="runner-mode" value="lean" checked /><span><b>节能更新</b><small>缓存优先、短输出</small></span></label>
+                <label><input type="radio" name="runner-mode" value="deep" /><span><b>深度重算</b><small>跳过缓存、完整分析</small></span></label>
+              </div>
+              <section id="runner-preflight" class="token-flight-plan">
+                <div><span>TOKEN FLIGHT PLAN</span><b id="runner-route">输入任务后自动预检</b></div>
+                <dl><div><dt>预计输入</dt><dd id="runner-estimated-input">—</dd></div><div><dt>最大输出</dt><dd id="runner-output-ceiling">—</dd></div><div><dt>本次调用</dt><dd id="runner-call-count">—</dd></div><div><dt>缓存状态</dt><dd id="runner-cache-state">—</dd></div></dl>
+                <p id="runner-impact">预检由应用服务器计算，不调用 OpenAI。</p>
+              </section>
+              <button id="runner-send" class="studio-run-button" type="button"><span>执行成果更新</span><b>→</b></button>
+              <div id="runner-output" class="runner-output">先选择执行模式。重复的规则与任务会直接命中缓存，零 Token 模式不会调用模型。</div>
+              <section class="space-history"><div><span>RECENT CAPSULES</span><button id="runner-history-refresh" type="button">刷新</button></div><div id="runner-history" class="space-history-list"><small>选择 Space 后显示最近成果。</small></div></section>
             </section>
           </section>
         </div>
@@ -280,7 +295,15 @@
               <button id="recruitment-save" class="primary-button" type="submit"><span>保存筛选并重新匹配</span><b>↗</b></button>
               <p id="recruitment-error" class="form-error" role="alert"></p>
             </form>
-            <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>当前重点监控范围</strong><small>这些是平台的搜索范围，不代表每家单位当前都有开放岗位。</small></div></div>
+            <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>我的官网变化雷达</strong><small>添加企业官方校招页。系统比较网页指纹，页面变化时提醒；整个过程不调用 AI。</small></div></div>
+            <form id="recruitment-watch-form" class="recruitment-watch-form">
+              <label class="field compact-field"><span>监控名称</span><input id="recruitment-watch-name" maxlength="80" placeholder="例如：字节跳动 2027 校招" required /></label>
+              <label class="field compact-field"><span>企业官方招聘页（HTTPS）</span><input id="recruitment-watch-url" type="url" maxlength="1000" placeholder="https://jobs.example.com/campus" required /></label>
+              <label class="field compact-field"><span>重点关键词（至少一个，逗号分隔）</span><input id="recruitment-watch-keywords" maxlength="240" placeholder="产品经理，数据，2027届" required /></label>
+              <button id="recruitment-watch-add" class="watch-add-button" type="submit"><span>加入动态雷达</span><b>＋</b></button>
+            </form>
+            <div id="recruitment-watch-list" class="recruitment-watch-list"><small>尚未添加官方页面。</small></div>
+            <div class="recruitment-section-heading monitor-heading"><span>03</span><div><strong>平台重点监控范围</strong><small>这是搜索范围，不代表每家单位当前都有开放岗位；请以可点击的官方公告为准。</small></div></div>
             <div id="recruitment-monitor-pools" class="recruitment-monitor-pools"></div>
           </section>
           <section class="recruitment-results">
@@ -318,7 +341,7 @@
     <dialog id="consent-dialog" class="modal consent-modal">
       <div class="modal-shell">
         <span class="modal-symbol">◇</span><h2>继续前需要确认数据处理方式</h2>
-        <p>当你聊天或建立文档索引时，消息、文件片段与必要的账号匿名标识会发送至 OpenAI API。请阅读隐私政策后决定是否继续。</p>
+        <p>聊天消息与文档片段会发送至 OpenAI API；AI Space 的节能/深度模式还会发送该 Space 的规则与本次任务。零 Token 规则整理、精确缓存复用和招聘网页指纹比较不调用 OpenAI。请阅读隐私政策后决定是否继续。</p>
         <div class="consent-actions"><a href="/privacy.html" target="_blank" class="soft-button">查看隐私政策</a><button id="accept-consent" class="primary-button" type="button"><span>同意并继续</span><b>→</b></button></div>
         <button id="consent-logout" class="text-button" type="button">不同意并退出登录</button>
       </div>
