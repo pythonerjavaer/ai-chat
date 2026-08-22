@@ -116,9 +116,8 @@ def _extract_deadline(url: str) -> str | None:
         return None
 
 
-# Personal monitoring scope migrated from the owner's existing ChatGPT autumn
-# recruiting monitors. These are search scopes, not claims that every employer
-# currently has an open role.
+# Configured monitoring scopes. These are search scopes, not claims that every
+# employer currently has an open role.
 PERSONAL_MONITOR_POOLS = [
     {
         "id": "state_owned_full",
@@ -238,7 +237,7 @@ def fetch_public_recruitment_sources() -> list[dict]:
                     "closing_date": None, "requirements": "请打开原文核对专业、毕业年份、截止日期和投递入口。",
                     "tags": [source["employer_type"], "公开来源"],
                     "historical_applicants": None, "historical_offers": None,
-                    "last_verified_at": datetime.now(timezone.utc).isoformat(), "status": "open",
+                    "last_verified_at": datetime.now(timezone.utc).isoformat(), "status": "discovery",
                 })
                 if not is_priority_campus_listing(jobs[-1]):
                     jobs.pop()
@@ -290,6 +289,6 @@ def fetch_adzuna_jobs(query: str = "graduate", location: str = "") -> list[dict]
             "historical_applicants": None,
             "historical_offers": None,
             "last_verified_at": datetime.now(timezone.utc).isoformat(),
-            "status": "open",
+            "status": "discovery",
         })
     return jobs

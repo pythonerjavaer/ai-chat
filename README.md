@@ -14,9 +14,12 @@
 - Token 账本：按账号和按 AI Space 记录模型实际输入/输出 Token，用免费计划额度与每个 Space 的预算在服务端阻止超额调用。
 - 个人秋招监控：岗位/职能类型、雇主类型、行业与城市偏好均可只填写其中一部分后匹配。
 - 已合并三组个人监控范围：央国企全量秋招、大厂/金融/外企、政策行与平安专项；覆盖监控目标，不代表清单内所有单位当前均有开放岗位。
-- 实时源适配器：服务启动后按 `RECRUITMENT_REFRESH_MINUTES`（默认 30 分钟）刷新公开招聘源；支持配置 Adzuna 官方 API 凭证。中国互联网、外企和央国企官方源需要分别获得其 API、RSS 或授权数据源。
-- 当前公开刷新源：国资小新公开招聘列表、银行招聘网公开招聘列表；每条结果保留来源名称和原文链接，截止日期和具体资格以原公告为准。
+- 动态源适配器：服务启动后按 `RECRUITMENT_REFRESH_MINUTES`（默认 30 分钟）扫描公开招聘线索，并支持配置 Adzuna API 凭证。公开聚合页只进入后台发现队列，不会直接成为面向用户的岗位卡片。
+- 行动卡片准入：只展示已核验的企业官方 ATS/招聘官网直达链接，或通过受保护动态接收 API 写入的岗位；无链接、第三方聚合页、非校招和已过期岗位不会展示。
 - 已核验校招直达源：拼多多 2027 提前批、科尔尼大中华区 2027 校招，以及九坤 2027 梧桐计划 8 个官方 Moka 岗位；前两者按官方公告截止日期触发预警，九坤按官方持续开放窗口展示。
+- 首页截止预警：登录后直接显示 7 天内到期的已核验校招，无需先打开秋招雷达；过期岗位不会从岗位 API 返回。
+- 动态监控接收 API：受 `RECRUITMENT_INGEST_TOKEN` 保护，可由外部监控任务持续推送结构化校招岗位，服务端会拒绝过期、非校招和非目标城市数据。
+- 外部监控接入规范见 [`docs/RECRUITMENT_INGEST_OPENAPI.yaml`](docs/RECRUITMENT_INGEST_OPENAPI.yaml)；部署后将其中的 `YOUR_RENDER_DOMAIN` 替换为实际域名，并在发送方配置 Render 生成的监控令牌。
 - 订阅能力的服务端边界：已有 Free/Pro 权益模型、额度查询和一个默认关闭的 Apple 交易校验入口；未配置交易校验时接口明确拒绝，不会把演示按钮伪装成已完成收款。
 - 三档反事实压力舱（Base / Downside / Breakpoint）、未知事项雷达、证据锁链和输入版本分析指纹；情景明确标注为推演而非预测。
 - PDF、DOCX、TXT、Markdown、CSV、JSON 上传；使用 OpenAI Embeddings 建立私人文档索引。
@@ -205,6 +208,7 @@ npm run ios:open
 | `GET/PUT` | `/api/recruitment/profile` | 查询或保存秋招求职画像 |
 | `GET` | `/api/recruitment/jobs` | 获取岗位、截止日期、匹配度与 T0–T3 分层 |
 | `POST` | `/api/recruitment/refresh` | 使用已配置的官方/授权岗位源刷新数据 |
+| `POST` | `/api/recruitment/ingest` | 使用 `X-Recruitment-Token` 接收外部监控任务推送的校招岗位 |
 
 聊天请求示例：
 

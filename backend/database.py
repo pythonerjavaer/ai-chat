@@ -506,7 +506,13 @@ def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str,
 def list_recruitment_jobs() -> list[dict[str, Any]]:
     with connect() as connection:
         rows = connection.execute(
-            "SELECT * FROM recruitment_jobs ORDER BY closing_date IS NULL, closing_date"
+            """
+            SELECT * FROM recruitment_jobs
+            WHERE status = 'open'
+              AND (closing_date IS NULL OR closing_date >= DATE('now'))
+              AND url LIKE 'https://%'
+            ORDER BY closing_date IS NULL, closing_date
+            """
         ).fetchall()
     result = []
     for row in rows:
@@ -517,6 +523,28 @@ def list_recruitment_jobs() -> list[dict[str, Any]]:
             item["tags"] = []
         result.append(item)
     return result
+
+
+def purge_legacy_recruitment_samples() -> None:
+    """Remove prototype vacancies and unverified aggregator cards."""
+    with connect() as connection:
+        connection.execute(
+            """
+            DELETE FROM recruitment_jobs
+            WHERE id IN (
+                'sample-byteplus-product-2026',
+                'sample-hsbc-analyst-2026',
+                'sample-state-tech-2026'
+            )
+               OR source IN ('示例岗位，等待接入官方源', '示例数据')
+            """
+        )
+        connection.execute(
+            """
+            DELETE FROM recruitment_jobs
+            WHERE source IN ('国资小新', '银行招聘网', 'Adzuna API')
+            """
+        )
 
 
 def seed_recruitment_jobs(jobs: list[dict[str, Any]]) -> None:

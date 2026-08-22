@@ -123,6 +123,11 @@
             </div>
           </div>
 
+          <section id="home-deadline-alerts" class="home-deadline-alerts hidden" aria-live="polite">
+            <div class="home-alert-heading"><div><span>DEADLINE ALERT</span><strong id="home-alert-title">校招网申即将截止</strong></div><button id="home-alert-open" type="button">查看秋招雷达 ↗</button></div>
+            <div id="home-alert-list" class="home-alert-list"></div>
+          </section>
+
           <div class="conversation-bar">
             <div><span id="workspace-indicator" class="workspace-badge">通用文档</span><h2 id="conversation-title">新对话</h2></div>
             <div class="conversation-actions">
@@ -261,7 +266,7 @@
     <dialog id="recruitment-dialog" class="recruitment-dialog">
       <div class="recruitment-shell">
         <header class="recruitment-header">
-          <div><span class="overline">PERSONAL AUTUMN RECRUITING RADAR</span><h2>我的秋招监控</h2><p>集中查看你原有的多组秋招监控与当前可行动岗位。</p></div>
+          <div><span class="overline">PERSONAL AUTUMN RECRUITING RADAR</span><h2>我的秋招监控</h2><p>集中查看公开招聘源、已核验官方公告和动态推送中的可行动岗位。</p></div>
           <button id="recruitment-close" class="icon-button" type="button" aria-label="关闭秋招雷达">×</button>
         </header>
         <div class="recruitment-body">
@@ -275,11 +280,11 @@
               <button id="recruitment-save" class="primary-button" type="submit"><span>保存筛选并重新匹配</span><b>↗</b></button>
               <p id="recruitment-error" class="form-error" role="alert"></p>
             </form>
-            <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>已合并的个人监控</strong><small>来自你原有的多个 ChatGPT 秋招监控范围。</small></div></div>
+            <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>当前重点监控范围</strong><small>这些是平台的搜索范围，不代表每家单位当前都有开放岗位。</small></div></div>
             <div id="recruitment-monitor-pools" class="recruitment-monitor-pools"></div>
           </section>
           <section class="recruitment-results">
-            <div class="recruitment-results-heading"><div><span class="overline">MATCHED OPPORTUNITIES</span><h3>适合你的秋招岗位</h3></div><button id="recruitment-refresh" class="source-status" type="button">刷新岗位源 ↻</button></div>
+            <div class="recruitment-results-heading"><div><span class="overline">MATCHED OPPORTUNITIES</span><h3>适合你的秋招岗位</h3><small id="recruitment-source-status" class="recruitment-source-copy">正在读取岗位源…</small></div><button id="recruitment-refresh" class="source-status" type="button">立即刷新 ↻</button></div>
             <div class="recruitment-disclaimer">结果按你的岗位、行业、城市和雇主筛选条件排序；请打开原公告核对资格与截止日期。</div>
             <section id="recruitment-deadline-alerts" class="recruitment-deadline-alerts" aria-live="polite"></section>
             <div id="recruitment-jobs" class="recruitment-jobs"></div>

@@ -2,8 +2,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -12,6 +13,7 @@ from fastapi import (
     FastAPI,
     File,
     Form,
+    Header,
     HTTPException,
     Request,
     Response,
@@ -36,12 +38,14 @@ from .ai_service import (
     stream_agent,
 )
 from .platform import SPACE_TEMPLATES, plan_limits
-from .recruitment import SAMPLE_JOBS, score_job
+from .recruitment import score_job
 from .live_sources import (
+    CORE_LOCATION_MARKERS,
     CURATED_CAMPUS_JOBS,
     PERSONAL_MONITOR_POOLS,
     fetch_adzuna_jobs,
     fetch_public_recruitment_sources,
+    is_actionable_recruitment_listing,
     is_priority_campus_listing,
 )
 from .config import settings
@@ -86,7 +90,8 @@ async def recruitment_refresh_loop() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.init_db()
-    database.seed_recruitment_jobs([*SAMPLE_JOBS, *CURATED_CAMPUS_JOBS])
+    database.purge_legacy_recruitment_samples()
+    database.seed_recruitment_jobs(CURATED_CAMPUS_JOBS)
     task = None
     if settings.recruitment_refresh_minutes > 0:
         task = asyncio.create_task(recruitment_refresh_loop())
@@ -184,7 +189,26 @@ class AppleTransactionRequest(BaseModel):
 class RecruitmentProfileRequest(BaseModel):
     desired_roles: list[str] = Field(default_factory=list, max_length=12)
     industries: list[str] = Field(default_factory=list, max_length=8)
+    locations: list[str] = Field(default_factory=list, max_length=12)
     employer_types: list[str] = Field(default_factory=list, max_length=6)
+
+
+class RecruitmentIngestJob(BaseModel):
+    company: str = Field(min_length=1, max_length=120)
+    title: str = Field(min_length=2, max_length=240)
+    city: str = Field(min_length=1, max_length=120)
+    employer_type: str = Field(default="重点雇主", max_length=60)
+    industry: str = Field(default="", max_length=80)
+    official_url: str = Field(pattern=r"^https://", max_length=1_000)
+    source: str = Field(default="动态监控 API", max_length=120)
+    opening_date: date | None = None
+    closing_date: date | None = None
+    requirements: str = Field(default="", max_length=2_000)
+    tags: list[str] = Field(default_factory=lambda: ["校园招聘"], max_length=20)
+
+
+class RecruitmentIngestRequest(BaseModel):
+    jobs: list[RecruitmentIngestJob] = Field(min_length=1, max_length=100)
 
 
 def current_user(
@@ -362,6 +386,7 @@ def public_recruitment_profile(profile: dict) -> dict:
     return {
         "desired_roles": profile.get("desired_roles", []),
         "industries": profile.get("industries", []),
+        "locations": profile.get("locations", []),
         "employer_types": profile.get("employer_types", []),
     }
 
@@ -374,7 +399,7 @@ def recruitment_profile(user: User) -> dict:
 @app.put("/api/recruitment/profile")
 def save_recruitment_profile(request: RecruitmentProfileRequest, user: ConsentedUser) -> dict:
     payload = request.model_dump()
-    for key in ("desired_roles", "industries", "employer_types"):
+    for key in ("desired_roles", "industries", "locations", "employer_types"):
         payload[key] = [str(value).strip()[:80] for value in payload[key] if str(value).strip()]
     return public_recruitment_profile(database.save_recruitment_profile(user["id"], payload))
 
@@ -382,10 +407,11 @@ def save_recruitment_profile(request: RecruitmentProfileRequest, user: Consented
 @app.get("/api/recruitment/jobs")
 def recruitment_jobs(user: User) -> dict:
     profile = database.get_recruitment_profile(user["id"])
+    available_jobs = database.list_recruitment_jobs()
     jobs = [
         score_job(job, profile)
-        for job in database.list_recruitment_jobs()
-        if is_priority_campus_listing(job)
+        for job in available_jobs
+        if is_priority_campus_listing(job) or "动态监控" in job.get("tags", [])
     ]
     jobs = [job for job in jobs if job["days_left"] is None or job["days_left"] >= 0]
     jobs.sort(key=lambda item: (-item["match_score"], item["days_left"] is None, item["days_left"] or 9999))
@@ -394,8 +420,8 @@ def recruitment_jobs(user: User) -> dict:
         "profile": public_recruitment_profile(profile),
         "monitor_pools": PERSONAL_MONITOR_POOLS,
         "data_status": {
-            "mode": "live" if any(item.get("source") not in ("示例岗位，等待接入官方源", "示例数据") for item in database.list_recruitment_jobs()) else "sample",
-            "message": "岗位来自公开招聘页面或已配置的官方/授权源，打开来源核验原文。" if any(item.get("source") not in ("示例岗位，等待接入官方源", "示例数据") for item in database.list_recruitment_jobs()) else "当前为示例岗位数据；点击刷新岗位源获取公开招聘页面数据。",
+            "mode": "verified_dynamic",
+            "message": "每 30 分钟扫描公开线索并接收授权推送；仅展示已核验官方直达链接且未过期的校招岗位。",
             "last_sync": None,
         },
     }
@@ -410,6 +436,61 @@ def refresh_recruitment(user: ConsentedUser) -> dict:
         logger.exception("Recruitment source refresh failed")
         raise HTTPException(status_code=502, detail="招聘源刷新失败，请稍后重试。") from exc
     return {"source": "公开招聘页面 + 已配置 API", "count": count, "refreshed_at": database.utc_now()}
+
+
+@app.post("/api/recruitment/ingest")
+def ingest_recruitment_jobs(
+    request: RecruitmentIngestRequest,
+    ingest_token: Annotated[str | None, Header(alias="X-Recruitment-Token")] = None,
+) -> dict:
+    """Receive normalized campus jobs from an authorized external monitor."""
+    configured_token = settings.recruitment_ingest_token
+    if not configured_token:
+        raise HTTPException(status_code=503, detail="Recruitment ingest is not configured.")
+    if not ingest_token or not secrets.compare_digest(ingest_token, configured_token):
+        raise HTTPException(status_code=401, detail="Invalid recruitment ingest token.")
+
+    accepted: list[dict] = []
+    skipped: list[dict] = []
+    today = date.today()
+    for item in request.jobs:
+        if item.closing_date and item.closing_date < today:
+            skipped.append({"title": item.title, "reason": "expired"})
+            continue
+        job = {
+            "id": f"monitor-{hashlib.sha256(item.official_url.encode()).hexdigest()[:24]}",
+            "company": item.company.strip(),
+            "employer_type": item.employer_type.strip(),
+            "title": item.title.strip(),
+            "city": item.city.strip(),
+            "industry": item.industry.strip(),
+            "url": item.official_url,
+            "source": item.source.strip(),
+            "opening_date": item.opening_date.isoformat() if item.opening_date else None,
+            "closing_date": item.closing_date.isoformat() if item.closing_date else None,
+            "requirements": item.requirements.strip(),
+            "tags": list(dict.fromkeys([*item.tags, "校园招聘", "动态监控"])),
+            "historical_applicants": None,
+            "historical_offers": None,
+            "last_verified_at": database.utc_now(),
+            "status": "open",
+        }
+        location_text = f"{job['city']} {job['title']}"
+        if not is_actionable_recruitment_listing(job):
+            skipped.append({"title": item.title, "reason": "not_campus"})
+            continue
+        if not any(marker in location_text for marker in CORE_LOCATION_MARKERS):
+            skipped.append({"title": item.title, "reason": "location_outside_scope"})
+            continue
+        accepted.append(job)
+
+    if accepted:
+        database.upsert_recruitment_jobs(accepted)
+    return {
+        "accepted": len(accepted),
+        "skipped": skipped,
+        "received_at": database.utc_now(),
+    }
 
 
 @app.get("/api/billing/status")

@@ -2,55 +2,6 @@ from datetime import date
 from typing import Any
 
 
-SAMPLE_JOBS = [
-    {
-        "id": "sample-byteplus-product-2026",
-        "company": "字节跳动",
-        "employer_type": "互联网企业",
-        "title": "产品经理（2026届秋招）",
-        "city": "北京 / 上海 / 深圳",
-        "industry": "互联网",
-        "source": "示例岗位，等待接入官方源",
-        "opening_date": "2026-08-15",
-        "closing_date": "2026-10-15",
-        "requirements": "产品设计、数据分析、用户研究；有项目经历优先。",
-        "tags": ["产品", "互联网", "应届生"],
-        "historical_applicants": 1200,
-        "historical_offers": 36,
-    },
-    {
-        "id": "sample-hsbc-analyst-2026",
-        "company": "汇丰银行",
-        "employer_type": "外企",
-        "title": "Management Trainee / Business Analyst",
-        "city": "上海 / 香港",
-        "industry": "金融科技",
-        "source": "示例岗位，等待接入官方源",
-        "opening_date": "2026-07-20",
-        "closing_date": "2026-09-30",
-        "requirements": "英语沟通、商业分析、跨团队协作；接受海外背景。",
-        "tags": ["英语", "分析", "外企"],
-        "historical_applicants": 680,
-        "historical_offers": 28,
-    },
-    {
-        "id": "sample-state-tech-2026",
-        "company": "国家电网",
-        "employer_type": "央国企",
-        "title": "数字化技术岗（2026届）",
-        "city": "全国多地",
-        "industry": "央国企",
-        "source": "示例岗位，等待接入官方源",
-        "opening_date": "2026-09-01",
-        "closing_date": "2026-11-10",
-        "requirements": "计算机、数据科学、信息管理相关专业；需要通过网申和笔试。",
-        "tags": ["数字化", "央国企", "技术岗"],
-        "historical_applicants": 4500,
-        "historical_offers": 180,
-    },
-]
-
-
 def _words(values: Any) -> set[str]:
     if not isinstance(values, list):
         return set()

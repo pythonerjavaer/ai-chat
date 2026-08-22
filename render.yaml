@@ -29,3 +29,5 @@ services:
         value: gb
       - key: RECRUITMENT_REFRESH_MINUTES
         value: 30
+      - key: RECRUITMENT_INGEST_TOKEN
+        generateValue: true

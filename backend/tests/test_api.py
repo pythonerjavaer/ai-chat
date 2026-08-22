@@ -10,6 +10,7 @@ TEST_DIRECTORY = Path(tempfile.mkdtemp(prefix="ai-chat-tests-"))
 os.environ["OPENAI_API_KEY"] = "test-key"
 os.environ["JWT_SECRET"] = "test-secret-that-is-long-enough-for-tests"
 os.environ["DATABASE_PATH"] = str(TEST_DIRECTORY / "test.db")
+os.environ["RECRUITMENT_INGEST_TOKEN"] = "test-recruitment-ingest-token"
 
 from fastapi.testclient import TestClient
 
@@ -521,17 +522,19 @@ def test_recruitment_profile_matching_and_deadline_metadata():
             },
         )
         assert profile.status_code == 200
-        assert set(profile.json()) == {"desired_roles", "industries", "employer_types"}
+        assert set(profile.json()) == {"desired_roles", "industries", "locations", "employer_types"}
         jobs = client.get("/api/recruitment/jobs", headers=auth(token))
         assert jobs.status_code == 200
         payload = jobs.json()
-        assert payload["data_status"]["mode"] == "live"
+        assert payload["data_status"]["mode"] == "verified_dynamic"
         assert len(payload["monitor_pools"]) == 3
         assert payload["jobs"]
         titles = {job["title"] for job in payload["jobs"]}
         assert "拼多多 2027届校园招聘提前批" in titles
         assert "2027 Business Analyst (General Practice)_Campus" in titles
         assert sum("梧桐计划" in title for title in titles) == 8
+        assert all(job["url"].startswith("https://") for job in payload["jobs"])
+        assert not any(job["id"].startswith("sample-") for job in payload["jobs"])
         first = payload["jobs"][0]
         assert "match_score" in first
         assert "estimated_rate" not in first
@@ -540,6 +543,43 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         assert "days_left" in first
         assert first["tier_code"] in {"T0", "T1", "T2", "T3"}
         assert "composite_fit" not in first
+
+
+def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs():
+    payload = {
+        "jobs": [
+            {
+                "company": "测试重点机构",
+                "title": "2099届校园招聘数据岗",
+                "city": "北京",
+                "official_url": "https://example.com/campus/data-2099",
+                "closing_date": "2099-08-25",
+                "tags": ["校园招聘", "数据"],
+            },
+            {
+                "company": "过期机构",
+                "title": "2020届校园招聘岗位",
+                "city": "上海",
+                "official_url": "https://example.com/campus/expired",
+                "closing_date": "2020-08-01",
+            },
+        ]
+    }
+    with TestClient(main.app) as client:
+        unauthorized = client.post("/api/recruitment/ingest", json=payload)
+        assert unauthorized.status_code == 401
+        result = client.post(
+            "/api/recruitment/ingest",
+            headers={"X-Recruitment-Token": "test-recruitment-ingest-token"},
+            json=payload,
+        )
+        assert result.status_code == 200
+        assert result.json()["accepted"] == 1
+        assert result.json()["skipped"] == [{"title": "2020届校园招聘岗位", "reason": "expired"}]
+        token, _ = register(client, "dynamic-recruiter")
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
+        assert any(job["title"] == "2099届校园招聘数据岗" for job in jobs)
+        assert not any(job["title"] == "2020届校园招聘岗位" for job in jobs)
 
 
 def test_docx_extraction_preserves_readable_content():

@@ -105,6 +105,8 @@ const elements = {
   recruitmentRefresh: $("recruitment-refresh"), recruitmentSave: $("recruitment-save"),
   recruitmentError: $("recruitment-error"), recruitmentMonitorPools: $("recruitment-monitor-pools"),
   recruitmentDeadlineAlerts: $("recruitment-deadline-alerts"),
+  homeDeadlineAlerts: $("home-deadline-alerts"), homeAlertTitle: $("home-alert-title"),
+  homeAlertList: $("home-alert-list"),
 };
 
 function activeWorkspace() {
@@ -225,9 +227,41 @@ async function enterApp() {
   elements.appView.classList.remove("hidden");
   applyUser();
   await loadWorkspaces();
-  await Promise.all([loadSessions(), loadDocuments()]);
+  await Promise.all([loadSessions(), loadDocuments(), loadHomeRecruitmentAlerts()]);
   newConversation();
   if (!state.user.privacy_accepted && !elements.consentDialog.open) elements.consentDialog.showModal();
+}
+
+async function loadHomeRecruitmentAlerts() {
+  try {
+    const data = await api("/recruitment/jobs");
+    state.recruitmentJobs = data.jobs || [];
+    renderHomeRecruitmentAlerts(state.recruitmentJobs);
+  } catch (_) {
+    elements.homeDeadlineAlerts.classList.add("hidden");
+  }
+}
+
+function renderHomeRecruitmentAlerts(jobs) {
+  const urgent = jobs
+    .filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 7)
+    .sort((a, b) => a.days_left - b.days_left);
+  elements.homeAlertList.replaceChildren();
+  if (!urgent.length) {
+    elements.homeDeadlineAlerts.classList.add("hidden");
+    return;
+  }
+  elements.homeAlertTitle.textContent = `${urgent.length} 个校招网申将在 7 天内截止`;
+  urgent.forEach((job) => {
+    const link = document.createElement("a");
+    link.href = job.url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    const urgency = job.days_left === 0 ? "今天截止" : `剩 ${job.days_left} 天`;
+    link.innerHTML = `<span>${DOMPurify.sanitize(job.company)}</span><strong>${DOMPurify.sanitize(job.title)}</strong><b>${urgency}</b>`;
+    elements.homeAlertList.appendChild(link);
+  });
+  elements.homeDeadlineAlerts.classList.remove("hidden");
 }
 
 function applyUser() {
@@ -1007,6 +1041,10 @@ function splitRecruitmentValues(value) {
   return value.split(/[，,、]/).map((item) => item.trim()).filter(Boolean).slice(0, 12);
 }
 
+function setRecruitmentStatus(message) {
+  if (elements.recruitmentStatus) elements.recruitmentStatus.textContent = message;
+}
+
 function renderRecruitmentProfile(profile) {
   if (!profile) return;
   elements.recruitmentRoles.value = (profile.desired_roles || []).join("，");
@@ -1056,11 +1094,11 @@ function renderRecruitmentJobs(jobs) {
     elements.recruitmentJobs.innerHTML = '<div class="empty-list">暂时没有匹配岗位。调整筛选或刷新岗位源后再试。</div>';
     return;
   }
-  jobs.forEach((job) => {
+  jobs.filter((job) => /^https:\/\//.test(job.url || "")).forEach((job) => {
     const card = document.createElement("article");
     card.className = "recruitment-job-card";
-    const deadline = job.days_left == null ? "截止日期待确认" : job.days_left < 0 ? "已过截止日期" : `${job.days_left} 天后截止`;
-    card.innerHTML = `<div class="job-card-top"><div><span class="job-company">${DOMPurify.sanitize(job.company)}</span><span class="job-type">${DOMPurify.sanitize(job.employer_type)}</span></div><div class="job-rank"><span class="job-tier ${DOMPurify.sanitize(job.tier_code || "T3")}">${DOMPurify.sanitize(job.tier_code || "T3")}</span><span class="job-score">${job.match_score}% 匹配</span></div></div><h4>${DOMPurify.sanitize(job.title)}</h4><p class="job-meta">${DOMPurify.sanitize(job.city)} · ${DOMPurify.sanitize(job.industry)} · ${deadline}</p><p class="job-requirements">${DOMPurify.sanitize(job.requirements)}</p><div class="job-card-bottom"><a href="${DOMPurify.sanitize(job.url || "#")}" target="_blank" rel="noreferrer">打开校招公告 ↗</a></div>`;
+    const deadline = job.days_left == null ? "截止日期待官方确认" : `${job.days_left} 天后截止`;
+    card.innerHTML = `<div class="job-card-top"><div><span class="job-company">${DOMPurify.sanitize(job.company)}</span><span class="job-type">${DOMPurify.sanitize(job.employer_type)}</span></div><div class="job-rank"><span class="job-tier ${DOMPurify.sanitize(job.tier_code || "T3")}">${DOMPurify.sanitize(job.tier_code || "T3")}</span><span class="job-score">${job.match_score}% 匹配</span></div></div><h4>${DOMPurify.sanitize(job.title)}</h4><p class="job-meta">${DOMPurify.sanitize(job.city)} · ${DOMPurify.sanitize(job.industry)} · ${deadline}</p><p class="job-requirements">${DOMPurify.sanitize(job.requirements)}</p><div class="job-card-bottom"><a href="${DOMPurify.sanitize(job.url)}" target="_blank" rel="noreferrer">打开校招公告 ↗</a></div>`;
     elements.recruitmentJobs.appendChild(card);
   });
 }
@@ -1073,11 +1111,12 @@ async function refreshRecruitment() {
     renderRecruitmentProfile(profile);
     renderRecruitmentJobs(state.recruitmentJobs);
     renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
+    renderHomeRecruitmentAlerts(state.recruitmentJobs);
     renderRecruitmentMonitors(data.monitor_pools || []);
-    elements.recruitmentStatus.textContent = data.data_status?.mode === "sample" ? "演示数据 · 待接入实时源" : "实时同步";
+    setRecruitmentStatus(data.data_status?.message || "已读取动态岗位源");
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
-    elements.recruitmentStatus.textContent = "加载失败";
+    setRecruitmentStatus("岗位源加载失败");
   }
 }
 
@@ -1106,7 +1145,7 @@ async function saveRecruitment(event) {
   if (saveButton) saveButton.disabled = true;
   if (saveLabel) saveLabel.textContent = "匹配中…";
   elements.recruitmentError.textContent = "";
-  elements.recruitmentStatus.textContent = "正在保存筛选并匹配岗位…";
+  setRecruitmentStatus("正在保存筛选并匹配岗位…");
   const employerTypes = [...document.querySelectorAll(".recruitment-checks input:checked")].map((input) => input.value);
   try {
     const profile = await api("/recruitment/profile", {
@@ -1126,12 +1165,13 @@ async function saveRecruitment(event) {
     state.recruitmentJobs = data.jobs || [];
     renderRecruitmentJobs(state.recruitmentJobs);
     renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
+    renderHomeRecruitmentAlerts(state.recruitmentJobs);
     renderRecruitmentMonitors(data.monitor_pools || []);
-    elements.recruitmentStatus.textContent = data.data_status?.mode === "sample" ? "演示数据 · 待接入实时源" : "实时同步";
+    setRecruitmentStatus(data.data_status?.message || "已读取动态岗位源");
     showToast("筛选已保存，岗位匹配已更新。", 3500);
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
-    elements.recruitmentStatus.textContent = "保存未完成，可稍后重试";
+    setRecruitmentStatus("保存未完成，可稍后重试");
   } finally {
     if (saveButton) saveButton.disabled = false;
     if (saveLabel) saveLabel.textContent = "保存筛选并重新匹配";
@@ -1305,6 +1345,7 @@ elements.messageInput.addEventListener("keydown", (event) => {
 $("composer-upload").addEventListener("click", () => elements.documentInput.click());
 $("studio-open").addEventListener("click", openStudio);
 $("recruitment-open").addEventListener("click", openRecruitment);
+$("home-alert-open").addEventListener("click", openRecruitment);
 $("recruitment-close").addEventListener("click", () => elements.recruitmentDialog.close());
 elements.recruitmentRefresh.addEventListener("click", refreshRecruitmentSource);
 elements.recruitmentForm.addEventListener("submit", saveRecruitment);
