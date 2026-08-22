@@ -205,12 +205,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .recruitment-monitor-card span { color: #74cce9; font-size: 8px; white-space: nowrap; }
 .recruitment-monitor-card p { margin: 6px 0; color: #92a8b7; font-size: 9px; line-height: 1.55; }
 .recruitment-monitor-card small { display: block; color: #718899; font-size: 8px; line-height: 1.5; }
+.recruitment-monitor-card details { margin-top: 8px; }
+.recruitment-monitor-card summary { color: #9edfff; cursor: pointer; font-size: 9px; }
+.recruitment-monitor-card details small { margin-top: 8px; }
 .recruitment-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .recruitment-results { min-width: 0; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; overflow-anchor: none; padding: 23px; }
 .recruitment-results-heading { display: flex; align-items: end; justify-content: space-between; gap: 14px; margin-bottom: 10px; }
 .recruitment-results-heading h3 { margin: 5px 0 0; font-size: 20px; letter-spacing: -.035em; }
 .source-status { color: #8ec9d7; font-size: 9px; white-space: nowrap; }
 .recruitment-disclaimer { margin-bottom: 16px; padding: 9px 11px; color: #8498a8; border: 1px solid rgba(121,196,224,.12); border-radius: 9px; background: rgba(73,182,218,.045); font-size: 9px; line-height: 1.5; }
+.recruitment-deadline-alerts { display: grid; gap: 8px; margin: 0 0 16px; padding: 12px; border: 1px solid rgba(255,170,91,.35); border-radius: 12px; background: rgba(255,121,53,.08); }
+.recruitment-deadline-alerts:empty { display: none; }
+.recruitment-deadline-alerts strong { color: #ffd19b; font-size: 11px; }
+.recruitment-deadline-alerts div { display: grid; gap: 5px; }
+.recruitment-deadline-alerts a { color: #fff0dc; font-size: 10px; line-height: 1.45; }
 .recruitment-jobs { display: grid; gap: 10px; }
 .recruitment-job-card { padding: 15px 16px; border: 1px solid rgba(160,214,241,.13); border-radius: 15px; background: rgba(255,255,255,.026); transition: border .2s, transform .2s, background .2s; }
 .recruitment-job-card:hover { transform: translateY(-1px); border-color: rgba(125,219,255,.35); background: rgba(93,199,235,.045); }

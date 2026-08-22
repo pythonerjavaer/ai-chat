@@ -104,6 +104,7 @@ const elements = {
   recruitmentJobs: $("recruitment-jobs"), recruitmentStatus: $("recruitment-source-status"),
   recruitmentRefresh: $("recruitment-refresh"), recruitmentSave: $("recruitment-save"),
   recruitmentError: $("recruitment-error"), recruitmentMonitorPools: $("recruitment-monitor-pools"),
+  recruitmentDeadlineAlerts: $("recruitment-deadline-alerts"),
 };
 
 function activeWorkspace() {
@@ -1021,11 +1022,28 @@ function renderRecruitmentMonitors(pools = []) {
   pools.forEach((pool) => {
     const card = document.createElement("article");
     card.className = "recruitment-monitor-card";
-    const employers = (pool.employers || []).slice(0, 8).join(" · ");
-    const remaining = Math.max(0, (pool.employers || []).length - 8);
-    card.innerHTML = `<div><strong>${DOMPurify.sanitize(pool.name)}</strong><span>${pool.employers?.length || 0} 个重点机构</span></div><p>${DOMPurify.sanitize(pool.focus || "")}</p><small>${DOMPurify.sanitize(employers)}${remaining ? ` · 另 ${remaining} 个` : ""}</small>`;
+    const employers = (pool.employers || []).join(" · ");
+    card.innerHTML = `<div><strong>${DOMPurify.sanitize(pool.name)}</strong><span>${pool.employers?.length || 0} 个重点机构</span></div><p>${DOMPurify.sanitize(pool.focus || "")}</p><details><summary>查看全部监控机构</summary><small>${DOMPurify.sanitize(employers)}</small></details>`;
     elements.recruitmentMonitorPools.appendChild(card);
   });
+}
+
+function renderRecruitmentDeadlineAlerts(jobs) {
+  elements.recruitmentDeadlineAlerts.replaceChildren();
+  const urgent = jobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 7);
+  if (!urgent.length) return;
+  const heading = document.createElement("strong");
+  heading.textContent = `网申截止预警 · ${urgent.length} 个岗位将在 7 天内截止`;
+  const list = document.createElement("div");
+  urgent.forEach((job) => {
+    const item = document.createElement("a");
+    item.href = job.url || "#";
+    item.target = "_blank";
+    item.rel = "noreferrer";
+    item.textContent = `${job.company}｜${job.title}｜${job.days_left === 0 ? "今天截止" : `${job.days_left} 天后截止`}`;
+    list.appendChild(item);
+  });
+  elements.recruitmentDeadlineAlerts.append(heading, list);
 }
 
 function renderRecruitmentJobs(jobs) {
@@ -1050,6 +1068,7 @@ async function refreshRecruitment() {
     state.recruitmentJobs = data.jobs || [];
     renderRecruitmentProfile(profile);
     renderRecruitmentJobs(state.recruitmentJobs);
+    renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
     renderRecruitmentMonitors(data.monitor_pools || []);
     elements.recruitmentStatus.textContent = data.data_status?.mode === "sample" ? "演示数据 · 待接入实时源" : "实时同步";
   } catch (error) {
@@ -1102,6 +1121,7 @@ async function saveRecruitment(event) {
     ]);
     state.recruitmentJobs = data.jobs || [];
     renderRecruitmentJobs(state.recruitmentJobs);
+    renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
     renderRecruitmentMonitors(data.monitor_pools || []);
     elements.recruitmentStatus.textContent = data.data_status?.mode === "sample" ? "演示数据 · 待接入实时源" : "实时同步";
     showToast("筛选已保存，岗位匹配已更新。", 3500);
