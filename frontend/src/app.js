@@ -103,6 +103,7 @@ const elements = {
   recruitmentRoles: $("recruitment-roles"), recruitmentIndustries: $("recruitment-industries"),
   recruitmentLocations: $("recruitment-locations"), recruitmentBackground: $("recruitment-background"),
   recruitmentUndergraduateSchool: $("recruitment-undergraduate-school"), recruitmentMasterSchool: $("recruitment-master-school"),
+  recruitmentUndergraduateMajor: $("recruitment-undergraduate-major"), recruitmentMasterMajor: $("recruitment-master-major"),
   recruitmentStart: $("recruitment-start"), recruitmentEnd: $("recruitment-end"),
   recruitmentJobs: $("recruitment-jobs"), recruitmentStatus: $("recruitment-source-status"),
   recruitmentRefresh: $("recruitment-refresh"),
@@ -1008,6 +1009,8 @@ function renderRecruitmentProfile(profile) {
   elements.recruitmentBackground.value = profile.background || "";
   elements.recruitmentUndergraduateSchool.value = profile.undergraduate_school || "";
   elements.recruitmentMasterSchool.value = profile.master_school || "";
+  elements.recruitmentUndergraduateMajor.value = profile.undergraduate_major || "";
+  elements.recruitmentMasterMajor.value = profile.master_major || "";
   elements.recruitmentStart.value = profile.availability_start || "";
   elements.recruitmentEnd.value = profile.availability_end || "";
   document.querySelectorAll(".recruitment-checks input").forEach((input) => {
@@ -1088,9 +1091,9 @@ async function saveRecruitment(event) {
         experience_level: choice("experience_level"),
         skill_tags: choices("skill_tags"),
         language_level: choice("language_level"),
-        undergraduate_major: choice("undergraduate_major"),
+        undergraduate_major: elements.recruitmentUndergraduateMajor.value.trim(),
         undergraduate_school_tier: choice("undergraduate_school_tier"),
-        master_major: choice("master_major"),
+        master_major: elements.recruitmentMasterMajor.value.trim(),
         master_school_tier: choice("master_school_tier"),
         undergraduate_school: elements.recruitmentUndergraduateSchool.value.trim(),
         master_school: elements.recruitmentMasterSchool.value.trim(),

@@ -520,6 +520,11 @@ def test_recruitment_profile_matching_and_deadline_metadata():
                 "locations": ["北京"],
                 "employer_types": ["互联网企业"],
                 "background": "计算机专业，有产品实习经历",
+                "undergraduate_major": "计算机科学与技术（辅修经济学，数据科学方向）",
+                "master_major": "金融科技（机器学习与风险管理方向）",
+                "undergraduate_school": "复旦大学",
+                "master_school": "University of Melbourne",
+                "composite_interest": True,
                 "availability_start": "2026-09-01",
                 "availability_end": "2026-12-31",
             },
@@ -534,6 +539,8 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         assert "match_score" in first
         assert "estimated_rate" in first
         assert "days_left" in first
+        assert first["tier_code"] in {"T0", "T1", "T2", "T3"}
+        assert first["composite_fit"] is True
 
 
 def test_docx_extraction_preserves_readable_content():
