@@ -7,7 +7,7 @@
 ## 已实现
 
 - 用户注册、登录、JWT 鉴权、隐私同意记录与应用内永久删号；用户数据相互隔离。
-- SQLite 持久化会话、消息、文档文本和向量；工作区之间不会交叉检索资料。
+- SQLite 保存会话、消息、文档文本和向量；本地或 Docker volume 可长期保留，Render 免费实例上的数据则可能随重启或重新部署重置。工作区之间不会交叉检索资料。
 - 合同与合规、金融研究、通用文档三个工作区。
 - “冰火交叉审查”独立工作台：把合同机制与财务后果连接成跨域因果碰撞卡，而不是分别生成两份摘要。
 - AI Space Studio：用户可从项目工程师、工作流设计师、文档研究员或空白模板出发，定义独立角色规则、说明和月度 Token 上限，并在 Space Sandbox 中运行任务。
@@ -32,7 +32,7 @@
 - 自适应三栏桌面界面、移动端抽屉、离线状态、原生触觉反馈和本地偏好。
 - 隐私政策、使用条款、支持中心、第三方 AI 数据传输明示同意与账号删除闭环。
 - Capacitor iOS/Android 工程、原生图标、启动图、iOS Privacy Manifest 和 Android Release 混淆/资源压缩配置。
-- 多阶段 Docker 镜像：构建 Web 前端并由同一个 FastAPI 容器提供前端、法律页面与 API；附带单机持久化部署配置。
+- 多阶段 Docker 镜像：构建 Web 前端并由同一个 FastAPI 容器提供前端、法律页面与 API；`docker-compose.yml` 提供本地持久化，`render.yaml` 当前使用免费演示实例。
 
 ## 明确边界
 
@@ -151,6 +151,12 @@ docker compose up --build
 `ai-chat-data` volume 会持久化 SQLite 数据。生产环境必须由反向代理或托管平台终止 HTTPS，并把 `CORS_ORIGINS` 限制为实际 Web 域名。
 
 Docker 镜像会在构建阶段执行 Vite 生产构建。运行后，`/` 提供 Web 应用，`/privacy.html`、`/terms.html` 和 `/support.html` 提供公开政策页面，`/api/*` 提供后端接口，因此可以只维护一个 HTTPS 域名。
+
+### Render 免费演示部署
+
+根目录 `render.yaml` 当前使用 Render Free Web Service，不需要持久化磁盘。它适合公开演示和小规模测试，但空闲后会休眠，重新部署或实例重启可能清空 SQLite 中的账号、会话、文档和秋招动态数据。正式运营前必须升级并挂载持久化磁盘，或迁移到托管 PostgreSQL。
+
+部署时必须在 Render 的环境变量页面填写 `OPENAI_API_KEY` 和 `CORS_ORIGINS`；`JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 由 Blueprint 自动生成。真实密钥不得写入仓库。
 
 ## 移动端
 
