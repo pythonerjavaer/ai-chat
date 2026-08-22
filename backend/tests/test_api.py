@@ -517,30 +517,23 @@ def test_recruitment_profile_matching_and_deadline_metadata():
             json={
                 "desired_roles": ["产品经理"],
                 "industries": ["互联网"],
-                "locations": ["北京"],
                 "employer_types": ["互联网企业"],
-                "background": "计算机专业，有产品实习经历",
-                "undergraduate_major": "计算机科学与技术（辅修经济学，数据科学方向）",
-                "master_major": "金融科技（机器学习与风险管理方向）",
-                "undergraduate_school": "复旦大学",
-                "master_school": "University of Melbourne",
-                "composite_interest": True,
-                "availability_start": "2026-09-01",
-                "availability_end": "2026-12-31",
             },
         )
         assert profile.status_code == 200
+        assert set(profile.json()) == {"desired_roles", "industries", "employer_types"}
         jobs = client.get("/api/recruitment/jobs", headers=auth(token))
         assert jobs.status_code == 200
         payload = jobs.json()
         assert payload["data_status"]["mode"] == "sample"
+        assert len(payload["monitor_pools"]) == 3
         assert payload["jobs"]
         first = payload["jobs"][0]
         assert "match_score" in first
         assert "estimated_rate" in first
         assert "days_left" in first
         assert first["tier_code"] in {"T0", "T1", "T2", "T3"}
-        assert first["composite_fit"] is True
+        assert "composite_fit" not in first
 
 
 def test_docx_extraction_preserves_readable_content():

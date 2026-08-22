@@ -14,6 +14,52 @@ PUBLIC_RECRUITMENT_SOURCES = [
 ]
 
 
+# Personal monitoring scope migrated from the owner's existing ChatGPT autumn
+# recruiting monitors. These are search scopes, not claims that every employer
+# currently has an open role.
+PERSONAL_MONITOR_POOLS = [
+    {
+        "id": "state_owned_full",
+        "name": "央国企全量秋招",
+        "focus": "正式秋招、提前批、预招聘、留学生专场、补录；总部、子公司、研究院与直属机构",
+        "employers": [
+            "中国人民银行", "国家开发银行", "中国进出口银行", "中国农业发展银行",
+            "工商银行", "农业银行", "中国银行", "建设银行", "交通银行", "邮储银行",
+            "国家能源集团", "国家电网", "中国石油", "中国石化", "中国海油",
+            "中国移动", "中国电信", "中国联通", "中国航天科技", "中国航天科工",
+            "中国电科", "中国东方资产", "中储粮", "中国一汽", "航空工业",
+            "中国铁塔", "国机集团", "中国宝武", "中国商飞", "中国信通院",
+            "中国投资有限责任公司", "中国保利", "中国盐业",
+        ],
+    },
+    {
+        "id": "tech_finance_global",
+        "name": "大厂·金融·外企",
+        "focus": "FinTech、Data、AI Application、Product、Risk、Quant Analytics、Strategy、管培",
+        "employers": [
+            "腾讯", "阿里巴巴", "字节跳动", "百度", "拼多多", "蚂蚁集团",
+            "中信证券", "中金公司", "华泰证券", "国泰海通", "中信建投", "招商证券",
+            "广发证券", "申万宏源", "银河证券", "光大证券", "平安证券", "华金证券",
+            "易方达", "华夏基金", "嘉实基金", "南方基金", "汇添富", "富国基金",
+            "幻方", "九坤", "明汯", "衍复", "灵均", "宽德", "高瓴", "红杉中国",
+            "J.P. Morgan", "Goldman Sachs", "Morgan Stanley", "UBS", "Citi", "HSBC",
+            "Standard Chartered", "Macquarie", "BlackRock", "KPMG", "Deloitte", "PwC",
+            "EY", "Accenture", "Microsoft", "Google", "Amazon/AWS", "Apple", "NVIDIA",
+        ],
+    },
+    {
+        "id": "policy_banks_pingan",
+        "name": "政策行与平安专项",
+        "focus": "截止日期、滚动筛选、英语门槛、笔面试安排、总行/总部与金融科技岗位",
+        "employers": [
+            "国家开发银行", "中国进出口银行", "中国农业发展银行", "中国平安",
+            "平安银行", "平安产险", "平安理财", "平安养老险", "平安科技",
+            "金融壹账通", "陆金所控股", "平安银行信用卡中心", "平安银行汽车消费金融中心",
+        ],
+    },
+]
+
+
 class _RecruitmentLinkParser(HTMLParser):
     def __init__(self):
         super().__init__()

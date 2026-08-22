@@ -36,7 +36,11 @@ from .ai_service import (
 )
 from .platform import SPACE_TEMPLATES, plan_limits
 from .recruitment import SAMPLE_JOBS, score_job
-from .live_sources import fetch_adzuna_jobs, fetch_public_recruitment_sources
+from .live_sources import (
+    PERSONAL_MONITOR_POOLS,
+    fetch_adzuna_jobs,
+    fetch_public_recruitment_sources,
+)
 from .config import settings
 from .security import (
     create_access_token,
@@ -146,25 +150,7 @@ class AppleTransactionRequest(BaseModel):
 class RecruitmentProfileRequest(BaseModel):
     desired_roles: list[str] = Field(default_factory=list, max_length=12)
     industries: list[str] = Field(default_factory=list, max_length=8)
-    locations: list[str] = Field(default_factory=list, max_length=12)
     employer_types: list[str] = Field(default_factory=list, max_length=6)
-    background: str = Field(default="", max_length=4_000)
-    education_level: str = Field(default="", max_length=40)
-    major_category: str = Field(default="", max_length=60)
-    school_tier: str = Field(default="", max_length=40)
-    experience_level: str = Field(default="", max_length=40)
-    skill_tags: list[str] = Field(default_factory=list, max_length=16)
-    language_level: str = Field(default="", max_length=40)
-    undergraduate_major: str = Field(default="", max_length=60)
-    undergraduate_school_tier: str = Field(default="", max_length=40)
-    master_major: str = Field(default="", max_length=60)
-    master_school_tier: str = Field(default="", max_length=40)
-    undergraduate_school: str = Field(default="", max_length=120)
-    master_school: str = Field(default="", max_length=120)
-    composite_interest: bool = False
-    graduation_year: int | None = Field(default=None, ge=2020, le=2100)
-    availability_start: str | None = Field(default=None, max_length=10)
-    availability_end: str | None = Field(default=None, max_length=10)
 
 
 def current_user(
@@ -338,18 +324,25 @@ def platform_templates() -> list[dict]:
     ]
 
 
+def public_recruitment_profile(profile: dict) -> dict:
+    return {
+        "desired_roles": profile.get("desired_roles", []),
+        "industries": profile.get("industries", []),
+        "employer_types": profile.get("employer_types", []),
+    }
+
+
 @app.get("/api/recruitment/profile")
 def recruitment_profile(user: User) -> dict:
-    return database.get_recruitment_profile(user["id"])
+    return public_recruitment_profile(database.get_recruitment_profile(user["id"]))
 
 
 @app.put("/api/recruitment/profile")
 def save_recruitment_profile(request: RecruitmentProfileRequest, user: ConsentedUser) -> dict:
     payload = request.model_dump()
-    for key in ("desired_roles", "industries", "locations", "employer_types"):
+    for key in ("desired_roles", "industries", "employer_types"):
         payload[key] = [str(value).strip()[:80] for value in payload[key] if str(value).strip()]
-    payload["skill_tags"] = [str(value).strip()[:80] for value in payload["skill_tags"] if str(value).strip()]
-    return database.save_recruitment_profile(user["id"], payload)
+    return public_recruitment_profile(database.save_recruitment_profile(user["id"], payload))
 
 
 @app.get("/api/recruitment/jobs")
@@ -359,7 +352,8 @@ def recruitment_jobs(user: User) -> dict:
     jobs.sort(key=lambda item: (-item["match_score"], item["days_left"] is None, item["days_left"] or 9999))
     return {
         "jobs": jobs,
-        "profile": profile,
+        "profile": public_recruitment_profile(profile),
+        "monitor_pools": PERSONAL_MONITOR_POOLS,
         "data_status": {
             "mode": "live" if any(item.get("source") not in ("示例岗位，等待接入官方源", "示例数据") for item in database.list_recruitment_jobs()) else "sample",
             "message": "岗位来自公开招聘页面或已配置的官方/授权源，打开来源核验原文。" if any(item.get("source") not in ("示例岗位，等待接入官方源", "示例数据") for item in database.list_recruitment_jobs()) else "当前为示例岗位数据；点击刷新岗位源获取公开招聘页面数据。",

@@ -261,31 +261,21 @@
     <dialog id="recruitment-dialog" class="recruitment-dialog">
       <div class="recruitment-shell">
         <header class="recruitment-header">
-          <div><span class="overline">AUTUMN RECRUITING RADAR</span><h2>秋招雷达</h2><p>把岗位偏好、个人背景和截止日期放在同一张决策面板里。</p></div>
+          <div><span class="overline">PERSONAL AUTUMN RECRUITING RADAR</span><h2>我的秋招监控</h2><p>集中查看你原有的多组秋招监控与当前可行动岗位。</p></div>
           <button id="recruitment-close" class="icon-button" type="button" aria-label="关闭秋招雷达">×</button>
         </header>
         <div class="recruitment-body">
           <section class="recruitment-profile-panel">
-            <div class="recruitment-section-heading"><span>01</span><div><strong>定义你的求职画像</strong><small>支持自定义岗位方向、城市、雇主类型和背景。</small></div></div>
+            <div class="recruitment-section-heading"><span>01</span><div><strong>只保留必要筛选</strong><small>岗位/职能类型、雇主类型和行业偏好都可以只填一部分。</small></div></div>
             <form id="recruitment-form" class="recruitment-form">
-              <label class="field compact-field"><span>目标岗位（逗号分隔）</span><input id="recruitment-roles" placeholder="产品经理，数据分析，软件工程" /></label>
+              <label class="field compact-field"><span>岗位/职能类型（逗号分隔）</span><input id="recruitment-roles" placeholder="产品，数据，金融科技，风险" /></label>
               <label class="field compact-field"><span>行业偏好</span><input id="recruitment-industries" placeholder="互联网，金融科技，新能源" /></label>
-              <label class="field compact-field"><span>城市偏好</span><input id="recruitment-locations" placeholder="北京，上海，深圳，可远程" /></label>
-              <div class="recruitment-checks"><span>雇主类型</span><label><input type="checkbox" value="互联网企业" />互联网</label><label><input type="checkbox" value="外企" />外企</label><label><input type="checkbox" value="央国企" />央国企</label></div>
-              <div class="recruitment-quiz-group"><span>最高学历</span><div class="recruitment-options" data-choice-group="education_level"><label><input type="radio" name="education_level" value="本科" />本科</label><label><input type="radio" name="education_level" value="硕士" />硕士</label><label><input type="radio" name="education_level" value="博士" />博士</label><label><input type="radio" name="education_level" value="其他" />其他</label></div></div>
-              <label class="field compact-field"><span>本科专业（可写辅修/方向）</span><input id="recruitment-undergraduate-major" maxlength="120" /></label>
-              <label class="field compact-field"><span>本科院校名称</span><input id="recruitment-undergraduate-school" maxlength="120" /></label>
-              <label class="field compact-field"><span>硕士专业（可写研究方向/辅修）</span><input id="recruitment-master-major" maxlength="120" /></label>
-              <label class="field compact-field"><span>硕士院校名称</span><input id="recruitment-master-school" maxlength="120" /></label>
-              <div class="recruitment-quiz-group"><span>复合型专业意向</span><div class="recruitment-options" data-choice-group="composite_interest"><label><input type="checkbox" name="composite_interest" value="true" />希望系统优先推荐能结合本科+硕士的岗位</label></div></div>
-              <div class="recruitment-quiz-group"><span>相关经历</span><div class="recruitment-options" data-choice-group="experience_level"><label><input type="radio" name="experience_level" value="无实习" />无实习</label><label><input type="radio" name="experience_level" value="1段实习" />1段实习</label><label><input type="radio" name="experience_level" value="2段及以上实习" />2段及以上实习</label><label><input type="radio" name="experience_level" value="全职/转行" />全职/转行</label></div></div>
-              <div class="recruitment-quiz-group"><span>技能标签（可多选）</span><div class="recruitment-options" data-choice-group="skill_tags"><label><input type="checkbox" value="Python" />Python</label><label><input type="checkbox" value="SQL" />SQL</label><label><input type="checkbox" value="数据分析" />数据分析</label><label><input type="checkbox" value="产品设计" />产品设计</label><label><input type="checkbox" value="项目管理" />项目管理</label></div></div>
-              <div class="recruitment-quiz-group"><span>语言能力</span><div class="recruitment-options" data-choice-group="language_level"><label><input type="radio" name="language_level" value="中文为主" />中文为主</label><label><input type="radio" name="language_level" value="英语可工作" />英语可工作</label><label><input type="radio" name="language_level" value="双语/海外经历" />双语/海外经历</label></div></div>
-              <label class="field compact-field"><span>补充背景（可选）</span><textarea id="recruitment-background" rows="2" placeholder="证书、项目成果、行业限制等…"></textarea></label>
-              <div class="recruitment-dates"><label class="field compact-field"><span>可入职开始</span><input id="recruitment-start" type="date" /></label><label class="field compact-field"><span>可入职截止</span><input id="recruitment-end" type="date" /></label></div>
-              <button id="recruitment-save" class="primary-button" type="submit"><span>保存画像并重新匹配</span><b>↗</b></button>
+              <div class="recruitment-checks"><span>雇主类型</span><label><input type="checkbox" value="互联网企业" />互联网/科技</label><label><input type="checkbox" value="银行/金融" />银行/金融</label><label><input type="checkbox" value="外企" />外企/咨询</label><label><input type="checkbox" value="央国企" />央国企</label></div>
+              <button id="recruitment-save" class="primary-button" type="submit"><span>保存筛选并重新匹配</span><b>↗</b></button>
               <p id="recruitment-error" class="form-error" role="alert"></p>
             </form>
+            <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>已合并的个人监控</strong><small>来自你原有的多个 ChatGPT 秋招监控范围。</small></div></div>
+            <div id="recruitment-monitor-pools" class="recruitment-monitor-pools"></div>
           </section>
           <section class="recruitment-results">
             <div class="recruitment-results-heading"><div><span class="overline">MATCHED OPPORTUNITIES</span><h3>适合你的秋招岗位</h3></div><button id="recruitment-refresh" class="source-status" type="button">刷新岗位源 ↻</button></div>

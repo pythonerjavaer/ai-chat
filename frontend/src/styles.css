@@ -197,6 +197,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .recruitment-checks > span { flex-basis: 100%; color: #b7c3d1; font-weight: 600; }
 .recruitment-checks label { display: inline-flex; align-items: center; gap: 4px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.025); cursor: pointer; }
 .recruitment-checks input { accent-color: #68d7ff; }
+.monitor-heading { margin-top: 24px; }
+.recruitment-monitor-pools { display: grid; gap: 9px; padding-bottom: 18px; }
+.recruitment-monitor-card { padding: 11px 12px; border: 1px solid rgba(111,218,255,.14); border-radius: 11px; background: rgba(54,164,205,.045); }
+.recruitment-monitor-card > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.recruitment-monitor-card strong { color: #dff7ff; font-size: 11px; }
+.recruitment-monitor-card span { color: #74cce9; font-size: 8px; white-space: nowrap; }
+.recruitment-monitor-card p { margin: 6px 0; color: #92a8b7; font-size: 9px; line-height: 1.55; }
+.recruitment-monitor-card small { display: block; color: #718899; font-size: 8px; line-height: 1.5; }
 .recruitment-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .recruitment-results { min-width: 0; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; overflow-anchor: none; padding: 23px; }
 .recruitment-results-heading { display: flex; align-items: end; justify-content: space-between; gap: 14px; margin-bottom: 10px; }

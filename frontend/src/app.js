@@ -101,13 +101,9 @@ const elements = {
   runnerInput: $("runner-input"), runnerSend: $("runner-send"), runnerOutput: $("runner-output"),
   recruitmentDialog: $("recruitment-dialog"), recruitmentForm: $("recruitment-form"),
   recruitmentRoles: $("recruitment-roles"), recruitmentIndustries: $("recruitment-industries"),
-  recruitmentLocations: $("recruitment-locations"), recruitmentBackground: $("recruitment-background"),
-  recruitmentUndergraduateSchool: $("recruitment-undergraduate-school"), recruitmentMasterSchool: $("recruitment-master-school"),
-  recruitmentUndergraduateMajor: $("recruitment-undergraduate-major"), recruitmentMasterMajor: $("recruitment-master-major"),
-  recruitmentStart: $("recruitment-start"), recruitmentEnd: $("recruitment-end"),
   recruitmentJobs: $("recruitment-jobs"), recruitmentStatus: $("recruitment-source-status"),
   recruitmentRefresh: $("recruitment-refresh"), recruitmentSave: $("recruitment-save"),
-  recruitmentError: $("recruitment-error"),
+  recruitmentError: $("recruitment-error"), recruitmentMonitorPools: $("recruitment-monitor-pools"),
 };
 
 function activeWorkspace() {
@@ -1014,28 +1010,27 @@ function renderRecruitmentProfile(profile) {
   if (!profile) return;
   elements.recruitmentRoles.value = (profile.desired_roles || []).join("，");
   elements.recruitmentIndustries.value = (profile.industries || []).join("，");
-  elements.recruitmentLocations.value = (profile.locations || []).join("，");
-  elements.recruitmentBackground.value = profile.background || "";
-  elements.recruitmentUndergraduateSchool.value = profile.undergraduate_school || "";
-  elements.recruitmentMasterSchool.value = profile.master_school || "";
-  elements.recruitmentUndergraduateMajor.value = profile.undergraduate_major || "";
-  elements.recruitmentMasterMajor.value = profile.master_major || "";
-  elements.recruitmentStart.value = profile.availability_start || "";
-  elements.recruitmentEnd.value = profile.availability_end || "";
   document.querySelectorAll(".recruitment-checks input").forEach((input) => {
     input.checked = (profile.employer_types || []).includes(input.value);
   });
-  document.querySelectorAll("[data-choice-group]").forEach((group) => {
-    const key = group.dataset.choiceGroup;
-    const values = Array.isArray(profile[key]) ? profile[key] : [profile[key]];
-    group.querySelectorAll("input").forEach((input) => { input.checked = values.map(String).includes(input.value); });
+}
+
+function renderRecruitmentMonitors(pools = []) {
+  elements.recruitmentMonitorPools.replaceChildren();
+  pools.forEach((pool) => {
+    const card = document.createElement("article");
+    card.className = "recruitment-monitor-card";
+    const employers = (pool.employers || []).slice(0, 8).join(" · ");
+    const remaining = Math.max(0, (pool.employers || []).length - 8);
+    card.innerHTML = `<div><strong>${DOMPurify.sanitize(pool.name)}</strong><span>${pool.employers?.length || 0} 个重点机构</span></div><p>${DOMPurify.sanitize(pool.focus || "")}</p><small>${DOMPurify.sanitize(employers)}${remaining ? ` · 另 ${remaining} 个` : ""}</small>`;
+    elements.recruitmentMonitorPools.appendChild(card);
   });
 }
 
 function renderRecruitmentJobs(jobs) {
   elements.recruitmentJobs.replaceChildren();
   if (!jobs.length) {
-    elements.recruitmentJobs.innerHTML = '<div class="empty-list">暂时没有匹配岗位。完善画像后再试。</div>';
+    elements.recruitmentJobs.innerHTML = '<div class="empty-list">暂时没有匹配岗位。调整筛选或刷新岗位源后再试。</div>';
     return;
   }
   jobs.forEach((job) => {
@@ -1055,6 +1050,7 @@ async function refreshRecruitment() {
     state.recruitmentJobs = data.jobs || [];
     renderRecruitmentProfile(profile);
     renderRecruitmentJobs(state.recruitmentJobs);
+    renderRecruitmentMonitors(data.monitor_pools || []);
     elements.recruitmentStatus.textContent = data.data_status?.mode === "sample" ? "演示数据 · 待接入实时源" : "实时同步";
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
@@ -1087,35 +1083,15 @@ async function saveRecruitment(event) {
   if (saveButton) saveButton.disabled = true;
   if (saveLabel) saveLabel.textContent = "匹配中…";
   elements.recruitmentError.textContent = "";
-  elements.recruitmentStatus.textContent = "正在保存画像并匹配岗位…";
+  elements.recruitmentStatus.textContent = "正在保存筛选并匹配岗位…";
   const employerTypes = [...document.querySelectorAll(".recruitment-checks input:checked")].map((input) => input.value);
-  const choice = (key) => document.querySelector(`[data-choice-group="${key}"] input:checked`)?.value || "";
-  const choices = (key) => [...document.querySelectorAll(`[data-choice-group="${key}"] input:checked`)].map((input) => input.value);
   try {
     const profile = await api("/recruitment/profile", {
       method: "PUT",
       body: JSON.stringify({
         desired_roles: splitRecruitmentValues(elements.recruitmentRoles.value),
         industries: splitRecruitmentValues(elements.recruitmentIndustries.value),
-        locations: splitRecruitmentValues(elements.recruitmentLocations.value),
         employer_types: employerTypes,
-        background: elements.recruitmentBackground.value.trim(),
-        education_level: choice("education_level"),
-        major_category: choice("major_category"),
-        school_tier: choice("school_tier"),
-        experience_level: choice("experience_level"),
-        skill_tags: choices("skill_tags"),
-        language_level: choice("language_level"),
-        undergraduate_major: elements.recruitmentUndergraduateMajor.value.trim(),
-        undergraduate_school_tier: choice("undergraduate_school_tier"),
-        master_major: elements.recruitmentMasterMajor.value.trim(),
-        master_school_tier: choice("master_school_tier"),
-        undergraduate_school: elements.recruitmentUndergraduateSchool.value.trim(),
-        master_school: elements.recruitmentMasterSchool.value.trim(),
-        composite_interest: choices("composite_interest").includes("true"),
-        graduation_year: null,
-        availability_start: elements.recruitmentStart.value || null,
-        availability_end: elements.recruitmentEnd.value || null,
       }),
     });
     state.recruitmentProfile = profile;
@@ -1125,14 +1101,15 @@ async function saveRecruitment(event) {
     ]);
     state.recruitmentJobs = data.jobs || [];
     renderRecruitmentJobs(state.recruitmentJobs);
+    renderRecruitmentMonitors(data.monitor_pools || []);
     elements.recruitmentStatus.textContent = data.data_status?.mode === "sample" ? "演示数据 · 待接入实时源" : "实时同步";
-    showToast("求职画像已保存，岗位匹配已更新。", 3500);
+    showToast("筛选已保存，岗位匹配已更新。", 3500);
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
     elements.recruitmentStatus.textContent = "保存未完成，可稍后重试";
   } finally {
     if (saveButton) saveButton.disabled = false;
-    if (saveLabel) saveLabel.textContent = "保存画像并重新匹配";
+    if (saveLabel) saveLabel.textContent = "保存筛选并重新匹配";
   }
 }
 
@@ -1306,14 +1283,6 @@ $("recruitment-open").addEventListener("click", openRecruitment);
 $("recruitment-close").addEventListener("click", () => elements.recruitmentDialog.close());
 elements.recruitmentRefresh.addEventListener("click", refreshRecruitmentSource);
 elements.recruitmentForm.addEventListener("submit", saveRecruitment);
-$(`recruitment-dialog`).addEventListener("change", (event) => {
-  if (!event.target.matches('[data-choice-group="composite_interest"] input')) return;
-  // Keep the profile pane anchored when the hidden checkbox changes state.
-  const panel = document.querySelector(".recruitment-profile-panel");
-  if (!panel) return;
-  const top = panel.scrollTop;
-  requestAnimationFrame(() => { panel.scrollTop = top; });
-});
 $("studio-open-secondary").addEventListener("click", openStudio);
 $("mobile-studio-open").addEventListener("click", openStudio);
 $("studio-close").addEventListener("click", () => elements.studioDialog.close());
