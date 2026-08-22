@@ -36,6 +36,7 @@ from .ai_service import (
 )
 from .platform import SPACE_TEMPLATES, plan_limits
 from .recruitment import SAMPLE_JOBS, score_job
+from .live_sources import fetch_adzuna_jobs
 from .config import settings
 from .security import (
     create_access_token,
@@ -148,6 +149,12 @@ class RecruitmentProfileRequest(BaseModel):
     locations: list[str] = Field(default_factory=list, max_length=12)
     employer_types: list[str] = Field(default_factory=list, max_length=6)
     background: str = Field(default="", max_length=4_000)
+    education_level: str = Field(default="", max_length=40)
+    major_category: str = Field(default="", max_length=60)
+    school_tier: str = Field(default="", max_length=40)
+    experience_level: str = Field(default="", max_length=40)
+    skill_tags: list[str] = Field(default_factory=list, max_length=16)
+    language_level: str = Field(default="", max_length=40)
     graduation_year: int | None = Field(default=None, ge=2020, le=2100)
     availability_start: str | None = Field(default=None, max_length=10)
     availability_end: str | None = Field(default=None, max_length=10)
@@ -334,6 +341,7 @@ def save_recruitment_profile(request: RecruitmentProfileRequest, user: Consented
     payload = request.model_dump()
     for key in ("desired_roles", "industries", "locations", "employer_types"):
         payload[key] = [str(value).strip()[:80] for value in payload[key] if str(value).strip()]
+    payload["skill_tags"] = [str(value).strip()[:80] for value in payload["skill_tags"] if str(value).strip()]
     return database.save_recruitment_profile(user["id"], payload)
 
 
@@ -346,11 +354,25 @@ def recruitment_jobs(user: User) -> dict:
         "jobs": jobs,
         "profile": profile,
         "data_status": {
-            "mode": "sample",
-            "message": "当前为演示岗位数据；接入企业官网、官方招聘 API 或合规数据供应商后才会实时更新。",
+            "mode": "live" if settings.adzuna_app_id and settings.adzuna_app_key else "sample",
+            "message": "岗位来自已配置的官方/授权源。" if settings.adzuna_app_id and settings.adzuna_app_key else "当前为示例岗位数据；配置官方 API 或合规数据供应商后才会实时更新。",
             "last_sync": None,
         },
     }
+
+
+@app.post("/api/recruitment/refresh")
+def refresh_recruitment(user: ConsentedUser) -> dict:
+    del user
+    if not settings.adzuna_app_id or not settings.adzuna_app_key:
+        raise HTTPException(status_code=503, detail="尚未配置官方招聘 API 凭证。")
+    try:
+        jobs = fetch_adzuna_jobs()
+        database.upsert_recruitment_jobs(jobs)
+    except Exception as exc:
+        logger.exception("Recruitment source refresh failed")
+        raise HTTPException(status_code=502, detail="招聘源刷新失败，请稍后重试。") from exc
+    return {"source": "Adzuna API", "count": len(jobs), "refreshed_at": database.utc_now()}
 
 
 @app.get("/api/billing/status")

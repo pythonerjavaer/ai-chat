@@ -112,6 +112,12 @@ def init_db() -> None:
                 locations TEXT NOT NULL DEFAULT '[]',
                 employer_types TEXT NOT NULL DEFAULT '[]',
                 background TEXT NOT NULL DEFAULT '',
+                education_level TEXT NOT NULL DEFAULT '',
+                major_category TEXT NOT NULL DEFAULT '',
+                school_tier TEXT NOT NULL DEFAULT '',
+                experience_level TEXT NOT NULL DEFAULT '',
+                skill_tags TEXT NOT NULL DEFAULT '[]',
+                language_level TEXT NOT NULL DEFAULT '',
                 graduation_year INTEGER,
                 availability_start TEXT,
                 availability_end TEXT,
@@ -185,6 +191,15 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_recruitment_jobs_deadline "
             "ON recruitment_jobs(status, closing_date)"
         )
+        for column, declaration in (
+            ("education_level", "TEXT NOT NULL DEFAULT ''"),
+            ("major_category", "TEXT NOT NULL DEFAULT ''"),
+            ("school_tier", "TEXT NOT NULL DEFAULT ''"),
+            ("experience_level", "TEXT NOT NULL DEFAULT ''"),
+            ("skill_tags", "TEXT NOT NULL DEFAULT '[]'"),
+            ("language_level", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            _ensure_column(connection, "recruitment_profiles", column, declaration)
 
 
 def _ensure_column(
@@ -407,10 +422,12 @@ def get_recruitment_profile(user_id: int) -> dict[str, Any]:
             "user_id": user_id,
             "desired_roles": [], "industries": [], "locations": [],
             "employer_types": [], "background": "", "graduation_year": None,
+            "education_level": "", "major_category": "", "school_tier": "",
+            "experience_level": "", "skill_tags": [], "language_level": "",
             "availability_start": None, "availability_end": None,
         }
     item = dict(row)
-    for key in ("desired_roles", "industries", "locations", "employer_types"):
+    for key in ("desired_roles", "industries", "locations", "employer_types", "skill_tags"):
         try:
             item[key] = json.loads(item[key])
         except (TypeError, json.JSONDecodeError):
@@ -426,7 +443,11 @@ def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str,
         json.dumps(profile.get("industries", []), ensure_ascii=False),
         json.dumps(profile.get("locations", []), ensure_ascii=False),
         json.dumps(profile.get("employer_types", []), ensure_ascii=False),
-        profile.get("background", ""), profile.get("graduation_year"),
+        profile.get("background", ""), profile.get("education_level", ""),
+        profile.get("major_category", ""), profile.get("school_tier", ""),
+        profile.get("experience_level", ""),
+        json.dumps(profile.get("skill_tags", []), ensure_ascii=False),
+        profile.get("language_level", ""), profile.get("graduation_year"),
         profile.get("availability_start"), profile.get("availability_end"), now,
     )
     with connect() as connection:
@@ -434,12 +455,17 @@ def save_recruitment_profile(user_id: int, profile: dict[str, Any]) -> dict[str,
             """
             INSERT INTO recruitment_profiles
                 (user_id, desired_roles, industries, locations, employer_types,
-                 background, graduation_year, availability_start, availability_end, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 background, education_level, major_category, school_tier,
+                 experience_level, skill_tags, language_level, graduation_year,
+                 availability_start, availability_end, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 desired_roles=excluded.desired_roles, industries=excluded.industries,
                 locations=excluded.locations, employer_types=excluded.employer_types,
                 background=excluded.background, graduation_year=excluded.graduation_year,
+                education_level=excluded.education_level, major_category=excluded.major_category,
+                school_tier=excluded.school_tier, experience_level=excluded.experience_level,
+                skill_tags=excluded.skill_tags, language_level=excluded.language_level,
                 availability_start=excluded.availability_start,
                 availability_end=excluded.availability_end, updated_at=excluded.updated_at
             """,
@@ -479,6 +505,33 @@ def seed_recruitment_jobs(jobs: list[dict[str, Any]]) -> None:
                     job["id"], job["company"], job["employer_type"], job["title"],
                     job.get("city", ""), job.get("industry", ""), job.get("url", ""),
                     job.get("source", "示例数据"), job.get("opening_date"),
+                    job.get("closing_date"), job.get("requirements", ""),
+                    json.dumps(job.get("tags", []), ensure_ascii=False),
+                    job.get("historical_applicants"), job.get("historical_offers"),
+                    job.get("last_verified_at", utc_now()), job.get("status", "open"),
+                ),
+            )
+
+
+def upsert_recruitment_jobs(jobs: list[dict[str, Any]]) -> None:
+    with connect() as connection:
+        for job in jobs:
+            connection.execute(
+                """
+                INSERT INTO recruitment_jobs
+                    (id, company, employer_type, title, city, industry, url, source,
+                     opening_date, closing_date, requirements, tags, historical_applicants,
+                     historical_offers, last_verified_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    company=excluded.company, title=excluded.title, city=excluded.city,
+                    url=excluded.url, requirements=excluded.requirements,
+                    last_verified_at=excluded.last_verified_at, status=excluded.status
+                """,
+                (
+                    job["id"], job["company"], job.get("employer_type", "公开岗位源"),
+                    job["title"], job.get("city", ""), job.get("industry", ""),
+                    job.get("url", ""), job.get("source", ""), job.get("opening_date"),
                     job.get("closing_date"), job.get("requirements", ""),
                     json.dumps(job.get("tags", []), ensure_ascii=False),
                     job.get("historical_applicants"), job.get("historical_offers"),

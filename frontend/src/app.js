@@ -104,6 +104,7 @@ const elements = {
   recruitmentLocations: $("recruitment-locations"), recruitmentBackground: $("recruitment-background"),
   recruitmentStart: $("recruitment-start"), recruitmentEnd: $("recruitment-end"),
   recruitmentJobs: $("recruitment-jobs"), recruitmentStatus: $("recruitment-source-status"),
+  recruitmentRefresh: $("recruitment-refresh"),
   recruitmentError: $("recruitment-error"),
 };
 
@@ -1009,6 +1010,11 @@ function renderRecruitmentProfile(profile) {
   document.querySelectorAll(".recruitment-checks input").forEach((input) => {
     input.checked = (profile.employer_types || []).includes(input.value);
   });
+  document.querySelectorAll("[data-choice-group]").forEach((group) => {
+    const key = group.dataset.choiceGroup;
+    const values = Array.isArray(profile[key]) ? profile[key] : [profile[key]];
+    group.querySelectorAll("input").forEach((input) => { input.checked = values.includes(input.value); });
+  });
 }
 
 function renderRecruitmentJobs(jobs) {
@@ -1041,6 +1047,18 @@ async function refreshRecruitment() {
   }
 }
 
+async function refreshRecruitmentSource() {
+  elements.recruitmentRefresh.disabled = true;
+  try {
+    await api("/recruitment/refresh", { method: "POST" });
+    await refreshRecruitment();
+    showToast("岗位源已刷新。", 3500);
+  } catch (error) {
+    elements.recruitmentError.textContent = translateError(error.message);
+    showToast("当前还没有配置官方实时岗位源。", 4500);
+  } finally { elements.recruitmentRefresh.disabled = false; }
+}
+
 async function openRecruitment() {
   elements.recruitmentError.textContent = "";
   elements.recruitmentDialog.showModal();
@@ -1050,6 +1068,8 @@ async function openRecruitment() {
 async function saveRecruitment(event) {
   event.preventDefault();
   const employerTypes = [...document.querySelectorAll(".recruitment-checks input:checked")].map((input) => input.value);
+  const choice = (key) => document.querySelector(`[data-choice-group="${key}"] input:checked`)?.value || "";
+  const choices = (key) => [...document.querySelectorAll(`[data-choice-group="${key}"] input:checked`)].map((input) => input.value);
   try {
     const profile = await api("/recruitment/profile", {
       method: "PUT",
@@ -1059,6 +1079,12 @@ async function saveRecruitment(event) {
         locations: splitRecruitmentValues(elements.recruitmentLocations.value),
         employer_types: employerTypes,
         background: elements.recruitmentBackground.value.trim(),
+        education_level: choice("education_level"),
+        major_category: choice("major_category"),
+        school_tier: choice("school_tier"),
+        experience_level: choice("experience_level"),
+        skill_tags: choices("skill_tags"),
+        language_level: choice("language_level"),
         graduation_year: null,
         availability_start: elements.recruitmentStart.value || null,
         availability_end: elements.recruitmentEnd.value || null,
@@ -1241,6 +1267,7 @@ $("composer-upload").addEventListener("click", () => elements.documentInput.clic
 $("studio-open").addEventListener("click", openStudio);
 $("recruitment-open").addEventListener("click", openRecruitment);
 $("recruitment-close").addEventListener("click", () => elements.recruitmentDialog.close());
+elements.recruitmentRefresh.addEventListener("click", refreshRecruitmentSource);
 elements.recruitmentForm.addEventListener("submit", saveRecruitment);
 $("studio-open-secondary").addEventListener("click", openStudio);
 $("mobile-studio-open").addEventListener("click", openStudio);

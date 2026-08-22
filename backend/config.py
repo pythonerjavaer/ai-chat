@@ -17,6 +17,9 @@ class Settings:
     embedding_model: str
     database_path: Path
     cors_origins: list[str]
+    adzuna_app_id: str
+    adzuna_app_key: str
+    adzuna_country: str
 
 
 def load_settings() -> Settings:
@@ -52,6 +55,9 @@ def load_settings() -> Settings:
         ),
         database_path=database_path,
         cors_origins=cors_origins,
+        adzuna_app_id=os.getenv("ADZUNA_APP_ID", "").strip(),
+        adzuna_app_key=os.getenv("ADZUNA_APP_KEY", "").strip(),
+        adzuna_country=os.getenv("ADZUNA_COUNTRY", "gb").strip() or "gb",
     )
 
 
