@@ -1642,8 +1642,24 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
   .brand.compact .brand-mark { width: 38px; height: 38px; }
   .compass-controls { gap: 9px; margin-bottom: 7px; font-size: 7px; letter-spacing: .07em; }
   .compass-controls button { width: 32px; height: 32px; }
-  .world-entry-grid.rotary-compass, .world-map-grid.rotary-compass { display: block; height: 470px; grid-template-columns: none; grid-template-rows: none; overflow: hidden; border-radius: 20px; }
-  .world-entry-grid.rotary-compass > .world-entry, .world-map-grid.rotary-compass > .world-map-card, .world-map-card:nth-of-type(n) { position: absolute !important; left: 50% !important; top: 50% !important; width: min(70vw, 245px); min-height: 128px; grid-column: auto !important; grid-row: auto !important; padding: 14px; transform: translate(-50%,-50%) translate3d(var(--compass-x,0),var(--compass-y,0),0) scale(var(--compass-scale,.6)); }
+  .world-entry-grid.rotary-compass, .world-map-grid.rotary-compass { display: block; height: 500px; grid-template-columns: none; grid-template-rows: none; overflow: hidden; border-radius: 20px; }
+  .world-entry-grid.rotary-compass > .world-entry, .world-map-grid.rotary-compass > .world-map-card { position: absolute !important; left: 50% !important; top: 50% !important; width: 82px; min-height: 76px; place-content: center; justify-items: center; gap: 5px; grid-column: auto !important; grid-row: auto !important; padding: 8px; text-align: center; transform: translate(-50%,-50%) translate3d(var(--compass-x,0),var(--compass-y,0),0) scale(var(--compass-scale,.6)); }
+  .world-entry-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) > span,
+  .world-entry-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) > p,
+  .world-entry-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) > small,
+  .world-map-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) > span,
+  .world-map-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) > p,
+  .world-map-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) > small { display: none; }
+  .world-entry-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) strong,
+  .world-map-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) strong { max-width: 68px; margin: 0; overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+  .world-entry-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) .world-entry-icon,
+  .world-map-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) > i { position: static; width: 28px; height: 28px; display: grid; place-items: center; font-size: 16px; }
+  .world-entry-grid.rotary-compass > [data-launch][data-compass-selected="true"],
+  .world-map-grid.rotary-compass > [data-launch][data-compass-selected="true"] { width: min(74vw, 270px); min-height: 152px; place-content: initial; justify-items: stretch; gap: 7px; padding: 15px; text-align: left; }
+  .world-entry-grid.rotary-compass > [data-launch][data-compass-selected="true"] .world-entry-icon { position: absolute; top: 12px; right: 14px; width: 34px; height: 34px; }
+  .world-map-grid.rotary-compass > [data-launch][data-compass-selected="true"] > i { position: absolute; top: 15px; right: 16px; width: auto; height: auto; font-size: 24px; }
+  .world-entry-grid.rotary-compass > [data-launch][data-compass-selected="true"] strong { font-size: 16px; }
+  .world-map-grid.rotary-compass > [data-launch][data-compass-selected="true"] strong { margin-top: 10px; font-size: 20px; }
   .world-map-grid.rotary-compass > .world-compass-core { position: absolute; width: 112px; min-height: 112px; border-radius: 50%; }
   .world-compass-core span { font-size: 17px; }
   .oblivion-archive-dialog { width: 96vw; border-radius: 20px; }

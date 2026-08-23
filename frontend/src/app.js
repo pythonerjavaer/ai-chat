@@ -275,8 +275,8 @@ function setupRotaryCompass(container) {
   const step = () => (Math.PI * 2) / compass.cards.length;
   const render = () => {
     const compact = window.innerWidth <= 520;
-    const radiusX = compact ? Math.min(122, container.clientWidth * .36) : Math.min(id === "landing" ? 320 : 300, container.clientWidth * .39);
-    const radiusY = compact ? 62 : id === "landing" ? 104 : 94;
+    const radiusX = compact ? Math.min(154, container.clientWidth * .43) : Math.min(id === "landing" ? 320 : 300, container.clientWidth * .39);
+    const radiusY = compact ? 118 : id === "landing" ? 104 : 94;
     let selectedIndex = 0;
     let selectedDepth = -1;
     compass.cards.forEach((card, index) => {
@@ -475,7 +475,7 @@ async function authenticate(event) {
 
 function translateError(message) {
   const known = {
-    "Invalid username or password.": "用户名或密码不正确。",
+    "Invalid username or password.": "用户名或密码不正确。当前测试环境升级后旧账号可能已失效，可切换到“注册新账号”重新创建。",
     "Username already exists.": "这个用户名已经存在。",
     "Authentication required.": "请先登录。",
     "Password is incorrect.": "密码不正确。",
@@ -1818,12 +1818,17 @@ async function launchProduct(product) {
   if (product === "oblivion") return openOblivionArchive();
   if (!state.token) {
     state.pendingLaunch = product;
+    const productButton = document.querySelector(`[data-launch="${product}"]`);
+    const productName = productButton?.querySelector("strong")?.textContent?.trim() || "这个世界";
     if (WORKSPACE_ORDER.includes(product)) {
       state.workspace = product;
       await storage.set(STORAGE_KEYS.workspace, product);
     }
+    elements.authKicker.textContent = "世界入口已锁定";
+    elements.authTitle.textContent = `登录后进入${productName}`;
+    elements.authDescription.textContent = "完成登录或注册后会自动打开刚才选择的产品，不需要再次寻找入口。";
     document.querySelector(".auth-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
-    showToast("登录后即可进入这个世界。", 3200);
+    showToast(`${productName}需要先登录；完成后将自动进入。`, 4200);
     return;
   }
   if (WORKSPACE_ORDER.includes(product)) {
