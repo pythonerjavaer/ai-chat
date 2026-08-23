@@ -117,6 +117,8 @@ class CandidatePageEvidence:
 
     readable: bool
     title_confirmed: bool
+    closed: bool = False
+    page_text: str = ""
 
 
 def _search_prompt(pool: dict[str, Any]) -> str:
@@ -188,6 +190,40 @@ def _evidence_key(value: str) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
 
 
+_CLOSED_PAGE_PATTERN = re.compile(
+    r"(?:已截止|申请已结束|报名已结束|网申已结束|投递已结束|职位已关闭|岗位已关闭|"
+    r"申请通道已关闭|不再接受申请|职位已下线|job\s+no\s+longer\s+available|"
+    r"\bclosed\b|\bexpired\b|no\s+longer\s+accepting)",
+    re.IGNORECASE,
+)
+
+
+def _date_appears_in_page(page_text: str, iso_date: str | None) -> bool:
+    if not iso_date:
+        return False
+    try:
+        value = date.fromisoformat(iso_date)
+    except ValueError:
+        return False
+    compact = re.sub(r"\s+", "", page_text.casefold())
+    variants = {
+        value.isoformat(),
+        f"{value.year}/{value.month:02d}/{value.day:02d}",
+        f"{value.year}.{value.month:02d}.{value.day:02d}",
+        f"{value.year}年{value.month}月{value.day}日",
+        f"{value.year}年{value.month:02d}月{value.day:02d}日",
+    }
+    return any(variant.casefold() in compact for variant in variants)
+
+
+def _targets_current_graduate_cohort(value: str) -> bool:
+    today = date.today()
+    target_year = today.year + 1 if today.month >= 6 else today.year
+    short_year = str(target_year)[-2:]
+    normalized = re.sub(r"\s+", "", value.casefold())
+    return str(target_year) in normalized or f"{short_year}届" in normalized
+
+
 def _inspect_official_candidate_page(job: dict[str, Any]) -> CandidatePageEvidence:
     """Open the supplied page and check whether its body supports the title.
 
@@ -204,11 +240,14 @@ def _inspect_official_candidate_page(job: dict[str, Any]) -> CandidatePageEviden
         )
     except (OSError, ValueError, WatchFetchError):
         return CandidatePageEvidence(readable=False, title_confirmed=False)
-    page_key = _evidence_key(result.text)
+    page_text = str(result.text or "")
+    page_key = _evidence_key(page_text)
     title_key = _evidence_key(str(job.get("title", "")))
     return CandidatePageEvidence(
         readable=bool(page_key),
         title_confirmed=bool(title_key and title_key in page_key),
+        closed=bool(_CLOSED_PAGE_PATTERN.search(page_text)),
+        page_text=page_text,
     )
 
 
@@ -225,11 +264,17 @@ def _normalize_job(item: dict[str, Any]) -> dict[str, Any] | None:
         for marker in ("校园", "校招", "应届", "毕业生", "graduate", "campus", "管培", "提前批")
     ):
         return None
+    if not _targets_current_graduate_cohort(campus_text):
+        return None
     official_url = _safe_official_url(str(item.get("official_url", "")).strip())
     if not official_url:
         return None
     closing_date = _date_or_none(item.get("closing_date"))
-    if closing_date and closing_date < date.today().isoformat():
+    opening_date = _date_or_none(item.get("opening_date"))
+    today = date.today().isoformat()
+    if closing_date and closing_date <= today:
+        return None
+    if opening_date and opening_date > today:
         return None
     category = EMPLOYER_TYPE_BY_NAME.get(employer_key)
     if not category:
@@ -249,7 +294,7 @@ def _normalize_job(item: dict[str, Any]) -> dict[str, Any] | None:
         "industry": str(item.get("industry", "")).strip()[:80],
         "url": official_url,
         "source": WEB_SEARCH_SOURCE,
-        "opening_date": _date_or_none(item.get("opening_date")),
+        "opening_date": opening_date,
         "closing_date": closing_date,
         "requirements": requirements or "AI 网页搜索发现；请打开企业官方原文核对申请条件。",
         "tags": tags,
@@ -303,8 +348,18 @@ def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSear
         if not job or job["url"] in seen_urls:
             continue
         evidence = _inspect_official_candidate_page(job)
-        if not evidence.readable:
+        if not evidence.readable or evidence.closed:
             continue
+        job["opening_date"] = (
+            job["opening_date"]
+            if _date_appears_in_page(evidence.page_text, job["opening_date"])
+            else None
+        )
+        job["closing_date"] = (
+            job["closing_date"]
+            if _date_appears_in_page(evidence.page_text, job["closing_date"])
+            else None
+        )
         job["tags"].append("链接已验证")
         if evidence.title_confirmed:
             job["tags"].append("标题已验证")

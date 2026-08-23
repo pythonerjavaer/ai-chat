@@ -2076,7 +2076,7 @@ def list_recruitment_jobs() -> list[dict[str, Any]]:
             """
             SELECT * FROM recruitment_jobs
             WHERE status = 'open'
-              AND (closing_date IS NULL OR closing_date >= DATE('now'))
+              AND (closing_date IS NULL OR closing_date > DATE('now'))
               AND url LIKE 'https://%'
             ORDER BY closing_date IS NULL, closing_date
             """
@@ -2101,14 +2101,20 @@ def purge_legacy_recruitment_samples() -> None:
             WHERE id IN (
                 'sample-byteplus-product-2026',
                 'sample-hsbc-analyst-2026',
-                'sample-state-tech-2026'
+                'sample-state-tech-2026',
+                'curated-pdd-2027-early',
+                'curated-kearney-2027-ba'
             )
                OR source IN ('示例岗位，等待接入官方源', '示例数据')
                OR company LIKE '九坤%'
                OR source LIKE '九坤%'
                OR (
                     source = 'OpenAI 网页搜索'
-                    AND tags NOT LIKE '%链接已验证%'
+                    AND (
+                        tags NOT LIKE '%链接已验证%'
+                        OR tags LIKE '%待官方核验%'
+                        OR tags LIKE '%待打开核对%'
+                    )
                )
                OR (
                     source = 'OpenAI 网页搜索'
