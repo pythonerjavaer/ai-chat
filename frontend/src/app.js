@@ -265,9 +265,12 @@ function setupRotaryCompass(container) {
     rotation: 0,
     startRotation: 0,
     startX: 0,
+    startY: 0,
     dragging: false,
     moved: false,
-    suppressClickUntil: 0,
+    suppressNextClick: false,
+    selectedIndex: 0,
+    wheelLocked: false,
   };
   const step = () => (Math.PI * 2) / compass.cards.length;
   const render = () => {
@@ -289,13 +292,20 @@ function setupRotaryCompass(container) {
       card.style.setProperty("--compass-opacity", (.12 + depth * .88).toFixed(3));
       card.style.setProperty("--compass-blur", `${((1 - depth) * 2.6).toFixed(2)}px`);
       card.style.zIndex = String(Math.round(10 + depth * 90));
-      const interactive = depth > .7;
-      card.setAttribute("aria-hidden", String(!interactive));
-      card.tabIndex = interactive ? 0 : -1;
+      card.dataset.compassDepth = depth.toFixed(3);
       if (depth > selectedDepth) {
         selectedDepth = depth;
         selectedIndex = index;
       }
+    });
+    compass.selectedIndex = selectedIndex;
+    compass.cards.forEach((card, index) => {
+      const visible = Number(card.dataset.compassDepth) >= .08;
+      const selected = index === selectedIndex;
+      card.setAttribute("aria-hidden", String(!visible));
+      card.setAttribute("data-compass-selected", String(selected));
+      card.setAttribute("aria-current", selected ? "true" : "false");
+      card.tabIndex = selected ? 0 : -1;
     });
     container.dataset.selectedProduct = compass.cards[selectedIndex].dataset.launch || "";
   };
@@ -314,33 +324,53 @@ function setupRotaryCompass(container) {
     compass.dragging = true;
     compass.moved = false;
     compass.startX = event.clientX;
+    compass.startY = event.clientY;
     compass.startRotation = compass.rotation;
     container.classList.add("is-dragging");
     container.setPointerCapture(event.pointerId);
   });
   container.addEventListener("pointermove", (event) => {
     if (!compass.dragging) return;
-    const delta = event.clientX - compass.startX;
-    if (Math.abs(delta) > 5) compass.moved = true;
-    compass.rotation = compass.startRotation + delta / Math.max(170, container.clientWidth) * Math.PI * 1.6;
+    const deltaX = event.clientX - compass.startX;
+    const deltaY = event.clientY - compass.startY;
+    if (Math.hypot(deltaX, deltaY) > 5) compass.moved = true;
+    if (compass.moved && event.cancelable && Math.abs(deltaX) >= Math.abs(deltaY)) event.preventDefault();
+    compass.rotation = compass.startRotation + deltaX / Math.max(150, container.clientWidth) * Math.PI * 2;
     render();
   });
   const endDrag = (event) => {
     if (!compass.dragging) return;
     compass.dragging = false;
     container.classList.remove("is-dragging");
-    if (compass.moved) compass.suppressClickUntil = performance.now() + 420;
+    if (compass.moved) {
+      compass.suppressNextClick = true;
+      window.setTimeout(() => { compass.suppressNextClick = false; }, 120);
+    }
     if (container.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
     snap();
   };
   container.addEventListener("pointerup", endDrag);
   container.addEventListener("pointercancel", endDrag);
   container.addEventListener("click", (event) => {
-    if (performance.now() < compass.suppressClickUntil) {
+    if (compass.suppressNextClick) {
+      compass.suppressNextClick = false;
       event.preventDefault();
       event.stopImmediatePropagation();
+      return;
     }
+    const card = event.target.closest?.('[data-launch][data-compass-selected="true"]');
+    if (!card || !container.contains(card)) return;
+    snap();
   }, true);
+  container.addEventListener("wheel", (event) => {
+    if (compass.wheelLocked) return;
+    const amount = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    if (Math.abs(amount) < 4) return;
+    event.preventDefault();
+    compass.wheelLocked = true;
+    rotate(amount > 0 ? 1 : -1);
+    window.setTimeout(() => { compass.wheelLocked = false; }, 180);
+  }, { passive: false });
   container.addEventListener("keydown", (event) => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
     event.preventDefault();
