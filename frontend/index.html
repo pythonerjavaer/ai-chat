@@ -216,13 +216,12 @@
         </aside>
       </div>
       <div id="panel-backdrop" class="panel-backdrop hidden"></div>
-      <aside id="music-mini-player" class="music-mini-player is-idle" aria-live="polite" aria-label="八度空间迷你播放器">
+      <aside id="music-mini-player" class="music-mini-player is-idle hidden" aria-live="polite" aria-label="八度空间迷你播放器">
         <button id="music-mini-open" class="music-mini-main" type="button" aria-label="打开八度空间">
           <span class="music-mini-glyph" aria-hidden="true">♫</span>
           <span class="music-mini-copy"><small>MUSIC DIMENSION</small><strong id="music-mini-track">八度空间</strong></span>
         </button>
         <button id="music-mini-toggle" class="music-mini-control" type="button" aria-label="播放或暂停" disabled>▶</button>
-        <button id="music-mini-next" class="music-mini-control" type="button" aria-label="下一首" disabled>›</button>
         <button id="music-mini-mute" class="music-mini-control" type="button" aria-label="静音" disabled>◖</button>
       </aside>
     </section>
@@ -413,8 +412,8 @@
           <div class="music-wave"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></div>
         </div>
         <header class="music-dimension-header">
-          <div><span class="overline">MUSIC DIMENSION</span><h2>八度空间</h2><p>音乐不是世界的背景。<br />它是记忆、情绪与时间留下的另一条轨迹。</p></div>
-          <button id="music-dialog-close" class="icon-button" type="button" aria-label="关闭八度空间窗口">×</button>
+          <div><span class="overline">MUSIC DIMENSION</span><h2>八度空间</h2><p>不依赖任何音乐 App。<br />把乐器、声线与叙事，在你的设备里编织成一条原创轨迹。</p></div>
+          <div class="music-window-actions"><button id="music-dialog-minimize" class="icon-button" type="button" aria-label="把八度空间最小化">−</button><button id="music-dialog-close" class="icon-button" type="button" aria-label="关闭八度空间窗口">×</button></div>
         </header>
         <div class="music-dimension-body">
           <section class="music-now-playing" aria-live="polite">
@@ -426,19 +425,13 @@
           </section>
           <section class="music-controls" aria-label="音乐播放控制">
             <div class="music-transport">
-              <button id="music-previous" type="button" aria-label="上一首" disabled>‹</button>
               <button id="music-play-toggle" class="music-play-toggle" type="button" aria-label="播放或暂停" disabled>▶</button>
-              <button id="music-next" type="button" aria-label="下一首" disabled>›</button>
             </div>
-            <label class="music-shuffle"><input id="music-shuffle" type="checkbox" checked /><span>随机播放</span><b>一轮内不重复</b></label>
+            <div class="music-local-badge"><span>ON-DEVICE SYNTHESIS</span><b>本地编曲 · 无账号 · 0 AI Token</b></div>
             <label class="music-volume"><span>VOLUME</span><input id="music-volume" type="range" min="0" max="1" step="0.01" value="0.18" /><output id="music-volume-output">18%</output></label>
           </section>
-          <aside id="music-service-state" class="music-service-state">
-            <strong>八度空间已经打开，但音乐服务尚未连接。</strong>
-            <p>本地原创声场仍可使用；外部曲库需要单独连接合规音乐服务。这里不会使用盗版音源或自动调用 AI。</p>
-          </aside>
           <section class="music-creator" aria-label="音乐创作模板">
-            <header><div><span class="overline">SOUND BLUEPRINT</span><h3>创作自己的声音世界</h3><p>模板、描述重写和声音合成都在浏览器本地完成，0 OpenAI Token。</p></div><span class="music-zero-token">LOCAL · 0 TOKEN</span></header>
+            <header><div><span class="overline">SOUND BLUEPRINT</span><h3>创作自己的歌曲雏形</h3><p>自由组合乐器与原创合成声线；模板、编曲和声音合成都在浏览器本地完成。</p></div><span class="music-zero-token">LOCAL · 0 TOKEN</span></header>
             <div id="music-template-grid" class="music-template-grid" aria-label="选择创作模板">
               <button type="button" data-music-template="cosmos">星际叙事<small>COSMOS</small></button>
               <button type="button" data-music-template="frost">冰晶回声<small>FROST</small></button>
@@ -450,21 +443,32 @@
               <label><span>风格方向</span><input id="music-creation-style" maxlength="80" placeholder="电影氛围、未来节拍…" /></label>
               <label><span>情绪坐标</span><input id="music-creation-mood" maxlength="80" placeholder="辽阔、冷静、炽热…" /></label>
               <label><span>速度 <b id="music-tempo-output">72 BPM</b></span><input id="music-creation-tempo" type="range" min="48" max="160" step="1" value="72" /></label>
+              <fieldset class="music-instrument-fieldset wide"><legend>乐器编制 · 可多选</legend><div class="music-instrument-grid">
+                <label><input type="checkbox" data-music-instrument="piano" /><span>星穹钢琴</span></label>
+                <label><input type="checkbox" data-music-instrument="strings" /><span>弦乐群</span></label>
+                <label><input type="checkbox" data-music-instrument="synth" /><span>空间合成器</span></label>
+                <label><input type="checkbox" data-music-instrument="guitar" /><span>脉冲吉他</span></label>
+                <label><input type="checkbox" data-music-instrument="bass" /><span>深空贝斯</span></label>
+                <label><input type="checkbox" data-music-instrument="drums" /><span>电子鼓组</span></label>
+                <label><input type="checkbox" data-music-instrument="flute" /><span>气流长笛</span></label>
+                <label><input type="checkbox" data-music-instrument="bells" /><span>晶体钟琴</span></label>
+              </div></fieldset>
+              <label class="wide"><span>原创合成声线</span><select id="music-vocal-profile"><option value="none">纯器乐</option><option value="crystal">晶透高声线</option><option value="warm">温暖中声线</option><option value="deep">深沉低声线</option><option value="airy">雾化气声线</option><option value="choir">星云合唱层</option></select><small>生成合成哼唱层，不克隆或冒充任何真实歌手。</small></label>
               <label class="wide"><span>声音材质</span><input id="music-creation-texture" maxlength="160" placeholder="空气合成器、低频脉冲、遥远钟声…" /></label>
-              <label class="wide"><span>你想让它讲述什么</span><textarea id="music-creation-description" rows="3" maxlength="500" placeholder="写下场景、时间、记忆或运动轨迹。"></textarea></label>
+              <label class="wide"><span>歌词意象 / 叙事方向</span><textarea id="music-creation-description" rows="3" maxlength="500" placeholder="写下歌词主题、场景、记忆或运动轨迹。"></textarea></label>
             </div>
             <div class="music-blueprint-output">
               <div><span>重写后的创作描述</span><button id="music-copy-blueprint" type="button">复制</button></div>
               <textarea id="music-blueprint" rows="6" readonly></textarea>
             </div>
             <div class="music-creator-actions"><button id="music-rewrite" type="button">重写创作描述</button><button id="music-enable" class="music-primary-action" type="button"><span>生成并播放我的声音</span><b>♫</b></button></div>
-            <small class="music-creator-note">当前生成的是原创程序化氛围声场与可复用创作描述，不冒充完整商业歌曲；以后可接入你拥有授权的音乐生成服务。</small>
+            <small class="music-creator-note">当前会生成可播放的原创程序化编曲、合成哼唱与可复用创作蓝图；不是对真实歌手的声音克隆，也不声称是完成母带的商业歌曲。</small>
           </section>
         </div>
         <footer class="music-dimension-footer">
-          <button id="music-authorize" class="music-secondary-action" type="button">连接 Apple Music</button>
-          <a id="music-album-link" class="music-secondary-action" href="https://music.apple.com/" target="_blank" rel="noreferrer">打开 Apple Music ↗</a>
-          <button id="music-disable" class="music-text-action" type="button">关闭八度空间</button>
+          <span class="music-independence-copy">INDEPENDENT CREATION ENGINE · 不连接外部音乐平台</span>
+          <button id="music-footer-minimize" class="music-secondary-action" type="button">最小化并继续播放</button>
+          <button id="music-disable" class="music-text-action" type="button">停止并关闭</button>
         </footer>
       </section>
     </dialog>

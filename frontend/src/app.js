@@ -3,7 +3,6 @@ import { marked } from "marked";
 import { Capacitor } from "@capacitor/core";
 import { Haptics, ImpactStyle } from "@capacitor/haptics";
 import { Preferences } from "@capacitor/preferences";
-import { APPLE_MUSIC_URL, musicProvider } from "./music-provider.js";
 import { MUSIC_CREATION_TEMPLATES, buildMusicBlueprint, soundscapeEngine } from "./music-creator.js";
 import "./styles.css";
 
@@ -11,14 +10,11 @@ marked.setOptions({ gfm: true, breaks: true });
 
 const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const API_BASE = configuredApiBase || "/api";
-musicProvider.setTokenEndpoint(`${API_BASE}/music/apple-token`);
 const STORAGE_KEYS = {
   token: "frostfire_token",
   workspace: "frostfire_workspace",
   musicEnabled: "bingyan_music_enabled",
   musicVolume: "bingyan_music_volume",
-  musicShuffle: "bingyan_music_shuffle",
-  musicLastTrack: "bingyan_music_last_track",
   musicBlueprint: "bingyan_music_blueprint",
   activeProduct: "bingyan_active_product",
 };
@@ -78,25 +74,20 @@ const state = {
   pendingLaunch: null,
   activeProduct: null,
   music: {
-    provider: "apple_music",
-    configured: false,
-    authorized: false,
     enabled: false,
     playing: false,
     loading: false,
     volume: 0.18,
-    shuffle: true,
-    tracks: [],
-    queue: [],
-    history: [],
     currentTrack: null,
     status: "idle",
     error: null,
     muted: false,
+    minimized: false,
     source: "local_composer",
     creationTemplate: "cosmos",
     creationScale: "minor_pentatonic",
-    creationWave: "sine",
+    creationInstruments: ["piano", "strings", "bass", "bells"],
+    vocalProfile: "none",
   },
 };
 
@@ -157,18 +148,16 @@ const elements = {
   resonanceDialog: $("resonance-dialog"), traceDialog: $("trace-dialog"),
   musicDialog: $("music-dimension-dialog"), musicMiniPlayer: $("music-mini-player"),
   musicMiniTrack: $("music-mini-track"), musicMiniToggle: $("music-mini-toggle"),
-  musicMiniNext: $("music-mini-next"), musicMiniMute: $("music-mini-mute"),
+  musicMiniMute: $("music-mini-mute"), musicDialogMinimize: $("music-dialog-minimize"),
   musicCurrentTrack: $("music-current-track"), musicCurrentArtist: $("music-current-artist"),
-  musicStatus: $("music-status"), musicServiceState: $("music-service-state"),
-  musicPrevious: $("music-previous"), musicPlayToggle: $("music-play-toggle"), musicNext: $("music-next"),
-  musicShuffle: $("music-shuffle"), musicVolume: $("music-volume"), musicVolumeOutput: $("music-volume-output"),
-  musicEnable: $("music-enable"), musicAuthorize: $("music-authorize"), musicDisable: $("music-disable"),
-  musicAlbumLink: $("music-album-link"),
+  musicStatus: $("music-status"), musicPlayToggle: $("music-play-toggle"),
+  musicVolume: $("music-volume"), musicVolumeOutput: $("music-volume-output"),
+  musicEnable: $("music-enable"), musicDisable: $("music-disable"), musicFooterMinimize: $("music-footer-minimize"),
   musicCreationTitle: $("music-creation-title"), musicCreationStyle: $("music-creation-style"),
   musicCreationMood: $("music-creation-mood"), musicCreationTempo: $("music-creation-tempo"),
   musicTempoOutput: $("music-tempo-output"), musicCreationTexture: $("music-creation-texture"),
   musicCreationDescription: $("music-creation-description"), musicBlueprint: $("music-blueprint"),
-  musicRewrite: $("music-rewrite"), musicCopyBlueprint: $("music-copy-blueprint"),
+  musicRewrite: $("music-rewrite"), musicCopyBlueprint: $("music-copy-blueprint"), musicVocalProfile: $("music-vocal-profile"),
   mobileWorldNavigation: $("mobile-world-navigation"),
   worldMapDialog: $("world-map-dialog"), worldMapCurrent: $("world-map-current"),
   adminUsageLauncher: $("admin-usage-launcher"), adminUsageDialog: $("admin-usage-dialog"),
@@ -179,8 +168,6 @@ const elements = {
   adminUsageSeries: $("admin-usage-series"), adminUsageRefresh: $("admin-usage-refresh"),
   adminUsageLock: $("admin-usage-lock"), adminUsageClose: $("admin-usage-close"),
 };
-
-elements.musicAlbumLink.href = APPLE_MUSIC_URL;
 
 if (elements.recruitmentRefresh) {
   elements.recruitmentRefresh.textContent = RECRUITMENT_REFRESH_LABEL;
@@ -347,14 +334,13 @@ async function enterApp() {
   await loadWorkspaces();
   await Promise.all([loadSessions(), loadDocuments(), loadHomeRecruitmentAlerts()]);
   newConversation();
-  playWorkspaceEntry(state.workspace);
   const pendingLaunch = state.pendingLaunch;
   state.pendingLaunch = null;
   if (pendingLaunch) window.setTimeout(() => launchProduct(pendingLaunch), 0);
   if (!state.user.privacy_accepted && !elements.consentDialog.open) {
     elements.consentDialog.showModal();
   } else if (!pendingLaunch) {
-    window.setTimeout(state.activeProduct === "music" ? openMusicDimension : openWorldMap, 80);
+    window.setTimeout(openWorldMap, 80);
   }
 }
 
@@ -434,8 +420,8 @@ function applyUser() {
 
 async function logout(showMessage = true) {
   await soundscapeEngine.destroy();
-  await musicProvider.destroy();
   state.music.playing = false;
+  state.music.minimized = false;
   state.music.status = state.music.enabled ? "resume_pending" : "idle";
   renderMusicUI();
   await storage.remove(STORAGE_KEYS.token);
@@ -1168,11 +1154,9 @@ function closeConcept(dialogId) {
 }
 
 async function loadMusicPreferences() {
-  const [enabled, volume, shuffle, lastTrack, savedBlueprint] = await Promise.all([
+  const [enabled, volume, savedBlueprint] = await Promise.all([
     storage.get(STORAGE_KEYS.musicEnabled),
     storage.get(STORAGE_KEYS.musicVolume),
-    storage.get(STORAGE_KEYS.musicShuffle),
-    storage.get(STORAGE_KEYS.musicLastTrack),
     storage.get(STORAGE_KEYS.musicBlueprint),
   ]);
   state.music.enabled = enabled === "true";
@@ -1180,8 +1164,6 @@ async function loadMusicPreferences() {
   state.music.volume = volume !== null && Number.isFinite(storedVolume)
     ? Math.min(1, Math.max(0, storedVolume))
     : 0.18;
-  state.music.shuffle = shuffle !== "false";
-  state.music.lastTrackId = lastTrack || null;
   let blueprint = null;
   try { blueprint = savedBlueprint ? JSON.parse(savedBlueprint) : null; } catch (_) {}
   applyMusicCreationTemplate(blueprint?.template || "cosmos", blueprint);
@@ -1199,10 +1181,6 @@ async function persistMusicPreferences() {
   await Promise.all([
     storage.set(STORAGE_KEYS.musicEnabled, String(state.music.enabled)),
     storage.set(STORAGE_KEYS.musicVolume, String(state.music.volume)),
-    storage.set(STORAGE_KEYS.musicShuffle, String(state.music.shuffle)),
-    state.music.currentTrack?.id
-      ? storage.set(STORAGE_KEYS.musicLastTrack, String(state.music.currentTrack.id))
-      : Promise.resolve(),
     storage.set(STORAGE_KEYS.musicBlueprint, JSON.stringify(blueprint)),
   ]);
 }
@@ -1217,7 +1195,8 @@ function currentMusicCreation() {
     texture: elements.musicCreationTexture.value.trim(),
     description: elements.musicCreationDescription.value.trim(),
     scale: state.music.creationScale,
-    wave: state.music.creationWave,
+    instruments: [...document.querySelectorAll("[data-music-instrument]:checked")].map((input) => input.dataset.musicInstrument),
+    vocalProfile: elements.musicVocalProfile.value,
   };
 }
 
@@ -1225,13 +1204,18 @@ function applyMusicCreationTemplate(templateId, overrides = null) {
   const template = MUSIC_CREATION_TEMPLATES[templateId] || MUSIC_CREATION_TEMPLATES.cosmos;
   state.music.creationTemplate = templateId in MUSIC_CREATION_TEMPLATES ? templateId : "cosmos";
   state.music.creationScale = overrides?.scale || template.scale;
-  state.music.creationWave = overrides?.wave || template.wave;
+  state.music.creationInstruments = overrides?.instruments || template.instruments;
+  state.music.vocalProfile = overrides?.vocalProfile || template.vocalProfile;
   elements.musicCreationTitle.value = overrides?.title || template.title;
   elements.musicCreationStyle.value = overrides?.style || template.style;
   elements.musicCreationMood.value = overrides?.mood || template.mood;
   elements.musicCreationTempo.value = String(overrides?.tempo || template.tempo);
   elements.musicCreationTexture.value = overrides?.texture || template.texture;
   elements.musicCreationDescription.value = overrides?.description || "";
+  elements.musicVocalProfile.value = state.music.vocalProfile;
+  document.querySelectorAll("[data-music-instrument]").forEach((input) => {
+    input.checked = state.music.creationInstruments.includes(input.dataset.musicInstrument);
+  });
   elements.musicTempoOutput.textContent = `${elements.musicCreationTempo.value} BPM`;
   document.querySelectorAll("[data-music-template]").forEach((button) => {
     button.classList.toggle("active", button.dataset.musicTemplate === state.music.creationTemplate);
@@ -1244,63 +1228,34 @@ function rewriteMusicBlueprint() {
   return elements.musicBlueprint.value;
 }
 
-function applyMusicSnapshot(snapshot = {}) {
-  state.music.configured = Boolean(snapshot.configured);
-  state.music.authorized = Boolean(snapshot.authorized);
-  state.music.status = snapshot.status || state.music.status;
-  state.music.playing = state.music.status === "playing";
-  state.music.tracks = snapshot.tracks || state.music.tracks;
-  state.music.queue = snapshot.queue || state.music.queue;
-  state.music.history = snapshot.history || state.music.history;
-  state.music.currentTrack = snapshot.currentTrack || state.music.currentTrack;
-  state.music.error = snapshot.error || null;
-}
-
 function musicStatusCopy() {
-  if (state.music.loading) return state.music.source === "local_composer" ? "正在生成你的声音轨迹…" : "正在校准音乐服务轨道…";
+  if (state.music.loading) return "正在编排乐器与原创声线…";
   const copies = {
     idle: "选择一个模板，让八度空间开始转动。",
     resume_pending: "上次的声音蓝图已保留，点击重新生成并播放。",
-    generated_playing: "你的原创声音世界正在运行。",
+    generated_playing: "你的原创编曲正在本机运行。",
     generated_paused: "时间停在这一拍。",
-    not_configured: "八度空间已经打开，但音乐服务尚未连接。",
-    network_error: "网络暂时不可用；其他冰焰产品不受影响。",
-    initialization_failed: "Apple Music 初始化失败，请稍后重试。",
-    authorization_denied: "Apple Music 授权未完成，你可以随时重新连接。",
-    album_unavailable: "当前内容在这个音乐服务地区暂不可用。",
-    album_ready: "轨道已经就位。",
-    authorized: "Apple Music 已连接，正在读取专辑。",
-    playing: "八度空间正在运行。",
-    paused: "时间停在这一拍。",
-    autoplay_blocked: "点击继续播放",
-    playback_failed: "Apple Music 暂时无法播放，请稍后重试。",
-    ready: "音乐服务已经就绪。",
+    playback_failed: "当前浏览器暂时无法生成声音，请稍后重试。",
   };
   return state.music.error || copies[state.music.status] || copies.idle;
 }
 
 function renderMusicUI() {
   if (!elements.musicMiniPlayer) return;
-  const isLocal = state.music.source === "local_composer";
-  const hasLocalPlayback = isLocal && state.music.enabled && Boolean(state.music.currentTrack);
-  const hasAppleTracks = !isLocal && state.music.configured && state.music.authorized && state.music.tracks.length > 0;
-  const hasPlayback = hasLocalPlayback || hasAppleTracks;
+  const hasPlayback = state.music.enabled && Boolean(state.music.currentTrack);
   const currentTrack = state.music.currentTrack;
   const statusCopy = musicStatusCopy();
-  const isDegraded = !isLocal && state.music.enabled && !hasAppleTracks && [
-    "not_configured", "network_error", "initialization_failed", "authorization_denied", "album_unavailable", "playback_failed",
-  ].includes(state.music.status);
 
   document.body.dataset.musicEnabled = String(state.music.enabled);
+  elements.musicMiniPlayer.classList.toggle("hidden", !state.music.minimized);
   elements.musicMiniPlayer.classList.toggle("is-idle", !state.music.enabled);
   elements.musicMiniPlayer.classList.toggle("is-active", state.music.enabled);
   elements.musicMiniPlayer.classList.toggle("is-playing", state.music.playing);
   elements.musicMiniTrack.textContent = state.music.enabled
-    ? (currentTrack?.name || (isDegraded ? "音乐服务尚未连接" : "点击继续播放"))
+    ? (currentTrack?.name || "点击继续创作")
     : "八度空间";
   elements.musicMiniToggle.textContent = state.music.playing ? "Ⅱ" : "▶";
   elements.musicMiniToggle.disabled = !hasPlayback || state.music.loading;
-  elements.musicMiniNext.disabled = isLocal || !hasAppleTracks || state.music.loading;
   elements.musicMiniMute.disabled = !hasPlayback;
   elements.musicMiniMute.textContent = state.music.muted || state.music.volume === 0 ? "○" : "◖";
 
@@ -1308,33 +1263,19 @@ function renderMusicUI() {
   elements.musicCurrentArtist.textContent = currentTrack?.artistName || "由你定义";
   elements.musicStatus.querySelector("span").textContent = statusCopy;
   elements.musicStatus.dataset.status = state.music.status;
-  elements.musicServiceState.classList.toggle("hidden", !isDegraded);
-  if (isDegraded) {
-    elements.musicServiceState.querySelector("strong").textContent =
-      state.music.status === "not_configured"
-        ? "八度空间已经打开，但音乐服务尚未连接。"
-        : statusCopy;
-  }
-  elements.musicPrevious.disabled = isLocal || !hasAppleTracks || state.music.loading;
   elements.musicPlayToggle.disabled = !hasPlayback || state.music.loading;
-  elements.musicNext.disabled = isLocal || !hasAppleTracks || state.music.loading;
   elements.musicPlayToggle.textContent = state.music.playing ? "Ⅱ" : "▶";
-  elements.musicShuffle.checked = state.music.shuffle;
   elements.musicVolume.value = String(state.music.volume);
   elements.musicVolumeOutput.textContent = `${Math.round(state.music.volume * 100)}%`;
   elements.musicEnable.disabled = state.music.loading;
-  elements.musicAuthorize.disabled = state.music.loading;
   elements.musicEnable.querySelector("span").textContent = state.music.loading
     ? "正在生成…"
-    : state.music.playing && isLocal
-      ? "重新生成这个声音"
-      : "生成并播放我的声音";
+    : state.music.playing ? "重新生成这个作品" : "生成并播放我的作品";
 }
 
 function openMusicDimension() {
   closePanels();
-  state.activeProduct = "music";
-  storage.set(STORAGE_KEYS.activeProduct, "music");
+  state.music.minimized = false;
   if (!elements.musicDialog.open) {
     elements.musicDialog.showModal();
     playSceneEntry(elements.musicDialog);
@@ -1344,10 +1285,15 @@ function openMusicDimension() {
   renderMusicUI();
 }
 
+async function minimizeMusicDimension() {
+  if (elements.musicDialog.open) elements.musicDialog.close();
+  state.music.minimized = true;
+  renderMusicUI();
+}
+
 async function closeMusicDimension() {
   if (elements.musicDialog.open) elements.musicDialog.close();
-  state.activeProduct = null;
-  await storage.remove(STORAGE_KEYS.activeProduct);
+  await disableMusicDimension();
 }
 
 async function copyMusicBlueprint() {
@@ -1371,18 +1317,12 @@ async function generateLocalSoundscape() {
   rewriteMusicBlueprint();
   renderMusicUI();
   try {
-    await musicProvider.destroy();
     const creation = currentMusicCreation();
     await soundscapeEngine.start({ ...creation, volume: state.music.volume });
-    state.music.configured = true;
-    state.music.authorized = true;
-    state.music.tracks = [];
-    state.music.queue = [];
-    state.music.history = [];
     state.music.currentTrack = {
       id: `local-${Date.now()}`,
-      name: creation.title || "未命名声音世界",
-      artistName: "由你创建",
+      name: creation.title || "未命名原创作品",
+      artistName: "本地编曲 · 由你创建",
     };
     state.music.playing = true;
     state.music.status = "generated_playing";
@@ -1397,72 +1337,16 @@ async function generateLocalSoundscape() {
   }
 }
 
-async function connectAppleMusic() {
-  if (state.music.loading) return;
-  state.music.enabled = true;
-  state.music.loading = true;
-  state.music.source = "apple_music";
-  state.music.error = null;
-  state.music.currentTrack = null;
-  state.music.tracks = [];
-  state.music.queue = [];
-  state.music.history = [];
-  await soundscapeEngine.destroy();
-  renderMusicUI();
-  await persistMusicPreferences();
-  try {
-    const initialized = await musicProvider.initialize();
-    applyMusicSnapshot(initialized);
-    if (!initialized.configured) return;
-    const authorized = initialized.authorized ? initialized : await musicProvider.authorize();
-    applyMusicSnapshot(authorized);
-    const album = await musicProvider.loadAlbum({
-      shuffle: state.music.shuffle,
-      lastTrackId: state.music.lastTrackId,
-    });
-    applyMusicSnapshot(album);
-    await musicProvider.setVolume(state.music.volume);
-    applyMusicSnapshot(await musicProvider.next());
-    await persistMusicPreferences();
-  } catch (error) {
-    state.music.status = error.code || "initialization_failed";
-    state.music.error = error.message || "Apple Music 暂时不可用。";
-    state.music.playing = false;
-  } finally {
-    state.music.loading = false;
-    renderMusicUI();
-  }
-}
-
 async function toggleMusicPlayback() {
   if (!state.music.enabled || !state.music.currentTrack) {
     openMusicDimension();
     return;
   }
   try {
-    if (state.music.source === "local_composer") {
-      if (state.music.playing) await soundscapeEngine.pause();
-      else await soundscapeEngine.resume();
-      state.music.playing = !state.music.playing;
-      state.music.status = state.music.playing ? "generated_playing" : "generated_paused";
-    } else {
-      const snapshot = state.music.playing ? await musicProvider.pause() : await musicProvider.resume();
-      applyMusicSnapshot(snapshot);
-    }
-  } catch (error) {
-    state.music.status = error.code || "playback_failed";
-    state.music.error = error.message;
-    state.music.playing = false;
-  }
-  renderMusicUI();
-}
-
-async function stepMusic(direction) {
-  if (state.music.source === "local_composer") return openMusicDimension();
-  if (!state.music.configured || !state.music.authorized) return openMusicDimension();
-  try {
-    applyMusicSnapshot(direction === "previous" ? await musicProvider.previous() : await musicProvider.next());
-    await persistMusicPreferences();
+    if (state.music.playing) await soundscapeEngine.pause();
+    else await soundscapeEngine.resume();
+    state.music.playing = !state.music.playing;
+    state.music.status = state.music.playing ? "generated_playing" : "generated_paused";
   } catch (error) {
     state.music.status = error.code || "playback_failed";
     state.music.error = error.message;
@@ -1474,27 +1358,26 @@ async function stepMusic(direction) {
 async function changeMusicVolume(value) {
   state.music.volume = Math.min(1, Math.max(0, Number(value)));
   state.music.muted = false;
-  if (state.music.source === "local_composer") soundscapeEngine.setVolume(state.music.volume);
-  else await musicProvider.setVolume(state.music.volume);
+  soundscapeEngine.setVolume(state.music.volume);
   await persistMusicPreferences();
   renderMusicUI();
 }
 
 async function toggleMusicMute() {
   state.music.muted = !state.music.muted;
-  if (state.music.source === "local_composer") soundscapeEngine.setVolume(state.music.muted ? 0 : state.music.volume);
-  else await musicProvider.setVolume(state.music.muted ? 0 : state.music.volume);
+  soundscapeEngine.setVolume(state.music.muted ? 0 : state.music.volume);
   renderMusicUI();
 }
 
 async function disableMusicDimension() {
+  if (elements.musicDialog.open) elements.musicDialog.close();
   await soundscapeEngine.destroy();
-  applyMusicSnapshot(await musicProvider.destroy());
   state.music.enabled = false;
   state.music.playing = false;
   state.music.error = null;
   state.music.status = "idle";
   state.music.currentTrack = null;
+  state.music.minimized = false;
   state.music.source = "local_composer";
   await persistMusicPreferences();
   renderMusicUI();
@@ -2771,9 +2654,14 @@ $("world-map-cross-open").addEventListener("click", () => {
   openCrossExam();
 });
 $("music-dialog-close").addEventListener("click", closeMusicDimension);
+elements.musicDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeMusicDimension();
+});
+elements.musicDialogMinimize.addEventListener("click", minimizeMusicDimension);
+elements.musicFooterMinimize.addEventListener("click", minimizeMusicDimension);
 $("music-mini-open").addEventListener("click", openMusicDimension);
 elements.musicEnable.addEventListener("click", generateLocalSoundscape);
-elements.musicAuthorize.addEventListener("click", connectAppleMusic);
 elements.musicDisable.addEventListener("click", disableMusicDimension);
 elements.musicRewrite.addEventListener("click", async () => {
   rewriteMusicBlueprint();
@@ -2784,6 +2672,24 @@ elements.musicCopyBlueprint.addEventListener("click", copyMusicBlueprint);
 elements.musicCreationTempo.addEventListener("input", () => {
   elements.musicTempoOutput.textContent = `${elements.musicCreationTempo.value} BPM`;
 });
+elements.musicVocalProfile.addEventListener("change", async () => {
+  state.music.vocalProfile = elements.musicVocalProfile.value;
+  rewriteMusicBlueprint();
+  await persistMusicPreferences();
+});
+document.querySelectorAll("[data-music-instrument]").forEach((input) => {
+  input.addEventListener("change", async () => {
+    const selected = [...document.querySelectorAll("[data-music-instrument]:checked")];
+    if (!selected.length) {
+      input.checked = true;
+      showToast("至少保留一种乐器。", 2200);
+      return;
+    }
+    state.music.creationInstruments = selected.map((item) => item.dataset.musicInstrument);
+    rewriteMusicBlueprint();
+    await persistMusicPreferences();
+  });
+});
 document.querySelectorAll("[data-music-template]").forEach((button) => {
   button.addEventListener("click", async () => {
     applyMusicCreationTemplate(button.dataset.musicTemplate);
@@ -2792,20 +2698,11 @@ document.querySelectorAll("[data-music-template]").forEach((button) => {
 });
 elements.musicPlayToggle.addEventListener("click", toggleMusicPlayback);
 elements.musicMiniToggle.addEventListener("click", toggleMusicPlayback);
-elements.musicPrevious.addEventListener("click", () => stepMusic("previous"));
-elements.musicNext.addEventListener("click", () => stepMusic("next"));
-elements.musicMiniNext.addEventListener("click", () => stepMusic("next"));
 elements.musicMiniMute.addEventListener("click", toggleMusicMute);
 elements.musicVolume.addEventListener("input", () => {
   elements.musicVolumeOutput.textContent = `${Math.round(Number(elements.musicVolume.value) * 100)}%`;
 });
 elements.musicVolume.addEventListener("change", () => changeMusicVolume(elements.musicVolume.value));
-elements.musicShuffle.addEventListener("change", async () => {
-  state.music.shuffle = elements.musicShuffle.checked;
-  if (state.music.tracks.length) applyMusicSnapshot(await musicProvider.setShuffle(state.music.shuffle));
-  await persistMusicPreferences();
-  renderMusicUI();
-});
 $("cross-exam-close").addEventListener("click", () => elements.crossExamDialog.close());
 elements.crossExamRun.addEventListener("click", runCrossExam);
 document.querySelectorAll("[data-cross-focus]").forEach((button) => {
@@ -2877,7 +2774,8 @@ elements.adminUsageLock.addEventListener("click", lockAdminUsage);
   if (initialParams.get("start") === "register") openRegistrationFromLink();
   state.token = await storage.get(STORAGE_KEYS.token);
   state.workspace = (await storage.get(STORAGE_KEYS.workspace)) || "general";
-  state.activeProduct = await storage.get(STORAGE_KEYS.activeProduct);
+  state.activeProduct = null;
+  await storage.remove(STORAGE_KEYS.activeProduct);
   if (Capacitor.isNativePlatform() && !configuredApiBase) {
     elements.authError.textContent = "移动端构建尚未配置正式 HTTPS API 地址。";
   }

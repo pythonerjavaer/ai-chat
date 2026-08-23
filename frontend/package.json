@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5500",
     "build": "vite build",
-    "test:music": "node --test src/music-provider.test.js",
+    "test:music": "node --test src/music-creator.test.js",
     "preview": "vite preview --host 127.0.0.1 --port 5500",
     "mobile:sync": "npm run build && cap sync",
     "android:open": "cap open android",
