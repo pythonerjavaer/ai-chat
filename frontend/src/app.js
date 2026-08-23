@@ -14,6 +14,8 @@ const STORAGE_KEYS = {
   workspace: "frostfire_workspace",
 };
 const WORKSPACE_ORDER = ["legal", "general", "finance"];
+const CHATGPT_MONITOR_SOURCE_COUNT = 5;
+const RECRUITMENT_REFRESH_LABEL = "公开源 + AI 补漏 ↻";
 const WORKSPACE_META = {
   legal: { symbol: "§", eyebrow: "FROST", themeName: "寒冰域", label: "寒冰域", hero: "有些东西决定世界如何运行，也决定什么不能被越过。", description: "当前从合同、合规、义务、期限与风险开始。", lens: "来源" },
   general: { symbol: "✦", eyebrow: "AURORA", themeName: "极光域", label: "极光域", hero: "让散落的信息逐渐形成属于你的知识世界。", description: "当前从资料、文档、对话与可追溯问答开始。", lens: "来源" },
@@ -62,6 +64,7 @@ const state = {
   recruitmentProfile: null,
   recruitmentJobs: [],
   recruitmentWatches: [],
+  recruitmentSyncStatus: null,
   pendingLaunch: null,
 };
 
@@ -129,6 +132,12 @@ const elements = {
   adminUsageSeries: $("admin-usage-series"), adminUsageRefresh: $("admin-usage-refresh"),
   adminUsageLock: $("admin-usage-lock"), adminUsageClose: $("admin-usage-close"),
 };
+
+if (elements.recruitmentRefresh) {
+  elements.recruitmentRefresh.textContent = RECRUITMENT_REFRESH_LABEL;
+  elements.recruitmentRefresh.title = "同步公开招聘来源，并在 15 分钟冷却允许时运行一次低频 AI 补漏；会产生少量 Token 消耗。";
+  elements.recruitmentRefresh.setAttribute("aria-label", "刷新公开源并运行低频 AI 补漏");
+}
 
 function activeWorkspace() {
   const rawWorkspace = state.workspaces.find((item) => item.id === state.workspace) || {
@@ -304,6 +313,8 @@ async function loadHomeRecruitmentAlerts() {
     ]);
     state.recruitmentJobs = data.jobs || [];
     state.recruitmentWatches = watchData.watches || watchData || [];
+    const syncStatus = chatgptSyncFromJobs(data);
+    if (syncStatus) renderRecruitmentSyncStatus(syncStatus);
     renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
   } catch (_) {
     elements.homeDeadlineAlerts.classList.add("hidden");
@@ -1295,6 +1306,246 @@ function setRecruitmentStatus(message) {
   if (elements.recruitmentStatus) elements.recruitmentStatus.textContent = message;
 }
 
+function valueAtPaths(source, paths) {
+  for (const path of paths) {
+    const value = path.split(".").reduce((current, key) => current?.[key], source);
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return null;
+}
+
+function syncCount(source, paths, sources, sourcePaths) {
+  const directValue = valueAtPaths(source, paths);
+  const direct = Number(directValue);
+  if (directValue !== null && Number.isFinite(direct) && direct >= 0) return direct;
+  let found = false;
+  const total = (sources || []).reduce((sum, item) => {
+    const rawValue = valueAtPaths(item, sourcePaths);
+    const value = Number(rawValue);
+    if (rawValue === null || !Number.isFinite(value) || value < 0) return sum;
+    found = true;
+    return sum + value;
+  }, 0);
+  return found ? total : null;
+}
+
+function formatSyncTime(value, fallback = "等待首次同步") {
+  if (!value) return fallback;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: parsed.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(parsed);
+}
+
+function chatgptSyncFromJobs(data) {
+  return data?.data_status?.chatgpt_sync
+    || data?.chatgpt_sync
+    || data?.data_status?.sync?.chatgpt
+    || null;
+}
+
+function ensureRecruitmentSyncPanel() {
+  const existing = $("recruitment-chatgpt-sync");
+  if (existing) return existing;
+
+  const panel = document.createElement("section");
+  panel.id = "recruitment-chatgpt-sync";
+  panel.className = "recruitment-sync-panel";
+  panel.setAttribute("role", "status");
+  panel.setAttribute("aria-live", "polite");
+
+  const header = makeElement("div", "recruitment-sync-header");
+  const identity = makeElement("div", "recruitment-sync-identity");
+  const orbit = makeElement("span", "recruitment-sync-orbit");
+  orbit.setAttribute("aria-hidden", "true");
+  orbit.append(...Array.from({ length: CHATGPT_MONITOR_SOURCE_COUNT }, () => makeElement("i", "unknown")));
+  const title = document.createElement("div");
+  const eyebrow = makeElement("small", "", "CONTROLLED CHAT BRIDGE");
+  const heading = makeElement("strong", "", `${CHATGPT_MONITOR_SOURCE_COUNT} 个 ChatGPT 监控源`);
+  heading.dataset.syncTitle = "true";
+  title.append(eyebrow, heading);
+  identity.append(orbit, title);
+  const badge = makeElement("span", "recruitment-sync-badge pending", "等待同步");
+  badge.dataset.syncBadge = "true";
+  header.append(identity, badge);
+
+  const description = makeElement(
+    "p",
+    "recruitment-sync-description",
+    "由受控同步桥读取指定监控对话，只向冰焰提交结构化机会信号；这不是 ChatGPT API 直连。",
+  );
+  const metrics = makeElement("div", "recruitment-sync-metrics");
+  [
+    ["最后同步", "last-sync", "等待首次同步"],
+    ["已核验", "accepted", "—"],
+    ["待核验", "pending", "—"],
+    ["已拒绝", "rejected", "—"],
+  ].forEach(([label, key, value]) => {
+    const metric = document.createElement("article");
+    metric.dataset.syncMetric = key;
+    metric.append(makeElement("small", "", label), makeElement("strong", "", value));
+    metrics.appendChild(metric);
+  });
+  const footer = makeElement("footer", "recruitment-sync-footer");
+  footer.append(
+    makeElement("span", "", "受控桥接 · 非 ChatGPT API 直连"),
+    makeElement("b", "", "状态待后端回报"),
+  );
+  panel.append(header, description, metrics, footer);
+
+  const disclaimer = document.querySelector(".recruitment-results .recruitment-disclaimer");
+  if (disclaimer?.parentNode) disclaimer.parentNode.insertBefore(panel, disclaimer);
+  return panel;
+}
+
+function renderRecruitmentSyncStatus(rawStatus) {
+  const panel = ensureRecruitmentSyncPanel();
+  const status = rawStatus && typeof rawStatus === "object" ? rawStatus : null;
+  const sources = Array.isArray(status?.sources) ? status.sources : [];
+  const expectedRaw = Number(valueAtPaths(status, ["expected_source_count", "expected_sources", "configured_source_count"]));
+  const expected = Number.isFinite(expectedRaw) && expectedRaw > 0 ? expectedRaw : CHATGPT_MONITOR_SOURCE_COUNT;
+  const connectedValue = valueAtPaths(status, ["connected_source_count", "active_source_count", "source_count"]);
+  const connected = connectedValue !== null && Number.isFinite(Number(connectedValue)) && Number(connectedValue) >= 0
+    ? Number(connectedValue)
+    : (sources.length || null);
+  const lastSyncedAt = valueAtPaths(status, [
+    "last_synced_at", "last_sync_at", "last_completed_at", "completed_at", "updated_at",
+  ]);
+  const latestAccepted = syncCount(status, [
+    "accepted", "verified", "accepted_count", "verified_count", "counts.accepted", "counts.verified",
+  ], [], []);
+  const latestPending = syncCount(status, [
+    "pending", "pending_count", "pending_verification", "pending_verification_count", "counts.pending",
+  ], [], []);
+  const latestRejected = syncCount(status, [
+    "rejected", "skipped", "rejected_count", "skipped_count", "counts.rejected", "counts.skipped",
+  ], [], []);
+  const sourceAccepted = syncCount(null, [], sources, ["accepted", "verified", "accepted_count", "verified_count"]);
+  const sourcePending = syncCount(null, [], sources, ["pending", "pending_count", "pending_verification"]);
+  const sourceRejected = syncCount(null, [], sources, ["rejected", "skipped", "rejected_count", "skipped_count"]);
+  const inventoryAccepted = syncCount(status, ["inventory_accepted", "counts.inventory_accepted"], [], [])
+    ?? latestAccepted
+    ?? sourceAccepted;
+  const inventoryPending = syncCount(status, ["inventory_pending", "counts.inventory_pending"], [], [])
+    ?? latestPending
+    ?? sourcePending;
+  const inventoryRejected = syncCount(status, ["inventory_rejected", "counts.inventory_rejected"], [], [])
+    ?? latestRejected
+    ?? sourceRejected;
+  const rawState = String(valueAtPaths(status, ["status", "state", "bridge_status"]) || "").toLowerCase();
+  const isRunning = /running|syncing|in_progress/.test(rawState);
+  const isError = /error|failed|unavailable/.test(rawState);
+  const isDisabled = /disabled|paused|inactive/.test(rawState);
+  const allSourcesConnected = connected != null && connected >= expected;
+  const noReviewBacklog = (latestPending == null || latestPending === 0)
+    && (latestRejected == null || latestRejected === 0);
+  const isSynced = rawState === "synced" && allSourcesConnected && Boolean(lastSyncedAt) && noReviewBacklog;
+  const isPartial = rawState === "partial"
+    || (connected != null && connected > 0 && !isSynced)
+    || (latestPending != null && latestPending > 0)
+    || (latestRejected != null && latestRejected > 0);
+  const visualState = isRunning
+    ? "running"
+    : isError
+      ? "error"
+      : isDisabled
+        ? "disabled"
+        : isSynced
+          ? "synced"
+          : isPartial
+            ? "partial"
+            : "pending";
+  const badgeCopy = {
+    running: "正在同步",
+    error: "同步异常",
+    disabled: "桥接暂停",
+    synced: "同步完成",
+    partial: "部分同步",
+    pending: "等待同步",
+  }[visualState];
+
+  panel.dataset.state = visualState;
+  panel.querySelector("[data-sync-title]").textContent = `${expected} 个 ChatGPT 监控源`;
+  const badge = panel.querySelector("[data-sync-badge]");
+  badge.className = `recruitment-sync-badge ${visualState}`;
+  badge.textContent = badgeCopy;
+  const metricValues = {
+    "last-sync": formatSyncTime(lastSyncedAt),
+    accepted: inventoryAccepted == null ? "—" : Number(inventoryAccepted).toLocaleString("zh-CN"),
+    pending: inventoryPending == null ? "—" : Number(inventoryPending).toLocaleString("zh-CN"),
+    rejected: inventoryRejected == null ? "—" : Number(inventoryRejected).toLocaleString("zh-CN"),
+  };
+  Object.entries(metricValues).forEach(([key, value]) => {
+    const target = panel.querySelector(`[data-sync-metric="${key}"] strong`);
+    if (target) target.textContent = value;
+  });
+
+  const nodes = [...panel.querySelectorAll(".recruitment-sync-orbit i")];
+  nodes.forEach((node, index) => {
+    const source = sources[index];
+    const sourceState = String(source?.status || source?.state || "").toLowerCase();
+    node.className = source
+      ? (/error|failed|rejected/.test(sourceState)
+        ? "error"
+        : (!source.last_seen_at || /pending|waiting|new/.test(sourceState) ? "pending" : "active"))
+      : (status && connected != null && index < connected
+        ? (visualState === "error" ? "error" : visualState === "pending" ? "pending" : "active")
+        : "unknown");
+    node.title = source?.title || source?.name || `监控源 ${index + 1}`;
+  });
+  const footerStatus = panel.querySelector(".recruitment-sync-footer b");
+  footerStatus.textContent = !status
+    ? "状态待后端回报"
+    : connected == null
+      ? `${expected} 个配置目标`
+      : visualState === "synced"
+        ? `${expected} / ${expected} 已同步`
+        : `${Math.min(connected, expected)} / ${expected} 源已回传`;
+  state.recruitmentSyncStatus = status;
+}
+
+function formatHistoricalAiSearch(webSearch, triggeredThisRun = false) {
+  if (!webSearch || typeof webSearch !== "object") return "AI 补漏尚无历史运行记录";
+  const status = String(webSearch.status || "").toLowerCase();
+  const timestamp = webSearch.completed_at || webSearch.last_attempt_at || webSearch.updated_at || webSearch.last_run_at;
+  const label = triggeredThisRun ? "本次 AI 补漏" : "上次 AI 补漏";
+  const timeCopy = timestamp ? `（${formatSyncTime(timestamp, "")}）` : "";
+  if (status === "success" || status === "completed") {
+    const jobsValue = webSearch.jobs ?? webSearch.count ?? webSearch.candidates;
+    const jobs = Number(jobsValue);
+    return jobsValue == null || !Number.isFinite(jobs)
+      ? `${label}${timeCopy}已完成`
+      : `${label}${timeCopy}发现 ${jobs.toLocaleString("zh-CN")} 条候选`;
+  }
+  if (status === "error" || status === "failed") return `${label}${timeCopy}未完成`;
+  if (status === "running" || status === "in_progress") return `AI 补漏正在独立后台运行${timeCopy}`;
+  return `${label}${timeCopy}暂无可展示结果`;
+}
+
+function formatDeepSearchOutcome(sourceResult) {
+  const webSearch = sourceResult?.web_search;
+  const ranThisTime = sourceResult?.web_search_ran === true
+    || sourceResult?.web_search_triggered === true
+    || webSearch?.triggered_this_run === true;
+  if (ranThisTime) return formatHistoricalAiSearch(webSearch, true);
+  const nextDueCopy = sourceResult?.next_due_at
+    ? `，${formatSyncTime(sourceResult.next_due_at, "稍后")} 后可再次运行`
+    : "";
+  const skipCopy = {
+    deep_search_cooldown: `AI 补漏：15 分钟冷却中，本次未调用模型${nextDueCopy}`,
+    web_search_disabled: "AI 补漏：服务端未启用，本次未调用模型",
+    web_search_not_started: "AI 补漏：本次未能启动，未将历史结果计作本轮",
+    deep_search_not_requested: "AI 补漏：本次未请求模型",
+  }[sourceResult?.skip_reason];
+  return skipCopy || `${formatHistoricalAiSearch(webSearch, false)}；本次未调用模型`;
+}
+
 function renderRecruitmentProfile(profile) {
   if (!profile) return;
   elements.recruitmentRoles.value = (profile.desired_roles || []).join("，");
@@ -1575,48 +1826,65 @@ async function refreshRecruitment() {
     renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
     renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
     renderRecruitmentMonitors(data.monitor_pools || []);
+    renderRecruitmentSyncStatus(chatgptSyncFromJobs(data));
     setRecruitmentStatus(data.data_status?.message || "已接收公开信号源");
+    return data;
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
     setRecruitmentStatus("公开信号源加载失败");
+    renderRecruitmentSyncStatus(state.recruitmentSyncStatus);
+    return null;
   }
 }
 
 async function refreshRecruitmentSource() {
+  const idleLabel = RECRUITMENT_REFRESH_LABEL;
   elements.recruitmentRefresh.disabled = true;
+  elements.recruitmentRefresh.classList.add("is-syncing");
+  elements.recruitmentRefresh.setAttribute("aria-busy", "true");
+  elements.recruitmentRefresh.textContent = "公开源 + AI 补漏同步中…";
+  elements.recruitmentError.textContent = "";
+  setRecruitmentStatus("正在同步公开来源、官网哨站与低频 AI 补漏；AI 有 15 分钟冷却并会产生少量 Token 消耗…");
   try {
     const results = await Promise.allSettled([
-      api("/recruitment/refresh", { method: "POST" }),
-      api("/recruitment/watches/refresh", { method: "POST", timeoutMs: 35000 }),
+      api("/recruitment/refresh?deep_search=true", { method: "POST", timeoutMs: 90000 }),
+      api("/recruitment/watches/refresh", { method: "POST", timeoutMs: 90000 }),
     ]);
     if (results.every((result) => result.status === "rejected")) throw results[0].reason;
-    await refreshRecruitment();
+    const refreshedData = await refreshRecruitment();
     const jobsOk = results[0].status === "fulfilled";
     const watchesOk = results[1].status === "fulfilled";
     const sourceResult = jobsOk ? results[0].value : null;
     const sourceCopy = sourceResult
       ? sourceResult.cached
-        ? "沿用 60 秒内的公开源结果"
-        : `读取 ${Number(sourceResult.count || 0).toLocaleString()} 条公开源候选`
-      : "公开信号源本次未完成";
-    const webSearch = sourceResult?.web_search;
-    const webSearchCopy = webSearch?.status === "success"
-      ? `AI 网页搜索发现 ${Number(webSearch.jobs || 0)} 条候选`
-      : webSearch?.status === "error"
-        ? "AI 网页搜索本轮未完成"
-        : "AI 网页搜索按低频周期运行";
+        ? "公开源：沿用 60 秒内的缓存结果"
+        : `公开源：返回 ${Number(sourceResult.count || 0).toLocaleString()} 条候选（非新增数）`
+      : "公开源：本次未完成";
+    const webSearchCopy = sourceResult
+      ? formatDeepSearchOutcome(sourceResult)
+      : "AI 补漏：本次未完成";
+    const watchResult = watchesOk ? results[1].value : null;
+    const checkedWatches = Number(watchResult?.checked ?? watchResult?.count ?? watchResult?.refreshed);
+    const watchCopy = watchesOk
+      ? (Number.isFinite(checkedWatches) ? `官网哨站：本次核对 ${checkedWatches.toLocaleString("zh-CN")} 个` : "官网哨站：本次已刷新")
+      : "官网哨站：本次未完成";
+    const bridgeCopy = refreshedData
+      ? "已读取受控桥当前状态，未将历史 AI 结果计作本轮"
+      : "受控桥状态本次未能重新读取，未将历史 AI 结果计作本轮";
     showToast(
-      jobsOk && watchesOk
-        ? `${sourceCopy}；${webSearchCopy}；官网变化雷达已刷新。`
-        : jobsOk
-          ? `${sourceCopy}；${webSearchCopy}；官网变化雷达本次未完成。`
-          : "官网变化雷达已刷新；公开信号源本次未完成。",
-      4500,
+      `${sourceCopy}；${watchCopy}；${webSearchCopy}。${bridgeCopy}。`,
+      7000,
     );
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
-    showToast("刷新未完成，请稍后重试。", 4500);
-  } finally { elements.recruitmentRefresh.disabled = false; }
+    setRecruitmentStatus("公开来源同步未完成；当前列表保持不变");
+    showToast("公开源或官网哨站同步未完成；当前岗位列表没有被清空，请稍后重试。", 5500);
+  } finally {
+    elements.recruitmentRefresh.disabled = false;
+    elements.recruitmentRefresh.classList.remove("is-syncing");
+    elements.recruitmentRefresh.removeAttribute("aria-busy");
+    elements.recruitmentRefresh.textContent = idleLabel;
+  }
 }
 
 async function openRecruitment() {

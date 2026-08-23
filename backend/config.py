@@ -75,7 +75,7 @@ def load_settings() -> Settings:
         recruitment_web_search_model=(
             os.getenv("RECRUITMENT_WEB_SEARCH_MODEL", "").strip()
             or os.getenv("AI_MODEL", "").strip()
-            or "gpt-4o-mini"
+            or "gpt-5.4-nano"
         ),
         recruitment_web_search_interval_minutes=max(
             60,

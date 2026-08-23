@@ -1,15 +1,25 @@
 openapi: 3.1.0
 info:
-  title: Frostfire Opportunity Monitor Ingest
-  version: 1.0.0
-  description: Push verified campus vacancies into the Future Opportunity Radar.
+  title: Frostfire Future Radar Bridge
+  version: 2.0.0
+  description: |
+    Push normalized campus opportunities from authorized external monitors into
+    Future Radar and inspect aggregate bridge health. This contract does not
+    grant access to ChatGPT conversations and never accepts browser cookies or
+    OpenAI API keys.
 servers:
-  - url: https://YOUR_RENDER_DOMAIN
+  - url: https://frostfire-ai.onrender.com
 paths:
   /api/recruitment/ingest:
     post:
       operationId: ingestRecruitmentJobs
-      summary: Push verified campus vacancies
+      summary: Submit new or updated campus opportunities
+      description: |
+        Idempotently accepts up to ten normalized opportunities. An empty jobs
+        array with a logical source_id is a heartbeat and records source health
+        without inventing a vacancy. Send only information the source monitor
+        is authorized to export. Stable source and item identifiers may be
+        retried safely.
       security:
         - recruitmentToken: []
       requestBody:
@@ -18,59 +28,387 @@ paths:
           application/json:
             schema:
               type: object
-              required: [jobs]
               properties:
                 jobs:
                   type: array
-                  minItems: 1
-                  maxItems: 100
+                  maxItems: 10
+                  default: []
                   items:
                     $ref: '#/components/schemas/RecruitmentJob'
+                source_id:
+                  type: [string, 'null']
+                  minLength: 1
+                  maxLength: 64
+                  pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'
+                  description: Batch source override; required when jobs is empty.
+                source_updated_at:
+                  type: [string, 'null']
+                  format: date-time
+                  description: Batch source timestamp used by heartbeat and as a fallback for job timestamps.
+              anyOf:
+                - required: [source_id]
+                  properties:
+                    source_id:
+                      type: string
+                - required: [jobs]
+                  properties:
+                    jobs:
+                      minItems: 1
+              additionalProperties: false
       responses:
         '200':
-          description: Accepted jobs and skipped records with reasons.
+          description: Idempotent ingest result, including accepted and rejected counts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
         '401':
           description: Missing or invalid monitor token.
+        '422':
+          description: Invalid request shape or field value.
+        '503':
+          description: Recruitment ingest is not configured on the server.
+  /api/recruitment/sync/status:
+    get:
+      operationId: getRecruitmentSyncStatus
+      summary: Inspect aggregate bridge status
+      description: |
+        Returns source-level timestamps and aggregate counts. It does not return
+        credentials, ChatGPT conversation content, private prompts, or cookies.
+      security:
+        - recruitmentToken: []
+      responses:
+        '200':
+          description: Aggregate status for the five configured monitor sources.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncStatus'
+        '401':
+          description: Missing or invalid monitor token.
+        '503':
+          description: Recruitment ingest is not configured on the server.
 components:
   securitySchemes:
     recruitmentToken:
       type: apiKey
       in: header
       name: X-Recruitment-Token
+      description: |
+        The Render RECRUITMENT_INGEST_TOKEN value. Store it in macOS Keychain or
+        another local secret store; never put it in this document or a Git file.
   schemas:
     RecruitmentJob:
       type: object
       required: [company, title, city, official_url]
       properties:
+        source_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'
+          default: external-monitor
+          description: Stable logical source ID, for example chatgpt-radar-01.
+        source_thread_id:
+          type: [string, 'null']
+          maxLength: 100
+          description: |
+            Optional compatibility field. For chatgpt-radar-01..05, omit the
+            real conversation ID: the server uses source_id and does not retain
+            the supplied thread value. Other source types retain only a short
+            SHA-256 reference, never the raw value.
+        source_item_id:
+          type: [string, 'null']
+          maxLength: 160
+          description: Stable item/message ID within the source conversation, when available.
+        source_updated_at:
+          type: [string, 'null']
+          format: date-time
+          description: ISO 8601 timestamp supplied by the source for this item.
+        external_id:
+          type: [string, 'null']
+          maxLength: 160
+          description: Stable vacancy or ATS requisition ID. Preferred idempotency key when available.
         company:
           type: string
+          minLength: 1
+          maxLength: 120
         title:
           type: string
+          minLength: 2
+          maxLength: 240
         city:
           type: string
+          minLength: 1
+          maxLength: 120
         employer_type:
           type: string
+          maxLength: 60
+          default: 重点雇主
         industry:
           type: string
+          maxLength: 80
         official_url:
           type: string
           format: uri
+          maxLength: 1000
           pattern: '^https://'
+          description: Direct official recruitment notice or authorized ATS URL.
         source:
           type: string
+          maxLength: 120
+          default: 动态监控 API
+          description: Human-readable source label; not a secret.
         opening_date:
-          type: string
+          type: [string, 'null']
           format: date
+          description: Promoted only when the exact submitted date appears in the readable official page.
         closing_date:
-          type: string
+          type: [string, 'null']
           format: date
+          description: Promoted only when the exact submitted date appears in the readable official page.
         requirements:
           type: string
+          maxLength: 2000
         tags:
           type: array
+          maxItems: 20
           items:
             type: string
+        evidence:
+          type: array
+          maxItems: 12
+          description: |
+            Short, non-secret evidence statements copied or paraphrased from an
+            authorized source. Each statement should explain which field it
+            supports; do not include full conversation transcripts, line breaks,
+            email addresses, or phone numbers. Evidence is audit context and
+            cannot replace deterministic verification of the official page.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 280
+            pattern: '^[^\r\n]+$'
         status:
           type: string
           enum: [open, closed]
           default: open
+      additionalProperties: false
+    SkippedItem:
+      type: object
+      properties:
+        title:
+          type: string
+        reason:
+          type: string
+      additionalProperties: true
+    IngestResult:
+      type: object
+      required:
+        - received
+        - accepted
+        - new
+        - updated
+        - duplicates
+        - stale
+        - pending
+        - rejected
+        - closed
+        - skipped
+        - received_at
+        - event_id
+        - event_ids
+      properties:
+        received:
+          type: integer
+          minimum: 0
+        accepted:
+          type: integer
+          minimum: 0
+        new:
+          type: integer
+          minimum: 0
+        updated:
+          type: integer
+          minimum: 0
+        duplicates:
+          type: integer
+          minimum: 0
+        stale:
+          type: integer
+          minimum: 0
+        pending:
+          type: integer
+          minimum: 0
+        rejected:
+          type: integer
+          minimum: 0
+        closed:
+          type: integer
+          minimum: 0
+        skipped:
+          type: array
+          items:
+            $ref: '#/components/schemas/SkippedItem'
+        received_at:
+          type: string
+          format: date-time
+        event_id:
+          type: [string, 'null']
+        event_ids:
+          type: array
+          items:
+            type: string
+      additionalProperties: true
+    SourceStatus:
+      type: object
+      properties:
+        source_id:
+          type: string
+        source_ref:
+          type: [string, 'null']
+          description: Privacy-preserving hash reference for non-standard sources; null for the five logical ChatGPT sources.
+        title:
+          type: string
+        status:
+          type: string
+        last_seen_at:
+          type: [string, 'null']
+          format: date-time
+        last_source_updated_at:
+          type: [string, 'null']
+          format: date-time
+        last_item_id:
+          type: [string, 'null']
+        accepted:
+          type: integer
+          minimum: 0
+          description: Accepted count in this source's latest event.
+        pending:
+          type: integer
+          minimum: 0
+          description: Pending count in this source's latest event.
+        rejected:
+          type: integer
+          minimum: 0
+          description: Rejected count in this source's latest event.
+        closed:
+          type: integer
+          minimum: 0
+          description: Closed count in this source's latest event.
+        latest_accepted:
+          type: integer
+          minimum: 0
+        latest_pending:
+          type: integer
+          minimum: 0
+        latest_rejected:
+          type: integer
+          minimum: 0
+        latest_closed:
+          type: integer
+          minimum: 0
+        inventory_accepted:
+          type: integer
+          minimum: 0
+        inventory_pending:
+          type: integer
+          minimum: 0
+        inventory_rejected:
+          type: integer
+          minimum: 0
+      additionalProperties: true
+    SyncEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        source_id:
+          type: string
+        source_ref:
+          type: [string, 'null']
+        received:
+          type: integer
+        accepted:
+          type: integer
+        new_count:
+          type: integer
+        updated_count:
+          type: integer
+        duplicate_count:
+          type: integer
+        stale_count:
+          type: integer
+        pending_count:
+          type: integer
+        rejected_count:
+          type: integer
+        closed_count:
+          type: integer
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: true
+    SyncStatus:
+      type: object
+      required:
+        - source_count
+        - expected_source_count
+        - connected_source_count
+        - last_synced_at
+        - accepted
+        - pending
+        - rejected
+        - inventory_accepted
+        - inventory_pending
+        - inventory_rejected
+        - sources
+        - recent_events
+      properties:
+        source_count:
+          type: integer
+          minimum: 0
+        expected_source_count:
+          type: integer
+          const: 5
+        connected_source_count:
+          type: integer
+          minimum: 0
+        last_synced_at:
+          type: [string, 'null']
+          format: date-time
+        accepted:
+          type: integer
+          minimum: 0
+          description: Sum of accepted counts from each source's latest event, not historical inventory.
+        pending:
+          type: integer
+          minimum: 0
+          description: Sum of pending counts from each source's latest event, not historical inventory.
+        rejected:
+          type: integer
+          minimum: 0
+          description: Sum of rejected counts from each source's latest event, not historical inventory.
+        inventory_accepted:
+          type: integer
+          minimum: 0
+          description: Current historical candidate inventory whose verification status is verified.
+        inventory_pending:
+          type: integer
+          minimum: 0
+          description: Current historical candidate inventory whose verification status is pending.
+        inventory_rejected:
+          type: integer
+          minimum: 0
+          description: Current historical candidate inventory whose verification status is rejected.
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceStatus'
+        recent_events:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncEvent'
+      additionalProperties: true
