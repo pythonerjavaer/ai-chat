@@ -37,6 +37,7 @@ BLOCKED_DISCOVERY_HOSTS = {
 EMPLOYER_TYPE_BY_POOL = {
     "state_energy_resources": "央国企",
     "state_tech_transport": "央国企科技",
+    "tobacco_monopoly": "烟草/专卖",
     "policy_and_major_banks": "银行/金融",
     "securities_funds_asset": "券商/基金",
     "insurance_fintech": "保险/综合金融",

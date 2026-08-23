@@ -9,6 +9,7 @@ from typing import Any
 EMPLOYER_TYPE_ALIASES: dict[str, set[str]] = {
     "央国企": {"央国企", "央企能源", "央企资源"},
     "央国企科技": {"央国企科技", "央企科技", "央企通信", "央企交通"},
+    "烟草/专卖": {"烟草/专卖", "烟草", "中烟", "专卖体系"},
     "银行/金融": {"银行/金融", "政策性金融", "政策行", "国有大行"},
     "券商/基金": {"券商/基金", "券商", "基金", "资管"},
     "保险/综合金融": {"保险/综合金融", "保险", "综合金融"},
@@ -74,6 +75,7 @@ STRONG_PLATFORM_MARKERS = (
     "字节", "byteplus", "蚂蚁", "美团", "京东", "百度", "拼多多", "大疆", "dji",
     "中芯国际", "smic", "hsbc", "汇丰", "ubs", "citi", "罗兰贝格", "roland berger",
     "中信期货", "中信建投", "华泰证券", "国泰海通", "嘉实基金", "富国基金",
+    "国家烟草专卖局", "中国烟草总公司", "中烟工业", "上海烟草集团",
 )
 
 STATE_ENERGY_MARKERS = (
@@ -84,6 +86,7 @@ STATE_TECH_MARKERS = (
     "中国移动", "中国电信", "中国联通", "中国铁塔", "中国电子", "中国电科", "航天",
     "航空工业", "中国商飞", "中国铁路", "铁道", "交通建设", "中国一汽", "信通院", "中国船舶", "兵器",
 )
+TOBACCO_MARKERS = ("国家烟草专卖局", "中国烟草总公司", "中国烟草", "中烟工业", "烟草集团", "烟草专卖")
 BANK_MARKERS = (
     "人民银行", "国家开发银行", "进出口银行", "农业发展银行", "工商银行", "农业银行",
     "中国银行", "建设银行", "交通银行", "邮储银行", "政策性银行", "国有大行",
@@ -239,6 +242,8 @@ def semantic_employer_categories(job: dict[str, Any]) -> set[str]:
         categories.update({"央国企", "央企能源", "央企资源"})
     if _contains_any(text, STATE_TECH_MARKERS):
         categories.update({"央国企科技", "央企科技", "央企通信", "央企交通"})
+    if _contains_any(text, TOBACCO_MARKERS):
+        categories.update({"烟草/专卖", "烟草", "中烟", "专卖体系"})
     if _contains_any(text, BANK_MARKERS):
         categories.update({"银行/金融", "政策性金融", "政策行", "国有大行"})
     if _contains_any(text, SECURITIES_MARKERS):

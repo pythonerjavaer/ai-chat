@@ -35,6 +35,20 @@ def test_semantic_employer_filter_is_real_and_not_literal_only():
     assert not job_matches_profile(technology_job, {"employer_types": ["银行/金融"]})
 
 
+def test_tobacco_starfield_matches_official_and_provincial_employers():
+    tobacco_job = {
+        "company": "上海烟草集团",
+        "title": "2027届数字化管理校园招聘",
+        "city": "上海",
+        "employer_type": "国有企业",
+        "industry": "烟草专卖体系",
+        "requirements": "面向应届毕业生",
+        "tags": ["校园招聘"],
+    }
+    assert job_matches_profile(tobacco_job, {"employer_types": ["烟草/专卖"]})
+    assert not job_matches_profile(tobacco_job, {"employer_types": ["互联网企业"]})
+
+
 def test_populated_filter_dimensions_reduce_results_with_or_inside_each_field():
     job = {
         "company": "示例科技",

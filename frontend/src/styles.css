@@ -92,17 +92,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .brand > span:last-child { display: grid; gap: 1px; }
 .brand strong { color: #eefaff; background: linear-gradient(96deg, #baf8ff 0 24%, #f6fbff 43%, #ffd7bc 68%, #ff9a61 100%); background-clip: text; -webkit-background-clip: text; font-size: 17px; font-weight: 860; letter-spacing: .075em; -webkit-text-fill-color: transparent; text-shadow: 0 0 24px rgba(158,226,255,.08); }
 .brand small { color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .25em; }
-.brand-mark { position: relative; width: 46px; height: 46px; flex: 0 0 auto; overflow: visible; isolation: isolate; background: radial-gradient(circle at 50% 51%, rgba(244,255,255,.9) 0 3%, rgba(118,217,255,.24) 4% 12%, transparent 25%); filter: drop-shadow(-5px 0 12px rgba(50,218,255,.2)) drop-shadow(5px 0 13px rgba(255,86,44,.18)); }
-.brand-mark::before { content: ""; position: absolute; z-index: 0; inset: -5px; opacity: .72; background: conic-gradient(from 195deg, transparent 0 8%, rgba(76,228,255,.55) 9% 11%, transparent 12% 38%, rgba(255,96,45,.52) 39% 42%, transparent 43% 70%, rgba(219,251,255,.24) 71% 73%, transparent 74%); clip-path: polygon(50% 0, 58% 17%, 80% 6%, 76% 30%, 100% 37%, 78% 51%, 96% 70%, 69% 68%, 61% 100%, 49% 76%, 33% 97%, 31% 70%, 3% 71%, 23% 51%, 0 36%, 27% 31%, 22% 5%, 43% 18%); animation: brandCorona 9s linear infinite; }
-.brand-mark::after { content: ""; position: absolute; z-index: 6; width: 8px; height: 18px; left: 50%; top: 50%; background: linear-gradient(180deg, #fff, #c9f9ff 46%, #ffd0a7); clip-path: polygon(48% 0, 100% 24%, 62% 45%, 92% 63%, 37% 100%, 47% 67%, 0 50%, 42% 31%); box-shadow: -4px 0 12px rgba(119,237,255,.9), 4px 0 14px rgba(255,119,67,.9), 0 0 24px rgba(255,255,255,.75); transform: translate(-50%,-50%); animation: brandCorePulse 2.8s ease-in-out infinite; }
-.brand-mark > i, .brand-mark > b { position: absolute; z-index: 3; top: 7%; width: 57%; height: 86%; opacity: .98; }
-.brand-mark > i { left: -1%; background: linear-gradient(135deg, rgba(221,255,255,.98), #6ff0ff 25%, #2c99ed 62%, #4861de 100%); clip-path: polygon(4% 51%, 28% 32%, 19% 4%, 56% 24%, 92% 0, 82% 37%, 100% 50%, 76% 62%, 86% 100%, 50% 76%, 12% 94%, 25% 64%); filter: drop-shadow(-5px 1px 8px rgba(70,226,255,.62)); transform-origin: right center; animation: brandIceBreathe 3.8s ease-in-out infinite; }
-.brand-mark > b { right: -1%; background: linear-gradient(225deg, #fff0bf 0, #ffbd5a 20%, #ff613c 55%, #d9153f 82%, #721058 100%); clip-path: polygon(96% 50%, 72% 30%, 83% 2%, 51% 24%, 17% 0, 26% 37%, 0 50%, 24% 63%, 13% 100%, 51% 75%, 89% 94%, 75% 63%); filter: drop-shadow(5px 1px 9px rgba(255,92,42,.68)); transform-origin: left center; animation: brandFireBreathe 3.2s ease-in-out infinite -.7s; }
-.brand-mark .brand-fusion { position: absolute; z-index: 5; width: 15%; height: 72%; left: 50%; top: 50%; opacity: .88; background: linear-gradient(180deg, transparent, rgba(238,255,255,.96) 18%, #fff 52%, rgba(255,224,192,.9) 80%, transparent); clip-path: polygon(45% 0, 88% 18%, 54% 38%, 83% 52%, 35% 70%, 53% 100%, 8% 77%, 35% 58%, 0 42%, 39% 25%); filter: blur(.15px) drop-shadow(0 0 6px #fff); transform: translate(-50%,-50%); }
-.brand-mark .brand-orbit { position: absolute; z-index: 1; width: 112%; height: 45%; left: -6%; top: 28%; border: 1px solid rgba(198,242,255,.36); border-left-color: rgba(91,230,255,.8); border-right-color: rgba(255,119,68,.76); border-radius: 50%; box-shadow: 0 0 10px rgba(137,211,255,.1); transform: rotate(-18deg); animation: brandFusionOrbit 6.8s linear infinite; }
+.brand-mark { position: relative; width: 52px; height: 52px; flex: 0 0 auto; display: grid; place-items: center; overflow: visible; isolation: isolate; filter: drop-shadow(-7px 0 13px rgba(58,218,255,.28)) drop-shadow(8px 0 14px rgba(255,79,28,.3)); }
+.brand-mark::before { content: ""; position: absolute; z-index: 0; inset: -5px; border: 1px solid rgba(206,246,255,.22); border-left-color: rgba(81,230,255,.82); border-right-color: rgba(255,98,36,.78); border-radius: 50%; box-shadow: inset -7px 0 14px rgba(255,68,24,.08), inset 7px 0 14px rgba(52,211,255,.09), 0 0 24px rgba(120,202,255,.08); animation: brandCorona 9s linear infinite; }
+.brand-mark::after { content: ""; position: absolute; z-index: 4; width: 2px; height: 62%; left: 50%; top: 19%; background: linear-gradient(180deg, transparent, #fff 26% 72%, transparent); box-shadow: -3px 0 10px rgba(100,233,255,.86), 3px 0 12px rgba(255,116,54,.86), 0 0 24px rgba(255,255,255,.7); transform: translateX(-50%); animation: brandCorePulse 2.6s ease-in-out infinite; }
+.brand-mark > img { position: relative; z-index: 2; width: 164%; max-width: none; height: 164%; object-fit: contain; pointer-events: none; user-select: none; animation: brandMaterialPulse 4.8s ease-in-out infinite; }
+.brand-mark .brand-orbit { position: absolute; z-index: 3; width: 128%; height: 42%; left: -14%; top: 29%; border: 1px solid rgba(198,242,255,.38); border-left-color: rgba(91,230,255,.88); border-right-color: rgba(255,119,68,.82); border-radius: 50%; box-shadow: 0 0 12px rgba(137,211,255,.12); transform: rotate(-18deg); animation: brandFusionOrbit 6.8s linear infinite; }
 .brand-mark .brand-orbit::after { content: ""; position: absolute; width: 4px; height: 4px; right: 5px; top: 2px; border-radius: 50%; background: #fff4d6; box-shadow: 0 0 8px #ff9e58, 0 0 18px rgba(255,90,42,.8); }
 @keyframes brandCorona { to { transform: rotate(360deg); } }
-@keyframes brandCorePulse { 0%,100% { opacity: .72; transform: translate(-50%,-50%) scale(.82); } 50% { opacity: 1; transform: translate(-50%,-50%) scale(1.12); } }
+@keyframes brandCorePulse { 0%,100% { opacity: .72; transform: translateX(-50%) scaleY(.82); } 50% { opacity: 1; transform: translateX(-50%) scaleY(1.12); } }
+@keyframes brandMaterialPulse { 0%,100% { transform: scale(.98); filter: saturate(1.03) brightness(.98); } 50% { transform: scale(1.035); filter: saturate(1.2) brightness(1.1); } }
 @keyframes brandIceBreathe { 0%,100% { transform: scaleX(.94) translateX(1px); filter: drop-shadow(-5px 1px 7px rgba(70,226,255,.5)); } 50% { transform: scaleX(1.04) translateX(-1px); filter: drop-shadow(-7px 1px 12px rgba(70,226,255,.78)); } }
 @keyframes brandFireBreathe { 0%,100% { transform: scaleX(.93) translateX(-1px); filter: drop-shadow(5px 1px 8px rgba(255,92,42,.54)); } 50% { transform: scaleX(1.05) translateX(1px); filter: drop-shadow(8px 1px 13px rgba(255,92,42,.82)); } }
 @keyframes brandFusionOrbit { to { transform: rotate(342deg); } }
@@ -946,6 +944,29 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; backg
 .world-map-shell > footer button { min-height: 32px; padding: 0 11px; color: #a6b8ca; border: 1px solid rgba(153,203,238,.13); border-radius: 9px; background: rgba(255,255,255,.025); cursor: pointer; font-size: 8px; }
 .world-map-shell > footer button:hover { color: #edf9ff; border-color: rgba(160,218,255,.3); }
 @keyframes worldMapDrift { to { background-position: 44px 44px, 44px 44px; } }
+.compass-controls { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 5px 0 10px; color: #7793aa; font-size: 8px; font-weight: 800; letter-spacing: .12em; text-align: center; text-transform: uppercase; }
+.compass-controls button { width: 35px; height: 35px; display: grid; place-items: center; flex: 0 0 auto; padding: 0; color: #dffaff; border: 1px solid rgba(129,224,255,.26); border-radius: 50%; background: radial-gradient(circle, rgba(92,211,255,.14), rgba(12,26,42,.62)); box-shadow: inset 0 0 18px rgba(95,208,255,.06), 0 0 18px rgba(68,188,255,.07); cursor: pointer; font-size: 20px; transition: transform .2s, border-color .2s, box-shadow .2s; }
+.compass-controls button:hover { transform: scale(1.08); border-color: rgba(169,238,255,.55); box-shadow: 0 0 26px rgba(83,210,255,.18); }
+.rotary-compass { position: relative; display: block; height: 545px; overflow: hidden; border: 1px solid rgba(132,215,255,.09); border-radius: 28px; background: radial-gradient(ellipse at 50% 52%, rgba(116,101,255,.1), transparent 19%), radial-gradient(ellipse at 50% 54%, transparent 0 38%, rgba(91,219,255,.055) 39% 39.5%, transparent 40%), linear-gradient(180deg, rgba(0,0,0,.12), rgba(13,24,43,.05)); perspective: 950px; transform-style: preserve-3d; touch-action: pan-y; user-select: none; cursor: grab; isolation: isolate; }
+.rotary-compass::before, .rotary-compass::after { content: ""; position: absolute; z-index: 0; width: 76%; height: 48%; left: 12%; top: 27%; pointer-events: none; border: 1px solid rgba(118,222,255,.15); border-radius: 50%; box-shadow: 0 0 0 30px rgba(103,116,255,.025), 0 0 0 72px rgba(70,205,255,.012); transform: rotateX(67deg); animation: compassHaloPulse 7s ease-in-out infinite; }
+.rotary-compass::after { width: 52%; height: 33%; left: 24%; top: 35%; border-style: dashed; border-color: rgba(210,165,255,.17); animation-delay: -3.5s; }
+.rotary-compass.is-dragging { cursor: grabbing; }
+.rotary-compass > [data-launch] { position: absolute !important; left: 50% !important; top: 50% !important; width: min(23vw, 205px); min-height: 126px; height: auto; grid-column: auto !important; grid-row: auto !important; margin: 0; transform: translate(-50%,-50%) translate3d(var(--compass-x,0),var(--compass-y,0),0) scale(var(--compass-scale,.6)); transform-origin: center; opacity: var(--compass-opacity,.2); filter: blur(var(--compass-blur,0)); transition: transform .34s cubic-bezier(.2,.75,.22,1), opacity .28s ease, filter .28s ease, border-color .2s, box-shadow .2s; will-change: transform, opacity; }
+.rotary-compass.is-dragging > [data-launch] { transition: none; }
+.rotary-compass > [data-launch][aria-hidden="true"] { pointer-events: none; }
+.rotary-compass .world-entry:hover, .rotary-compass .world-map-card:hover { transform: translate(-50%,-50%) translate3d(var(--compass-x,0),var(--compass-y,0),0) scale(var(--compass-scale,.6)); }
+.world-entry-grid.rotary-compass { height: 560px; grid-template-columns: none; gap: 0; }
+.world-entry-grid.rotary-compass > .world-entry { width: min(25vw, 220px); min-height: 146px; grid-column: auto; }
+.world-map-grid.rotary-compass { height: 510px; grid-template-columns: none; grid-template-rows: none; gap: 0; }
+.world-map-grid.rotary-compass::before, .world-map-grid.rotary-compass::after { width: 76%; height: 48%; aspect-ratio: auto; left: 12%; top: 27%; transform: rotateX(67deg); }
+.world-map-grid.rotary-compass::after { width: 52%; height: 33%; left: 24%; top: 35%; }
+.world-map-grid.rotary-compass > .world-map-card { width: min(22vw, 190px); min-height: 120px; }
+.world-map-grid.rotary-compass > .world-compass-core { position: absolute; z-index: 6; width: 158px; min-height: 158px; left: 50%; top: 50%; grid-column: auto; grid-row: auto; pointer-events: none; transform: translate(-50%,-50%); }
+.world-entry.oblivion, .world-map-card.oblivion { --world-color: 190, 163, 103; border-color: rgba(202,174,111,.27); background: radial-gradient(circle at 86% 18%, rgba(181,154,91,.15), transparent 31%), linear-gradient(145deg, rgba(91,82,67,.15), rgba(7,12,19,.9)); }
+.world-entry.oblivion .world-entry-icon { color: #d8c08a; border-color: rgba(214,190,136,.4); background: rgba(179,151,91,.07); box-shadow: inset 0 0 18px rgba(194,166,103,.1), 0 0 26px rgba(161,134,79,.12); animation: oblivionGlyph 5s ease-in-out infinite; }
+.world-map-card.oblivion > i { color: #d9c08b; }
+@keyframes compassHaloPulse { 0%,100% { opacity: .55; filter: drop-shadow(0 0 8px rgba(82,211,255,.08)); } 50% { opacity: 1; filter: drop-shadow(0 0 18px rgba(127,118,255,.16)); } }
+@keyframes oblivionGlyph { 0%,100% { transform: rotate(-5deg); opacity: .72; } 50% { transform: rotate(6deg) scale(1.06); opacity: 1; } }
 .concept-trace { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 9px 15px; max-width: 380px; margin: 28px auto; }
 .concept-trace span { padding: 13px 15px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.026); font-size: 12px; }
 .concept-trace i { grid-column: 1 / -1; justify-self: center; }
@@ -1247,6 +1268,110 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 .admin-usage-privacy { margin: 15px 2px 0; color: #5f7486; font-size: 8px; line-height: 1.65; }
 @keyframes adminPulse { 50% { opacity: .45; transform: scale(.72); } }
 
+.oblivion-archive-dialog { width: min(96vw, 1120px); max-width: none; max-height: 94dvh; padding: 0; overflow: hidden; color: #eeeae1; border: 1px solid rgba(206,181,124,.27); border-radius: 26px; background: transparent; box-shadow: 0 46px 150px rgba(0,0,0,.8), 0 0 80px rgba(175,143,78,.08); }
+.oblivion-archive-dialog::backdrop { background: radial-gradient(circle at 48% 40%, rgba(137,118,78,.13), transparent 38%), rgba(1,3,7,.91); backdrop-filter: blur(17px); }
+.oblivion-archive-shell { position: relative; max-height: 94dvh; overflow-y: auto; isolation: isolate; background: radial-gradient(circle at 14% 4%, rgba(115,154,184,.09), transparent 29%), radial-gradient(circle at 88% 9%, rgba(175,139,70,.1), transparent 28%), linear-gradient(148deg, #0e1117, #080b10 52%, #13110e); }
+.oblivion-atmosphere { position: absolute; z-index: 0; inset: 0; overflow: hidden; pointer-events: none; opacity: .76; }
+.oblivion-atmosphere::before { content: ""; position: absolute; inset: 0; opacity: .34; background-image: linear-gradient(rgba(218,199,158,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(218,199,158,.025) 1px, transparent 1px); background-size: 56px 56px; mask-image: linear-gradient(#000, transparent 80%); }
+.oblivion-atmosphere i { position: absolute; width: 1px; height: 72%; top: 15%; background: linear-gradient(transparent, rgba(216,192,137,.48), transparent); box-shadow: 0 0 20px rgba(188,157,91,.16); animation: archiveTimeline 10s ease-in-out infinite; }
+.oblivion-atmosphere i:first-child { left: 19%; transform: rotate(8deg); }
+.oblivion-atmosphere i:nth-child(2) { right: 18%; transform: rotate(-6deg); animation-delay: -5s; }
+.oblivion-atmosphere span { position: absolute; width: 60%; height: 1px; left: 20%; top: 41%; background: linear-gradient(90deg, transparent, rgba(198,177,126,.45), rgba(183,218,235,.3), transparent); box-shadow: 0 0 18px rgba(183,164,120,.13); }
+.oblivion-archive-shell > *:not(.oblivion-atmosphere) { position: relative; z-index: 1; }
+.oblivion-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 22px; padding: 28px 30px 21px; border-bottom: 1px solid rgba(207,184,135,.12); }
+.oblivion-header .overline { color: #c4a967; }
+.oblivion-header h2 { margin: 7px 0 5px; font-family: "Songti SC", "STSong", Georgia, serif; font-size: clamp(32px, 5vw, 48px); font-weight: 560; letter-spacing: .08em; }
+.oblivion-header p { margin: 0 0 7px; color: #ddd4c1; font-family: "Songti SC", "STSong", Georgia, serif; font-size: 17px; }
+.oblivion-header small { display: block; max-width: 650px; color: #8f8e89; font-size: 10px; line-height: 1.7; }
+.oblivion-privacy { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 16px; margin: 18px 30px 0; padding: 12px 15px; color: #97958f; border: 1px solid rgba(207,184,135,.12); border-left-color: rgba(210,180,111,.52); background: rgba(198,170,108,.035); }
+.oblivion-privacy span { color: #c6ad72; font-size: 8px; font-weight: 850; letter-spacing: .13em; white-space: nowrap; }
+.oblivion-privacy p { margin: 0; font-size: 9px; line-height: 1.6; }
+.oblivion-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; padding: 18px 30px; }
+.oblivion-tabs button { min-height: 58px; display: grid; align-content: center; gap: 4px; padding: 8px 12px; text-align: left; color: #9c9c98; border: 1px solid rgba(203,186,148,.1); background: rgba(255,255,255,.018); cursor: pointer; transition: border-color .2s, background .2s, color .2s, transform .2s; }
+.oblivion-tabs button:hover { transform: translateY(-2px); border-color: rgba(211,183,119,.25); }
+.oblivion-tabs button.active { color: #f0e9db; border-color: rgba(215,183,111,.42); background: linear-gradient(120deg, rgba(176,146,81,.14), rgba(106,134,151,.06)); box-shadow: inset 0 0 24px rgba(199,164,90,.045); }
+.oblivion-tabs span { font-size: 12px; font-weight: 750; }
+.oblivion-tabs small { color: #716f6b; font-size: 6px; font-weight: 800; letter-spacing: .12em; }
+.oblivion-tabs button.active small { color: #b49b66; }
+.oblivion-body { min-height: 450px; padding: 0 30px 25px; }
+.oblivion-overview { margin-bottom: 14px; }
+.oblivion-overview-heading, .oblivion-editor > header, .oblivion-detail > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 14px; }
+.oblivion-overview-heading h3, .oblivion-editor h3, .oblivion-detail h3 { margin: 4px 0 0; font-size: 23px; letter-spacing: -.025em; }
+.oblivion-overview-heading > button, .oblivion-save { min-height: 42px; display: inline-flex; align-items: center; gap: 22px; padding: 0 14px 0 17px; color: #14110b; border: 0; background: linear-gradient(110deg, #d5c18b, #a8864e); box-shadow: 0 12px 28px rgba(157,125,67,.14); cursor: pointer; font-size: 10px; font-weight: 850; }
+.oblivion-overview-heading > button b, .oblivion-save b { font-size: 18px; }
+.oblivion-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 7px; }
+.oblivion-stats article { min-height: 88px; display: grid; align-content: space-between; padding: 13px; border: 1px solid rgba(205,184,139,.11); background: linear-gradient(145deg, rgba(214,183,113,.055), rgba(114,145,164,.025)); }
+.oblivion-stats small { color: #6f6b62; font-size: 7px; }
+.oblivion-stats strong { overflow-wrap: anywhere; color: #e4d5b1; font-family: Georgia, serif; font-size: clamp(15px, 2vw, 24px); font-weight: 500; }
+.oblivion-stats span { color: #88857f; font-size: 8px; }
+.oblivion-filters { display: grid; grid-template-columns: minmax(180px, 1.5fr) repeat(4, minmax(110px, .8fr)); gap: 7px; margin: 14px 0; }
+.oblivion-filters label { display: grid; gap: 5px; color: #777771; font-size: 7px; font-weight: 800; letter-spacing: .08em; }
+.oblivion-filters input, .oblivion-filters select { width: 100%; min-width: 0; height: 38px; padding: 0 11px; color: #dfd9cc; border: 1px solid rgba(205,184,139,.12); background: rgba(0,0,0,.18); outline: none; }
+.oblivion-filters input:focus, .oblivion-filters select:focus { border-color: rgba(213,184,116,.42); box-shadow: 0 0 0 3px rgba(180,149,83,.07); }
+.oblivion-filters select:disabled { opacity: .62; }
+.oblivion-filters .featured select { border-color: rgba(199,171,108,.32); }
+.oblivion-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.oblivion-entry-card { position: relative; min-width: 0; display: grid; gap: 9px; padding: 17px; overflow: hidden; border: 1px solid rgba(206,185,141,.13); background: linear-gradient(145deg, rgba(91,95,99,.08), rgba(12,14,18,.8)); }
+.oblivion-entry-card::after { content: ""; position: absolute; width: 60%; height: 1px; right: -12%; top: 27px; background: linear-gradient(90deg, transparent, rgba(197,172,111,.3), transparent); transform: rotate(-8deg); }
+.oblivion-entry-card.memory { border-left-color: rgba(135,189,213,.38); }
+.oblivion-entry-card.unfinished { border-left-color: rgba(205,170,100,.42); }
+.oblivion-entry-card.lost_world { border-left-color: rgba(174,162,137,.34); }
+.oblivion-entry-card > * { position: relative; z-index: 1; }
+.oblivion-entry-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.oblivion-entry-card header div { display: grid; gap: 3px; }
+.oblivion-entry-card header span { color: #7d7d78; font-size: 7px; font-weight: 800; letter-spacing: .11em; }
+.oblivion-entry-card header strong { color: #c8c4b9; font-size: 10px; }
+.oblivion-entry-card header > b { padding: 4px 7px; color: #c5ad73; border: 1px solid rgba(205,175,108,.2); font-size: 7px; font-weight: 750; }
+.oblivion-entry-card h4 { margin: 3px 0 0; color: #eee9df; font-family: "Songti SC", "STSong", Georgia, serif; font-size: 19px; font-weight: 560; }
+.oblivion-entry-date { color: #777772; font-size: 8px; }
+.oblivion-entry-card > p { min-height: 48px; margin: 0; color: #a3a19c; font-size: 10px; line-height: 1.65; white-space: pre-wrap; }
+.oblivion-entry-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.oblivion-entry-tags span { padding: 3px 6px; color: #9b9586; border: 1px solid rgba(193,176,138,.11); font-size: 7px; }
+.oblivion-entry-card footer, .oblivion-detail > footer { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 10px; border-top: 1px solid rgba(202,184,146,.08); }
+.oblivion-entry-card footer button, .oblivion-detail button, .oblivion-editor header button, .oblivion-import-panel button, .oblivion-footer button { min-height: 31px; padding: 0 10px; color: #aaa69d; border: 1px solid rgba(203,185,147,.13); background: rgba(255,255,255,.018); cursor: pointer; font-size: 8px; }
+.oblivion-entry-card footer button.highlight { color: #e2cc94; border-color: rgba(211,179,103,.3); }
+.oblivion-entry-card footer button.danger, .oblivion-detail button.danger { margin-left: auto; color: #ad7d78; }
+.oblivion-empty { grid-column: 1 / -1; min-height: 260px; display: grid; place-content: center; justify-items: center; gap: 9px; padding: 30px; text-align: center; border: 1px dashed rgba(203,184,143,.14); background: radial-gradient(circle, rgba(177,149,87,.04), transparent 55%); }
+.oblivion-empty i { color: #b49b64; font-family: Georgia, serif; font-size: 34px; font-style: normal; text-shadow: 0 0 24px rgba(179,148,78,.3); }
+.oblivion-empty h3 { margin: 0; font-family: "Songti SC", "STSong", Georgia, serif; font-size: 21px; font-weight: 500; }
+.oblivion-empty p { margin: 0; color: #85837e; font-size: 10px; }
+.oblivion-empty button { margin-top: 8px; min-height: 38px; padding: 0 14px; color: #d7c18d; border: 1px solid rgba(206,176,107,.29); background: rgba(191,156,83,.06); cursor: pointer; }
+.oblivion-editor { max-width: 760px; margin: 0 auto; padding: 6px 0 18px; }
+.oblivion-editor form { display: grid; }
+.oblivion-editor fieldset { margin: 0 0 17px; padding: 0; border: 0; }
+.oblivion-editor legend { margin-bottom: 8px; color: #b7b0a2; font-size: 11px; font-weight: 650; }
+.oblivion-editor .field input, .oblivion-editor .field textarea, .oblivion-editor .field select { color: #e7e1d6; border-color: rgba(203,184,144,.15); border-radius: 0; background: rgba(0,0,0,.2); }
+.oblivion-editor .field textarea { white-space: pre-wrap; }
+.oblivion-type-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.oblivion-type-options label { cursor: pointer; }
+.oblivion-type-options input { position: absolute; opacity: 0; }
+.oblivion-type-options span { min-height: 62px; display: grid; align-content: center; gap: 4px; padding: 10px 12px; color: #aaa69e; border: 1px solid rgba(204,185,146,.13); background: rgba(255,255,255,.017); }
+.oblivion-type-options small { color: #6e6d69; font-size: 8px; }
+.oblivion-type-options input:checked + span { color: #eadfc7; border-color: rgba(214,183,112,.42); background: rgba(187,151,77,.08); box-shadow: inset 0 0 22px rgba(187,151,77,.04); }
+.oblivion-form-row { display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 12px; }
+.oblivion-blurred { display: flex; align-items: center; gap: 9px; color: #aaa69e; font-size: 10px; cursor: pointer; }
+.oblivion-blurred input { accent-color: #b69757; }
+.oblivion-save { justify-content: space-between; justify-self: end; min-width: 210px; }
+.oblivion-detail { max-width: 820px; margin: 0 auto; padding: 6px 0 18px; }
+.oblivion-detail header small { color: #89877f; font-size: 9px; }
+.oblivion-detail > article { padding: 22px; border: 1px solid rgba(204,185,147,.12); background: rgba(255,255,255,.015); }
+.oblivion-detail > article p { margin: 0; color: #bbb7ae; font-size: 11px; line-height: 1.9; white-space: pre-wrap; }
+.oblivion-detail > article h4 { margin: 24px 0 7px; color: #d7c69d; font-size: 11px; }
+.oblivion-detail .oblivion-entry-tags { margin-top: 18px; }
+.oblivion-future-links { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 12px; padding: 13px; border: 1px dashed rgba(203,184,145,.12); }
+.oblivion-future-links strong { margin-right: 4px; font-size: 9px; }
+.oblivion-future-links small { margin-right: auto; color: #756f63; font-size: 7px; }
+.oblivion-future-links button:disabled { opacity: .44; cursor: not-allowed; }
+.oblivion-import-panel { min-height: 260px; display: grid; place-content: center; justify-items: center; gap: 22px; text-align: center; }
+.oblivion-import-panel h3 { margin: 6px 0; font-size: 23px; }
+.oblivion-import-panel p { margin: 0; color: #88857f; font-size: 10px; }
+.oblivion-import-panel > div:last-child { display: flex; gap: 8px; }
+.oblivion-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 30px 20px; border-top: 1px solid rgba(203,184,146,.1); }
+.oblivion-footer > div { display: flex; gap: 7px; }
+.oblivion-footer small { color: #666560; font-size: 7px; }
+.oblivion-footer b { color: #9d8b63; }
+@keyframes archiveTimeline { 0%,100% { opacity: .25; transform: translateY(-8%) rotate(8deg); } 50% { opacity: .78; transform: translateY(8%) rotate(8deg); } }
+
 @media (max-width: 1180px) {
   .app-header { grid-template-columns: 170px minmax(0,1fr) auto; gap: 8px; }
   .header-actions { min-width: max-content; gap: 7px; }
@@ -1508,6 +1633,35 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
   .photon-result-meta dd { white-space: normal; }
   .photon-projection-header p { font-size: 10px; }
   .photon-projection-header small { max-width: none; }
+}
+
+@media (max-width: 820px) {
+  .brand-mark { width: 42px; height: 42px; }
+  .brand.compact .brand-mark { width: 38px; height: 38px; }
+  .compass-controls { gap: 9px; margin-bottom: 7px; font-size: 7px; letter-spacing: .07em; }
+  .compass-controls button { width: 32px; height: 32px; }
+  .world-entry-grid.rotary-compass, .world-map-grid.rotary-compass { display: block; height: 470px; grid-template-columns: none; grid-template-rows: none; overflow: hidden; border-radius: 20px; }
+  .world-entry-grid.rotary-compass > .world-entry, .world-map-grid.rotary-compass > .world-map-card, .world-map-card:nth-of-type(n) { position: absolute !important; left: 50% !important; top: 50% !important; width: min(70vw, 245px); min-height: 128px; grid-column: auto !important; grid-row: auto !important; padding: 14px; transform: translate(-50%,-50%) translate3d(var(--compass-x,0),var(--compass-y,0),0) scale(var(--compass-scale,.6)); }
+  .world-map-grid.rotary-compass > .world-compass-core { position: absolute; width: 112px; min-height: 112px; border-radius: 50%; }
+  .world-compass-core span { font-size: 17px; }
+  .oblivion-archive-dialog { width: 96vw; border-radius: 20px; }
+  .oblivion-header { padding: 21px 19px 16px; }
+  .oblivion-header h2 { font-size: 34px; }
+  .oblivion-header p { font-size: 14px; }
+  .oblivion-privacy { grid-template-columns: 1fr; gap: 5px; margin: 14px 19px 0; }
+  .oblivion-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 14px 19px; }
+  .oblivion-tabs button:first-child { grid-column: 1 / -1; }
+  .oblivion-body { padding: 0 19px 20px; }
+  .oblivion-overview-heading { align-items: flex-start; flex-direction: column; }
+  .oblivion-overview-heading > button { width: 100%; justify-content: space-between; }
+  .oblivion-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .oblivion-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .oblivion-filters label:first-child { grid-column: 1 / -1; }
+  .oblivion-list { grid-template-columns: 1fr; }
+  .oblivion-type-options { grid-template-columns: 1fr; }
+  .oblivion-form-row { grid-template-columns: 1fr; }
+  .oblivion-save { width: 100%; justify-self: stretch; }
+  .oblivion-footer { align-items: flex-start; flex-direction: column; padding: 15px 19px 19px; }
 }
 
 @media (max-width: 360px) {

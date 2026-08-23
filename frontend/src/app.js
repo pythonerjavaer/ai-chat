@@ -4,6 +4,7 @@ import { Capacitor } from "@capacitor/core";
 import { Haptics, ImpactStyle } from "@capacitor/haptics";
 import { Preferences } from "@capacitor/preferences";
 import { MUSIC_CREATION_TEMPLATES, buildMusicBlueprint, soundscapeEngine } from "./music-creator.js";
+import { initOblivionArchive, openOblivionArchive } from "./oblivion-archive.js";
 import "./styles.css";
 
 marked.setOptions({ gfm: true, breaks: true });
@@ -250,6 +251,115 @@ function playWorkspaceEntry(workspaceId) {
   playSceneEntry(elements.appView, 2400);
 }
 
+const rotaryCompasses = new Map();
+
+function setupRotaryCompass(container) {
+  if (!container || rotaryCompasses.has(container.dataset.rotaryCompass)) return;
+  const id = container.dataset.rotaryCompass;
+  const cards = [...container.querySelectorAll("[data-launch]")];
+  if (!cards.length) return;
+  const compass = {
+    id,
+    container,
+    cards,
+    rotation: 0,
+    startRotation: 0,
+    startX: 0,
+    dragging: false,
+    moved: false,
+    suppressClickUntil: 0,
+  };
+  const step = () => (Math.PI * 2) / compass.cards.length;
+  const render = () => {
+    const compact = window.innerWidth <= 520;
+    const radiusX = compact ? Math.min(122, container.clientWidth * .36) : Math.min(id === "landing" ? 320 : 300, container.clientWidth * .39);
+    const radiusY = compact ? 62 : id === "landing" ? 104 : 94;
+    let selectedIndex = 0;
+    let selectedDepth = -1;
+    compass.cards.forEach((card, index) => {
+      const angle = compass.rotation + index * step();
+      const cosine = Math.cos(angle);
+      const depth = (cosine + 1) / 2;
+      const scale = .54 + depth * .46;
+      const x = Math.sin(angle) * radiusX;
+      const y = cosine * radiusY;
+      card.style.setProperty("--compass-x", `${x}px`);
+      card.style.setProperty("--compass-y", `${y}px`);
+      card.style.setProperty("--compass-scale", scale.toFixed(3));
+      card.style.setProperty("--compass-opacity", (.12 + depth * .88).toFixed(3));
+      card.style.setProperty("--compass-blur", `${((1 - depth) * 2.6).toFixed(2)}px`);
+      card.style.zIndex = String(Math.round(10 + depth * 90));
+      const interactive = depth > .7;
+      card.setAttribute("aria-hidden", String(!interactive));
+      card.tabIndex = interactive ? 0 : -1;
+      if (depth > selectedDepth) {
+        selectedDepth = depth;
+        selectedIndex = index;
+      }
+    });
+    container.dataset.selectedProduct = compass.cards[selectedIndex].dataset.launch || "";
+  };
+  const snap = () => {
+    compass.rotation = Math.round(compass.rotation / step()) * step();
+    container.classList.add("is-snapping");
+    render();
+    window.setTimeout(() => container.classList.remove("is-snapping"), 360);
+  };
+  const rotate = (direction) => {
+    compass.rotation -= direction * step();
+    snap();
+  };
+  container.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    compass.dragging = true;
+    compass.moved = false;
+    compass.startX = event.clientX;
+    compass.startRotation = compass.rotation;
+    container.classList.add("is-dragging");
+    container.setPointerCapture(event.pointerId);
+  });
+  container.addEventListener("pointermove", (event) => {
+    if (!compass.dragging) return;
+    const delta = event.clientX - compass.startX;
+    if (Math.abs(delta) > 5) compass.moved = true;
+    compass.rotation = compass.startRotation + delta / Math.max(170, container.clientWidth) * Math.PI * 1.6;
+    render();
+  });
+  const endDrag = (event) => {
+    if (!compass.dragging) return;
+    compass.dragging = false;
+    container.classList.remove("is-dragging");
+    if (compass.moved) compass.suppressClickUntil = performance.now() + 420;
+    if (container.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
+    snap();
+  };
+  container.addEventListener("pointerup", endDrag);
+  container.addEventListener("pointercancel", endDrag);
+  container.addEventListener("click", (event) => {
+    if (performance.now() < compass.suppressClickUntil) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
+  container.addEventListener("keydown", (event) => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    event.preventDefault();
+    rotate(event.key === "ArrowRight" ? 1 : -1);
+  });
+  const controls = document.querySelector(`[data-compass-controls="${id}"]`);
+  controls?.querySelectorAll("[data-compass-step]").forEach((button) => {
+    button.addEventListener("click", () => rotate(Number(button.dataset.compassStep)));
+  });
+  compass.render = render;
+  rotaryCompasses.set(id, compass);
+  render();
+}
+
+function setupRotaryCompasses() {
+  document.querySelectorAll("[data-rotary-compass]").forEach(setupRotaryCompass);
+  window.addEventListener("resize", () => rotaryCompasses.forEach((compass) => compass.render()));
+}
+
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
@@ -361,7 +471,7 @@ async function enterApp() {
   await loadWorkspaces();
   await Promise.all([loadSessions(), loadDocuments(), loadHomeRecruitmentAlerts()]);
   newConversation();
-  const pendingLaunch = state.pendingLaunch;
+  const pendingLaunch = state.pendingLaunch || state.activeProduct;
   state.pendingLaunch = null;
   if (pendingLaunch) window.setTimeout(() => launchProduct(pendingLaunch), 0);
   if (!state.user.privacy_accepted && !elements.consentDialog.open) {
@@ -526,8 +636,8 @@ async function changeWorkspace(workspaceId) {
   state.workspace = workspaceId;
   state.sessionId = null;
   state.latestEvidence = { sources: [], tools: [] };
-  state.activeProduct = null;
-  await storage.remove(STORAGE_KEYS.activeProduct);
+  state.activeProduct = workspaceId;
+  await storage.set(STORAGE_KEYS.activeProduct, workspaceId);
   await storage.set(STORAGE_KEYS.workspace, workspaceId);
   await haptic();
   renderWorkspaceTabs();
@@ -1172,6 +1282,7 @@ function openWorldMap() {
   if (!elements.worldMapDialog.open) {
     elements.worldMapDialog.showModal();
     playSceneEntry(elements.worldMapDialog);
+    window.requestAnimationFrame(() => rotaryCompasses.get("world")?.render());
   }
 }
 
@@ -1669,9 +1780,12 @@ async function openPhotonProjection() {
 }
 
 async function launchProduct(product) {
+  state.activeProduct = product;
+  await storage.set(STORAGE_KEYS.activeProduct, product);
   if (elements.worldMapDialog.open) elements.worldMapDialog.close();
   if (product === "resonance") return openConcept(elements.resonanceDialog);
   if (product === "trace") return openConcept(elements.traceDialog);
+  if (product === "oblivion") return openOblivionArchive();
   if (!state.token) {
     state.pendingLaunch = product;
     if (WORKSPACE_ORDER.includes(product)) {
@@ -2286,13 +2400,49 @@ function renderRecruitmentDeadlineAlerts(jobs) {
   }
 }
 
+function selectedRecruitmentStarfields() {
+  return [...document.querySelectorAll(".recruitment-checks input:checked")].map((input) => input.value);
+}
+
+function fallbackRecruitmentCategories(job) {
+  const text = `${job.company || ""} ${job.title || ""} ${job.employer_type || ""} ${job.industry || ""}`.toLocaleLowerCase("zh-CN");
+  const categories = [];
+  const rules = [
+    ["央国企", ["石油", "石化", "海油", "国家电网", "国家能源", "华能", "华电", "大唐", "国家电投", "中核", "中化", "中粮", "五矿", "中铝"]],
+    ["央国企科技", ["中国移动", "中国电信", "中国联通", "中国铁塔", "中国电科", "中国电子", "航天", "航空工业", "中国商飞", "中国铁路", "中国船舶", "兵器"]],
+    ["烟草/专卖", ["烟草", "中烟", "烟草专卖"]],
+    ["银行/金融", ["人民银行", "国家开发银行", "进出口银行", "农业发展银行", "工商银行", "农业银行", "中国银行", "建设银行", "交通银行", "邮储银行"]],
+    ["券商/基金", ["证券", "基金", "资管", "资产管理", "期货", "投行"]],
+    ["保险/综合金融", ["保险", "人保", "人寿", "太平", "平安", "再保险"]],
+    ["互联网企业", ["腾讯", "阿里", "字节", "百度", "拼多多", "美团", "京东", "小米", "网易", "快手", "滴滴", "携程", "华为", "大疆", "互联网", "云计算"]],
+    ["快消/外企/咨询", ["宝洁", "联合利华", "欧莱雅", "雀巢", "玛氏", "可口可乐", "百事", "咨询", "kearney", "科尔尼", "麦肯锡", "德勤", "普华永道", "毕马威", "安永", "microsoft", "google", "apple", "nvidia", "hsbc", "汇丰"]],
+    ["量化私募", ["量化", "私募", "对冲基金", "point72", "幻方", "明汯", "衍复", "灵均", "宽德"]],
+  ];
+  rules.forEach(([category, markers]) => {
+    if (markers.some((marker) => text.includes(marker))) categories.push(category);
+  });
+  return categories;
+}
+
+function filterRecruitmentByStarfield(jobs) {
+  const selected = selectedRecruitmentStarfields();
+  if (!selected.length) return jobs;
+  return jobs.filter((job) => {
+    const categories = Array.isArray(job.employer_categories) && job.employer_categories.length
+      ? job.employer_categories
+      : fallbackRecruitmentCategories(job);
+    return selected.some((category) => categories.includes(category));
+  });
+}
+
 function renderRecruitmentJobs(jobs) {
   elements.recruitmentJobs.replaceChildren();
-  if (!jobs.length) {
+  const starfieldJobs = filterRecruitmentByStarfield(jobs);
+  if (!starfieldJobs.length) {
     elements.recruitmentJobs.innerHTML = '<div class="empty-list">当前筛选条件下没有达到 T3 以上的可投机会。减少一项筛选条件，或刷新公开信源后再试。</div>';
     return;
   }
-  const availableJobs = jobs.filter((job) => /^https:\/\//.test(job.url || ""));
+  const availableJobs = starfieldJobs.filter((job) => /^https:\/\//.test(job.url || ""));
   const tierDefinitions = [
     ["T0", "终极目标", "90–100"], ["T0.5", "准终极", "85–89"],
     ["T1", "核心主申", "80–84"], ["T1.5", "高质量重点", "75–79"],
@@ -2459,7 +2609,7 @@ async function refreshRecruitment() {
     renderRecruitmentProfile(profile);
     renderRecruitmentJobs(state.recruitmentJobs);
     renderRecruitmentWatches(state.recruitmentWatches);
-    renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
+    renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(state.recruitmentJobs));
     renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
     renderRecruitmentMonitors(data.monitor_pools || []);
     renderRecruitmentSyncStatus(chatgptSyncFromJobs(data));
@@ -2561,7 +2711,7 @@ async function saveRecruitment(event, { silent = false } = {}) {
     ]);
     state.recruitmentJobs = data.jobs || [];
     renderRecruitmentJobs(state.recruitmentJobs);
-    renderRecruitmentDeadlineAlerts(state.recruitmentJobs);
+    renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(state.recruitmentJobs));
     renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
     renderRecruitmentMonitors(data.monitor_pools || []);
     setRecruitmentStatus(data.data_status?.message || "已接收公开信号源");
@@ -2918,7 +3068,14 @@ $("recruitment-close").addEventListener("click", () => elements.recruitmentDialo
 elements.recruitmentRefresh.addEventListener("click", refreshRecruitmentSource);
 elements.recruitmentForm.addEventListener("submit", saveRecruitment);
 document.querySelectorAll(".recruitment-checks input").forEach((input) => {
-  input.addEventListener("change", scheduleRecruitmentAutoFilter);
+  input.addEventListener("change", () => {
+    state.recruitmentTierFilter = "ALL";
+    renderRecruitmentJobs(state.recruitmentJobs);
+    renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(state.recruitmentJobs));
+    const selected = selectedRecruitmentStarfields();
+    setRecruitmentStatus(selected.length ? `已即时筛选：${selected.join(" · ")}；正在同步保存你的星域坐标…` : "已显示全部信号星域；正在同步保存坐标…");
+    scheduleRecruitmentAutoFilter();
+  });
 });
 [elements.recruitmentRoles, elements.recruitmentIndustries, elements.recruitmentLocations].forEach((input) => {
   input.addEventListener("change", scheduleRecruitmentAutoFilter);
@@ -3069,6 +3226,9 @@ elements.adminUsageAuth.addEventListener("submit", async (event) => {
 elements.adminUsageRefresh.addEventListener("click", refreshAdminUsage);
 elements.adminUsageLock.addEventListener("click", lockAdminUsage);
 
+initOblivionArchive({ notify: showToast });
+setupRotaryCompasses();
+
 (async function bootstrap() {
   updateNetwork();
   await loadMusicPreferences();
@@ -3080,12 +3240,16 @@ elements.adminUsageLock.addEventListener("click", lockAdminUsage);
   if (initialParams.get("start") === "register") openRegistrationFromLink();
   state.token = await storage.get(STORAGE_KEYS.token);
   state.workspace = (await storage.get(STORAGE_KEYS.workspace)) || "general";
-  state.activeProduct = null;
-  await storage.remove(STORAGE_KEYS.activeProduct);
+  state.activeProduct = await storage.get(STORAGE_KEYS.activeProduct);
   if (Capacitor.isNativePlatform() && !configuredApiBase) {
     elements.authError.textContent = "移动端构建尚未配置正式 HTTPS API 地址。";
   }
-  if (!state.token) return;
+  if (!state.token) {
+    if (["oblivion", "resonance", "trace"].includes(state.activeProduct)) {
+      window.setTimeout(() => launchProduct(state.activeProduct), 80);
+    }
+    return;
+  }
   try {
     state.user = await api("/auth/me");
     await enterApp();

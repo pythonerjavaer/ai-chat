@@ -52,7 +52,7 @@ from .space_engine import (
     build_preflight,
     render_local_capsule,
 )
-from .recruitment import TIER_DEFINITIONS, job_matches_profile, score_job
+from .recruitment import TIER_DEFINITIONS, job_matches_profile, score_job, semantic_employer_categories
 from .recruitment_search import (
     WEB_SEARCH_SOURCE,
     WEB_SEARCH_STATE_KEY,
@@ -925,6 +925,8 @@ def recruitment_jobs(user: User) -> dict:
         for job in scored_jobs
         if job["days_left"] is None or job["days_left"] > 0
     ]
+    for job in scored_jobs:
+        job["employer_categories"] = sorted(semantic_employer_categories(job))
     below_priority_count = sum(
         job.get("tier_code") == "不建议投" for job in scored_jobs
     )

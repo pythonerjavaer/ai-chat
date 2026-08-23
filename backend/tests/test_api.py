@@ -939,8 +939,10 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         assert set(payload["data_status"]["tier_counts"]) == {
             "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3",
         }
-        assert len(payload["monitor_pools"]) == 8
+        assert len(payload["monitor_pools"]) == 9
+        assert any(pool["id"] == "tobacco_monopoly" for pool in payload["monitor_pools"])
         assert payload["jobs"]
+        assert all("employer_categories" in job for job in payload["jobs"])
         titles = {job["title"] for job in payload["jobs"]}
         assert "Strategy Manager Graduate（BytePlus）– 2027 Start" in titles
         assert "拼多多 2027届校园招聘提前批" not in titles
