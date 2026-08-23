@@ -180,6 +180,75 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'open'
             );
 
+            CREATE TABLE IF NOT EXISTS recruitment_ingest_candidates (
+                id TEXT PRIMARY KEY,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                source_key TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                source_thread_id TEXT,
+                source_item_id TEXT,
+                external_id TEXT,
+                source_updated_at TEXT,
+                company TEXT NOT NULL,
+                employer_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                city TEXT NOT NULL,
+                industry TEXT NOT NULL DEFAULT '',
+                official_url TEXT NOT NULL,
+                canonical_url TEXT NOT NULL,
+                source TEXT NOT NULL,
+                opening_date TEXT,
+                closing_date TEXT,
+                requirements TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '[]',
+                evidence TEXT NOT NULL DEFAULT '[]',
+                incoming_status TEXT NOT NULL DEFAULT 'open',
+                payload_hash TEXT NOT NULL,
+                verification_status TEXT NOT NULL DEFAULT 'pending',
+                verification_reason TEXT,
+                promoted_job_id TEXT,
+                verified_opening_date TEXT,
+                verified_closing_date TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                verified_at TEXT,
+                rejected_at TEXT,
+                FOREIGN KEY (promoted_job_id) REFERENCES recruitment_jobs(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS recruitment_ingest_sources (
+                source_key TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                source_thread_id TEXT,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                last_seen_at TEXT,
+                last_source_updated_at TEXT,
+                last_item_id TEXT,
+                last_event_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS recruitment_ingest_events (
+                id TEXT PRIMARY KEY,
+                source_key TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                source_thread_id TEXT,
+                received INTEGER NOT NULL DEFAULT 0,
+                accepted INTEGER NOT NULL DEFAULT 0,
+                new_count INTEGER NOT NULL DEFAULT 0,
+                updated_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                stale_count INTEGER NOT NULL DEFAULT 0,
+                pending_count INTEGER NOT NULL DEFAULT 0,
+                rejected_count INTEGER NOT NULL DEFAULT 0,
+                closed_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (source_key) REFERENCES recruitment_ingest_sources(source_key) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS recruitment_watches (
                 id TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL,
@@ -276,6 +345,22 @@ def init_db() -> None:
             "ON recruitment_jobs(status, closing_date)"
         )
         connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recruitment_ingest_candidates_source "
+            "ON recruitment_ingest_candidates(source_key, verification_status, last_seen_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recruitment_ingest_candidates_url "
+            "ON recruitment_ingest_candidates(canonical_url)"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_recruitment_ingest_sources_identity "
+            "ON recruitment_ingest_sources(source_id, COALESCE(source_thread_id, ''))"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recruitment_ingest_events_source_created "
+            "ON recruitment_ingest_events(source_key, created_at DESC)"
+        )
+        connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_recruitment_watches_user_url "
             "ON recruitment_watches(user_id, url)"
         )
@@ -290,6 +375,18 @@ def init_db() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_api_usage_events_user_created "
             "ON api_usage_events(user_id, created_at)"
+        )
+        _ensure_column(
+            connection,
+            "recruitment_ingest_candidates",
+            "verified_opening_date",
+            "TEXT",
+        )
+        _ensure_column(
+            connection,
+            "recruitment_ingest_candidates",
+            "verified_closing_date",
+            "TEXT",
         )
         for column, declaration in (
             ("education_level", "TEXT NOT NULL DEFAULT ''"),
@@ -1521,6 +1618,404 @@ def recruitment_watch_summary(user_id: int) -> dict[str, Any]:
         "errors": int(row["errors"] or 0),
         "last_checked_at": row["last_checked_at"],
         "last_changed_at": row["last_changed_at"],
+    }
+
+
+def recruitment_ingest_source_key(source_id: str, source_thread_id: str | None) -> str:
+    """Return the stable identity used for one external monitoring source."""
+    return f"{source_id.strip()}::{(source_thread_id or '').strip()}"
+
+
+def ensure_recruitment_ingest_sources(sources: list[dict[str, Any]]) -> None:
+    """Register expected sources without making an uncontacted source look synced."""
+    now = utc_now()
+    with connect() as connection:
+        for source in sources:
+            source_id = str(source["source_id"]).strip()
+            source_thread_id = str(source.get("source_thread_id") or "").strip() or None
+            source_key = recruitment_ingest_source_key(source_id, source_thread_id)
+            connection.execute(
+                """
+                INSERT INTO recruitment_ingest_sources
+                    (source_key, source_id, source_thread_id, title, status,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                ON CONFLICT(source_key) DO UPDATE SET
+                    title=excluded.title
+                """,
+                (
+                    source_key,
+                    source_id,
+                    source_thread_id,
+                    str(source.get("title") or source_id).strip()[:120],
+                    now,
+                    now,
+                ),
+            )
+
+
+def _decode_recruitment_ingest_candidate(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    for field in ("tags", "evidence"):
+        try:
+            item[field] = json.loads(item.get(field) or "[]")
+        except (TypeError, json.JSONDecodeError):
+            item[field] = []
+    return item
+
+
+def _source_timestamp_is_older(incoming: str | None, current: str | None) -> bool:
+    if not incoming or not current:
+        return False
+    try:
+        incoming_value = datetime.fromisoformat(incoming.replace("Z", "+00:00"))
+        current_value = datetime.fromisoformat(current.replace("Z", "+00:00"))
+        if incoming_value.tzinfo is None:
+            incoming_value = incoming_value.replace(tzinfo=timezone.utc)
+        if current_value.tzinfo is None:
+            current_value = current_value.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return incoming_value < current_value
+
+
+def _update_existing_recruitment_ingest_candidate(
+    connection: sqlite3.Connection,
+    existing: sqlite3.Row,
+    candidate: dict[str, Any],
+    now: str,
+) -> str:
+    if _source_timestamp_is_older(
+        candidate.get("source_updated_at"), existing["source_updated_at"]
+    ):
+        connection.execute(
+            "UPDATE recruitment_ingest_candidates SET last_seen_at = ? WHERE id = ?",
+            (now, existing["id"]),
+        )
+        return "stale"
+    if existing["payload_hash"] == candidate["payload_hash"]:
+        connection.execute(
+            """
+            UPDATE recruitment_ingest_candidates
+            SET last_seen_at = ?, source_updated_at = COALESCE(?, source_updated_at),
+                source_item_id = COALESCE(?, source_item_id)
+            WHERE id = ?
+            """,
+            (
+                now,
+                candidate.get("source_updated_at"),
+                candidate.get("source_item_id"),
+                existing["id"],
+            ),
+        )
+        return "duplicate"
+    connection.execute(
+        """
+        UPDATE recruitment_ingest_candidates
+        SET source_key=?, source_id=?, source_thread_id=?, source_item_id=?,
+            external_id=?, source_updated_at=?, company=?, employer_type=?, title=?,
+            city=?, industry=?, official_url=?, canonical_url=?, source=?,
+            opening_date=?, closing_date=?, requirements=?, tags=?, evidence=?,
+            incoming_status=?, payload_hash=?, verification_status='pending',
+            verification_reason=NULL, rejected_at=NULL, last_seen_at=?
+        WHERE id=?
+        """,
+        (
+            candidate["source_key"], candidate["source_id"],
+            candidate.get("source_thread_id"), candidate.get("source_item_id"),
+            candidate.get("external_id"), candidate.get("source_updated_at"),
+            candidate["company"], candidate["employer_type"], candidate["title"],
+            candidate["city"], candidate.get("industry", ""),
+            candidate["official_url"], candidate["canonical_url"], candidate["source"],
+            candidate.get("opening_date"), candidate.get("closing_date"),
+            candidate.get("requirements", ""),
+            json.dumps(candidate.get("tags", []), ensure_ascii=False),
+            json.dumps(candidate.get("evidence", []), ensure_ascii=False),
+            candidate.get("incoming_status", "open"), candidate["payload_hash"],
+            now, existing["id"],
+        ),
+    )
+    return "updated"
+
+
+def upsert_recruitment_ingest_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Persist an isolated candidate and recover safely from concurrent inserts."""
+    now = utc_now()
+    with connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute(
+            "SELECT * FROM recruitment_ingest_candidates WHERE dedupe_key = ?",
+            (candidate["dedupe_key"],),
+        ).fetchone()
+        if existing is None:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO recruitment_ingest_candidates
+                        (id, dedupe_key, source_key, source_id, source_thread_id,
+                         source_item_id, external_id, source_updated_at, company,
+                         employer_type, title, city, industry, official_url,
+                         canonical_url, source, opening_date, closing_date,
+                         requirements, tags, evidence, incoming_status, payload_hash,
+                         verification_status, first_seen_at, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            'pending', ?, ?)
+                    """,
+                    (
+                        candidate["id"], candidate["dedupe_key"], candidate["source_key"],
+                        candidate["source_id"], candidate.get("source_thread_id"),
+                        candidate.get("source_item_id"), candidate.get("external_id"),
+                        candidate.get("source_updated_at"), candidate["company"],
+                        candidate["employer_type"], candidate["title"], candidate["city"],
+                        candidate.get("industry", ""), candidate["official_url"],
+                        candidate["canonical_url"], candidate["source"],
+                        candidate.get("opening_date"), candidate.get("closing_date"),
+                        candidate.get("requirements", ""),
+                        json.dumps(candidate.get("tags", []), ensure_ascii=False),
+                        json.dumps(candidate.get("evidence", []), ensure_ascii=False),
+                        candidate.get("incoming_status", "open"), candidate["payload_hash"],
+                        now, now,
+                    ),
+                )
+                disposition = "new"
+            except sqlite3.IntegrityError:
+                existing = connection.execute(
+                    "SELECT * FROM recruitment_ingest_candidates WHERE dedupe_key = ?",
+                    (candidate["dedupe_key"],),
+                ).fetchone()
+                if existing is None:
+                    raise
+                disposition = _update_existing_recruitment_ingest_candidate(
+                    connection, existing, candidate, now
+                )
+        else:
+            disposition = _update_existing_recruitment_ingest_candidate(
+                connection, existing, candidate, now
+            )
+        row = connection.execute(
+            "SELECT * FROM recruitment_ingest_candidates WHERE dedupe_key = ?",
+            (candidate["dedupe_key"],),
+        ).fetchone()
+    result = _decode_recruitment_ingest_candidate(row)
+    result["disposition"] = disposition
+    return result
+
+
+def set_recruitment_ingest_candidate_verification(
+    candidate_id: str,
+    verification_status: str,
+    reason: str | None,
+    promoted_job_id: str | None = None,
+    verified_opening_date: str | None = None,
+    verified_closing_date: str | None = None,
+) -> dict[str, Any] | None:
+    now = utc_now()
+    verified_at = now if verification_status == "verified" else None
+    rejected_at = now if verification_status == "rejected" else None
+    with connect() as connection:
+        connection.execute(
+            """
+            UPDATE recruitment_ingest_candidates
+            SET verification_status=?, verification_reason=?,
+                promoted_job_id=COALESCE(?, promoted_job_id),
+                verified_at=COALESCE(?, verified_at),
+                rejected_at=?,
+                verified_opening_date=CASE WHEN ? = 'verified' THEN ?
+                                           ELSE verified_opening_date END,
+                verified_closing_date=CASE WHEN ? = 'verified' THEN ?
+                                           ELSE verified_closing_date END,
+                last_seen_at=last_seen_at
+            WHERE id=?
+            """,
+            (
+                verification_status,
+                reason,
+                promoted_job_id,
+                verified_at,
+                rejected_at,
+                verification_status,
+                verified_opening_date,
+                verification_status,
+                verified_closing_date,
+                candidate_id,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM recruitment_ingest_candidates WHERE id = ?",
+            (candidate_id,),
+        ).fetchone()
+    return _decode_recruitment_ingest_candidate(row) if row else None
+
+
+def record_recruitment_ingest_event(
+    *,
+    source_id: str,
+    source_thread_id: str | None,
+    title: str,
+    counts: dict[str, int],
+    last_item_id: str | None,
+    last_source_updated_at: str | None,
+) -> str:
+    now = utc_now()
+    event_id = str(uuid.uuid4())
+    source_key = recruitment_ingest_source_key(source_id, source_thread_id)
+    received = int(counts.get("received", 0))
+    rejected = int(counts.get("rejected", 0))
+    pending = int(counts.get("pending", 0))
+    event_status = (
+        "error" if received > 0 and rejected == received
+        else "partial" if rejected or pending
+        else "synced"
+    )
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO recruitment_ingest_sources
+                (source_key, source_id, source_thread_id, title, status, last_seen_at,
+                 last_source_updated_at, last_item_id, last_event_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_key) DO UPDATE SET
+                title=excluded.title, status=excluded.status,
+                last_seen_at=excluded.last_seen_at,
+                last_source_updated_at=CASE
+                    WHEN excluded.last_source_updated_at IS NULL
+                        THEN recruitment_ingest_sources.last_source_updated_at
+                    WHEN recruitment_ingest_sources.last_source_updated_at IS NULL
+                        THEN excluded.last_source_updated_at
+                    WHEN julianday(excluded.last_source_updated_at) >=
+                         julianday(recruitment_ingest_sources.last_source_updated_at)
+                        THEN excluded.last_source_updated_at
+                    ELSE recruitment_ingest_sources.last_source_updated_at
+                END,
+                last_item_id=COALESCE(excluded.last_item_id,
+                                      recruitment_ingest_sources.last_item_id),
+                last_event_id=excluded.last_event_id, updated_at=excluded.updated_at
+            """,
+            (
+                source_key, source_id, source_thread_id, title[:120], event_status, now,
+                last_source_updated_at, last_item_id, event_id, now, now,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO recruitment_ingest_events
+                (id, source_key, source_id, source_thread_id, received, accepted,
+                 new_count, updated_count, duplicate_count, stale_count, pending_count,
+                 rejected_count, closed_count, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id, source_key, source_id, source_thread_id, received,
+                int(counts.get("accepted", 0)), int(counts.get("new", 0)),
+                int(counts.get("updated", 0)), int(counts.get("duplicates", 0)),
+                int(counts.get("stale", 0)), pending, rejected,
+                int(counts.get("closed", 0)), event_status, now,
+            ),
+        )
+    return event_id
+
+
+def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]:
+    """Return aggregate source state without exposing the shared ingest token."""
+    with connect() as connection:
+        source_rows = connection.execute(
+            """
+            SELECT sources.*,
+                   events.accepted AS latest_accepted,
+                   events.pending_count AS latest_pending,
+                   events.rejected_count AS latest_rejected,
+                   events.closed_count AS latest_closed
+            FROM recruitment_ingest_sources AS sources
+            LEFT JOIN recruitment_ingest_events AS events
+              ON events.id = sources.last_event_id
+            ORDER BY sources.source_thread_id IS NULL,
+                     sources.created_at,
+                     sources.source_thread_id
+            """
+        ).fetchall()
+        candidate_rows = connection.execute(
+            """
+            SELECT source_key,
+                   SUM(CASE WHEN verification_status = 'verified' THEN 1 ELSE 0 END) accepted,
+                   SUM(CASE WHEN verification_status = 'pending' THEN 1 ELSE 0 END) pending,
+                   SUM(CASE WHEN verification_status = 'rejected' THEN 1 ELSE 0 END) rejected
+            FROM recruitment_ingest_candidates
+            GROUP BY source_key
+            """
+        ).fetchall()
+        event_rows = connection.execute(
+            """
+            SELECT id, source_id, source_thread_id, received, accepted,
+                   new_count, updated_count, duplicate_count, stale_count, pending_count,
+                   rejected_count, closed_count, status, created_at
+            FROM recruitment_ingest_events
+            ORDER BY created_at DESC
+            LIMIT 20
+            """
+        ).fetchall()
+    counts_by_source = {
+        row["source_key"]: {
+            "accepted": int(row["accepted"] or 0),
+            "pending": int(row["pending"] or 0),
+            "rejected": int(row["rejected"] or 0),
+        }
+        for row in candidate_rows
+    }
+    sources: list[dict[str, Any]] = []
+    for row in source_rows:
+        counts = counts_by_source.get(
+            row["source_key"], {"accepted": 0, "pending": 0, "rejected": 0}
+        )
+        latest_counts = {
+            "accepted": int(row["latest_accepted"] or 0),
+            "pending": int(row["latest_pending"] or 0),
+            "rejected": int(row["latest_rejected"] or 0),
+            "closed": int(row["latest_closed"] or 0),
+        }
+        sources.append({
+            "source_id": row["source_id"],
+            "source_ref": row["source_thread_id"],
+            "title": row["title"],
+            "status": row["status"],
+            "last_seen_at": row["last_seen_at"],
+            "last_source_updated_at": row["last_source_updated_at"],
+            "last_item_id": row["last_item_id"],
+            **latest_counts,
+            "latest_accepted": latest_counts["accepted"],
+            "latest_pending": latest_counts["pending"],
+            "latest_rejected": latest_counts["rejected"],
+            "latest_closed": latest_counts["closed"],
+            "inventory_accepted": counts["accepted"],
+            "inventory_pending": counts["pending"],
+            "inventory_rejected": counts["rejected"],
+        })
+    last_synced_at = max(
+        (source["last_seen_at"] for source in sources if source["last_seen_at"]),
+        default=None,
+    )
+    return {
+        "source_count": len(sources),
+        "expected_source_count": expected_source_count,
+        "connected_source_count": sum(source["last_seen_at"] is not None for source in sources),
+        "last_synced_at": last_synced_at,
+        "accepted": sum(source["latest_accepted"] for source in sources),
+        "pending": sum(source["latest_pending"] for source in sources),
+        "rejected": sum(source["latest_rejected"] for source in sources),
+        "inventory_accepted": sum(source["inventory_accepted"] for source in sources),
+        "inventory_pending": sum(source["inventory_pending"] for source in sources),
+        "inventory_rejected": sum(source["inventory_rejected"] for source in sources),
+        "sources": sources,
+        "recent_events": [
+            {
+                **{
+                    key: value
+                    for key, value in dict(row).items()
+                    if key != "source_thread_id"
+                },
+                "source_ref": row["source_thread_id"],
+            }
+            for row in event_rows
+        ],
     }
 
 

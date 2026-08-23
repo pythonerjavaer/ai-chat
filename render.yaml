@@ -31,7 +31,7 @@ services:
       - key: RECRUITMENT_WEB_SEARCH_ENABLED
         value: true
       - key: RECRUITMENT_WEB_SEARCH_MODEL
-        value: gpt-4o-mini
+        value: gpt-5.4-nano
       - key: RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES
         value: 360
       - key: RECRUITMENT_WEB_SEARCH_MAX_TOOL_CALLS

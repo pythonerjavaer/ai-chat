@@ -350,8 +350,54 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .recruitment-results { min-width: 0; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; overflow-anchor: none; padding: 23px; }
 .recruitment-results-heading { display: flex; align-items: end; justify-content: space-between; gap: 14px; margin-bottom: 10px; }
 .recruitment-results-heading h3 { margin: 5px 0 0; font-size: 20px; letter-spacing: -.035em; }
-.source-status { color: #8ec9d7; font-size: 9px; white-space: nowrap; }
+.source-status { min-height: 34px; padding: 0 10px; color: #8ec9d7; border: 1px solid rgba(112,218,244,.18); border-radius: 9px; background: rgba(46,164,201,.07); cursor: pointer; font-size: 9px; white-space: nowrap; transition: border-color .2s, color .2s, background .2s; }
+.source-status:hover { color: #c7f4ff; border-color: rgba(112,218,244,.36); background: rgba(46,164,201,.12); }
+.source-status:disabled { cursor: wait; opacity: .72; }
+.source-status.is-syncing { color: #c8fbff; border-color: rgba(103,229,224,.36); background: linear-gradient(100deg, rgba(47,167,205,.1), rgba(69,211,178,.15), rgba(47,167,205,.1)); background-size: 220% 100%; animation: syncButtonFlow 1.5s linear infinite; }
+@keyframes syncButtonFlow { to { background-position: -220% 0; } }
 .recruitment-source-copy { display: block; max-width: 540px; margin-top: 5px; color: var(--subtle); font-size: 8px; font-weight: 500; line-height: 1.45; }
+.recruitment-sync-panel { position: relative; display: grid; gap: 11px; margin: 0 0 13px; padding: 14px; overflow: hidden; border: 1px solid rgba(94,226,221,.18); border-radius: 14px; background: radial-gradient(circle at 87% 0, rgba(84,225,195,.12), transparent 38%), linear-gradient(135deg, rgba(22,112,147,.12), rgba(18,83,98,.07)); box-shadow: inset 0 1px rgba(218,253,255,.035); }
+.recruitment-sync-panel::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .26; background: linear-gradient(110deg, transparent 18%, rgba(138,247,255,.18) 48%, transparent 76%); transform: translateX(-105%); animation: bridgeScan 8s ease-in-out infinite; }
+.recruitment-sync-panel[data-state="error"] { border-color: rgba(255,129,103,.3); background: radial-gradient(circle at 87% 0, rgba(255,102,80,.12), transparent 38%), rgba(89,44,43,.08); }
+.recruitment-sync-panel[data-state="running"] { border-color: rgba(96,239,222,.38); }
+.recruitment-sync-panel[data-state="partial"] { border-color: rgba(255,193,104,.26); background: radial-gradient(circle at 87% 0, rgba(255,178,72,.1), transparent 38%), linear-gradient(135deg, rgba(22,112,147,.1), rgba(95,69,30,.07)); }
+.recruitment-sync-panel[data-state="synced"] { border-color: rgba(91,229,188,.3); }
+@keyframes bridgeScan { 0%, 62% { transform: translateX(-105%); } 82%, 100% { transform: translateX(105%); } }
+.recruitment-sync-header, .recruitment-sync-identity, .recruitment-sync-footer { position: relative; z-index: 1; display: flex; align-items: center; }
+.recruitment-sync-header, .recruitment-sync-footer { justify-content: space-between; gap: 12px; }
+.recruitment-sync-identity { min-width: 0; gap: 11px; }
+.recruitment-sync-identity > div { min-width: 0; display: grid; gap: 3px; }
+.recruitment-sync-identity small { color: #69c8d6; font-size: 7px; font-weight: 850; letter-spacing: .14em; }
+.recruitment-sync-identity strong { overflow: hidden; color: #e7fdff; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.recruitment-sync-orbit { position: relative; flex: 0 0 42px; width: 42px; height: 42px; border: 1px solid rgba(111,225,238,.22); border-radius: 50%; background: radial-gradient(circle, rgba(100,230,221,.18) 0 8%, transparent 9% 43%, rgba(83,211,222,.06) 44% 47%, transparent 48%); box-shadow: inset 0 0 18px rgba(83,211,222,.07), 0 0 18px rgba(59,210,210,.05); animation: syncOrbitPulse 3.4s ease-in-out infinite; }
+.recruitment-sync-orbit::after { content: ""; position: absolute; width: 18px; height: 1px; left: 50%; top: 50%; background: linear-gradient(90deg, rgba(116,239,228,.8), transparent); transform-origin: left center; animation: syncOrbitSweep 4s linear infinite; }
+.recruitment-sync-orbit i { position: absolute; width: 5px; height: 5px; border-radius: 50%; background: #587783; box-shadow: 0 0 7px currentColor; }
+.recruitment-sync-orbit i:nth-child(1) { left: 5px; top: 9px; }
+.recruitment-sync-orbit i:nth-child(2) { left: 20px; top: 3px; }
+.recruitment-sync-orbit i:nth-child(3) { right: 4px; top: 16px; }
+.recruitment-sync-orbit i:nth-child(4) { right: 9px; bottom: 5px; }
+.recruitment-sync-orbit i:nth-child(5) { left: 7px; bottom: 7px; }
+.recruitment-sync-orbit i.active { color: #70f0cf; background: #70f0cf; }
+.recruitment-sync-orbit i.pending { color: #ffd18b; background: #ffd18b; }
+.recruitment-sync-orbit i.error { color: #ff8878; background: #ff8878; }
+.recruitment-sync-orbit i.unknown { color: #56717c; background: #56717c; }
+@keyframes syncOrbitSweep { to { transform: rotate(360deg); } }
+@keyframes syncOrbitPulse { 50% { border-color: rgba(111,225,238,.4); box-shadow: inset 0 0 20px rgba(83,211,222,.12), 0 0 20px rgba(59,210,210,.1); } }
+.recruitment-sync-badge { flex: 0 0 auto; padding: 5px 7px; color: #829aa3; border: 1px solid rgba(133,169,179,.16); border-radius: 999px; background: rgba(97,130,139,.07); font-size: 7px; font-weight: 850; letter-spacing: .06em; }
+.recruitment-sync-badge.synced { color: #a6f4dd; border-color: rgba(100,229,190,.24); background: rgba(54,181,145,.1); }
+.recruitment-sync-badge.partial { color: #ffd59b; border-color: rgba(255,192,105,.25); background: rgba(212,138,48,.1); }
+.recruitment-sync-badge.pending { color: #a8bbc2; border-color: rgba(133,169,179,.16); background: rgba(97,130,139,.07); }
+.recruitment-sync-badge.running { color: #b8f5ff; border-color: rgba(99,220,239,.28); background: rgba(48,167,194,.12); animation: bridgeBadgePulse 1.2s ease-in-out infinite; }
+.recruitment-sync-badge.error { color: #ffb3a4; border-color: rgba(255,129,103,.28); background: rgba(211,76,57,.1); }
+.recruitment-sync-badge.disabled { color: #b5a3bd; border-color: rgba(187,145,197,.2); background: rgba(124,84,133,.08); }
+@keyframes bridgeBadgePulse { 50% { opacity: .58; } }
+.recruitment-sync-description { position: relative; z-index: 1; margin: 0; color: #8da9b2; font-size: 8px; line-height: 1.55; }
+.recruitment-sync-metrics { position: relative; z-index: 1; display: grid; grid-template-columns: 1.4fr repeat(3, minmax(0, .72fr)); gap: 7px; }
+.recruitment-sync-metrics article { min-width: 0; display: grid; gap: 4px; padding: 8px 9px; border: 1px solid rgba(126,216,224,.1); border-radius: 9px; background: rgba(3,14,22,.24); }
+.recruitment-sync-metrics small { color: #6f8b96; font-size: 7px; }
+.recruitment-sync-metrics strong { overflow: hidden; color: #daf8f7; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.recruitment-sync-footer { color: #65818b; font-size: 7px; }
+.recruitment-sync-footer b { color: #76bdc5; font-size: 7px; font-weight: 750; }
 .recruitment-disclaimer { margin-bottom: 16px; padding: 9px 11px; color: #8498a8; border: 1px solid rgba(121,196,224,.12); border-radius: 9px; background: rgba(73,182,218,.045); font-size: 9px; line-height: 1.5; }
 .recruitment-deadline-alerts { display: grid; gap: 8px; margin: 0 0 16px; padding: 12px; border: 1px solid rgba(255,170,91,.35); border-radius: 12px; background: rgba(255,121,53,.08); }
 .recruitment-deadline-alerts:empty { display: none; }
@@ -1075,6 +1121,11 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
   .recruitment-body { display: block; overflow-y: auto; }
   .recruitment-profile-panel { min-height: auto; overflow: visible; border-right: 0; border-bottom: 1px solid rgba(255,255,255,.075); }
   .recruitment-results { min-height: 520px; overflow: visible; padding: 19px; }
+  .recruitment-results-heading { align-items: flex-start; }
+  .source-status { min-height: 40px; }
+  .recruitment-sync-panel { padding: 13px; }
+  .recruitment-sync-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .recruitment-sync-metrics article:first-child { grid-column: 1 / -1; }
   .job-tier-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -1091,6 +1142,11 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
   .landing-copy::after { width: 90vw; left: 5vw; }
   .world-entry-grid { grid-template-columns: 1fr; }
   .world-entry { min-height: 126px; }
+  .recruitment-results-heading { display: grid; }
+  .recruitment-results-heading .source-status { justify-self: stretch; width: 100%; }
+  .recruitment-sync-header { align-items: flex-start; }
+  .recruitment-sync-description { font-size: 9px; }
+  .recruitment-sync-footer { align-items: flex-start; flex-direction: column; gap: 4px; }
   .trust-row { gap: 8px; font-size: 8px; }
   .settings-profile { grid-template-columns: 42px minmax(0,1fr); }
   .settings-profile .soft-button { grid-column: 1 / -1; }

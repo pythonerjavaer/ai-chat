@@ -3,9 +3,11 @@ import hashlib
 import json
 import logging
 import math
+import re
 import secrets
 import threading
 import time
+import urllib.parse
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -29,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import database
 from .ai_service import (
@@ -118,6 +120,19 @@ MODEL_GLOBAL_UNIT_LIMIT = 240
 REGISTRATION_WINDOW_SECONDS = 3_600
 REGISTRATION_LIMIT = 60
 RECRUITMENT_SOURCE_COOLDOWN_SECONDS = 60
+RECRUITMENT_DEEP_SEARCH_COOLDOWN_SECONDS = 15 * 60
+
+EXPECTED_CHATGPT_RADAR_SOURCES = [
+    {
+        "source_id": f"chatgpt-radar-{index:02d}",
+        "source_thread_id": None,
+        "title": f"ChatGPT 监控 {index}",
+    }
+    for index in range(1, 6)
+]
+EXPECTED_CHATGPT_SOURCE_IDS = {
+    source["source_id"] for source in EXPECTED_CHATGPT_RADAR_SOURCES
+}
 
 
 class RecruitmentRefreshBusy(RuntimeError):
@@ -215,7 +230,42 @@ def _web_recruitment_search_due(state: dict | None) -> bool:
     return datetime.now(timezone.utc) - attempted >= timedelta(minutes=interval_minutes)
 
 
-def refresh_recruitment_sources(*, include_web_search: bool = True) -> int:
+def _web_search_attempted_at(state: dict | None) -> datetime | None:
+    if not state:
+        return None
+    raw_value = state.get("attempted_at") or state.get("updated_at")
+    if not raw_value:
+        return None
+    try:
+        value = datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _deep_search_next_due_at(state: dict | None) -> str | None:
+    attempted = _web_search_attempted_at(state)
+    if attempted is None:
+        return None
+    return (
+        attempted + timedelta(seconds=RECRUITMENT_DEEP_SEARCH_COOLDOWN_SECONDS)
+    ).isoformat()
+
+
+def _deep_search_is_available(state: dict | None) -> bool:
+    attempted = _web_search_attempted_at(state)
+    return (
+        attempted is None
+        or datetime.now(timezone.utc) - attempted
+        >= timedelta(seconds=RECRUITMENT_DEEP_SEARCH_COOLDOWN_SECONDS)
+    )
+
+
+def refresh_recruitment_sources(
+    *,
+    include_web_search: bool = True,
+    force_web_search: bool = False,
+) -> int:
     """Refresh public recruitment sources; safe to call from a scheduled worker."""
     global _recruitment_source_last_count, _recruitment_source_last_refresh
     if not _recruitment_source_refresh_lock.acquire(blocking=False):
@@ -227,7 +277,9 @@ def refresh_recruitment_sources(*, include_web_search: bool = True) -> int:
             jobs.extend(fetch_adzuna_jobs())
         database.upsert_recruitment_jobs(jobs)
         web_state = database.get_system_state(WEB_SEARCH_STATE_KEY)
-        if include_web_search and _web_recruitment_search_due(web_state):
+        if include_web_search and settings.recruitment_web_search_enabled and (
+            force_web_search or _web_recruitment_search_due(web_state)
+        ):
             attempted_at = database.utc_now()
             try:
                 web_result = search_current_recruitment_jobs()
@@ -323,6 +375,7 @@ async def refresh_all_recruitment_watches() -> dict[str, int]:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.init_db()
+    database.ensure_recruitment_ingest_sources(EXPECTED_CHATGPT_RADAR_SOURCES)
     database.purge_legacy_recruitment_samples()
     database.seed_recruitment_jobs(CURATED_CAMPUS_JOBS)
     task = None
@@ -459,6 +512,8 @@ class RecruitmentProfileRequest(BaseModel):
 
 
 class RecruitmentIngestJob(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     company: str = Field(min_length=1, max_length=120)
     title: str = Field(min_length=2, max_length=240)
     city: str = Field(min_length=1, max_length=120)
@@ -471,10 +526,58 @@ class RecruitmentIngestJob(BaseModel):
     requirements: str = Field(default="", max_length=2_000)
     tags: list[str] = Field(default_factory=list, max_length=20)
     status: Literal["open", "closed"] = "open"
+    source_id: str = Field(
+        default="external-monitor",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+    )
+    source_thread_id: str | None = Field(default=None, max_length=100)
+    source_item_id: str | None = Field(default=None, max_length=160)
+    source_updated_at: datetime | None = None
+    external_id: str | None = Field(default=None, max_length=160)
+    evidence: list[Annotated[str, Field(min_length=1, max_length=280)]] = Field(
+        default_factory=list,
+        max_length=12,
+    )
+
+    @field_validator("evidence")
+    @classmethod
+    def validate_evidence_privacy(cls, values: list[str]) -> list[str]:
+        email_pattern = re.compile(r"(?i)\b[\w.+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
+        phone_patterns = (
+            re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)"),
+            re.compile(r"(?<!\d)0\d{2,3}[- ]?\d{7,8}(?!\d)"),
+            re.compile(r"(?<!\d)\+\d{8,15}(?!\d)"),
+        )
+        cleaned = []
+        for value in values:
+            text = value.strip()
+            if "\n" in text or "\r" in text:
+                raise ValueError("Evidence must be a short single-line statement.")
+            if email_pattern.search(text) or any(pattern.search(text) for pattern in phone_patterns):
+                raise ValueError("Evidence must not contain email addresses or phone numbers.")
+            cleaned.append(text)
+        return cleaned
 
 
 class RecruitmentIngestRequest(BaseModel):
-    jobs: list[RecruitmentIngestJob] = Field(min_length=1, max_length=100)
+    model_config = ConfigDict(extra="forbid")
+
+    jobs: list[RecruitmentIngestJob] = Field(default_factory=list, max_length=10)
+    source_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+    )
+    source_updated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def heartbeat_requires_source(self):
+        if not self.jobs and not self.source_id:
+            raise ValueError("source_id is required when jobs is empty.")
+        return self
 
 
 class RecruitmentWatchCreateRequest(BaseModel):
@@ -630,6 +733,19 @@ def require_admin_dashboard_token(
         raise HTTPException(status_code=401, detail="Invalid admin dashboard token.")
 
 
+def require_recruitment_ingest_token(
+    token: Annotated[
+        str | None,
+        Header(alias="X-Recruitment-Token"),
+    ] = None,
+) -> None:
+    configured_token = settings.recruitment_ingest_token
+    if not configured_token:
+        raise HTTPException(status_code=503, detail="Recruitment ingest is not configured.")
+    if not token or not secrets.compare_digest(token, configured_token):
+        raise HTTPException(status_code=401, detail="Invalid recruitment ingest token.")
+
+
 @app.get("/api/admin/usage")
 def admin_usage(
     _: Annotated[None, Depends(require_admin_dashboard_token)],
@@ -707,6 +823,51 @@ def public_recruitment_profile(profile: dict) -> dict:
         "industries": profile.get("industries", []),
         "locations": profile.get("locations", []),
         "employer_types": profile.get("employer_types", []),
+    }
+
+
+def public_chatgpt_sync_status() -> dict:
+    detailed = database.recruitment_sync_status(
+        expected_source_count=len(EXPECTED_CHATGPT_RADAR_SOURCES)
+    )
+    sources = [
+        source
+        for source in detailed["sources"]
+        if source.get("source_id") in EXPECTED_CHATGPT_SOURCE_IDS
+    ]
+    connected = sum(source.get("last_seen_at") is not None for source in sources)
+    latest_accepted = sum(int(source.get("latest_accepted", 0)) for source in sources)
+    latest_pending = sum(int(source.get("latest_pending", 0)) for source in sources)
+    latest_rejected = sum(int(source.get("latest_rejected", 0)) for source in sources)
+    inventory_accepted = sum(int(source.get("inventory_accepted", 0)) for source in sources)
+    inventory_pending = sum(int(source.get("inventory_pending", 0)) for source in sources)
+    inventory_rejected = sum(int(source.get("inventory_rejected", 0)) for source in sources)
+    last_synced_at = max(
+        (source["last_seen_at"] for source in sources if source.get("last_seen_at")),
+        default=None,
+    )
+    if connected == 0:
+        sync_state = "pending"
+    elif any(source.get("status") == "error" for source in sources):
+        sync_state = "error"
+    elif (
+        connected < len(EXPECTED_CHATGPT_RADAR_SOURCES)
+        or any(source.get("status") == "partial" for source in sources)
+    ):
+        sync_state = "partial"
+    else:
+        sync_state = "synced"
+    return {
+        "status": sync_state,
+        "expected_source_count": len(EXPECTED_CHATGPT_RADAR_SOURCES),
+        "connected_source_count": connected,
+        "last_synced_at": last_synced_at,
+        "accepted": latest_accepted,
+        "pending": latest_pending,
+        "rejected": latest_rejected,
+        "inventory_accepted": inventory_accepted,
+        "inventory_pending": inventory_pending,
+        "inventory_rejected": inventory_rejected,
     }
 
 
@@ -806,6 +967,7 @@ def recruitment_jobs(user: User) -> dict:
             "tier_counts": tier_counts,
             "tier_definitions": list(TIER_DEFINITIONS),
             "web_search": web_search_state,
+            "chatgpt_sync": public_chatgpt_sync_status(),
             "watches": watch_summary,
             "model_tokens_used": int(web_search_state.get("total_tokens", 0) or 0),
         },
@@ -1056,21 +1218,50 @@ def acknowledge_recruitment_watch(
 
 
 @app.post("/api/recruitment/refresh")
-def refresh_recruitment(user: ConsentedUser) -> dict:
+def refresh_recruitment(
+    user: ConsentedUser,
+    deep_search: bool = Query(default=False),
+) -> dict:
+    """Refresh deterministic sources and optionally run a rate-limited web search."""
     del user
+    web_state_before = database.get_system_state(WEB_SEARCH_STATE_KEY)
+    run_deep_search = False
+    if not deep_search:
+        skip_reason = "deep_search_not_requested"
+    elif not settings.recruitment_web_search_enabled:
+        skip_reason = "web_search_disabled"
+    elif not _deep_search_is_available(web_state_before):
+        skip_reason = "deep_search_cooldown"
+    else:
+        run_deep_search = True
+        skip_reason = None
+
     with _recruitment_source_refresh_state_guard:
         age = time.monotonic() - _recruitment_source_last_refresh
         cached_count = _recruitment_source_last_count
-    if _recruitment_source_last_refresh and age < RECRUITMENT_SOURCE_COOLDOWN_SECONDS:
+    if (
+        _recruitment_source_last_refresh
+        and age < RECRUITMENT_SOURCE_COOLDOWN_SECONDS
+        and not run_deep_search
+    ):
         return {
             "source": "公开机会页面 + 低频 AI 补漏 + 已配置 API",
             "count": cached_count,
             "refreshed_at": database.utc_now(),
             "cached": True,
-            "web_search": database.get_system_state(WEB_SEARCH_STATE_KEY),
+            "web_search_ran": False,
+            "skip_reason": skip_reason,
+            "next_due_at": (
+                _deep_search_next_due_at(web_state_before)
+                if settings.recruitment_web_search_enabled else None
+            ),
+            "web_search": web_state_before,
         }
     try:
-        count = refresh_recruitment_sources(include_web_search=False)
+        count = refresh_recruitment_sources(
+            include_web_search=run_deep_search,
+            force_web_search=run_deep_search,
+        )
     except RecruitmentRefreshBusy as exc:
         raise HTTPException(
             status_code=429,
@@ -1080,83 +1271,525 @@ def refresh_recruitment(user: ConsentedUser) -> dict:
     except Exception as exc:
         logger.exception("Recruitment source refresh failed")
         raise HTTPException(status_code=502, detail="公开信号源刷新失败，请稍后重试。") from exc
+    web_state_after = database.get_system_state(WEB_SEARCH_STATE_KEY)
+    before_attempt = _web_search_attempted_at(web_state_before)
+    after_attempt = _web_search_attempted_at(web_state_after)
+    web_search_ran = bool(
+        run_deep_search
+        and after_attempt is not None
+        and after_attempt != before_attempt
+    )
+    if run_deep_search and not web_search_ran:
+        skip_reason = "web_search_not_started"
     return {
         "source": "公开机会页面 + 低频 AI 补漏 + 已配置 API",
         "count": count,
         "refreshed_at": database.utc_now(),
         "cached": False,
-        "web_search": database.get_system_state(WEB_SEARCH_STATE_KEY),
+        "web_search_ran": web_search_ran,
+        "skip_reason": skip_reason,
+        "next_due_at": (
+            _deep_search_next_due_at(web_state_after)
+            if settings.recruitment_web_search_enabled else None
+        ),
+        "web_search": web_state_after,
     }
+
+
+_TRACKING_QUERY_KEYS = {"fbclid", "gclid", "msclkid"}
+_CAMPUS_PAGE_MARKERS = (
+    "校园招聘", "秋季招聘", "秋招", "校招", "应届生", "应届毕业生",
+    "graduate", "graduates", "campus", "early career",
+)
+_GENERIC_IDENTITY_TERMS = {
+    "校园招聘", "秋季招聘", "秋招", "校招", "应届", "应届生", "毕业生",
+    "招聘", "岗位", "职位", "graduate", "graduates", "campus", "career",
+}
+_CLOSED_PAGE_PATTERN = re.compile(
+    r"(?:已截止|申请已结束|报名已结束|网申已结束|投递已结束|职位已关闭|岗位已关闭|"
+    r"申请通道已关闭|不再接受申请|\bclosed\b|\bexpired\b|no\s+longer\s+accepting)",
+    re.IGNORECASE,
+)
+
+
+def canonicalize_recruitment_url(url: str) -> str:
+    """Return a public HTTPS URL with fragments and known tracking keys removed."""
+    display_url, _ = normalize_public_https_urls(url, resolve_dns=False)
+    parsed = urllib.parse.urlsplit(display_url)
+    hostname = (parsed.hostname or "").casefold()
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = hostname
+    filtered_query = []
+    for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+        normalized_key = key.casefold()
+        if normalized_key.startswith("utm_") or normalized_key in _TRACKING_QUERY_KEYS:
+            continue
+        filtered_query.append((key, value))
+    filtered_query.sort(key=lambda item: (item[0].casefold(), item[1]))
+    return urllib.parse.urlunsplit((
+        "https",
+        netloc,
+        parsed.path or "/",
+        urllib.parse.urlencode(filtered_query, doseq=True),
+        "",
+    ))
+
+
+def _normalized_identity(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
+
+
+def _page_contains_identity(page_text: str, value: str) -> bool:
+    normalized_page = _normalized_identity(page_text)
+    normalized_value = _normalized_identity(value)
+    if len(normalized_value) >= 3 and normalized_value in normalized_page:
+        return True
+    pieces = []
+    for piece in re.split(r"[\s/|·,，、()（）\[\]【】:_-]+", value.casefold()):
+        normalized_piece = _normalized_identity(piece)
+        if (
+            len(normalized_piece) >= 3
+            and normalized_piece not in _GENERIC_IDENTITY_TERMS
+        ):
+            pieces.append(normalized_piece)
+    return bool(pieces) and any(piece in normalized_page for piece in pieces)
+
+
+def _meaningful_title_terms(title: str) -> list[str]:
+    value = title.casefold()
+    value = re.sub(r"20\d{2}\s*(?:年|届)?", " ", value)
+    for generic in sorted(_GENERIC_IDENTITY_TERMS, key=len, reverse=True):
+        value = value.replace(generic, " ")
+    terms = []
+    for term in re.findall(r"[a-z][a-z0-9+.#-]{1,}|[\u4e00-\u9fff]{2,}", value):
+        normalized = _normalized_identity(term)
+        if len(normalized) >= 2 and normalized not in _GENERIC_IDENTITY_TERMS:
+            terms.append(normalized)
+    return list(dict.fromkeys(terms))
+
+
+def _page_contains_strict_title(page_text: str, title: str) -> bool:
+    normalized_page = _normalized_identity(page_text)
+    normalized_title = _normalized_identity(title)
+    if len(normalized_title) >= 4 and normalized_title in normalized_page:
+        return True
+    terms = _meaningful_title_terms(title)
+    if len(terms) < 2:
+        return False
+    matched = [term for term in terms if term in normalized_page]
+    required_terms = max(2, math.ceil(len(terms) * 0.75))
+    total_chars = sum(len(term) for term in terms)
+    matched_chars = sum(len(term) for term in matched)
+    return (
+        len(matched) >= required_terms
+        and matched_chars >= max(8, math.ceil(total_chars * 0.75))
+    )
+
+
+def _page_contains_date(page_text: str, iso_date: str | None) -> bool:
+    if not iso_date:
+        return False
+    try:
+        value = date.fromisoformat(iso_date)
+    except ValueError:
+        return False
+    compact_page = re.sub(r"\s+", "", page_text.casefold())
+    variants = {
+        value.isoformat(),
+        f"{value.year}/{value.month:02d}/{value.day:02d}",
+        f"{value.year}.{value.month:02d}.{value.day:02d}",
+        f"{value.year}年{value.month}月{value.day}日",
+        f"{value.year}年{value.month:02d}月{value.day:02d}日",
+    }
+    return any(variant.casefold() in compact_page for variant in variants)
+
+
+def _verify_ingest_candidate(
+    candidate: dict,
+) -> tuple[str, str | None, dict[str, str | None]]:
+    verified_dates = {"opening_date": None, "closing_date": None}
+    actionable = {
+        "title": candidate["title"],
+        "requirements": candidate.get("requirements", ""),
+        "tags": candidate.get("tags", []),
+    }
+    if not is_actionable_recruitment_listing(actionable):
+        return "rejected", "not_campus", verified_dates
+    location_text = f"{candidate['city']} {candidate['title']}"
+    if not any(marker in location_text for marker in CORE_LOCATION_MARKERS):
+        return "rejected", "location_outside_scope", verified_dates
+    try:
+        page = fetch_watch_page(candidate["canonical_url"], (), timeout_seconds=5)
+    except WatchFetchError:
+        return "pending", "official_page_fetch_failed", verified_dates
+    except Exception:
+        logger.exception("Unexpected recruitment candidate verification failure")
+        return "pending", "official_page_fetch_failed", verified_dates
+    page_text = str(page.text or "")
+    normalized_page = page_text.casefold()
+    if _CLOSED_PAGE_PATTERN.search(normalized_page):
+        return "closed", "official_page_closed", verified_dates
+    if not any(marker in normalized_page for marker in _CAMPUS_PAGE_MARKERS):
+        return "rejected", "page_missing_campus_signal", verified_dates
+    if not _page_contains_identity(page_text, candidate["company"]):
+        return "pending", "page_missing_company_evidence", verified_dates
+    if not _page_contains_strict_title(page_text, candidate["title"]):
+        return "pending", "page_missing_title_evidence", verified_dates
+    for field in ("opening_date", "closing_date"):
+        submitted_date = candidate.get(field)
+        if submitted_date and _page_contains_date(page_text, submitted_date):
+            verified_dates[field] = submitted_date
+    return "verified", None, verified_dates
+
+
+def _ingest_dedupe_key(
+    *,
+    source_id: str,
+    source_thread_id: str | None,
+    source_item_id: str | None,
+    external_id: str | None,
+    company: str,
+    title: str,
+    city: str,
+    canonical_url: str,
+) -> str:
+    if external_id:
+        material = f"source:{source_id.casefold()}|external:{external_id.casefold()}"
+    elif source_item_id:
+        material = (
+            f"source:{source_id.casefold()}|thread:{(source_thread_id or '').casefold()}|"
+            f"item:{source_item_id.casefold()}"
+        )
+    else:
+        material = "|".join((
+            "fallback",
+            _normalized_identity(company),
+            _normalized_identity(title),
+            _normalized_identity(city),
+            canonical_url,
+        ))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _normalized_source_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _max_source_timestamp(current: str | None, candidate: str | None) -> str | None:
+    if not current:
+        return candidate
+    if not candidate:
+        return current
+    try:
+        current_value = datetime.fromisoformat(current.replace("Z", "+00:00"))
+        candidate_value = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+        if current_value.tzinfo is None:
+            current_value = current_value.replace(tzinfo=timezone.utc)
+        if candidate_value.tzinfo is None:
+            candidate_value = candidate_value.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return max(current, candidate)
+    return candidate if candidate_value >= current_value else current
+
+
+def _candidate_from_ingest_item(
+    item: RecruitmentIngestJob,
+    *,
+    batch_source_id: str | None = None,
+    batch_source_updated_at: datetime | None = None,
+) -> tuple[dict, str | None]:
+    source_id = (batch_source_id or item.source_id).strip()
+    raw_source_thread_id = (item.source_thread_id or "").strip() or None
+    source_thread_id = None
+    if raw_source_thread_id and source_id not in EXPECTED_CHATGPT_SOURCE_IDS:
+        source_thread_id = (
+            "sha256:" + hashlib.sha256(raw_source_thread_id.encode("utf-8")).hexdigest()[:24]
+        )
+    source_item_id = (item.source_item_id or "").strip() or None
+    external_id = (item.external_id or "").strip() or None
+    try:
+        display_url, _ = normalize_public_https_urls(
+            item.official_url,
+            resolve_dns=False,
+        )
+        canonical_url = canonicalize_recruitment_url(item.official_url)
+        url_error = None
+    except WatchFetchError:
+        display_url = item.official_url.strip()
+        canonical_url = display_url.split("#", 1)[0]
+        url_error = "invalid_official_url"
+    source_updated_at = _normalized_source_timestamp(
+        item.source_updated_at or batch_source_updated_at
+    )
+    dedupe_key = _ingest_dedupe_key(
+        source_id=source_id,
+        source_thread_id=source_thread_id,
+        source_item_id=source_item_id,
+        external_id=external_id,
+        company=item.company.strip(),
+        title=item.title.strip(),
+        city=item.city.strip(),
+        canonical_url=canonical_url,
+    )
+    candidate = {
+        "id": f"candidate-{dedupe_key[:32]}",
+        "dedupe_key": dedupe_key,
+        "source_key": database.recruitment_ingest_source_key(source_id, source_thread_id),
+        "source_id": source_id,
+        "source_thread_id": source_thread_id,
+        "source_item_id": source_item_id,
+        "external_id": external_id,
+        "source_updated_at": source_updated_at,
+        "company": item.company.strip(),
+        "employer_type": item.employer_type.strip() or "重点雇主",
+        "title": item.title.strip(),
+        "city": item.city.strip(),
+        "industry": item.industry.strip(),
+        "official_url": display_url,
+        "canonical_url": canonical_url,
+        "source": item.source.strip() or source_id,
+        "opening_date": item.opening_date.isoformat() if item.opening_date else None,
+        "closing_date": item.closing_date.isoformat() if item.closing_date else None,
+        "requirements": item.requirements.strip(),
+        "tags": [str(tag).strip()[:120] for tag in item.tags if str(tag).strip()],
+        "evidence": [evidence.strip() for evidence in item.evidence if evidence.strip()],
+        "incoming_status": item.status,
+    }
+    payload_fields = {
+        key: value
+        for key, value in candidate.items()
+        if key not in {"id", "dedupe_key", "source_key", "source_updated_at"}
+    }
+    candidate["payload_hash"] = hashlib.sha256(
+        json.dumps(
+            payload_fields,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return candidate, url_error
+
+
+def _promoted_job(candidate: dict) -> dict:
+    if (
+        candidate.get("external_id")
+        and candidate.get("source_id") in EXPECTED_CHATGPT_SOURCE_IDS
+    ):
+        identity = (
+            f"external:{_normalized_identity(candidate['company'])}:"
+            f"{str(candidate['external_id']).casefold()}"
+        )
+        job_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    else:
+        job_key = candidate["dedupe_key"]
+    return {
+        "id": f"monitor-{job_key[:24]}",
+        "company": candidate["company"],
+        "employer_type": candidate["employer_type"],
+        "title": candidate["title"],
+        "city": candidate["city"],
+        "industry": candidate["industry"],
+        "url": candidate["official_url"],
+        "source": candidate["source"],
+        "opening_date": candidate.get("verified_opening_date"),
+        "closing_date": candidate.get("verified_closing_date"),
+        "requirements": candidate.get("requirements", ""),
+        "tags": list(dict.fromkeys([
+            *candidate.get("tags", []),
+            "校园招聘", "动态监控", "链接已验证", "标题已验证",
+        ])),
+        "historical_applicants": None,
+        "historical_offers": None,
+        "last_verified_at": database.utc_now(),
+        "status": "open",
+    }
+
+
+@app.get("/api/recruitment/sync/status")
+def recruitment_sync_status(
+    _: Annotated[None, Depends(require_recruitment_ingest_token)],
+) -> dict:
+    return database.recruitment_sync_status(
+        expected_source_count=len(EXPECTED_CHATGPT_RADAR_SOURCES)
+    )
 
 
 @app.post("/api/recruitment/ingest")
 def ingest_recruitment_jobs(
     request: RecruitmentIngestRequest,
-    ingest_token: Annotated[str | None, Header(alias="X-Recruitment-Token")] = None,
+    _: Annotated[None, Depends(require_recruitment_ingest_token)],
 ) -> dict:
-    """Receive normalized campus jobs from an authorized external monitor."""
-    configured_token = settings.recruitment_ingest_token
-    if not configured_token:
-        raise HTTPException(status_code=503, detail="Recruitment ingest is not configured.")
-    if not ingest_token or not secrets.compare_digest(ingest_token, configured_token):
-        raise HTTPException(status_code=401, detail="Invalid recruitment ingest token.")
-
-    accepted: list[dict] = []
+    """Quarantine, verify, and promote jobs from an authorized external monitor."""
+    totals = {
+        "received": len(request.jobs),
+        "accepted": 0,
+        "new": 0,
+        "updated": 0,
+        "duplicates": 0,
+        "stale": 0,
+        "pending": 0,
+        "rejected": 0,
+        "closed": 0,
+    }
     skipped: list[dict] = []
+    source_groups: dict[str, dict] = {}
+    expected_titles = {
+        source["source_id"]: source["title"]
+        for source in EXPECTED_CHATGPT_RADAR_SOURCES
+    }
     today = date.today()
+
+    if not request.jobs and request.source_id:
+        source_id = request.source_id.strip()
+        source_key = database.recruitment_ingest_source_key(source_id, None)
+        source_groups[source_key] = {
+            "source_id": source_id,
+            "source_thread_id": None,
+            "title": expected_titles.get(source_id, source_id),
+            "last_item_id": None,
+            "last_source_updated_at": _normalized_source_timestamp(
+                request.source_updated_at
+            ),
+            "counts": {key: 0 for key in totals},
+        }
+
     for item in request.jobs:
-        try:
-            display_url, _ = normalize_public_https_urls(
-                item.official_url,
-                resolve_dns=False,
-            )
-        except WatchFetchError:
-            skipped.append({"title": item.title, "reason": "invalid_official_url"})
+        candidate, url_error = _candidate_from_ingest_item(
+            item,
+            batch_source_id=request.source_id,
+            batch_source_updated_at=request.source_updated_at,
+        )
+        source_key = candidate["source_key"]
+        group = source_groups.setdefault(source_key, {
+            "source_id": candidate["source_id"],
+            "source_thread_id": candidate.get("source_thread_id"),
+            "title": expected_titles.get(candidate["source_id"], candidate["source"]),
+            "last_item_id": None,
+            "last_source_updated_at": _normalized_source_timestamp(
+                request.source_updated_at
+            ),
+            "counts": {key: 0 for key in totals},
+        })
+        group["counts"]["received"] += 1
+        group["last_item_id"] = candidate.get("source_item_id") or candidate.get("external_id")
+        group["last_source_updated_at"] = _max_source_timestamp(
+            group["last_source_updated_at"],
+            candidate.get("source_updated_at"),
+        )
+
+        stored = database.upsert_recruitment_ingest_candidate(candidate)
+        disposition = stored.pop("disposition")
+        if disposition == "stale":
+            totals["duplicates"] += 1
+            totals["stale"] += 1
+            group["counts"]["duplicates"] += 1
+            group["counts"]["stale"] += 1
+            existing_status = stored.get("verification_status")
+            if existing_status == "verified":
+                totals["accepted"] += 1
+                group["counts"]["accepted"] += 1
+            elif existing_status == "rejected":
+                totals["rejected"] += 1
+                group["counts"]["rejected"] += 1
+            elif existing_status == "closed":
+                totals["closed"] += 1
+                group["counts"]["closed"] += 1
+            else:
+                totals["pending"] += 1
+                group["counts"]["pending"] += 1
+            skipped.append({"title": item.title, "reason": "stale_source_update"})
             continue
-        job_id = f"monitor-{hashlib.sha256(display_url.encode()).hexdigest()[:24]}"
-        if item.status == "closed" or (item.closing_date and item.closing_date < today):
-            database.close_recruitment_job(job_id)
+        if disposition == "duplicate":
+            totals["duplicates"] += 1
+            group["counts"]["duplicates"] += 1
+        else:
+            totals[disposition] += 1
+            group["counts"][disposition] += 1
+
+        incoming_closed = item.status == "closed"
+        incoming_expired = bool(item.closing_date and item.closing_date < today)
+        if incoming_closed or incoming_expired:
+            promoted_job_id = stored.get("promoted_job_id")
+            if promoted_job_id:
+                database.close_recruitment_job(promoted_job_id)
+            database.set_recruitment_ingest_candidate_verification(
+                stored["id"],
+                "closed",
+                "closed" if incoming_closed else "expired",
+                promoted_job_id,
+            )
+            totals["closed"] += 1
+            group["counts"]["closed"] += 1
             skipped.append({
                 "title": item.title,
-                "reason": "closed" if item.status == "closed" else "expired",
+                "reason": "closed" if incoming_closed else "expired",
             })
             continue
-        candidate = {
-            "title": item.title.strip(),
-            "requirements": item.requirements.strip(),
-            "tags": list(item.tags),
-        }
-        if not is_actionable_recruitment_listing(candidate):
-            skipped.append({"title": item.title, "reason": "not_campus"})
-            continue
-        job = {
-            "id": job_id,
-            "company": item.company.strip(),
-            "employer_type": item.employer_type.strip(),
-            "title": item.title.strip(),
-            "city": item.city.strip(),
-            "industry": item.industry.strip(),
-            "url": display_url,
-            "source": item.source.strip(),
-            "opening_date": item.opening_date.isoformat() if item.opening_date else None,
-            "closing_date": item.closing_date.isoformat() if item.closing_date else None,
-            "requirements": item.requirements.strip(),
-            "tags": list(dict.fromkeys([*item.tags, "校园招聘", "动态监控"])),
-            "historical_applicants": None,
-            "historical_offers": None,
-            "last_verified_at": database.utc_now(),
-            "status": "open",
-        }
-        location_text = f"{job['city']} {job['title']}"
-        if not any(marker in location_text for marker in CORE_LOCATION_MARKERS):
-            skipped.append({"title": item.title, "reason": "location_outside_scope"})
-            continue
-        accepted.append(job)
 
-    if accepted:
-        database.upsert_recruitment_jobs(accepted)
+        if disposition == "duplicate" and stored.get("verification_status") == "verified":
+            database.upsert_recruitment_jobs([_promoted_job(stored)])
+            totals["accepted"] += 1
+            group["counts"]["accepted"] += 1
+            continue
+
+        if url_error:
+            verification_status, reason = "rejected", url_error
+            verified_dates = {"opening_date": None, "closing_date": None}
+        else:
+            verification_status, reason, verified_dates = _verify_ingest_candidate(stored)
+        if verification_status == "verified":
+            stored["verified_opening_date"] = verified_dates["opening_date"]
+            stored["verified_closing_date"] = verified_dates["closing_date"]
+            job = _promoted_job(stored)
+            database.upsert_recruitment_jobs([job])
+            database.set_recruitment_ingest_candidate_verification(
+                stored["id"],
+                "verified",
+                None,
+                job["id"],
+                verified_dates["opening_date"],
+                verified_dates["closing_date"],
+            )
+            totals["accepted"] += 1
+            group["counts"]["accepted"] += 1
+        elif verification_status == "closed":
+            promoted_job_id = stored.get("promoted_job_id")
+            if promoted_job_id:
+                database.close_recruitment_job(promoted_job_id)
+            database.set_recruitment_ingest_candidate_verification(
+                stored["id"], "closed", reason, promoted_job_id
+            )
+            totals["closed"] += 1
+            group["counts"]["closed"] += 1
+            skipped.append({"title": item.title, "reason": reason})
+        else:
+            database.set_recruitment_ingest_candidate_verification(
+                stored["id"], verification_status, reason
+            )
+            totals[verification_status] += 1
+            group["counts"][verification_status] += 1
+            skipped.append({"title": item.title, "reason": reason})
+
+    event_ids = []
+    for group in source_groups.values():
+        event_ids.append(database.record_recruitment_ingest_event(
+            source_id=group["source_id"],
+            source_thread_id=group["source_thread_id"],
+            title=group["title"],
+            counts=group["counts"],
+            last_item_id=group["last_item_id"],
+            last_source_updated_at=group["last_source_updated_at"],
+        ))
     return {
-        "accepted": len(accepted),
+        **totals,
+        "event_id": event_ids[0] if len(event_ids) == 1 else None,
+        "event_ids": event_ids,
         "skipped": skipped,
         "received_at": database.utc_now(),
     }

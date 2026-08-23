@@ -890,7 +890,14 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         assert "composite_fit" not in first
 
 
-def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs():
+def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "fetch_watch_page",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text="测试重点机构 2099届校园招聘数据岗 校园招聘 应届毕业生"
+        ),
+    )
     payload = {
         "jobs": [
             {
@@ -946,6 +953,481 @@ def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs():
         ]
         jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
         assert not any(job["title"] == "2099届校园招聘数据岗" for job in jobs)
+
+
+def test_recruitment_ingest_is_idempotent_allows_shared_pages_and_hides_thread_ids(monkeypatch):
+    raw_thread_id = "private-chat-thread-must-not-leak"
+    monkeypatch.setattr(
+        main,
+        "fetch_watch_page",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text=(
+                "桥接测试集团 2099届校园招聘数据分析岗 "
+                "桥接测试集团 2099届校园招聘产品策略岗 校园招聘 campus"
+            )
+        ),
+    )
+    jobs_payload = [
+        {
+            "company": "桥接测试集团",
+            "title": "2099届校园招聘数据分析岗",
+            "city": "北京",
+            "official_url": (
+                "https://example.com/campus/shared?jobList=1&utm_source=chatgpt#data"
+            ),
+            "closing_date": "2099-09-01",
+            "source_id": "chatgpt-radar-01",
+            "source_thread_id": raw_thread_id,
+            "source_item_id": "item-data",
+            "evidence": ["官方页面出现岗位标题和校招标志"],
+        },
+        {
+            "company": "桥接测试集团",
+            "title": "2099届校园招聘产品策略岗",
+            "city": "北京",
+            "official_url": (
+                "https://example.com/campus/shared?utm_medium=monitor&jobList=1#product"
+            ),
+            "closing_date": "2099-09-01",
+            "source_id": "chatgpt-radar-01",
+            "source_thread_id": raw_thread_id,
+            "source_item_id": "item-product",
+            "evidence": ["官方页面出现岗位标题和校招标志"],
+        },
+    ]
+    ingest_headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
+    with TestClient(main.app) as client:
+        first = client.post(
+            "/api/recruitment/ingest",
+            headers=ingest_headers,
+            json={"jobs": jobs_payload},
+        )
+        assert first.status_code == 200
+        assert first.json()["accepted"] == 2
+        assert first.json()["new"] == 2
+        assert first.json()["duplicates"] == 0
+
+        repeated = client.post(
+            "/api/recruitment/ingest",
+            headers=ingest_headers,
+            json={"jobs": jobs_payload},
+        )
+        assert repeated.status_code == 200
+        assert repeated.json()["accepted"] == 2
+        assert repeated.json()["duplicates"] == 2
+
+        token, _ = register(client, "bridge-idempotency-user")
+        jobs_response = client.get(
+            "/api/recruitment/jobs", headers=auth(token)
+        ).json()
+        bridged = [
+            job for job in jobs_response["jobs"]
+            if job["company"] == "桥接测试集团"
+        ]
+        assert {job["title"] for job in bridged} == {
+            "2099届校园招聘数据分析岗",
+            "2099届校园招聘产品策略岗",
+        }
+        with database.connect() as connection:
+            canonical_urls = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT canonical_url FROM recruitment_ingest_candidates "
+                    "WHERE company = ?",
+                    ("桥接测试集团",),
+                )
+            }
+        assert all("utm_" not in url and "#" not in url for url in canonical_urls)
+        assert jobs_response["data_status"]["chatgpt_sync"]["connected_source_count"] >= 1
+        assert "sources" not in jobs_response["data_status"]["chatgpt_sync"]
+
+        assert client.get("/api/recruitment/sync/status").status_code == 401
+        sync = client.get(
+            "/api/recruitment/sync/status", headers=ingest_headers
+        )
+        assert sync.status_code == 200
+        sync_payload = sync.json()
+        assert sync_payload["expected_source_count"] == 5
+        source = next(
+            item for item in sync_payload["sources"]
+            if item["source_id"] == "chatgpt-radar-01"
+        )
+        assert source["status"] == "synced"
+        assert source["source_ref"] is None
+        assert raw_thread_id not in sync.text
+        assert "source_thread_id" not in sync.text
+
+
+def test_recruitment_ingest_quarantines_unverifiable_and_rejects_noncampus_pages(monkeypatch):
+    def fake_fetch(url, *_args, **_kwargs):
+        if url.endswith("/unreachable"):
+            raise recruitment_watch.WatchFetchError("temporary failure")
+        return SimpleNamespace(text="核验失败集团 2099届审计岗 官方招聘页面")
+
+    monkeypatch.setattr(main, "fetch_watch_page", fake_fetch)
+    payload = {
+        "jobs": [
+            {
+                "company": "待核验集团",
+                "title": "2099届校园招聘研究岗",
+                "city": "上海",
+                "official_url": "https://example.com/unreachable",
+                "source_id": "chatgpt-radar-02",
+                "external_id": "pending-role",
+            },
+            {
+                "company": "核验失败集团",
+                "title": "2099届审计岗",
+                "city": "上海",
+                "official_url": "https://example.com/no-campus-signal",
+                "source_id": "chatgpt-radar-02",
+                "external_id": "rejected-role",
+                "tags": ["应届"],
+            },
+        ]
+    }
+    ingest_headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/recruitment/ingest", headers=ingest_headers, json=payload
+        )
+        assert response.status_code == 200
+        assert response.json()["accepted"] == 0
+        assert response.json()["pending"] == 1
+        assert response.json()["rejected"] == 1
+        assert {item["reason"] for item in response.json()["skipped"]} == {
+            "official_page_fetch_failed",
+            "page_missing_campus_signal",
+        }
+        token, _ = register(client, "bridge-quarantine-user")
+        titles = {
+            job["title"]
+            for job in client.get(
+                "/api/recruitment/jobs", headers=auth(token)
+            ).json()["jobs"]
+        }
+        assert "2099届校园招聘研究岗" not in titles
+        assert "2099届审计岗" not in titles
+
+
+def test_recruitment_ingest_ignores_stale_source_updates(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "fetch_watch_page",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text="时序测试集团 2099届校园招聘战略岗 校园招聘"
+        ),
+    )
+    headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
+    current = {
+        "company": "时序测试集团",
+        "title": "2099届校园招聘战略岗",
+        "city": "深圳",
+        "official_url": "https://example.com/campus/timeline",
+        "source_id": "chatgpt-radar-03",
+        "external_id": "timeline-role",
+        "source_updated_at": "2099-08-20T10:00:00Z",
+    }
+    stale = {
+        **current,
+        "title": "过时且不应覆盖的岗位标题",
+        "source_updated_at": "2099-08-19T10:00:00Z",
+    }
+    with TestClient(main.app) as client:
+        first = client.post(
+            "/api/recruitment/ingest", headers=headers, json={"jobs": [current]}
+        )
+        assert first.status_code == 200
+        assert first.json()["accepted"] == 1
+        second = client.post(
+            "/api/recruitment/ingest", headers=headers, json={"jobs": [stale]}
+        )
+        assert second.status_code == 200
+        assert second.json()["duplicates"] == 1
+        assert second.json()["stale"] == 1
+        assert second.json()["accepted"] == 1
+        assert second.json()["skipped"] == [
+            {"title": "过时且不应覆盖的岗位标题", "reason": "stale_source_update"}
+        ]
+
+
+def test_recruitment_ingest_requires_strict_title_and_preserves_last_known_good(monkeypatch):
+    page = {
+        "text": (
+            "存量保护集团 2099届校园招聘量化研究岗 校园招聘 "
+            "截止日期 2099年10月31日"
+        )
+    }
+    monkeypatch.setattr(
+        main,
+        "fetch_watch_page",
+        lambda *_args, **_kwargs: SimpleNamespace(text=page["text"]),
+    )
+    headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
+    initial = {
+        "company": "存量保护集团",
+        "title": "2099届校园招聘量化研究岗",
+        "city": "北京",
+        "official_url": "https://example.com/campus/last-known-good",
+        "closing_date": "2099-10-31",
+        "source_id": "chatgpt-radar-04",
+        "external_id": "last-known-good-role",
+        "source_updated_at": "2099-08-20T10:00:00Z",
+    }
+    changed = {
+        **initial,
+        "title": "2099届校园招聘产品经理岗",
+        "source_updated_at": "2099-08-21T10:00:00Z",
+    }
+    with TestClient(main.app) as client:
+        accepted = client.post(
+            "/api/recruitment/ingest", headers=headers, json={"jobs": [initial]}
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["accepted"] == 1
+
+        page["text"] = "存量保护集团 2099届校园招聘 校园招聘"
+        pending = client.post(
+            "/api/recruitment/ingest", headers=headers, json={"jobs": [changed]}
+        )
+        assert pending.status_code == 200
+        assert pending.json()["pending"] == 1
+        assert pending.json()["skipped"] == [
+            {
+                "title": "2099届校园招聘产品经理岗",
+                "reason": "page_missing_title_evidence",
+            }
+        ]
+
+        token, _ = register(client, "last-known-good-user")
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
+        protected = [job for job in jobs if job["company"] == "存量保护集团"]
+        assert len(protected) == 1
+        assert protected[0]["title"] == "2099届校园招聘量化研究岗"
+        assert protected[0]["closing_date"] == "2099-10-31"
+
+        page["text"] = "存量保护集团 2099届校园招聘产品经理岗 校园招聘"
+        reverified = client.post(
+            "/api/recruitment/ingest", headers=headers, json={"jobs": [changed]}
+        )
+        assert reverified.status_code == 200
+        assert reverified.json()["duplicates"] == 1
+        assert reverified.json()["accepted"] == 1
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
+        promoted = [job for job in jobs if job["company"] == "存量保护集团"]
+        assert len(promoted) == 1
+        assert promoted[0]["title"] == "2099届校园招聘产品经理岗"
+        assert promoted[0]["closing_date"] is None
+
+        page["text"] = (
+            "存量保护集团 2099届校园招聘产品经理岗 校园招聘，申请已结束"
+        )
+        closed = client.post(
+            "/api/recruitment/ingest",
+            headers=headers,
+            json={"jobs": [{**changed, "requirements": "触发官网状态复核"}]},
+        )
+        assert closed.status_code == 200
+        assert closed.json()["closed"] == 1
+        assert closed.json()["skipped"] == [
+            {
+                "title": "2099届校园招聘产品经理岗",
+                "reason": "official_page_closed",
+            }
+        ]
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
+        assert not any(job["company"] == "存量保护集团" for job in jobs)
+
+
+def test_recruitment_ingest_heartbeat_uses_latest_event_and_monotonic_timestamp(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "fetch_watch_page",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            recruitment_watch.WatchFetchError("temporary failure")
+        ),
+    )
+    headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
+    candidate = {
+        "company": "心跳状态集团",
+        "title": "2099届校园招聘研究岗",
+        "city": "上海",
+        "official_url": "https://example.com/campus/heartbeat",
+        "source_id": "chatgpt-radar-05",
+        "external_id": "heartbeat-pending-role",
+        "source_updated_at": "2099-08-20T10:00:00Z",
+    }
+    with TestClient(main.app) as client:
+        pending = client.post(
+            "/api/recruitment/ingest", headers=headers, json={"jobs": [candidate]}
+        )
+        assert pending.status_code == 200
+        assert pending.json()["pending"] == 1
+
+        heartbeat = client.post(
+            "/api/recruitment/ingest",
+            headers=headers,
+            json={
+                "jobs": [],
+                "source_id": "chatgpt-radar-05",
+                "source_updated_at": "2099-08-22T10:00:00Z",
+            },
+        )
+        assert heartbeat.status_code == 200
+        assert heartbeat.json()["received"] == 0
+        status = client.get("/api/recruitment/sync/status", headers=headers).json()
+        source = next(
+            item for item in status["sources"]
+            if item["source_id"] == "chatgpt-radar-05"
+        )
+        assert source["status"] == "synced"
+        assert source["latest_pending"] == 0
+        assert source["inventory_pending"] >= 1
+        assert source["last_source_updated_at"] == "2099-08-22T10:00:00+00:00"
+
+        older_heartbeat = client.post(
+            "/api/recruitment/ingest",
+            headers=headers,
+            json={
+                "jobs": [],
+                "source_id": "chatgpt-radar-05",
+                "source_updated_at": "2099-08-21T10:00:00Z",
+            },
+        )
+        assert older_heartbeat.status_code == 200
+        status = client.get("/api/recruitment/sync/status", headers=headers).json()
+        source = next(
+            item for item in status["sources"]
+            if item["source_id"] == "chatgpt-radar-05"
+        )
+        assert source["last_source_updated_at"] == "2099-08-22T10:00:00+00:00"
+
+        assert client.post(
+            "/api/recruitment/ingest", headers=headers, json={"jobs": []}
+        ).status_code == 422
+
+
+def test_recruitment_ingest_schema_canonicalization_and_cross_source_merge(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "fetch_watch_page",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text="跨源合并集团 2099届校园招聘战略分析岗 校园招聘"
+        ),
+    )
+    canonical = main.canonicalize_recruitment_url(
+        "https://EXAMPLE.com/campus?ref=partner&campaign=autumn&utm_source=gpt&gclid=x#role"
+    )
+    assert "ref=partner" in canonical
+    assert "campaign=autumn" in canonical
+    assert "utm_source" not in canonical
+    assert "gclid" not in canonical
+    assert "#" not in canonical
+
+    headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
+    common = {
+        "company": "跨源合并集团",
+        "title": "2099届校园招聘战略分析岗",
+        "city": "深圳",
+        "official_url": "https://example.com/campus/cross-source",
+        "external_id": "shared-vacancy-42",
+    }
+    with TestClient(main.app) as client:
+        first = client.post(
+            "/api/recruitment/ingest",
+            headers=headers,
+            json={"jobs": [{**common, "source_id": "chatgpt-radar-04"}]},
+        )
+        second = client.post(
+            "/api/recruitment/ingest",
+            headers=headers,
+            json={"jobs": [{**common, "source_id": "chatgpt-radar-05"}]},
+        )
+        assert first.status_code == second.status_code == 200
+        assert first.json()["accepted"] == second.json()["accepted"] == 1
+        with database.connect() as connection:
+            formal_count = connection.execute(
+                "SELECT COUNT(*) FROM recruitment_jobs WHERE company = ?",
+                ("跨源合并集团",),
+            ).fetchone()[0]
+            candidate_count = connection.execute(
+                "SELECT COUNT(*) FROM recruitment_ingest_candidates WHERE company = ?",
+                ("跨源合并集团",),
+            ).fetchone()[0]
+        assert formal_count == 1
+        assert candidate_count == 2
+
+        private_evidence = client.post(
+            "/api/recruitment/ingest",
+            headers=headers,
+            json={
+                "jobs": [{
+                    **common,
+                    "source_id": "chatgpt-radar-01",
+                    "evidence": ["请联系 recruiter@example.com 核验"],
+                }]
+            },
+        )
+        assert private_evidence.status_code == 422
+        extra_field = client.post(
+            "/api/recruitment/ingest",
+            headers=headers,
+            json={"jobs": [{**common, "unknown_field": "not allowed"}]},
+        )
+        assert extra_field.status_code == 422
+        too_many = client.post(
+            "/api/recruitment/ingest",
+            headers=headers,
+            json={"jobs": [common] * 11},
+        )
+        assert too_many.status_code == 422
+
+
+def test_recruitment_deep_search_is_explicit_and_rate_limited(monkeypatch):
+    calls = []
+    state = {"value": None}
+
+    def fake_refresh(*, include_web_search=True, force_web_search=False):
+        calls.append((include_web_search, force_web_search))
+        if include_web_search:
+            state["value"] = {
+                "status": "success",
+                "attempted_at": datetime.now(timezone.utc).isoformat(),
+                "jobs": 3,
+            }
+        return 3
+
+    with TestClient(main.app) as client:
+        token, _ = register(client, "deep-search-user")
+        monkeypatch.setattr(
+            main,
+            "settings",
+            SimpleNamespace(recruitment_web_search_enabled=True),
+        )
+        monkeypatch.setattr(main, "refresh_recruitment_sources", fake_refresh)
+        monkeypatch.setattr(
+            database,
+            "get_system_state",
+            lambda _key: state["value"],
+        )
+        monkeypatch.setattr(main, "_recruitment_source_last_refresh", 0.0)
+
+        deep = client.post(
+            "/api/recruitment/refresh?deep_search=true", headers=auth(token)
+        )
+        assert deep.status_code == 200
+        assert deep.json()["web_search_ran"] is True
+        assert deep.json()["skip_reason"] is None
+        assert deep.json()["next_due_at"]
+        assert calls[-1] == (True, True)
+
+        cooldown = client.post(
+            "/api/recruitment/refresh?deep_search=true", headers=auth(token)
+        )
+        assert cooldown.status_code == 200
+        assert cooldown.json()["web_search_ran"] is False
+        assert cooldown.json()["skip_reason"] == "deep_search_cooldown"
+        assert calls[-1] == (False, False)
 
 
 def test_recruitment_watch_fetch_is_offline_deterministic_and_safe(monkeypatch):
