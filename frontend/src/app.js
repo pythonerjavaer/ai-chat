@@ -124,6 +124,7 @@ const elements = {
   homeAlertList: $("home-alert-list"),
   resonanceDialog: $("resonance-dialog"), traceDialog: $("trace-dialog"), productMoreDialog: $("product-more-dialog"),
   mobileWorldNavigation: $("mobile-world-navigation"),
+  worldMapDialog: $("world-map-dialog"), worldMapCurrent: $("world-map-current"),
   adminUsageLauncher: $("admin-usage-launcher"), adminUsageDialog: $("admin-usage-dialog"),
   adminUsageAuth: $("admin-usage-auth"), adminUsageToken: $("admin-usage-token"),
   adminUsageConnect: $("admin-usage-connect"), adminUsageError: $("admin-usage-error"),
@@ -302,7 +303,11 @@ async function enterApp() {
   const pendingLaunch = state.pendingLaunch;
   state.pendingLaunch = null;
   if (pendingLaunch) window.setTimeout(() => launchProduct(pendingLaunch), 0);
-  if (!state.user.privacy_accepted && !elements.consentDialog.open) elements.consentDialog.showModal();
+  if (!state.user.privacy_accepted && !elements.consentDialog.open) {
+    elements.consentDialog.showModal();
+  } else if (!pendingLaunch) {
+    window.setTimeout(openWorldMap, 80);
+  }
 }
 
 async function loadHomeRecruitmentAlerts() {
@@ -388,6 +393,7 @@ async function logout(showMessage = true) {
   state.documents = [];
   if (elements.settingsDialog.open) elements.settingsDialog.close();
   if (elements.consentDialog.open) elements.consentDialog.close();
+  if (elements.worldMapDialog.open) elements.worldMapDialog.close();
   elements.appView.classList.add("hidden");
   elements.authView.classList.remove("hidden");
   elements.password.value = "";
@@ -443,6 +449,7 @@ function renderWorkspaceChrome() {
       : "发送消息，或询问已上传的资料…";
   elements.composerHint.textContent = `${workspace.boundary} 回答中的“来源”表示来源覆盖，不代表结论必然正确。`;
   elements.evidenceTitle.textContent = workspace.lens || "来源";
+  elements.worldMapCurrent.textContent = meta.themeName;
   document.querySelectorAll(".workspace-tab").forEach((button) => button.classList.toggle("active", button.dataset.workspace === state.workspace));
   document.querySelectorAll("[data-mobile-workspace]").forEach((button) => button.classList.toggle("active", button.dataset.mobileWorkspace === state.workspace));
   updateEvidence(state.latestEvidence.sources, state.latestEvidence.tools);
@@ -1092,12 +1099,21 @@ function openConcept(dialog) {
   }
 }
 
+function openWorldMap() {
+  closePanels();
+  if (!elements.worldMapDialog.open) {
+    elements.worldMapDialog.showModal();
+    playSceneEntry(elements.worldMapDialog);
+  }
+}
+
 function closeConcept(dialogId) {
   const dialog = $(dialogId);
   if (dialog?.open) dialog.close();
 }
 
 async function launchProduct(product) {
+  if (elements.worldMapDialog.open) elements.worldMapDialog.close();
   if (product === "resonance") return openConcept(elements.resonanceDialog);
   if (product === "trace") return openConcept(elements.traceDialog);
   if (!state.token) {
@@ -2078,6 +2094,7 @@ async function acceptPrivacyConsent() {
     state.user = await api("/auth/privacy-consent", { method: "POST", body: JSON.stringify({ accepted: true }) });
     elements.consentDialog.close();
     showToast("隐私选择已记录，你可以开始使用。", 4500);
+    window.setTimeout(openWorldMap, 120);
   } catch (error) { showToast(translateError(error.message), 5000); }
 }
 
@@ -2243,7 +2260,10 @@ elements.authSwitch.addEventListener("click", () => setAuthMode(state.authMode =
 elements.authModeLogin.addEventListener("click", () => setAuthMode("login"));
 elements.authModeRegister.addEventListener("click", () => setAuthMode("register"));
 $("new-chat").addEventListener("click", newConversation);
-$("brand-home").addEventListener("click", (event) => { event.preventDefault(); newConversation(); });
+$("brand-home").addEventListener("click", (event) => { event.preventDefault(); openWorldMap(); });
+$("world-map-open").addEventListener("click", openWorldMap);
+$("mobile-world-map-open").addEventListener("click", openWorldMap);
+$("world-map-close").addEventListener("click", () => elements.worldMapDialog.close());
 elements.documentInput.addEventListener("change", uploadDocument);
 elements.chatForm.addEventListener("submit", sendMessage);
 elements.messageInput.addEventListener("input", resizeComposer);

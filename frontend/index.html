@@ -99,6 +99,7 @@
           <span><strong>冰焰</strong><small>FROSTFIRE</small></span>
         </a>
         <div class="primary-navigation">
+          <button id="world-map-open" class="world-map-launch" type="button" aria-label="打开冰焰总览"><span aria-hidden="true">◈</span><b>总览</b></button>
           <nav id="workspace-tabs" class="workspace-tabs" aria-label="切换工作区"></nav>
           <div class="signal-navigation" aria-label="现实信号与来源工具">
             <button id="recruitment-open" class="recruitment-launch" type="button" aria-label="打开未来雷达"><span class="radar-glyph" aria-hidden="true"></span><b>未来雷达</b></button>
@@ -117,6 +118,7 @@
       </header>
 
       <nav id="mobile-world-navigation" class="mobile-world-navigation mobile-only" aria-label="冰焰世界与能力入口">
+        <button id="mobile-world-map-open" type="button"><b aria-hidden="true">◈</b><span>总览</span></button>
         <button type="button" data-mobile-workspace="legal"><b aria-hidden="true">§</b><span>寒冰域</span></button>
         <button type="button" data-mobile-workspace="general"><b aria-hidden="true">✦</b><span>极光域</span></button>
         <button type="button" data-mobile-workspace="finance"><b aria-hidden="true">↗</b><span>烈火域</span></button>
@@ -213,6 +215,29 @@
       </div>
       <div id="panel-backdrop" class="panel-backdrop hidden"></div>
     </section>
+
+    <dialog id="world-map-dialog" class="world-map-dialog" data-scene="world-map">
+      <div class="world-map-shell">
+        <header>
+          <div>
+            <span class="overline">FROSTFIRE WORLD MAP</span>
+            <h2>冰焰总览</h2>
+            <p>这里不是单一聊天页。七个世界彼此独立，也在同一片星图上协同运行。</p>
+          </div>
+          <button id="world-map-close" class="icon-button" type="button" aria-label="关闭冰焰总览">×</button>
+        </header>
+        <div class="world-map-grid" aria-label="选择要进入的冰焰页面">
+          <button class="world-map-card frost" type="button" data-launch="legal"><i aria-hidden="true">§</i><span>01 · FROST</span><strong>寒冰域</strong><p>合同、合规、义务、期限与风险。</p><small>进入寒冰域 ↗</small></button>
+          <button class="world-map-card aurora" type="button" data-launch="general"><i aria-hidden="true">✦</i><span>02 · AURORA</span><strong>极光域</strong><p>资料、文档、对话与可追溯问答。</p><small>进入极光域 ↗</small></button>
+          <button class="world-map-card ember" type="button" data-launch="finance"><i aria-hidden="true">↗</i><span>03 · EMBER</span><strong>烈火域</strong><p>金融、数字、假设、风险与决策分析。</p><small>进入烈火域 ↗</small></button>
+          <button class="world-map-card radar" type="button" data-launch="recruitment"><i aria-hidden="true">◉</i><span>04 · FUTURE RADAR</span><strong>未来雷达</strong><p>公开机会、官网变化与关键时间窗。</p><small>打开雷达 ↗</small></button>
+          <button class="world-map-card forge" type="button" data-launch="forge"><i aria-hidden="true">＋</i><span>05 · WORLD FORGE</span><strong>造界</strong><p>用目标、规则和预算创造专属 AI Space。</p><small>开始造界 ↗</small></button>
+          <button class="world-map-card resonance" type="button" data-launch="resonance"><i aria-hidden="true">≈</i><span>06 · RESONANCE</span><strong>共振</strong><p>连接不同世界的变化、冲突与可能性。</p><small>查看概念页 ↗</small></button>
+          <button class="world-map-card trace" type="button" data-launch="trace"><i aria-hidden="true">◎</i><span>07 · TRACE LENS</span><strong>溯源透镜</strong><p>看见结论的来源、路径与证据边界。</p><small>查看概念页 ↗</small></button>
+        </div>
+        <footer><span><i></i> 当前工作域：<b id="world-map-current">极光域</b></span><small>随时点击顶部“总览”重新打开这张星图</small></footer>
+      </div>
+    </dialog>
 
     <dialog id="cross-exam-dialog" class="cross-exam-dialog" data-scene="cross-exam">
       <div class="crossfire-shell">
