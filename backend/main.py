@@ -52,7 +52,7 @@ from .space_engine import (
     build_preflight,
     render_local_capsule,
 )
-from .recruitment import TIER_DEFINITIONS, score_job
+from .recruitment import TIER_DEFINITIONS, job_matches_profile, score_job
 from .recruitment_search import (
     WEB_SEARCH_SOURCE,
     WEB_SEARCH_STATE_KEY,
@@ -909,12 +909,25 @@ def recruitment_jobs(user: User) -> dict:
             return {"链接已验证", "标题已验证"}.issubset(tags)
         return is_priority_campus_listing(job)
 
-    jobs = [
+    scored_jobs = [
         score_job(job, profile)
         for job in available_jobs
         if is_verified_display_job(job)
     ]
-    jobs = [job for job in jobs if job["days_left"] is None or job["days_left"] > 0]
+    scored_jobs = [
+        job
+        for job in scored_jobs
+        if job["days_left"] is None or job["days_left"] > 0
+    ]
+    below_priority_count = sum(
+        job.get("tier_code") == "不建议投" for job in scored_jobs
+    )
+    jobs = [
+        job
+        for job in scored_jobs
+        if job.get("tier_code") != "不建议投"
+        and job_matches_profile(job, profile)
+    ]
     jobs.sort(
         key=lambda item: (
             -item["match_score"],
@@ -923,8 +936,8 @@ def recruitment_jobs(user: User) -> dict:
         )
     )
     public_source_leads = 0
-    verified_jobs = len(jobs)
-    quarantined_leads = max(0, len(available_jobs) - len(jobs))
+    verified_jobs = len(scored_jobs)
+    quarantined_leads = max(0, len(available_jobs) - len(scored_jobs))
     tier_counts = {
         tier: sum(job.get("tier_code") == tier for job in jobs)
         for tier in (definition["code"] for definition in TIER_DEFINITIONS)
@@ -943,9 +956,10 @@ def recruitment_jobs(user: User) -> dict:
     elif web_search_state.get("status") == "pending":
         web_search_copy = "AI 网页搜索等待首次运行。"
     inventory_copy = (
-        f"当前接收 {len(jobs)} 个仍在时间窗内的机会信号；"
+        f"当前筛选显示 {len(jobs)} 个仍在时间窗内的重点机会；"
         f"正文证据已核验 {verified_jobs} 个，另有 {quarantined_leads} 个候选信号"
         "留在核验区、不会进入主池。"
+        f"低于 T3 标准的 {below_priority_count} 个岗位未纳入重点池。"
         f"{web_search_copy}"
     )
     if watch_summary["total"] == 0:
@@ -975,6 +989,8 @@ def recruitment_jobs(user: User) -> dict:
             "last_job_verified_at": job_summary["last_verified_at"],
             "open_jobs": job_summary["open_jobs"],
             "verified_jobs": verified_jobs,
+            "matched_jobs": len(jobs),
+            "below_priority_jobs": below_priority_count,
             "public_source_leads": public_source_leads,
             "quarantined_leads": quarantined_leads,
             "tier_counts": tier_counts,
