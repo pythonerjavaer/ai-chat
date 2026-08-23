@@ -853,6 +853,11 @@ def test_ai_space_v2_preflight_local_cache_budget_and_history(monkeypatch):
 
 def test_recruitment_profile_matching_and_deadline_metadata():
     with TestClient(main.app) as client:
+        bootstrap_job = next(
+            job for job in main.CURATED_CAMPUS_JOBS
+            if "BytePlus" in job["company"]
+        )
+        database.upsert_recruitment_jobs([bootstrap_job])
         token, _ = register(client, "recruiter")
         profile = client.put(
             "/api/recruitment/profile",
@@ -875,8 +880,9 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         assert len(payload["monitor_pools"]) == 8
         assert payload["jobs"]
         titles = {job["title"] for job in payload["jobs"]}
-        assert "拼多多 2027届校园招聘提前批" in titles
-        assert "2027 Business Analyst (General Practice)_Campus" in titles
+        assert "Strategy Manager Graduate（BytePlus）– 2027 Start" in titles
+        assert "拼多多 2027届校园招聘提前批" not in titles
+        assert "2027 Business Analyst (General Practice)_Campus" not in titles
         assert not any("梧桐计划" in title for title in titles)
         assert all(job["url"].startswith("https://") for job in payload["jobs"])
         assert not any(job["id"].startswith("sample-") for job in payload["jobs"])
@@ -1056,6 +1062,42 @@ def test_recruitment_ingest_is_idempotent_allows_shared_pages_and_hides_thread_i
         assert source["source_ref"] is None
         assert raw_thread_id not in sync.text
         assert "source_thread_id" not in sync.text
+
+
+def test_repeated_ingest_rechecks_official_page_and_closes_removed_job(monkeypatch):
+    page = {"text": "复核集团 2099届校园招聘战略岗 校园招聘 应届毕业生"}
+    monkeypatch.setattr(
+        main,
+        "fetch_watch_page",
+        lambda *_args, **_kwargs: SimpleNamespace(text=page["text"]),
+    )
+    job = {
+        "company": "复核集团",
+        "title": "2099届校园招聘战略岗",
+        "city": "北京",
+        "official_url": "https://example.com/campus/recheck-role",
+        "source_id": "chatgpt-radar-03",
+        "external_id": "recheck-role",
+    }
+    headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
+    with TestClient(main.app) as client:
+        first = client.post(
+            "/api/recruitment/ingest", headers=headers, json={"jobs": [job]}
+        )
+        assert first.status_code == 200
+        assert first.json()["accepted"] == 1
+
+        page["text"] = "该职位已下线，申请通道已关闭。"
+        repeated = client.post(
+            "/api/recruitment/ingest", headers=headers, json={"jobs": [job]}
+        )
+        assert repeated.status_code == 200
+        assert repeated.json()["duplicates"] == 1
+        assert repeated.json()["closed"] == 1
+
+        token, _ = register(client, "recheck-closed-user")
+        jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
+        assert not any(item["title"] == job["title"] for item in jobs)
 
 
 def test_recruitment_ingest_quarantines_unverifiable_and_rejects_noncampus_pages(monkeypatch):
@@ -1657,22 +1699,27 @@ def test_recruitment_watch_preserves_fragment_links_and_enforces_cap(monkeypatch
 
 def test_company_only_watch_uses_recruitment_pool_without_url_or_keywords():
     with TestClient(main.app) as client:
+        bootstrap_job = next(
+            job for job in main.CURATED_CAMPUS_JOBS
+            if "BytePlus" in job["company"]
+        )
+        database.upsert_recruitment_jobs([bootstrap_job])
         token, _ = register(client, "company-watch-owner")
         created = client.post(
             "/api/recruitment/watches",
             headers=auth(token),
-            json={"company_name": "拼多多"},
+            json={"company_name": "BytePlus"},
         )
         assert created.status_code == 201
         item = created.json()
         assert item["watch_type"] == "company"
-        assert item["company_name"] == "拼多多"
+        assert item["company_name"] == "BytePlus"
         assert item["url"] == ""
         assert item["last_status"] == "baseline"
-        assert "校园招聘提前批" in item["last_keyword_hits"][0]
+        assert "Strategy Manager Graduate" in item["last_keyword_hits"][0]
 
 
-def test_recruitment_jobs_sort_today_deadline_before_tomorrow(monkeypatch):
+def test_recruitment_jobs_hide_today_deadline_and_keep_tomorrow(monkeypatch):
     today = date.today()
     base_job = {
         "company": "测试机构",
@@ -1683,7 +1730,7 @@ def test_recruitment_jobs_sort_today_deadline_before_tomorrow(monkeypatch):
         "source": "动态监控 API",
         "opening_date": None,
         "requirements": "2027届校园招聘",
-        "tags": ["校园招聘", "动态监控"],
+        "tags": ["校园招聘", "动态监控", "链接已验证", "标题已验证"],
         "historical_applicants": None,
         "historical_offers": None,
         "last_verified_at": "2099-01-01T00:00:00+00:00",
@@ -1710,7 +1757,7 @@ def test_recruitment_jobs_sort_today_deadline_before_tomorrow(monkeypatch):
     with TestClient(main.app) as client:
         token, _ = register(client, "deadline-sort-owner")
         jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
-        assert [job["id"] for job in jobs[:2]] == ["today", "tomorrow"]
+        assert [job["id"] for job in jobs] == ["tomorrow"]
 
 
 def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypatch):
@@ -1789,6 +1836,8 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
 
 
 def test_web_search_marks_policy_bank_management_trainee_claims_for_review():
+    today = date.today()
+    target_year = today.year + 1 if today.month >= 6 else today.year
     base = {
         "city": "北京",
         "industry": "金融",
@@ -1801,15 +1850,44 @@ def test_web_search_marks_policy_bank_management_trainee_claims_for_review():
     agriculture_job = recruitment_search._normalize_job({
         **base,
         "company": "中国农业发展银行",
-        "title": "2026年管培生招聘",
+        "title": f"{target_year}年管培生招聘",
     })
     central_bank_job = recruitment_search._normalize_job({
         **base,
         "company": "中国人民银行",
-        "title": "2026年管理培训生招聘",
+        "title": f"{target_year}年管理培训生招聘",
     })
     assert agriculture_job and "待官方核验" in agriculture_job["tags"]
     assert central_bank_job and "待官方核验" in central_bank_job["tags"]
+
+
+def test_web_search_rejects_old_cohort_today_deadline_and_future_opening():
+    today = date.today()
+    target_year = today.year + 1 if today.month >= 6 else today.year
+    base = {
+        "company": "拼多多",
+        "title": f"{target_year}届校园招聘产品岗",
+        "city": "上海",
+        "industry": "互联网",
+        "official_url": "https://careers.pddglobalhr.com/campus/role",
+        "opening_date": None,
+        "closing_date": "2099-09-01",
+        "requirements": f"面向{target_year}届毕业生",
+        "category": "互联网企业",
+    }
+    assert recruitment_search._normalize_job({
+        **base,
+        "title": f"{target_year - 1}届校园招聘产品岗",
+        "requirements": f"面向{target_year - 1}届毕业生",
+    }) is None
+    assert recruitment_search._normalize_job({
+        **base,
+        "closing_date": today.isoformat(),
+    }) is None
+    assert recruitment_search._normalize_job({
+        **base,
+        "opening_date": (today + timedelta(days=1)).isoformat(),
+    }) is None
 
 
 def test_web_search_discards_candidate_with_unreadable_link(monkeypatch):

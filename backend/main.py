@@ -71,7 +71,6 @@ from .live_sources import (
     fetch_public_recruitment_sources,
     is_actionable_recruitment_listing,
     is_priority_campus_listing,
-    is_priority_public_source_lead,
 )
 from .config import settings
 from .security import (
@@ -271,7 +270,10 @@ def refresh_recruitment_sources(
     if not _recruitment_source_refresh_lock.acquire(blocking=False):
         raise RecruitmentRefreshBusy("Recruitment source refresh is already running.")
     try:
-        jobs = [dict(job) for job in CURATED_CAMPUS_JOBS]
+        # The five-source snapshot is restored separately and only after each
+        # official page passes a fresh verification.  Re-upserting it here
+        # would reopen a vacancy that a later heartbeat already closed.
+        jobs: list[dict] = []
         jobs.extend(fetch_public_recruitment_sources())
         if settings.adzuna_app_id and settings.adzuna_app_key:
             jobs.extend(fetch_adzuna_jobs())
@@ -339,6 +341,14 @@ def refresh_recruitment_sources(
 async def recruitment_refresh_loop() -> None:
     while True:
         try:
+            restore_counts = await restore_verified_radar_snapshot()
+            logger.info(
+                "Verified radar snapshot refresh completed: %s",
+                restore_counts,
+            )
+        except Exception:
+            logger.exception("Verified radar snapshot refresh failed")
+        try:
             count = await asyncio.to_thread(refresh_recruitment_sources)
             logger.info("Scheduled recruitment source refresh completed: %s jobs", count)
         except Exception:
@@ -377,7 +387,6 @@ async def lifespan(_: FastAPI):
     database.init_db()
     database.ensure_recruitment_ingest_sources(EXPECTED_CHATGPT_RADAR_SOURCES)
     database.purge_legacy_recruitment_samples()
-    database.seed_recruitment_jobs(CURATED_CAMPUS_JOBS)
     task = None
     if settings.recruitment_refresh_minutes > 0:
         task = asyncio.create_task(recruitment_refresh_loop())
@@ -890,19 +899,22 @@ def recruitment_jobs(user: User) -> dict:
     available_jobs = database.list_recruitment_jobs()
     watch_summary = database.recruitment_watch_summary(user["id"])
     job_summary = database.recruitment_job_summary()
+    def is_verified_display_job(job: dict) -> bool:
+        tags = set(job.get("tags") or [])
+        if tags.intersection({"待官方核验", "待打开核对"}):
+            return False
+        if "动态监控" in tags:
+            # Authorized monitor candidates already passed campus, city,
+            # company, title and official-page verification at ingestion.
+            return {"链接已验证", "标题已验证"}.issubset(tags)
+        return is_priority_campus_listing(job)
+
     jobs = [
         score_job(job, profile)
         for job in available_jobs
-        if (
-            is_priority_campus_listing(job)
-            or (
-                is_priority_public_source_lead(job)
-                and "待打开核对" in (job.get("tags") or [])
-            )
-            or "动态监控" in job.get("tags", [])
-        )
+        if is_verified_display_job(job)
     ]
-    jobs = [job for job in jobs if job["days_left"] is None or job["days_left"] >= 0]
+    jobs = [job for job in jobs if job["days_left"] is None or job["days_left"] > 0]
     jobs.sort(
         key=lambda item: (
             -item["match_score"],
@@ -910,10 +922,9 @@ def recruitment_jobs(user: User) -> dict:
             item["days_left"] if item["days_left"] is not None else 9999,
         )
     )
-    public_source_leads = sum(
-        "待打开核对" in (job.get("tags") or []) for job in jobs
-    )
-    verified_jobs = len(jobs) - public_source_leads
+    public_source_leads = 0
+    verified_jobs = len(jobs)
+    quarantined_leads = max(0, len(available_jobs) - len(jobs))
     tier_counts = {
         tier: sum(job.get("tier_code") == tier for job in jobs)
         for tier in (definition["code"] for definition in TIER_DEFINITIONS)
@@ -933,7 +944,8 @@ def recruitment_jobs(user: User) -> dict:
         web_search_copy = "AI 网页搜索等待首次运行。"
     inventory_copy = (
         f"当前接收 {len(jobs)} 个仍在时间窗内的机会信号；"
-        f"正文证据已核验 {verified_jobs} 个，公开源待核对 {public_source_leads} 个。"
+        f"正文证据已核验 {verified_jobs} 个，另有 {quarantined_leads} 个候选信号"
+        "留在核验区、不会进入主池。"
         f"{web_search_copy}"
     )
     if watch_summary["total"] == 0:
@@ -964,6 +976,7 @@ def recruitment_jobs(user: User) -> dict:
             "open_jobs": job_summary["open_jobs"],
             "verified_jobs": verified_jobs,
             "public_source_leads": public_source_leads,
+            "quarantined_leads": quarantined_leads,
             "tier_counts": tier_counts,
             "tier_definitions": list(TIER_DEFINITIONS),
             "web_search": web_search_state,
@@ -1443,6 +1456,67 @@ def _verify_ingest_candidate(
     return "verified", None, verified_dates
 
 
+def _restore_verified_snapshot_job(job: dict) -> str:
+    """Rebuild one last-known-good public job only after a live page check."""
+    today = date.today().isoformat()
+    opening_date = job.get("opening_date")
+    closing_date = job.get("closing_date")
+    if job.get("status") != "open" or (closing_date and closing_date <= today):
+        database.close_recruitment_job(str(job["id"]))
+        return "closed"
+    if opening_date and opening_date > today:
+        database.close_recruitment_job(str(job["id"]))
+        return "future"
+
+    candidate = {
+        "company": str(job.get("company", "")),
+        "title": str(job.get("title", "")),
+        "city": str(job.get("city", "")),
+        "requirements": str(job.get("requirements", "")),
+        "tags": list(job.get("tags", [])),
+        "canonical_url": str(job.get("url", "")),
+        "opening_date": opening_date,
+        "closing_date": closing_date,
+    }
+    verification_status, _, verified_dates = _verify_ingest_candidate(candidate)
+    if verification_status == "verified":
+        restored = {
+            **job,
+            "opening_date": verified_dates["opening_date"],
+            "closing_date": verified_dates["closing_date"],
+            "last_verified_at": database.utc_now(),
+            "status": "open",
+        }
+        database.upsert_recruitment_jobs([restored])
+    elif verification_status in {"closed", "rejected"}:
+        # A readable page that no longer contains campus evidence is no longer
+        # eligible as last-known-good. Temporary fetch/title ambiguity remains
+        # pending and is retried without deleting the prior verified row.
+        database.close_recruitment_job(str(job["id"]))
+    # A temporary fetch failure never creates a new row and never overwrites a
+    # last-known-good row.  The next scheduled pass retries the official page.
+    return verification_status
+
+
+async def restore_verified_radar_snapshot() -> dict[str, int]:
+    """Re-verify the public five-monitor snapshot after an ephemeral restart."""
+    counts = {"verified": 0, "closed": 0, "pending": 0, "rejected": 0, "future": 0}
+    semaphore = asyncio.Semaphore(4)
+
+    async def restore_one(job: dict) -> str:
+        async with semaphore:
+            return await asyncio.to_thread(_restore_verified_snapshot_job, dict(job))
+
+    statuses = await asyncio.gather(
+        *(restore_one(job) for job in CURATED_CAMPUS_JOBS),
+        return_exceptions=True,
+    )
+    for result in statuses:
+        status_name = "pending" if isinstance(result, Exception) else str(result)
+        counts[status_name if status_name in counts else "pending"] += 1
+    return counts
+
+
 def _ingest_dedupe_key(
     *,
     source_id: str,
@@ -1691,7 +1765,18 @@ def ingest_recruitment_jobs(
             group["counts"]["duplicates"] += 1
             group["counts"]["stale"] += 1
             existing_status = stored.get("verification_status")
-            if existing_status == "verified":
+            verified_deadline = stored.get("verified_closing_date")
+            if verified_deadline and str(verified_deadline) <= today.isoformat():
+                promoted_job_id = stored.get("promoted_job_id")
+                if promoted_job_id:
+                    database.close_recruitment_job(promoted_job_id)
+                database.set_recruitment_ingest_candidate_verification(
+                    stored["id"], "closed", "expired", promoted_job_id
+                )
+                totals["closed"] += 1
+                group["counts"]["closed"] += 1
+                skipped.append({"title": item.title, "reason": "expired"})
+            elif existing_status == "verified":
                 totals["accepted"] += 1
                 group["counts"]["accepted"] += 1
             elif existing_status == "rejected":
@@ -1713,7 +1798,7 @@ def ingest_recruitment_jobs(
             group["counts"][disposition] += 1
 
         incoming_closed = item.status == "closed"
-        incoming_expired = bool(item.closing_date and item.closing_date < today)
+        incoming_expired = bool(item.closing_date and item.closing_date <= today)
         if incoming_closed or incoming_expired:
             promoted_job_id = stored.get("promoted_job_id")
             if promoted_job_id:
@@ -1732,10 +1817,17 @@ def ingest_recruitment_jobs(
             })
             continue
 
-        if disposition == "duplicate" and stored.get("verification_status") == "verified":
-            database.upsert_recruitment_jobs([_promoted_job(stored)])
-            totals["accepted"] += 1
-            group["counts"]["accepted"] += 1
+        verified_deadline = stored.get("verified_closing_date")
+        if verified_deadline and str(verified_deadline) <= today.isoformat():
+            promoted_job_id = stored.get("promoted_job_id")
+            if promoted_job_id:
+                database.close_recruitment_job(promoted_job_id)
+            database.set_recruitment_ingest_candidate_verification(
+                stored["id"], "closed", "expired", promoted_job_id
+            )
+            totals["closed"] += 1
+            group["counts"]["closed"] += 1
+            skipped.append({"title": item.title, "reason": "expired"})
             continue
 
         if url_error:
@@ -1769,6 +1861,9 @@ def ingest_recruitment_jobs(
             group["counts"]["closed"] += 1
             skipped.append({"title": item.title, "reason": reason})
         else:
+            promoted_job_id = stored.get("promoted_job_id")
+            if verification_status == "rejected" and promoted_job_id:
+                database.close_recruitment_job(promoted_job_id)
             database.set_recruitment_ingest_candidate_verification(
                 stored["id"], verification_status, reason
             )

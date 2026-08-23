@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+from pathlib import Path
 
 from .config import settings
 from .recruitment_watch import fetch_watch_page
@@ -24,31 +25,26 @@ PUBLIC_RECRUITMENT_SOURCES = [
 MAX_PUBLIC_SOURCE_BYTES = 1_500_000
 MAX_ADZUNA_BYTES = 2_000_000
 
-_VERIFIED_AT = "2026-08-22T00:00:00+00:00"
-# Official campus openings whose dates and direct ATS links were manually
-# verified. Generic public listing pages do not reliably expose these fields.
-CURATED_CAMPUS_JOBS = [
-    {
-        "id": "curated-pdd-2027-early",
-        "company": "拼多多", "employer_type": "互联网企业",
-        "title": "拼多多 2027届校园招聘提前批", "city": "上海", "industry": "互联网",
-        "url": "https://careers.pddglobalhr.com/campus/grad",
-        "source": "拼多多校园招聘官网", "opening_date": "2026-07-06", "closing_date": "2026-08-23",
-        "requirements": "面向毕业时间为 2026 年 9 月至 2027 年 8 月的 2027 届应届生；8 月 23 日截止，建议立即投递。",
-        "tags": ["2027届", "校园招聘", "提前批"], "historical_applicants": None,
-        "historical_offers": None, "last_verified_at": _VERIFIED_AT, "status": "open",
-    },
-    {
-        "id": "curated-kearney-2027-ba",
-        "company": "Kearney 科尔尼", "employer_type": "外企",
-        "title": "2027 Business Analyst (General Practice)_Campus", "city": "上海 / 北京", "industry": "咨询",
-        "url": "https://kearney.taleo.net/careersection/01c/jobdetail.ftl?job=006JY",
-        "source": "科尔尼官方 Taleo + 官方校招公告", "opening_date": "2026-08-03", "closing_date": "2026-08-24",
-        "requirements": "面向 2027 届国内外本硕博，专业不限；官方校招公告明确 8 月 24 日 09:00（北京时间）截止。",
-        "tags": ["2027届", "校园招聘", "咨询", "Business Analyst"], "historical_applicants": None,
-        "historical_offers": None, "last_verified_at": _VERIFIED_AT, "status": "open",
-    },
-]
+RADAR_BOOTSTRAP_PATH = Path(__file__).with_name("radar_bootstrap_jobs.json")
+
+
+def _load_radar_bootstrap_jobs() -> list[dict]:
+    """Load only public, server-verified fields from the last five-source snapshot.
+
+    Render Free uses an ephemeral SQLite database.  The snapshot lets a cold
+    instance re-check official pages and rebuild its verified pool without
+    storing private ChatGPT conversation IDs or blindly trusting stale rows.
+    """
+    try:
+        payload = json.loads(RADAR_BOOTSTRAP_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [dict(item) for item in payload if isinstance(item, dict)]
+
+
+CURATED_CAMPUS_JOBS = _load_radar_bootstrap_jobs()
 
 # Navigation/category links are not job postings.  They often look like
 # "江门招聘" or "校园招聘" and must never be shown as an actionable vacancy.
@@ -148,7 +144,8 @@ PERSONAL_MONITOR_POOLS = [
         "employers": [
             "腾讯", "阿里巴巴", "字节跳动", "百度", "拼多多", "蚂蚁集团", "美团",
             "京东", "小米", "网易", "快手", "滴滴", "携程", "华为", "科大讯飞",
-            "同程旅行", "得物", "B站", "金山办公", "小红书",
+            "同程旅行", "得物", "B站", "金山办公", "小红书", "BytePlus",
+            "DJI", "大疆", "中芯国际", "SMIC",
         ],
     },
     {
@@ -158,8 +155,10 @@ PERSONAL_MONITOR_POOLS = [
         "employers": [
             "宝洁", "联合利华", "欧莱雅", "雀巢", "玛氏", "可口可乐", "百事", "耐克", "Babycare",
             "强生", "星巴克", "麦当劳", "Kearney 科尔尼", "麦肯锡", "波士顿咨询",
+            "Roland Berger", "罗兰贝格",
             "德勤", "普华永道", "毕马威", "安永", "埃森哲", "Microsoft", "Google",
-            "Amazon/AWS", "Apple", "NVIDIA", "J.P. Morgan", "Goldman Sachs", "Morgan Stanley",
+            "Amazon/AWS", "Amazon", "AWS", "Apple", "NVIDIA", "J.P. Morgan",
+            "Goldman Sachs", "Morgan Stanley",
             "UBS", "Citi", "HSBC", "BlackRock",
         ],
     },
@@ -167,7 +166,7 @@ PERSONAL_MONITOR_POOLS = [
         "id": "quant_private_capital",
         "name": "量化与私募",
         "focus": "仅保留有明确校园职位和官方投递链接的量化、私募和研究岗位；不把远期开放窗口当截止预警",
-        "employers": ["幻方", "明汯", "衍复", "灵均", "宽德", "高瓴", "红杉中国"],
+        "employers": ["幻方", "明汯", "衍复", "灵均", "宽德", "高瓴", "红杉中国", "Point72"],
     },
 ]
 
