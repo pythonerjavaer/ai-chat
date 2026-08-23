@@ -40,7 +40,7 @@
             <p><b>别人拥有的是别人的冰焰。<br />你的冰焰，只为你而存在。</b></p>
           </div>
           <section class="world-entrances" aria-label="冰焰世界入口">
-            <div class="world-entrances-heading"><span class="overline">ENTER YOUR WORLD</span><h2>你的冰焰</h2><p>寒冰定义边界，极光沉淀认知，烈火驱动变化；未来雷达连接现实，造界创造新的世界。</p></div>
+            <div class="world-entrances-heading"><span class="overline">ENTER YOUR WORLD</span><h2>你的冰焰</h2><p>寒冰定义边界，极光沉淀认知，烈火驱动变化；未来雷达连接现实，造界创造新的世界。共振让世界彼此影响，溯源透镜让每一次变化都有来路，而八度空间让这个世界拥有自己的声音。</p></div>
             <div class="world-entry-grid">
               <button class="world-entry frost" type="button" data-launch="legal"><i class="world-entry-icon" aria-hidden="true">§</i><span>01 · FROST</span><strong>寒冰域</strong><p>有些东西决定世界如何运行，也决定什么不能被越过。</p><small>当前从合同、合规、义务、期限与风险开始。</small></button>
               <button class="world-entry aurora" type="button" data-launch="general"><i class="world-entry-icon" aria-hidden="true">✦</i><span>02 · AURORA</span><strong>极光域</strong><p>让散落的信息逐渐形成属于你的知识世界。</p><small>当前从资料、文档、对话与可追溯问答开始。</small></button>
@@ -49,6 +49,7 @@
               <button class="world-entry forge" type="button" data-launch="forge"><i class="world-entry-icon" aria-hidden="true">＋</i><span>05 · WORLD FORGE</span><strong>造界</strong><p>当现有世界无法定义你，就创造一个新的。</p><small>为它赋予目标、规则、边界与自己的运行方式。</small></button>
               <button class="world-entry forming" type="button" data-launch="resonance"><i class="world-entry-icon" aria-hidden="true">≈</i><span>06 · RESONANCE</span><strong>共振</strong><p>一个世界发生的变化，从来不会只停留在一个世界。</p><small>连接不同世界，让变化、冲突与可能性彼此传播。 · FORMING</small></button>
               <button class="world-entry forming" type="button" data-launch="trace"><i class="world-entry-icon" aria-hidden="true">◎</i><span>07 · TRACE LENS</span><strong>溯源透镜</strong><p>任何重要判断，都应该能够找到它的来路。</p><small>看见一个结论从哪里来，又经历了什么才成为现在的样子。 · FORMING</small></button>
+              <button class="world-entry music" type="button" data-launch="music"><i class="world-entry-icon" aria-hidden="true">♫</i><span>08 · MUSIC DIMENSION</span><strong>八度空间</strong><p>让你的私人世界，拥有自己的声音。</p><small>从创作模板、描述词与原创声音世界开始。 · MUSIC</small></button>
             </div>
           </section>
           <div class="landing-footer-note"><span class="note-dot"></span> 你的资料、对话与雷达坐标以账号为边界，彼此隔离</div>
@@ -109,7 +110,7 @@
         <div class="header-actions">
             <span id="network-status" class="network-status"><i></i><b>在线</b></span>
             <button id="studio-open" class="studio-launch" type="button" aria-label="打开造界"><span>＋</span><b>造界</b></button>
-            <details class="product-more-menu"><summary>更多 <i>⌄</i></summary><div><button id="resonance-open" type="button"><span>≈</span><b>共振</b><small>RESONANCE · FORMING</small></button><button id="cross-exam-open" type="button"><span>⟁</span><b>双域审查</b><small>保留的实验能力</small></button></div></details>
+            <div class="header-product-actions" aria-label="其他正式产品与实验能力"><button id="music-open" type="button" aria-label="打开八度空间"><span>♫</span><b>八度空间</b></button><button id="resonance-open" type="button" aria-label="打开共振"><span>≈</span><b>共振</b></button><button id="cross-exam-open" type="button" aria-label="打开双域审查"><span>⟁</span><b>双域审查</b></button></div>
           <button id="knowledge-toggle" class="icon-button tablet-only" type="button" aria-label="打开资料库">◇</button>
           <button id="settings-button" class="profile-button" type="button" aria-label="账号与设置">
             <span id="avatar">A</span><b id="current-username">account</b><i>⌄</i>
@@ -126,6 +127,7 @@
         <button id="mobile-trace-open" type="button"><b class="trace-glyph" aria-hidden="true"><i></i></b><span>溯源透镜</span></button>
         <button id="mobile-studio-open" type="button"><b aria-hidden="true">＋</b><span>造界<small>AI SPACE</small></span></button>
         <button id="mobile-resonance-open" type="button"><b aria-hidden="true">≈</b><span>共振</span></button>
+        <button id="mobile-music-open" type="button"><b aria-hidden="true">♫</b><span>八度空间</span></button>
       </nav>
 
       <div id="scene-arrival" class="scene-arrival" aria-hidden="true">
@@ -179,7 +181,7 @@
 
           <div class="composer-wrap">
             <nav class="mobile-action-dock mobile-only" aria-label="移动端功能入口">
-              <button id="mobile-more-open" type="button"><b>⋯</b><span>更多能力</span></button>
+              <button id="mobile-more-open" type="button"><b>◈</b><span>产品罗盘</span></button>
               <button id="mobile-knowledge" type="button"><b>◇</b><span>资料库</span></button>
             </nav>
             <form id="chat-form" class="composer">
@@ -214,6 +216,15 @@
         </aside>
       </div>
       <div id="panel-backdrop" class="panel-backdrop hidden"></div>
+      <aside id="music-mini-player" class="music-mini-player is-idle" aria-live="polite" aria-label="八度空间迷你播放器">
+        <button id="music-mini-open" class="music-mini-main" type="button" aria-label="打开八度空间">
+          <span class="music-mini-glyph" aria-hidden="true">♫</span>
+          <span class="music-mini-copy"><small>MUSIC DIMENSION</small><strong id="music-mini-track">八度空间</strong></span>
+        </button>
+        <button id="music-mini-toggle" class="music-mini-control" type="button" aria-label="播放或暂停" disabled>▶</button>
+        <button id="music-mini-next" class="music-mini-control" type="button" aria-label="下一首" disabled>›</button>
+        <button id="music-mini-mute" class="music-mini-control" type="button" aria-label="静音" disabled>◖</button>
+      </aside>
     </section>
 
     <dialog id="world-map-dialog" class="world-map-dialog" data-scene="world-map">
@@ -222,7 +233,7 @@
           <div>
             <span class="overline">FROSTFIRE WORLD MAP</span>
             <h2>冰焰总览</h2>
-            <p>这里不是单一聊天页。七个世界彼此独立，也在同一片星图上协同运行。</p>
+            <p>这里不是单一聊天页。八个产品彼此独立，也在同一片星图上协同运行。</p>
           </div>
           <button id="world-map-close" class="icon-button" type="button" aria-label="关闭冰焰总览">×</button>
         </header>
@@ -234,8 +245,10 @@
           <button class="world-map-card forge" type="button" data-launch="forge"><i aria-hidden="true">＋</i><span>05 · WORLD FORGE</span><strong>造界</strong><p>用目标、规则和预算创造专属 AI Space。</p><small>开始造界 ↗</small></button>
           <button class="world-map-card resonance" type="button" data-launch="resonance"><i aria-hidden="true">≈</i><span>06 · RESONANCE</span><strong>共振</strong><p>连接不同世界的变化、冲突与可能性。</p><small>查看概念页 ↗</small></button>
           <button class="world-map-card trace" type="button" data-launch="trace"><i aria-hidden="true">◎</i><span>07 · TRACE LENS</span><strong>溯源透镜</strong><p>看见结论的来源、路径与证据边界。</p><small>查看概念页 ↗</small></button>
+          <button class="world-map-card music" type="button" data-launch="music"><i aria-hidden="true">♫</i><span>08 · MUSIC DIMENSION</span><strong>八度空间</strong><p>让你的私人世界，拥有自己的声音。</p><small>打开音乐维度 ↗</small></button>
+          <div class="world-compass-core" aria-hidden="true"><i></i><span>冰焰</span><small>FROSTFIRE<br />PRODUCT COMPASS</small></div>
         </div>
-        <footer><span><i></i> 当前工作域：<b id="world-map-current">极光域</b></span><small>随时点击顶部“总览”重新打开这张星图</small></footer>
+        <footer><span><i></i> 当前工作域：<b id="world-map-current">极光域</b></span><button id="world-map-cross-open" type="button">实验舱 · 双域审查 ⟁</button><small>八个正式产品全部位于罗盘之上</small></footer>
       </div>
     </dialog>
 
@@ -375,17 +388,6 @@
       </div>
     </dialog>
 
-    <dialog id="product-more-dialog" class="concept-dialog">
-      <section class="concept-shell compact-concept">
-        <header><div><span class="overline">MORE FROM FROSTFIRE</span><h2>更多入口</h2></div><button class="icon-button" type="button" data-close-concept="product-more-dialog" aria-label="关闭更多入口">×</button></header>
-        <div class="concept-menu-grid">
-          <button type="button" data-concept-open="resonance-dialog"><span>≈</span><b>共振</b><small>RESONANCE · FORMING</small></button>
-          <button type="button" data-concept-open="trace-dialog"><span>◇</span><b>溯源透镜</b><small>TRACE LENS · FORMING</small></button>
-          <button id="more-cross-exam-open" type="button"><span>⟁</span><b>双域审查</b><small>保留的实验能力</small></button>
-        </div>
-      </section>
-    </dialog>
-
     <dialog id="resonance-dialog" class="concept-dialog" data-scene="resonance">
       <section class="concept-shell">
         <header><div><span class="overline">RESONANCE</span><h2>共振</h2><p>当世界彼此连接，改变才真正开始传播。</p></div><button class="icon-button" type="button" data-close-concept="resonance-dialog" aria-label="关闭共振">×</button></header>
@@ -400,6 +402,70 @@
         <header><div><span class="overline">TRACE LENS</span><h2>溯源透镜</h2><p>看见一个结论从哪里来，又经历了什么才成为现在的样子。</p></div><button class="icon-button" type="button" data-close-concept="trace-dialog" aria-label="关闭溯源透镜">×</button></header>
         <div class="concept-trace" aria-label="溯源路径"><span>来源</span><i>↓</i><span>世界</span><i>↓</i><span>变化</span><i>↓</i><span>判断</span></div>
         <footer><span>每一步，都应该可以被重新找到。</span><b>TRACE SYSTEM FORMING</b></footer>
+      </section>
+    </dialog>
+
+    <dialog id="music-dimension-dialog" class="music-dimension-dialog" data-scene="music">
+      <section class="music-dimension-shell">
+        <div class="music-atmosphere" aria-hidden="true">
+          <i></i><i></i><i></i><i></i><i></i>
+          <div class="music-orbit"><span>♫</span></div>
+          <div class="music-wave"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></div>
+        </div>
+        <header class="music-dimension-header">
+          <div><span class="overline">MUSIC DIMENSION</span><h2>八度空间</h2><p>音乐不是世界的背景。<br />它是记忆、情绪与时间留下的另一条轨迹。</p></div>
+          <button id="music-dialog-close" class="icon-button" type="button" aria-label="关闭八度空间窗口">×</button>
+        </header>
+        <div class="music-dimension-body">
+          <section class="music-now-playing" aria-live="polite">
+            <span class="music-connection-label">YOUR SOUND UNIVERSE</span>
+            <small>私人音乐创作维度</small>
+            <h3 id="music-current-track">尚未生成声音</h3>
+            <p id="music-current-artist">由你定义</p>
+            <div id="music-status" class="music-status"><i></i><span>选择一个模板，让八度空间开始转动。</span></div>
+          </section>
+          <section class="music-controls" aria-label="音乐播放控制">
+            <div class="music-transport">
+              <button id="music-previous" type="button" aria-label="上一首" disabled>‹</button>
+              <button id="music-play-toggle" class="music-play-toggle" type="button" aria-label="播放或暂停" disabled>▶</button>
+              <button id="music-next" type="button" aria-label="下一首" disabled>›</button>
+            </div>
+            <label class="music-shuffle"><input id="music-shuffle" type="checkbox" checked /><span>随机播放</span><b>一轮内不重复</b></label>
+            <label class="music-volume"><span>VOLUME</span><input id="music-volume" type="range" min="0" max="1" step="0.01" value="0.18" /><output id="music-volume-output">18%</output></label>
+          </section>
+          <aside id="music-service-state" class="music-service-state">
+            <strong>八度空间已经打开，但音乐服务尚未连接。</strong>
+            <p>本地原创声场仍可使用；外部曲库需要单独连接合规音乐服务。这里不会使用盗版音源或自动调用 AI。</p>
+          </aside>
+          <section class="music-creator" aria-label="音乐创作模板">
+            <header><div><span class="overline">SOUND BLUEPRINT</span><h3>创作自己的声音世界</h3><p>模板、描述重写和声音合成都在浏览器本地完成，0 OpenAI Token。</p></div><span class="music-zero-token">LOCAL · 0 TOKEN</span></header>
+            <div id="music-template-grid" class="music-template-grid" aria-label="选择创作模板">
+              <button type="button" data-music-template="cosmos">星际叙事<small>COSMOS</small></button>
+              <button type="button" data-music-template="frost">冰晶回声<small>FROST</small></button>
+              <button type="button" data-music-template="aurora">极光漂移<small>AURORA</small></button>
+              <button type="button" data-music-template="ember">烈焰脉冲<small>EMBER</small></button>
+            </div>
+            <div class="music-creator-fields">
+              <label><span>作品名称</span><input id="music-creation-title" maxlength="60" placeholder="给这个声音世界命名" /></label>
+              <label><span>风格方向</span><input id="music-creation-style" maxlength="80" placeholder="电影氛围、未来节拍…" /></label>
+              <label><span>情绪坐标</span><input id="music-creation-mood" maxlength="80" placeholder="辽阔、冷静、炽热…" /></label>
+              <label><span>速度 <b id="music-tempo-output">72 BPM</b></span><input id="music-creation-tempo" type="range" min="48" max="160" step="1" value="72" /></label>
+              <label class="wide"><span>声音材质</span><input id="music-creation-texture" maxlength="160" placeholder="空气合成器、低频脉冲、遥远钟声…" /></label>
+              <label class="wide"><span>你想让它讲述什么</span><textarea id="music-creation-description" rows="3" maxlength="500" placeholder="写下场景、时间、记忆或运动轨迹。"></textarea></label>
+            </div>
+            <div class="music-blueprint-output">
+              <div><span>重写后的创作描述</span><button id="music-copy-blueprint" type="button">复制</button></div>
+              <textarea id="music-blueprint" rows="6" readonly></textarea>
+            </div>
+            <div class="music-creator-actions"><button id="music-rewrite" type="button">重写创作描述</button><button id="music-enable" class="music-primary-action" type="button"><span>生成并播放我的声音</span><b>♫</b></button></div>
+            <small class="music-creator-note">当前生成的是原创程序化氛围声场与可复用创作描述，不冒充完整商业歌曲；以后可接入你拥有授权的音乐生成服务。</small>
+          </section>
+        </div>
+        <footer class="music-dimension-footer">
+          <button id="music-authorize" class="music-secondary-action" type="button">连接 Apple Music</button>
+          <a id="music-album-link" class="music-secondary-action" href="https://music.apple.com/" target="_blank" rel="noreferrer">打开 Apple Music ↗</a>
+          <button id="music-disable" class="music-text-action" type="button">关闭八度空间</button>
+        </footer>
       </section>
     </dialog>
 
