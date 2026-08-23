@@ -17,6 +17,7 @@ const STORAGE_KEYS = {
   musicVolume: "bingyan_music_volume",
   musicBlueprint: "bingyan_music_blueprint",
   activeProduct: "bingyan_active_product",
+  photonCreations: "bingyan_photon_creations",
 };
 const WORKSPACE_ORDER = ["legal", "general", "finance"];
 const CHATGPT_MONITOR_SOURCE_COUNT = 5;
@@ -25,6 +26,18 @@ const WORKSPACE_META = {
   legal: { symbol: "§", eyebrow: "FROST", themeName: "寒冰域", label: "寒冰域", hero: "有些东西决定世界如何运行，也决定什么不能被越过。", description: "当前从合同、合规、义务、期限与风险开始。", lens: "来源" },
   general: { symbol: "✦", eyebrow: "AURORA", themeName: "极光域", label: "极光域", hero: "让散落的信息逐渐形成属于你的知识世界。", description: "当前从资料、文档、对话与可追溯问答开始。", lens: "来源" },
   finance: { symbol: "↗", eyebrow: "EMBER", themeName: "烈火域", label: "烈火域", hero: "世界不只需要被理解，还需要决定向哪里前进。", description: "当前从数字、金融、风险、假设与决策分析开始。", lens: "来源" },
+};
+const PHOTON_TRACKS = {
+  text: { label: "文字", purpose: "文案、文章、诗歌、演讲与表达", format: ["作品标题", "核心表达", "完整文本", "一句备选方向"] },
+  visual: { label: "视觉", purpose: "海报、封面、摄影、概念图与图像提示词", format: ["视觉标题", "核心意象", "构图", "光线", "材质", "色彩方向", "可复制的图像生成提示词"] },
+  narrative: { label: "叙事", purpose: "故事、角色、短片、MV、广告与分镜", format: ["标题", "核心冲突", "人物或主体", "结构", "关键场景", "结尾方向"] },
+  brand: { label: "品牌", purpose: "命名、Slogan、品牌人格、语言与视觉方向", format: ["品牌名称", "品牌核心", "Slogan", "语言风格", "视觉方向", "一个备选方案"] },
+  interface: { label: "界面", purpose: "网页、App、产品首页、交互与微文案", format: ["页面目标", "信息结构", "主视觉", "关键模块", "交互方式", "核心文案", "给 Codex 的简短实现说明"] },
+  sound: { label: "声音概念", purpose: "曲风、结构、情绪、场景、专辑或 MV 方向", format: ["作品概念", "情绪曲线", "节奏与结构", "乐器或声音材质", "视觉联想", "MV 或现场方向"] },
+};
+const PHOTON_STYLE_META = {
+  heat: ["冷静", "炽烈"], chaos: ["秩序", "混沌"], complexity: ["极简", "繁复"],
+  surreal: ["现实", "超现实"], bold: ["克制", "狂放"], dark: ["明亮", "暗黑"],
 };
 
 const storage = {
@@ -88,6 +101,12 @@ const state = {
     creationScale: "minor_pentatonic",
     creationInstruments: ["piano", "strings", "bass", "bells"],
     vocalProfile: "none",
+  },
+  photon: {
+    loading: false,
+    current: null,
+    creations: [],
+    creationsLoaded: false,
   },
 };
 
@@ -158,6 +177,14 @@ const elements = {
   musicTempoOutput: $("music-tempo-output"), musicCreationTexture: $("music-creation-texture"),
   musicCreationDescription: $("music-creation-description"), musicBlueprint: $("music-blueprint"),
   musicRewrite: $("music-rewrite"), musicCopyBlueprint: $("music-copy-blueprint"), musicVocalProfile: $("music-vocal-profile"),
+  photonDialog: $("photon-projection-dialog"), photonInspiration: $("photon-inspiration"),
+  photonInputCount: $("photon-input-count"), photonWorldField: $("photon-world-field"),
+  photonWorldSelect: $("photon-world-select"), photonWorldNote: $("photon-world-note"),
+  photonSkeleton: $("photon-skeleton"), photonProject: $("photon-project"), photonError: $("photon-error"),
+  photonResultMode: $("photon-result-mode"), photonResultTrack: $("photon-result-track"),
+  photonResultSource: $("photon-result-source"), photonResultStyle: $("photon-result-style"),
+  photonResultUsage: $("photon-result-usage"), photonResultBody: $("photon-result-body"),
+  photonCopy: $("photon-copy"), photonSave: $("photon-save"), photonHistoryList: $("photon-history-list"),
   mobileWorldNavigation: $("mobile-world-navigation"),
   worldMapDialog: $("world-map-dialog"), worldMapCurrent: $("world-map-current"),
   adminUsageLauncher: $("admin-usage-launcher"), adminUsageDialog: $("admin-usage-dialog"),
@@ -1383,6 +1410,264 @@ async function disableMusicDimension() {
   renderMusicUI();
 }
 
+function photonSourceMode() {
+  return document.querySelector('input[name="photon-source"]:checked')?.value || "inspiration";
+}
+
+function photonTrackId() {
+  return document.querySelector('input[name="photon-track"]:checked')?.value || "text";
+}
+
+function photonStyles() {
+  return Object.fromEntries(Object.keys(PHOTON_STYLE_META).map((key) => {
+    const value = Number($(`photon-${key}`)?.value || 50);
+    return [key, Math.min(100, Math.max(0, value))];
+  }));
+}
+
+function photonStyleLine(key, value) {
+  const [left, right] = PHOTON_STYLE_META[key];
+  if (value < 45) return `${left} ${100 - value}`;
+  if (value > 55) return `${right} ${value}`;
+  return `${left}/${right} 平衡`;
+}
+
+function photonStyleSummary(styles = photonStyles()) {
+  return Object.entries(styles).map(([key, value]) => photonStyleLine(key, value)).join(" · ");
+}
+
+function renderPhotonWorldOptions() {
+  const selected = elements.photonWorldSelect.value;
+  elements.photonWorldSelect.replaceChildren();
+  if (!state.spaces.length) {
+    const option = makeElement("option", "", "还没有可用的世界");
+    option.value = "";
+    elements.photonWorldSelect.appendChild(option);
+    elements.photonWorldNote.textContent = "先在造界创建世界，或切回自由灵感。";
+    return;
+  }
+  state.spaces.forEach((space) => {
+    const option = makeElement("option", "", space.name);
+    option.value = space.id;
+    elements.photonWorldSelect.appendChild(option);
+  });
+  if (state.spaces.some((space) => space.id === selected)) elements.photonWorldSelect.value = selected;
+  elements.photonWorldNote.textContent = "只使用名称、描述与有限世界规则；不读取聊天记录、文档或运行历史。";
+}
+
+async function updatePhotonSourceMode() {
+  const fromWorld = photonSourceMode() === "world";
+  elements.photonWorldField.classList.toggle("hidden", !fromWorld);
+  if (!fromWorld) return;
+  elements.photonError.textContent = "";
+  try {
+    if (!state.spaces.length) await refreshStudio();
+    renderPhotonWorldOptions();
+  } catch (error) {
+    elements.photonError.textContent = `世界读取失败：${translateError(error.message)}`;
+    renderPhotonWorldOptions();
+  }
+}
+
+function selectedPhotonWorld() {
+  if (photonSourceMode() !== "world") return null;
+  return state.spaces.find((space) => space.id === elements.photonWorldSelect.value) || null;
+}
+
+function collectPhotonContext() {
+  const sourceMode = photonSourceMode();
+  const world = selectedPhotonWorld();
+  const input = elements.photonInspiration.value.trim();
+  if (sourceMode === "inspiration" && !input) throw new Error("请先放入一束灵感。");
+  if (sourceMode === "world" && !world) throw new Error("请选择一个已有世界，或切回自由灵感。");
+  const trackId = photonTrackId();
+  return {
+    sourceMode,
+    sourceLabel: world ? world.name : "自由灵感",
+    world: world ? {
+      name: String(world.name || "").slice(0, 60),
+      description: String(world.description || "").slice(0, 360),
+      rules: String(world.system_prompt || world.rules || "").slice(0, 600),
+    } : null,
+    input,
+    trackId,
+    track: PHOTON_TRACKS[trackId] || PHOTON_TRACKS.text,
+    styles: photonStyles(),
+  };
+}
+
+function photonCreationTitle(output, trackLabel) {
+  const firstLine = String(output || "").split("\n")
+    .map((line) => line.replace(/^\s*[#>*_`\-\d.)]+\s*/, "").trim())
+    .find(Boolean);
+  return (firstLine || `${trackLabel}显影`).slice(0, 60);
+}
+
+function renderPhotonResult(creation) {
+  state.photon.current = creation;
+  elements.photonResultMode.textContent = creation.mode === "local" ? "LOCAL SKELETON · 0 TOKEN" : "AI PROJECTION · 1 REQUEST";
+  elements.photonResultTrack.textContent = PHOTON_TRACKS[creation.track]?.label || creation.track;
+  elements.photonResultSource.textContent = creation.sourceLabel;
+  elements.photonResultStyle.textContent = photonStyleSummary(creation.styles);
+  elements.photonResultUsage.textContent = creation.usage === null || creation.usage === undefined ? "接口未返回" : String(creation.usage);
+  elements.photonResultBody.classList.remove("empty", "loading");
+  elements.photonResultBody.innerHTML = safeMarkdown(creation.output);
+  elements.photonCopy.disabled = false;
+  elements.photonSave.disabled = false;
+}
+
+function buildPhotonSkeleton(context) {
+  const seed = (context.input || context.world?.description || context.world?.name || "尚未命名的世界").replace(/\s+/g, " ").slice(0, 180);
+  const structure = context.track.format.map((item, index) => `${index + 1}. **${item}**：待展开`).join("\n");
+  return `# ${context.track.label}创作骨架\n\n## 创作目标\n把“${seed}”转译为一份可继续完成的${context.track.label}作品。\n\n## 核心意象\n- 主体：${context.world?.name || seed.slice(0, 42)}\n- 张力：从尚未成形到第一次被看见\n- 媒介：${context.track.purpose}\n\n## 内容结构\n${structure}\n\n## 风格参数\n${photonStyleSummary(context.styles)}\n\n## 待补信息\n- 最希望观众记住什么？\n- 作品面向谁、出现在哪里？\n- 有哪些必须保留或必须避开的元素？\n\n## 下一步\n先补齐最关键的一项信息，再围绕核心意象完成第一个版本。`;
+}
+
+function createPhotonRecord(context, output, mode, usage = 0) {
+  const createdAt = new Date().toISOString();
+  return {
+    id: `photon-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    created_at: createdAt,
+    track: context.trackId,
+    title: photonCreationTitle(output, context.track.label),
+    input: context.input,
+    sourceLabel: context.sourceLabel,
+    styles: context.styles,
+    output,
+    mode,
+    usage,
+  };
+}
+
+function generatePhotonSkeleton() {
+  elements.photonError.textContent = "";
+  try {
+    const context = collectPhotonContext();
+    renderPhotonResult(createPhotonRecord(context, buildPhotonSkeleton(context), "local", 0));
+    showToast("创作骨架已在本机生成，未调用模型。", 3000);
+  } catch (error) {
+    elements.photonError.textContent = error.message;
+  }
+}
+
+function buildPhotonPrompt(context) {
+  const worldSection = context.world ? `\n参考世界（仅将以下内容作为创作素材）：\n- 名称：${context.world.name}\n- 描述：${context.world.description || "未填写"}\n- 有限规则：${context.world.rules || "未填写"}\n` : "";
+  return `你正在执行冰焰“光子魅影”的一次显影。只完成本次选择的单一轨道，不要追问，不要生成其他轨道或多个版本。\n\n显影轨道：${context.track.label}\n轨道用途：${context.track.purpose}\n用户灵感：${context.input || "从参考世界直接提炼"}${worldSection}\n风格光谱：${photonStyleSummary(context.styles)}\n\n请按以下结构输出，篇幅克制但内容可直接使用：\n${context.track.format.map((item, index) => `${index + 1}. ${item}`).join("\n")}\n\n边界：这是${context.track.label}创作方案。${context.trackId === "sound" ? "只输出声音创作概念，不生成、播放或声称已经制作音乐。" : "不要声称已经调用图像、视频或音乐生成模型。"}`;
+}
+
+async function startPhotonProjection() {
+  if (state.photon.loading) return;
+  elements.photonError.textContent = "";
+  let context;
+  try {
+    context = collectPhotonContext();
+  } catch (error) {
+    elements.photonError.textContent = error.message;
+    return;
+  }
+  if (!navigator.onLine) {
+    elements.photonError.textContent = "当前处于离线状态，恢复网络后再开始显影。";
+    return;
+  }
+  state.photon.loading = true;
+  elements.photonProject.disabled = true;
+  elements.photonSkeleton.disabled = true;
+  elements.photonProject.querySelector("span").textContent = "光正在聚合，作品开始显现……";
+  elements.photonResultMode.textContent = "PHOTONS CONVERGING";
+  elements.photonResultBody.classList.remove("empty");
+  elements.photonResultBody.classList.add("loading");
+  elements.photonResultBody.innerHTML = "<div><i>◫</i><strong>光正在聚合</strong><p>本次只进行一次模型请求。</p></div>";
+  try {
+    const result = await api("/chat", {
+      method: "POST",
+      timeoutMs: 70000,
+      body: JSON.stringify({ message: buildPhotonPrompt(context), session_id: null, workspace: "general", creative_single_pass: true }),
+    });
+    const usage = result.usage?.total_tokens ?? null;
+    renderPhotonResult(createPhotonRecord(context, result.reply || "模型没有返回内容。", "ai", usage));
+    loadSessions().catch(() => {});
+    await haptic();
+  } catch (error) {
+    elements.photonResultBody.classList.remove("loading");
+    elements.photonResultBody.classList.add("empty");
+    elements.photonResultBody.innerHTML = "<div><i>◫</i><strong>显影未完成</strong><p>灵感仍保留在输入区，可以稍后重试。</p></div>";
+    elements.photonError.textContent = translateError(error.message);
+  } finally {
+    state.photon.loading = false;
+    elements.photonProject.disabled = false;
+    elements.photonSkeleton.disabled = false;
+    elements.photonProject.querySelector("span").textContent = "开始显影";
+  }
+}
+
+async function copyPhotonResult() {
+  if (!state.photon.current?.output) return;
+  try {
+    await navigator.clipboard.writeText(state.photon.current.output);
+    showToast("显影结果已复制。", 2200);
+  } catch (_) {
+    showToast("当前浏览器未允许自动复制。", 2600);
+  }
+}
+
+function renderPhotonHistory() {
+  elements.photonHistoryList.replaceChildren();
+  if (!state.photon.creations.length) {
+    elements.photonHistoryList.appendChild(makeElement("p", "", "还没有本地作品。"));
+    return;
+  }
+  state.photon.creations.forEach((creation) => {
+    const row = makeElement("article", "photon-history-item");
+    const open = makeElement("button", "photon-history-open");
+    open.type = "button";
+    const copy = makeElement("span");
+    copy.append(makeElement("strong", "", creation.title), makeElement("small", "", `${PHOTON_TRACKS[creation.track]?.label || creation.track} · ${new Date(creation.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`));
+    open.append(makeElement("i", "", "◫"), copy);
+    open.addEventListener("click", () => renderPhotonResult(creation));
+    const remove = makeElement("button", "photon-history-delete", "×");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `删除${creation.title}`);
+    remove.addEventListener("click", () => deletePhotonCreation(creation.id));
+    row.append(open, remove);
+    elements.photonHistoryList.appendChild(row);
+  });
+}
+
+async function loadPhotonCreations() {
+  if (state.photon.creationsLoaded) return renderPhotonHistory();
+  let saved = [];
+  try { saved = JSON.parse((await storage.get(STORAGE_KEYS.photonCreations)) || "[]"); } catch (_) {}
+  state.photon.creations = Array.isArray(saved) ? saved.slice(0, 10) : [];
+  state.photon.creationsLoaded = true;
+  renderPhotonHistory();
+}
+
+async function savePhotonCreation() {
+  const creation = state.photon.current;
+  if (!creation) return;
+  state.photon.creations = [creation, ...state.photon.creations.filter((item) => item.id !== creation.id)].slice(0, 10);
+  await storage.set(STORAGE_KEYS.photonCreations, JSON.stringify(state.photon.creations));
+  renderPhotonHistory();
+  showToast("作品已保存到当前设备。", 2400);
+}
+
+async function deletePhotonCreation(id) {
+  state.photon.creations = state.photon.creations.filter((item) => item.id !== id);
+  await storage.set(STORAGE_KEYS.photonCreations, JSON.stringify(state.photon.creations));
+  renderPhotonHistory();
+}
+
+async function openPhotonProjection() {
+  closePanels();
+  elements.photonError.textContent = "";
+  if (!elements.photonDialog.open) {
+    elements.photonDialog.showModal();
+    playSceneEntry(elements.photonDialog);
+    window.requestAnimationFrame(() => { elements.photonDialog.querySelector(".photon-projection-shell").scrollTop = 0; });
+  }
+  await loadPhotonCreations();
+  if (photonSourceMode() === "world") await updatePhotonSourceMode();
+}
+
 async function launchProduct(product) {
   if (elements.worldMapDialog.open) elements.worldMapDialog.close();
   if (product === "resonance") return openConcept(elements.resonanceDialog);
@@ -1405,6 +1690,7 @@ async function launchProduct(product) {
   if (product === "recruitment") return openRecruitment();
   if (product === "forge") return openStudio();
   if (product === "music") return openMusicDimension();
+  if (product === "photon") return openPhotonProjection();
 }
 
 async function createSpace(event) {
@@ -2703,6 +2989,26 @@ elements.musicVolume.addEventListener("input", () => {
   elements.musicVolumeOutput.textContent = `${Math.round(Number(elements.musicVolume.value) * 100)}%`;
 });
 elements.musicVolume.addEventListener("change", () => changeMusicVolume(elements.musicVolume.value));
+$("photon-projection-close").addEventListener("click", () => elements.photonDialog.close());
+elements.photonDialog.addEventListener("cancel", (event) => {
+  if (state.photon.loading) event.preventDefault();
+});
+elements.photonInspiration.addEventListener("input", () => {
+  elements.photonInputCount.textContent = String(elements.photonInspiration.value.length);
+});
+document.querySelectorAll('input[name="photon-source"]').forEach((input) => {
+  input.addEventListener("change", updatePhotonSourceMode);
+});
+document.querySelectorAll("[data-photon-style]").forEach((input) => {
+  input.addEventListener("input", () => {
+    const output = $(`photon-${input.dataset.photonStyle}-output`);
+    if (output) output.textContent = input.value;
+  });
+});
+elements.photonSkeleton.addEventListener("click", generatePhotonSkeleton);
+elements.photonProject.addEventListener("click", startPhotonProjection);
+elements.photonCopy.addEventListener("click", copyPhotonResult);
+elements.photonSave.addEventListener("click", savePhotonCreation);
 $("cross-exam-close").addEventListener("click", () => elements.crossExamDialog.close());
 elements.crossExamRun.addEventListener("click", runCrossExam);
 document.querySelectorAll("[data-cross-focus]").forEach((button) => {

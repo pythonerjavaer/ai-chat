@@ -584,20 +584,24 @@ def tools_for_workspace(workspace: str) -> list[dict[str, Any]]:
 def run_agent(
     messages: list[dict[str, Any]],
     workspace: str = DEFAULT_WORKSPACE,
+    tools_enabled: bool = True,
 ) -> tuple[str, list[str], dict[str, int]]:
     working_messages = list(messages)
     tools_used: list[str] = []
-    tools = tools_for_workspace(workspace)
+    tools = tools_for_workspace(workspace) if tools_enabled else []
     usage_totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
-    for _ in range(MAX_TOOL_ROUNDS + 1):
+    for _ in range(MAX_TOOL_ROUNDS + 1 if tools_enabled else 1):
+        request = {
+            "model": settings.ai_model,
+            "messages": working_messages,
+            "max_completion_tokens": 700,
+            "store": False,
+        }
+        if tools_enabled:
+            request.update({"tools": tools, "tool_choice": "auto"})
         response = client.chat.completions.create(
-            model=settings.ai_model,
-            messages=working_messages,
-            tools=tools,
-            tool_choice="auto",
-            max_completion_tokens=700,
-            store=False,
+            **request,
         )
         response_usage = getattr(response, "usage", None)
         usage_totals["input_tokens"] += int(

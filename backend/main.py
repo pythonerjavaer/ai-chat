@@ -478,6 +478,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=12_000)
     session_id: str | None = None
     workspace: Workspace | None = None
+    creative_single_pass: bool = False
 
 
 class CrossExamRequest(BaseModel):
@@ -703,10 +704,15 @@ def resolve_session(
     return session
 
 
-def prepare_chat(user_id: int, request: ChatRequest) -> tuple[dict, list, list]:
+def prepare_chat(
+    user_id: int,
+    request: ChatRequest,
+    *,
+    include_context: bool = True,
+) -> tuple[dict, list, list]:
     session = resolve_session(user_id, request.session_id, request.workspace)
     workspace = session["workspace"]
-    context = retrieve_context(user_id, request.message, workspace)
+    context = retrieve_context(user_id, request.message, workspace) if include_context else []
     database.append_message(session["id"], "user", request.message)
     messages = build_messages(user_id, session["id"], context, workspace)
     sources = [
@@ -2461,8 +2467,16 @@ def cross_exam(request: CrossExamRequest, user: ConsentedUser) -> dict:
 def chat(request: ChatRequest, user: ConsentedUser) -> dict:
     try:
         enforce_model_request_rate(user["id"], 4)
-        session, messages, sources = prepare_chat(user["id"], request)
-        agent_result = run_agent(messages, session["workspace"])
+        session, messages, sources = prepare_chat(
+            user["id"],
+            request,
+            include_context=not request.creative_single_pass,
+        )
+        agent_result = (
+            run_agent(messages, session["workspace"], tools_enabled=False)
+            if request.creative_single_pass
+            else run_agent(messages, session["workspace"])
+        )
         reply, tools_used = agent_result[:2]
         usage = (
             agent_result[2]
@@ -2484,6 +2498,7 @@ def chat(request: ChatRequest, user: ConsentedUser) -> dict:
             "workspace": session["workspace"],
             "sources": sources,
             "tools_used": tools_used,
+            "usage": usage,
         }
     except HTTPException:
         raise

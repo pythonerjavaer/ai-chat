@@ -331,6 +331,44 @@ def test_persistent_chat_and_session_history(monkeypatch):
         assert any(item["id"] == payload["session_id"] for item in sessions)
 
 
+def test_creative_single_pass_skips_rag_and_disables_tools(monkeypatch):
+    def unexpected_retrieval(*_):
+        raise AssertionError("creative single pass must not retrieve user documents")
+
+    calls = []
+
+    def fake_run_agent(messages, workspace, tools_enabled=True):
+        calls.append({"messages": messages, "workspace": workspace, "tools_enabled": tools_enabled})
+        return (
+            "One-pass creative result",
+            [],
+            {"input_tokens": 18, "output_tokens": 7, "total_tokens": 25},
+        )
+
+    monkeypatch.setattr(main, "retrieve_context", unexpected_retrieval)
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+
+    with TestClient(main.app) as client:
+        token, _ = register(client, "creative-pass-user")
+        response = client.post(
+            "/api/chat",
+            headers=auth(token),
+            json={
+                "message": "Project this idea once",
+                "workspace": "general",
+                "creative_single_pass": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "One-pass creative result"
+    assert response.json()["sources"] == []
+    assert response.json()["tools_used"] == []
+    assert response.json()["usage"]["total_tokens"] == 25
+    assert len(calls) == 1
+    assert calls[0]["tools_enabled"] is False
+
+
 def test_document_index_and_rag_sources(monkeypatch):
     monkeypatch.setattr(
         main,
@@ -432,6 +470,30 @@ def test_safe_calculator_chunking_and_financial_metrics():
     ratio = calculate_financial_metric("current_ratio", 250, 100)
     assert ratio["result"] == 2.5
     assert ratio["unit"] == "x"
+
+
+def test_run_agent_without_tools_makes_exactly_one_model_call(monkeypatch):
+    requests = []
+
+    def fake_completion(**kwargs):
+        requests.append(kwargs)
+        return SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=4, total_tokens=16),
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Projected once", tool_calls=None))],
+        )
+
+    monkeypatch.setattr(ai_service.client.chat.completions, "create", fake_completion)
+    reply, tools, usage = ai_service.run_agent(
+        [{"role": "user", "content": "Create one result"}],
+        tools_enabled=False,
+    )
+
+    assert reply == "Projected once"
+    assert tools == []
+    assert usage["total_tokens"] == 16
+    assert len(requests) == 1
+    assert "tools" not in requests[0]
+    assert "tool_choice" not in requests[0]
 
 
 def test_professional_workspaces_isolate_sessions_documents_and_prompts(monkeypatch):

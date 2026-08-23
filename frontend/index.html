@@ -20,7 +20,7 @@
     <section id="auth-view" class="auth-view">
       <header class="landing-header">
         <a class="brand" href="#" aria-label="冰焰首页">
-          <span class="brand-mark"><i></i><b></b></span>
+          <span class="brand-mark" aria-hidden="true"><i></i><b></b><span class="brand-fusion"></span><span class="brand-orbit"></span></span>
           <span><strong>冰焰</strong><small>FROSTFIRE</small></span>
         </a>
         <div class="landing-header-actions"><span class="landing-status"><i></i> PRIVATE INTELLIGENCE WORKSPACE</span><a class="landing-auth-access" href="#auth-card">登录 / 注册 <b>↘</b></a></div>
@@ -40,7 +40,7 @@
             <p><b>别人拥有的是别人的冰焰。<br />你的冰焰，只为你而存在。</b></p>
           </div>
           <section class="world-entrances" aria-label="冰焰世界入口">
-            <div class="world-entrances-heading"><span class="overline">ENTER YOUR WORLD</span><h2>你的冰焰</h2><p>寒冰定义边界，极光沉淀认知，烈火驱动变化；未来雷达连接现实，造界创造新的世界。共振让世界彼此影响，溯源透镜让每一次变化都有来路，而八度空间让这个世界拥有自己的声音。</p></div>
+            <div class="world-entrances-heading"><span class="overline">ENTER YOUR WORLD</span><h2>你的冰焰</h2><p>寒冰定义边界，极光沉淀认知，烈火驱动变化；未来雷达连接现实，造界创造新的世界。共振让世界彼此影响，溯源透镜让每一次变化都有来路，八度空间赋予声音，光子魅影让它第一次被看见。</p></div>
             <div class="world-entry-grid">
               <button class="world-entry frost" type="button" data-launch="legal"><i class="world-entry-icon" aria-hidden="true">§</i><span>01 · FROST</span><strong>寒冰域</strong><p>有些东西决定世界如何运行，也决定什么不能被越过。</p><small>当前从合同、合规、义务、期限与风险开始。</small></button>
               <button class="world-entry aurora" type="button" data-launch="general"><i class="world-entry-icon" aria-hidden="true">✦</i><span>02 · AURORA</span><strong>极光域</strong><p>让散落的信息逐渐形成属于你的知识世界。</p><small>当前从资料、文档、对话与可追溯问答开始。</small></button>
@@ -50,6 +50,7 @@
               <button class="world-entry forming" type="button" data-launch="resonance"><i class="world-entry-icon" aria-hidden="true">≈</i><span>06 · RESONANCE</span><strong>共振</strong><p>一个世界发生的变化，从来不会只停留在一个世界。</p><small>连接不同世界，让变化、冲突与可能性彼此传播。 · FORMING</small></button>
               <button class="world-entry forming" type="button" data-launch="trace"><i class="world-entry-icon" aria-hidden="true">◎</i><span>07 · TRACE LENS</span><strong>溯源透镜</strong><p>任何重要判断，都应该能够找到它的来路。</p><small>看见一个结论从哪里来，又经历了什么才成为现在的样子。 · FORMING</small></button>
               <button class="world-entry music" type="button" data-launch="music"><i class="world-entry-icon" aria-hidden="true">♫</i><span>08 · MUSIC DIMENSION</span><strong>八度空间</strong><p>让你的私人世界，拥有自己的声音。</p><small>从创作模板、描述词与原创声音世界开始。 · MUSIC</small></button>
+              <button class="world-entry photon" type="button" data-launch="photon"><i class="world-entry-icon" aria-hidden="true">◫</i><span>09 · PHOTON PROJECTION</span><strong>光子魅影</strong><p>让尚未成形的世界，第一次拥有形状。</p><small>文字、视觉、叙事、品牌、界面与声音概念。 · CREATIVE ENGINE</small></button>
             </div>
           </section>
           <div class="landing-footer-note"><span class="note-dot"></span> 你的资料、对话与雷达坐标以账号为边界，彼此隔离</div>
@@ -96,7 +97,7 @@
       <header class="app-header">
         <button id="mobile-menu" class="icon-button mobile-only" type="button" aria-label="打开对话列表">☰</button>
         <a class="brand compact" href="#" id="brand-home">
-          <span class="brand-mark"><i></i><b></b></span>
+          <span class="brand-mark" aria-hidden="true"><i></i><b></b><span class="brand-fusion"></span><span class="brand-orbit"></span></span>
           <span><strong>冰焰</strong><small>FROSTFIRE</small></span>
         </a>
         <div class="primary-navigation">
@@ -232,7 +233,7 @@
           <div>
             <span class="overline">FROSTFIRE WORLD MAP</span>
             <h2>冰焰总览</h2>
-            <p>这里不是单一聊天页。八个产品彼此独立，也在同一片星图上协同运行。</p>
+            <p>这里不是单一聊天页。九个产品彼此独立，也在同一片星图上协同运行。</p>
           </div>
           <button id="world-map-close" class="icon-button" type="button" aria-label="关闭冰焰总览">×</button>
         </header>
@@ -245,9 +246,10 @@
           <button class="world-map-card resonance" type="button" data-launch="resonance"><i aria-hidden="true">≈</i><span>06 · RESONANCE</span><strong>共振</strong><p>连接不同世界的变化、冲突与可能性。</p><small>查看概念页 ↗</small></button>
           <button class="world-map-card trace" type="button" data-launch="trace"><i aria-hidden="true">◎</i><span>07 · TRACE LENS</span><strong>溯源透镜</strong><p>看见结论的来源、路径与证据边界。</p><small>查看概念页 ↗</small></button>
           <button class="world-map-card music" type="button" data-launch="music"><i aria-hidden="true">♫</i><span>08 · MUSIC DIMENSION</span><strong>八度空间</strong><p>让你的私人世界，拥有自己的声音。</p><small>打开音乐维度 ↗</small></button>
+          <button class="world-map-card photon" type="button" data-launch="photon"><i aria-hidden="true">◫</i><span>09 · PHOTON PROJECTION</span><strong>光子魅影</strong><p>让尚未成形的世界，第一次拥有形状。</p><small>进入创作显影舱 ↗</small></button>
           <div class="world-compass-core" aria-hidden="true"><i></i><span>冰焰</span><small>FROSTFIRE<br />PRODUCT COMPASS</small></div>
         </div>
-        <footer><span><i></i> 当前工作域：<b id="world-map-current">极光域</b></span><button id="world-map-cross-open" type="button">实验舱 · 双域审查 ⟁</button><small>八个正式产品全部位于罗盘之上</small></footer>
+        <footer><span><i></i> 当前工作域：<b id="world-map-current">极光域</b></span><button id="world-map-cross-open" type="button">实验舱 · 双域审查 ⟁</button><small>九个正式产品全部位于罗盘之上</small></footer>
       </div>
     </dialog>
 
@@ -470,6 +472,57 @@
           <button id="music-footer-minimize" class="music-secondary-action" type="button">最小化并继续播放</button>
           <button id="music-disable" class="music-text-action" type="button">停止并关闭</button>
         </footer>
+      </section>
+    </dialog>
+
+    <dialog id="photon-projection-dialog" class="photon-projection-dialog" data-scene="photon">
+      <section class="photon-projection-shell">
+        <div class="photon-atmosphere" aria-hidden="true"><i></i><i></i><i></i><span></span></div>
+        <header class="photon-projection-header">
+          <div><span class="overline">PHOTON PROJECTION</span><h2>光子魅影</h2><p>世界被创造以后，还需要被看见。</p><small>把一个世界、一段记忆、一个想法或一种情绪，显影成文字、视觉、叙事、品牌、界面或声音概念。</small></div>
+          <button id="photon-projection-close" class="icon-button" type="button" aria-label="关闭光子魅影">×</button>
+        </header>
+
+        <div class="photon-projection-body">
+          <section class="photon-controls">
+            <label class="photon-inspiration-field"><span>放入一个世界，或者一束尚未成形的灵感。</span><textarea id="photon-inspiration" rows="5" maxlength="2000" placeholder="描述你想表达的想法、世界、情绪、事件或作品目标……"></textarea><small><b id="photon-input-count">0</b> / 2000 · 只有点击“开始显影”才会发送</small></label>
+
+            <fieldset class="photon-choice-group"><legend>创作来源</legend><div class="photon-source-options">
+              <label><input type="radio" name="photon-source" value="inspiration" checked /><span><b>自由灵感</b><small>只使用上方输入</small></span></label>
+              <label><input type="radio" name="photon-source" value="world" /><span><b>从我的世界出发</b><small>只读取有限的世界字段</small></span></label>
+            </div></fieldset>
+            <label id="photon-world-field" class="photon-world-field hidden"><span>选择一个已有世界</span><select id="photon-world-select"><option value="">正在等待你的世界…</option></select><small id="photon-world-note">不会读取聊天记录、文档或运行历史。</small></label>
+
+            <fieldset class="photon-choice-group photon-track-group"><legend>选择一条显影轨道</legend><div class="photon-track-grid">
+              <label><input type="radio" name="photon-track" value="text" checked /><span><b>文字</b><small>文案、文章、诗歌与表达</small></span></label>
+              <label><input type="radio" name="photon-track" value="visual" /><span><b>视觉</b><small>海报、封面与图像提示词</small></span></label>
+              <label><input type="radio" name="photon-track" value="narrative" /><span><b>叙事</b><small>故事、角色、短片与分镜</small></span></label>
+              <label><input type="radio" name="photon-track" value="brand" /><span><b>品牌</b><small>命名、Slogan 与视觉方向</small></span></label>
+              <label><input type="radio" name="photon-track" value="interface" /><span><b>界面</b><small>网页、App、交互与微文案</small></span></label>
+              <label><input type="radio" name="photon-track" value="sound" /><span><b>声音概念</b><small>只生成创作方案，不播放音乐</small></span></label>
+            </div></fieldset>
+
+            <fieldset class="photon-spectrum"><legend><span>风格光谱</span><small>LOCAL CONTROL · 0 TOKEN</small></legend><div class="photon-spectrum-grid">
+              <label><span><b>冷静</b><output id="photon-heat-output">50</output><b>炽烈</b></span><input id="photon-heat" data-photon-style="heat" type="range" min="0" max="100" value="50" /></label>
+              <label><span><b>秩序</b><output id="photon-chaos-output">50</output><b>混沌</b></span><input id="photon-chaos" data-photon-style="chaos" type="range" min="0" max="100" value="50" /></label>
+              <label><span><b>极简</b><output id="photon-complexity-output">50</output><b>繁复</b></span><input id="photon-complexity" data-photon-style="complexity" type="range" min="0" max="100" value="50" /></label>
+              <label><span><b>现实</b><output id="photon-surreal-output">50</output><b>超现实</b></span><input id="photon-surreal" data-photon-style="surreal" type="range" min="0" max="100" value="50" /></label>
+              <label><span><b>克制</b><output id="photon-bold-output">50</output><b>狂放</b></span><input id="photon-bold" data-photon-style="bold" type="range" min="0" max="100" value="50" /></label>
+              <label><span><b>明亮</b><output id="photon-dark-output">50</output><b>暗黑</b></span><input id="photon-dark" data-photon-style="dark" type="range" min="0" max="100" value="50" /></label>
+            </div></fieldset>
+
+            <div class="photon-actions"><button id="photon-skeleton" type="button"><span>生成创作骨架</span><small>LOCAL · 0 TOKEN</small></button><button id="photon-project" class="photon-primary-action" type="button"><span>开始显影</span><b>◫</b></button></div>
+            <p id="photon-error" class="form-error" role="alert"></p>
+          </section>
+
+          <section class="photon-output-stage" aria-live="polite">
+            <div class="photon-result-heading"><div><span class="overline">PROJECTION RESULT</span><h3>显影结果</h3></div><span id="photon-result-mode" class="photon-result-mode">等待第一束光</span></div>
+            <dl class="photon-result-meta"><div><dt>轨道</dt><dd id="photon-result-track">—</dd></div><div><dt>来源</dt><dd id="photon-result-source">—</dd></div><div><dt>风格</dt><dd id="photon-result-style">—</dd></div><div><dt>Token</dt><dd id="photon-result-usage">0</dd></div></dl>
+            <article id="photon-result-body" class="photon-result-body empty"><div><i>◫</i><strong>这里还没有作品。</strong><p>放入第一束灵感。</p></div></article>
+            <div class="photon-result-actions"><button id="photon-copy" type="button" disabled>复制结果</button><button id="photon-save" type="button" disabled>保存到本地</button></div>
+            <section class="photon-history"><header><div><span class="overline">RECENT PROJECTIONS</span><h3>最近显影</h3></div><small>当前设备 · 最近 10 个</small></header><div id="photon-history-list" class="photon-history-list"><p>还没有本地作品。</p></div></section>
+          </section>
+        </div>
       </section>
     </dialog>
 
