@@ -18,6 +18,7 @@ const STORAGE_KEYS = {
   musicVolume: "bingyan_music_volume",
   musicBlueprint: "bingyan_music_blueprint",
   activeProduct: "bingyan_active_product",
+  pendingProduct: "bingyan_pending_product",
   photonCreations: "bingyan_photon_creations",
 };
 const WORKSPACE_ORDER = ["legal", "general", "finance"];
@@ -420,6 +421,20 @@ function showToast(message, timeout = 3600) {
   showToast.timer = setTimeout(() => elements.toast.classList.add("hidden"), timeout);
 }
 
+function productDisplayName(product) {
+  const productButton = document.querySelector(`[data-launch="${product}"]`);
+  return productButton?.querySelector("strong")?.textContent?.trim() || "这个世界";
+}
+
+function showPendingProductAuth(product) {
+  if (!product) return;
+  const productName = productDisplayName(product);
+  const action = state.authMode === "register" ? "注册后进入" : "登录后进入";
+  elements.authKicker.textContent = "世界入口已锁定";
+  elements.authTitle.textContent = `${action}${productName}`;
+  elements.authDescription.textContent = "完成登录或注册后会自动打开刚才选择的产品，不需要再次寻找入口。";
+}
+
 function setAuthMode(mode) {
   state.authMode = mode;
   const registering = mode === "register";
@@ -439,6 +454,7 @@ function setAuthMode(mode) {
   elements.authModeRegister.classList.toggle("active", registering);
   elements.authModeLogin.setAttribute("aria-selected", String(!registering));
   elements.authModeRegister.setAttribute("aria-selected", String(registering));
+  if (state.pendingLaunch) showPendingProductAuth(state.pendingLaunch);
 }
 
 async function authenticate(event) {
@@ -495,14 +511,14 @@ function translateError(message) {
 }
 
 async function enterApp() {
+  const pendingLaunch = state.pendingLaunch || await storage.get(STORAGE_KEYS.pendingProduct);
+  if (WORKSPACE_ORDER.includes(pendingLaunch)) state.workspace = pendingLaunch;
   elements.authView.classList.add("hidden");
   elements.appView.classList.remove("hidden");
   applyUser();
   await loadWorkspaces();
   await Promise.all([loadSessions(), loadDocuments(), loadHomeRecruitmentAlerts()]);
   newConversation();
-  const pendingLaunch = state.pendingLaunch || state.activeProduct;
-  state.pendingLaunch = null;
   if (pendingLaunch) window.setTimeout(() => launchProduct(pendingLaunch), 0);
   if (!state.user.privacy_accepted && !elements.consentDialog.open) {
     elements.consentDialog.showModal();
@@ -1813,20 +1829,30 @@ async function launchProduct(product) {
   state.activeProduct = product;
   await storage.set(STORAGE_KEYS.activeProduct, product);
   if (elements.worldMapDialog.open) elements.worldMapDialog.close();
-  if (product === "resonance") return openConcept(elements.resonanceDialog);
-  if (product === "trace") return openConcept(elements.traceDialog);
-  if (product === "oblivion") return openOblivionArchive();
+  if (product === "resonance") {
+    state.pendingLaunch = null;
+    await storage.remove(STORAGE_KEYS.pendingProduct);
+    return openConcept(elements.resonanceDialog);
+  }
+  if (product === "trace") {
+    state.pendingLaunch = null;
+    await storage.remove(STORAGE_KEYS.pendingProduct);
+    return openConcept(elements.traceDialog);
+  }
+  if (product === "oblivion") {
+    state.pendingLaunch = null;
+    await storage.remove(STORAGE_KEYS.pendingProduct);
+    return openOblivionArchive();
+  }
   if (!state.token) {
     state.pendingLaunch = product;
-    const productButton = document.querySelector(`[data-launch="${product}"]`);
-    const productName = productButton?.querySelector("strong")?.textContent?.trim() || "这个世界";
+    await storage.set(STORAGE_KEYS.pendingProduct, product);
+    const productName = productDisplayName(product);
     if (WORKSPACE_ORDER.includes(product)) {
       state.workspace = product;
       await storage.set(STORAGE_KEYS.workspace, product);
     }
-    elements.authKicker.textContent = "世界入口已锁定";
-    elements.authTitle.textContent = `登录后进入${productName}`;
-    elements.authDescription.textContent = "完成登录或注册后会自动打开刚才选择的产品，不需要再次寻找入口。";
+    showPendingProductAuth(product);
     document.querySelector(".auth-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
     showToast(`${productName}需要先登录；完成后将自动进入。`, 4200);
     return;
@@ -1834,12 +1860,23 @@ async function launchProduct(product) {
   if (WORKSPACE_ORDER.includes(product)) {
     if (product !== state.workspace) await changeWorkspace(product);
     else playWorkspaceEntry(product);
+    if (state.token) {
+      state.pendingLaunch = null;
+      await storage.remove(STORAGE_KEYS.pendingProduct);
+    }
     return;
   }
-  if (product === "recruitment") return openRecruitment();
-  if (product === "forge") return openStudio();
-  if (product === "music") return openMusicDimension();
-  if (product === "photon") return openPhotonProjection();
+  if (product === "recruitment") await openRecruitment();
+  if (product === "forge") await openStudio();
+  if (product === "music") await openMusicDimension();
+  if (product === "photon") await openPhotonProjection();
+  if (state.token) {
+    state.pendingLaunch = null;
+    await storage.remove(STORAGE_KEYS.pendingProduct);
+  } else {
+    state.pendingLaunch = product;
+    await storage.set(STORAGE_KEYS.pendingProduct, product);
+  }
 }
 
 async function createSpace(event) {
@@ -3276,12 +3313,16 @@ setupRotaryCompasses();
   state.token = await storage.get(STORAGE_KEYS.token);
   state.workspace = (await storage.get(STORAGE_KEYS.workspace)) || "general";
   state.activeProduct = await storage.get(STORAGE_KEYS.activeProduct);
+  state.pendingLaunch = await storage.get(STORAGE_KEYS.pendingProduct);
   if (Capacitor.isNativePlatform() && !configuredApiBase) {
     elements.authError.textContent = "移动端构建尚未配置正式 HTTPS API 地址。";
   }
   if (!state.token) {
-    if (["oblivion", "resonance", "trace"].includes(state.activeProduct)) {
-      window.setTimeout(() => launchProduct(state.activeProduct), 80);
+    const publicProduct = state.pendingLaunch || state.activeProduct;
+    if (["oblivion", "resonance", "trace"].includes(publicProduct)) {
+      window.setTimeout(() => launchProduct(publicProduct), 80);
+    } else if (state.pendingLaunch) {
+      showPendingProductAuth(state.pendingLaunch);
     }
     return;
   }
