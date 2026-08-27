@@ -112,6 +112,9 @@ const state = {
   },
 };
 
+let productLaunchReady = false;
+let queuedProductLaunch = null;
+
 const $ = (id) => document.getElementById(id);
 const elements = {
   authView: $("auth-view"), appView: $("app-view"), authForm: $("auth-form"),
@@ -276,7 +279,7 @@ function setupRotaryCompass(container) {
   const step = () => (Math.PI * 2) / compass.cards.length;
   const render = () => {
     const compact = window.innerWidth <= 520;
-    const radiusX = compact ? Math.min(154, container.clientWidth * .43) : Math.min(id === "landing" ? 320 : 300, container.clientWidth * .39);
+    const radiusX = compact ? Math.min(240, container.clientWidth * .78) : Math.min(id === "landing" ? 320 : 300, container.clientWidth * .39);
     const radiusY = compact ? 118 : id === "landing" ? 104 : 94;
     let selectedIndex = 0;
     let selectedDepth = -1;
@@ -320,6 +323,14 @@ function setupRotaryCompass(container) {
     compass.rotation -= direction * step();
     snap();
   };
+  const rotateCardToFront = (card) => {
+    const index = compass.cards.indexOf(card);
+    if (index < 0 || index === compass.selectedIndex) return;
+    const baseRotation = -index * step();
+    const fullTurn = Math.PI * 2;
+    compass.rotation = baseRotation + Math.round((compass.rotation - baseRotation) / fullTurn) * fullTurn;
+    snap();
+  };
   container.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     compass.dragging = true;
@@ -328,13 +339,15 @@ function setupRotaryCompass(container) {
     compass.startY = event.clientY;
     compass.startRotation = compass.rotation;
     container.classList.add("is-dragging");
-    container.setPointerCapture(event.pointerId);
   });
   container.addEventListener("pointermove", (event) => {
     if (!compass.dragging) return;
     const deltaX = event.clientX - compass.startX;
     const deltaY = event.clientY - compass.startY;
-    if (Math.hypot(deltaX, deltaY) > 5) compass.moved = true;
+    if (Math.hypot(deltaX, deltaY) > 5 && !compass.moved) {
+      compass.moved = true;
+      if (!container.hasPointerCapture(event.pointerId)) container.setPointerCapture(event.pointerId);
+    }
     if (compass.moved && event.cancelable && Math.abs(deltaX) >= Math.abs(deltaY)) event.preventDefault();
     compass.rotation = compass.startRotation + deltaX / Math.max(150, container.clientWidth) * Math.PI * 2;
     render();
@@ -345,7 +358,7 @@ function setupRotaryCompass(container) {
     container.classList.remove("is-dragging");
     if (compass.moved) {
       compass.suppressNextClick = true;
-      window.setTimeout(() => { compass.suppressNextClick = false; }, 120);
+      window.setTimeout(() => { compass.suppressNextClick = false; }, 0);
     }
     if (container.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
     snap();
@@ -359,9 +372,9 @@ function setupRotaryCompass(container) {
       event.stopImmediatePropagation();
       return;
     }
-    const card = event.target.closest?.('[data-launch][data-compass-selected="true"]');
+    const card = event.target.closest?.('[data-launch][aria-hidden="false"]');
     if (!card || !container.contains(card)) return;
-    snap();
+    rotateCardToFront(card);
   }, true);
   container.addEventListener("wheel", (event) => {
     if (compass.wheelLocked) return;
@@ -512,17 +525,20 @@ function translateError(message) {
 
 async function enterApp() {
   const pendingLaunch = state.pendingLaunch || await storage.get(STORAGE_KEYS.pendingProduct);
-  if (WORKSPACE_ORDER.includes(pendingLaunch)) state.workspace = pendingLaunch;
+  const activeProduct = state.activeProduct || await storage.get(STORAGE_KEYS.activeProduct);
+  const resumeProduct = queuedProductLaunch || pendingLaunch || activeProduct;
+  queuedProductLaunch = null;
+  if (WORKSPACE_ORDER.includes(resumeProduct)) state.workspace = resumeProduct;
   elements.authView.classList.add("hidden");
   elements.appView.classList.remove("hidden");
   applyUser();
   await loadWorkspaces();
   await Promise.all([loadSessions(), loadDocuments(), loadHomeRecruitmentAlerts()]);
   newConversation();
-  if (pendingLaunch) window.setTimeout(() => launchProduct(pendingLaunch), 0);
+  if (resumeProduct) window.setTimeout(() => launchProduct(resumeProduct), 0);
   if (!state.user.privacy_accepted && !elements.consentDialog.open) {
     elements.consentDialog.showModal();
-  } else if (!pendingLaunch) {
+  } else if (!resumeProduct) {
     window.setTimeout(openWorldMap, 80);
   }
 }
@@ -1826,6 +1842,10 @@ async function openPhotonProjection() {
 }
 
 async function launchProduct(product) {
+  if (!productLaunchReady) {
+    queuedProductLaunch = product;
+    return;
+  }
   state.activeProduct = product;
   await storage.set(STORAGE_KEYS.activeProduct, product);
   if (elements.worldMapDialog.open) elements.worldMapDialog.close();
@@ -3314,10 +3334,17 @@ setupRotaryCompasses();
   state.workspace = (await storage.get(STORAGE_KEYS.workspace)) || "general";
   state.activeProduct = await storage.get(STORAGE_KEYS.activeProduct);
   state.pendingLaunch = await storage.get(STORAGE_KEYS.pendingProduct);
+  productLaunchReady = true;
   if (Capacitor.isNativePlatform() && !configuredApiBase) {
     elements.authError.textContent = "移动端构建尚未配置正式 HTTPS API 地址。";
   }
   if (!state.token) {
+    if (queuedProductLaunch) {
+      const queuedProduct = queuedProductLaunch;
+      queuedProductLaunch = null;
+      await launchProduct(queuedProduct);
+      return;
+    }
     const publicProduct = state.pendingLaunch || state.activeProduct;
     if (["oblivion", "resonance", "trace"].includes(publicProduct)) {
       window.setTimeout(() => launchProduct(publicProduct), 80);

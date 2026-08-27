@@ -954,6 +954,7 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; backg
 .rotary-compass > [data-launch] { position: absolute !important; left: 50% !important; top: 50% !important; width: min(23vw, 205px); min-height: 126px; height: auto; grid-column: auto !important; grid-row: auto !important; margin: 0; pointer-events: none; transform: translate(-50%,-50%) translate3d(var(--compass-x,0),var(--compass-y,0),0) scale(var(--compass-scale,.6)); transform-origin: center; opacity: var(--compass-opacity,.2); filter: blur(var(--compass-blur,0)); transition: transform .34s cubic-bezier(.2,.75,.22,1), opacity .28s ease, filter .28s ease, border-color .2s, box-shadow .2s; will-change: transform, opacity; }
 .rotary-compass.is-dragging > [data-launch] { transition: none; }
 .rotary-compass > [data-launch][aria-hidden="true"] { pointer-events: none; }
+.rotary-compass > [data-launch][aria-hidden="false"] { pointer-events: auto; cursor: pointer; }
 .rotary-compass > [data-launch][data-compass-selected="true"] { pointer-events: auto; cursor: pointer; border-color: rgba(169,238,255,.48); box-shadow: 0 20px 55px rgba(0,0,0,.38), 0 0 0 1px rgba(133,224,255,.1), 0 0 34px rgba(75,202,255,.14); }
 .rotary-compass.is-dragging > [data-launch] { cursor: grabbing; }
 .rotary-compass .world-entry:hover, .rotary-compass .world-map-card:hover { transform: translate(-50%,-50%) translate3d(var(--compass-x,0),var(--compass-y,0),0) scale(var(--compass-scale,.6)); }
@@ -1655,7 +1656,7 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
   .world-entry-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) .world-entry-icon,
   .world-map-grid.rotary-compass > [data-launch]:not([data-compass-selected="true"]) > i { position: static; width: 28px; height: 28px; display: grid; place-items: center; font-size: 16px; }
   .world-entry-grid.rotary-compass > [data-launch][data-compass-selected="true"],
-  .world-map-grid.rotary-compass > [data-launch][data-compass-selected="true"] { width: min(74vw, 270px); min-height: 152px; place-content: initial; justify-items: stretch; gap: 7px; padding: 15px; text-align: left; }
+  .world-map-grid.rotary-compass > [data-launch][data-compass-selected="true"] { width: min(62vw, 230px); min-height: 152px; place-content: initial; justify-items: stretch; gap: 7px; padding: 15px; text-align: left; }
   .world-entry-grid.rotary-compass > [data-launch][data-compass-selected="true"] .world-entry-icon { position: absolute; top: 12px; right: 14px; width: 34px; height: 34px; }
   .world-map-grid.rotary-compass > [data-launch][data-compass-selected="true"] > i { position: absolute; top: 15px; right: 16px; width: auto; height: auto; font-size: 24px; }
   .world-entry-grid.rotary-compass > [data-launch][data-compass-selected="true"] strong { font-size: 16px; }
