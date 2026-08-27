@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from .normalization import PRIMARY_CATEGORY_CODES
+from .normalization import infer_primary_category_from_metadata
 
 
 def migrate(connection: sqlite3.Connection) -> None:
@@ -329,30 +329,30 @@ def _ensure_column(
 
 
 def _backfill_primary_categories(connection: sqlite3.Connection) -> None:
-    """Populate only explicit machine categories; never infer from job prose."""
-    allowed = set(PRIMARY_CATEGORY_CODES)
+    """Backfill from structured employer metadata, never company/title/JD prose."""
     rows = connection.execute(
-        "SELECT id, primary_category, organization_category, tags FROM radar_jobs "
+        "SELECT id, employer_type, industry, organization_category, industry_tags, tags "
+        "FROM radar_jobs "
         "WHERE primary_category IS NULL OR TRIM(primary_category)=''"
     ).fetchall()
     updates: list[tuple[str, str]] = []
     for row in rows:
-        job_id, _current, organization_category, raw_tags = row
-        organization_code = str(organization_category or "").strip().casefold()
-        category = organization_code if organization_code in allowed else ""
-        if not category:
+        job_id, employer_type, industry, organization_category, raw_industry_tags, raw_tags = row
+
+        def decode_list(value: object) -> list[object]:
             try:
-                tags = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+                decoded = json.loads(value) if isinstance(value, str) else value
             except (TypeError, json.JSONDecodeError):
-                tags = []
-            exact_tags = {
-                str(value).strip().casefold()
-                for value in tags or []
-                if isinstance(value, str)
-            } if isinstance(tags, (list, tuple, set)) else set()
-            category = next(
-                (code for code in PRIMARY_CATEGORY_CODES if code in exact_tags), ""
-            )
+                decoded = []
+            return list(decoded) if isinstance(decoded, (list, tuple, set)) else []
+
+        category = infer_primary_category_from_metadata({
+            "employer_type": employer_type,
+            "industry": industry,
+            "organization_category": organization_category,
+            "industry_tags": decode_list(raw_industry_tags),
+            "tags": decode_list(raw_tags),
+        })
         if category:
             updates.append((category, str(job_id)))
     if updates:

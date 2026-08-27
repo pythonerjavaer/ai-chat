@@ -328,11 +328,28 @@ def test_structured_job_taxonomy_migration_upgrades_legacy_job_table():
             *timestamps,
         ),
     )
+    connection.execute(
+        """
+        INSERT INTO radar_jobs
+            (id, external_id, company, title, employer_type, industry, tags,
+             content_hash, first_seen_at, last_seen_at, last_changed_at,
+             created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "legacy-alias-row", "legacy-alias-row", "Legacy Tech", "Graduate Role",
+            "互联网企业", "人工智能", '["校园招聘"]', "legacy-alias-hash",
+            *timestamps,
+        ),
+    )
     try:
         migrate(connection)
         assert connection.execute(
             "SELECT primary_category FROM radar_jobs WHERE id='legacy-tag-row'"
         ).fetchone()[0] == "quant_private_hedge"
+        assert connection.execute(
+            "SELECT primary_category FROM radar_jobs WHERE id='legacy-alias-row'"
+        ).fetchone()[0] == "internet_tech"
         connection.execute(
             """
             INSERT INTO radar_jobs
@@ -422,6 +439,35 @@ def test_legacy_adapter_persists_metadata_categories_and_repository_pages_them(
     second = radar_service.repository.list_jobs(page=2, page_size=1, filters=filters)
     assert first["total"] == second["total"] == 3
     assert first["items"][0]["id"] != second["items"][0]["id"]
+
+
+def test_adapter_job_without_explicit_primary_is_persisted_and_queryable(
+    radar_service,
+):
+    source = create_source(radar_service, "implicit-primary-category")
+    job = {
+        **sample_job("implicit-internet-job"),
+        "employer_type": "互联网企业",
+        "industry": "人工智能/云计算",
+        "tags": ["校园招聘"],
+    }
+    radar_service.adapter_factory = lambda _source: StaticAdapter(
+        AdapterResult(jobs=[job], content_hash="implicit-category-v1")
+    )
+    assert radar_service.run(source_ids=[source["id"]], force=True)["new_jobs"] == 1
+    stored = radar_service.repository.get_job("implicit-internet-job")
+    assert stored["primary_category"] == "internet_tech"
+    result = radar_service.repository.list_jobs(
+        page=1,
+        page_size=10,
+        filters={
+            "status": "all",
+            "active_only": False,
+            "primary_categories": ["internet_tech"],
+        },
+    )
+    assert result["total"] == 1
+    assert result["items"][0]["external_id"] == "implicit-internet-job"
 
 
 def test_verified_structured_job_fields_survive_incomplete_discovery_merge():

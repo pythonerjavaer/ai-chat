@@ -130,6 +130,23 @@ def normalize_taxonomy_tags(values: Any) -> list[str]:
     return sorted(result)[:30]
 
 
+def infer_primary_category_from_metadata(item: dict[str, Any]) -> str:
+    """Infer one starfield only from structured organization metadata."""
+    # Keep the dependency local: recruitment owns the alias vocabulary, while
+    # Radar normalization owns persistence.  Job/company prose is intentionally
+    # absent from this projection.
+    from ..recruitment import primary_employer_category
+
+    category = primary_employer_category({
+        "employer_type": item.get("employer_type"),
+        "industry": item.get("industry"),
+        "organization_category": item.get("organization_category"),
+        "industry_tags": item.get("industry_tags"),
+        "tags": item.get("tags"),
+    })
+    return category if category in PRIMARY_CATEGORY_CODES else ""
+
+
 def normalize_evidence(values: Any) -> list[str]:
     if not isinstance(values, (list, tuple, set)):
         return []
@@ -239,6 +256,8 @@ def normalize_job(item: dict[str, Any]) -> dict[str, Any]:
     primary_category = normalize_taxonomy_value(item.get("primary_category"))
     if primary_category and primary_category not in PRIMARY_CATEGORY_CODES:
         raise ValueError(f"Unsupported primary_category: {primary_category}")
+    if not primary_category:
+        primary_category = infer_primary_category_from_metadata(item)
     normalized = {
         "program_id": clean_text(item.get("program_id"), limit=180) or None,
         "program_external_id": clean_text(item.get("program_external_id"), limit=180) or None,
