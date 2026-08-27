@@ -5,7 +5,12 @@ import { Haptics, ImpactStyle } from "@capacitor/haptics";
 import { Preferences } from "@capacitor/preferences";
 import { MUSIC_CREATION_TEMPLATES, buildMusicBlueprint, soundscapeEngine } from "./music-creator.js";
 import { initOblivionArchive, openOblivionArchive } from "./oblivion-archive.js";
-import { resolveStartupProduct } from "./product-navigation.js";
+import {
+  PRODUCT_NAV_ITEMS,
+  normalizeProductId,
+  productDialogIdsToClose,
+  resolveStartupProduct,
+} from "./product-navigation.js";
 import {
   TIER_CODES,
   buildFutureRadarJobsQuery,
@@ -306,6 +311,77 @@ function playWorkspaceEntry(workspaceId) {
 }
 
 const rotaryCompasses = new Map();
+const productSwitchers = new Set();
+
+function updateProductSwitchers(product) {
+  const activeProduct = normalizeProductId(product);
+  productSwitchers.forEach((navigation) => {
+    navigation.querySelectorAll("[data-product-switch]").forEach((button) => {
+      const active = button.dataset.productSwitch === activeProduct;
+      button.classList.toggle("active", active);
+      if (active) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    });
+  });
+}
+
+function createProductSwitcher(context) {
+  const navigation = document.createElement("nav");
+  navigation.className = "product-switcher";
+  navigation.dataset.productSwitcher = context;
+  navigation.setAttribute("aria-label", "切换冰焰产品");
+
+  const worldMapButton = document.createElement("button");
+  worldMapButton.type = "button";
+  worldMapButton.className = "product-switcher-map";
+  worldMapButton.dataset.productMapOpen = "true";
+  worldMapButton.title = "冰焰世界地图";
+  worldMapButton.setAttribute("aria-label", "打开冰焰世界地图");
+  worldMapButton.append(makeElement("i", "", "◈"), makeElement("span", "", "世界地图"));
+  worldMapButton.addEventListener("click", openWorldMap);
+  navigation.appendChild(worldMapButton);
+
+  PRODUCT_NAV_ITEMS.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.productSwitch = item.id;
+    button.title = `${item.label} · ${item.english}`;
+    button.setAttribute("aria-label", `切换到${item.label}`);
+    button.append(makeElement("i", "", item.symbol), makeElement("span", "", item.label));
+    button.addEventListener("click", () => launchProduct(item.id));
+    navigation.appendChild(button);
+  });
+  productSwitchers.add(navigation);
+  return navigation;
+}
+
+function setupProductSwitchers() {
+  const appHeader = elements.appView.querySelector(":scope > .app-header");
+  if (appHeader && !elements.appView.querySelector(":scope > [data-product-switcher]")) {
+    appHeader.after(createProductSwitcher("workspace"));
+  }
+
+  PRODUCT_NAV_ITEMS.filter((item) => item.dialogId).forEach((item) => {
+    const dialog = $(item.dialogId);
+    const shell = dialog?.firstElementChild;
+    const header = shell ? [...shell.children].find((child) => child.matches("header")) : null;
+    if (!header || shell.querySelector(":scope > [data-product-switcher]")) return;
+    header.after(createProductSwitcher(item.id));
+  });
+  updateProductSwitchers(state.activeProduct || state.workspace);
+}
+
+function closeOpenProductDialogs(nextProduct = null) {
+  productDialogIdsToClose(nextProduct).forEach((dialogId) => {
+    const dialog = $(dialogId);
+    if (!dialog?.open) return;
+    dialog.close();
+    if (dialogId === "music-dimension-dialog") {
+      state.music.minimized = state.music.enabled;
+      renderMusicUI();
+    }
+  });
+}
 
 function setupRotaryCompass(container) {
   if (!container || rotaryCompasses.has(container.dataset.rotaryCompass)) return;
@@ -739,6 +815,7 @@ function renderWorkspaceChrome() {
   elements.composerHint.textContent = `${workspace.boundary} 回答中的“来源”表示来源覆盖，不代表结论必然正确。`;
   elements.evidenceTitle.textContent = workspace.lens || "来源";
   elements.worldMapCurrent.textContent = meta.themeName;
+  updateProductSwitchers(state.workspace);
   document.querySelectorAll(".workspace-tab").forEach((button) => button.classList.toggle("active", button.dataset.workspace === state.workspace));
   document.querySelectorAll("[data-mobile-workspace]").forEach((button) => button.classList.toggle("active", button.dataset.mobileWorkspace === state.workspace));
   updateEvidence(state.latestEvidence.sources, state.latestEvidence.tools);
@@ -750,6 +827,7 @@ async function changeWorkspace(workspaceId) {
   state.sessionId = null;
   state.latestEvidence = { sources: [], tools: [] };
   state.activeProduct = workspaceId;
+  updateProductSwitchers(workspaceId);
   await storage.set(STORAGE_KEYS.activeProduct, workspaceId);
   await storage.set(STORAGE_KEYS.workspace, workspaceId);
   await haptic();
@@ -1364,6 +1442,7 @@ async function refreshStudio() {
 }
 
 async function openStudio() {
+  updateProductSwitchers("forge");
   closePanels();
   elements.spaceFormError.textContent = "";
   if (!elements.studioDialog.open) {
@@ -1383,6 +1462,7 @@ async function openStudio() {
 }
 
 function openConcept(dialog) {
+  updateProductSwitchers(dialog?.dataset.scene);
   closePanels();
   if (!dialog.open) {
     dialog.showModal();
@@ -1392,6 +1472,7 @@ function openConcept(dialog) {
 
 function openWorldMap() {
   closePanels();
+  closeOpenProductDialogs();
   if (!elements.worldMapDialog.open) {
     elements.worldMapDialog.showModal();
     playSceneEntry(elements.worldMapDialog);
@@ -1525,6 +1606,7 @@ function renderMusicUI() {
 }
 
 function openMusicDimension() {
+  updateProductSwitchers("music");
   closePanels();
   state.music.minimized = false;
   if (!elements.musicDialog.open) {
@@ -1881,6 +1963,7 @@ async function deletePhotonCreation(id) {
 }
 
 async function openPhotonProjection() {
+  updateProductSwitchers("photon");
   closePanels();
   elements.photonError.textContent = "";
   if (!elements.photonDialog.open) {
@@ -1893,12 +1976,16 @@ async function openPhotonProjection() {
 }
 
 async function launchProduct(product) {
+  product = normalizeProductId(product);
+  if (!product) return;
   if (!productLaunchReady) {
     queuedProductLaunch = product;
     return;
   }
   state.activeProduct = product;
+  updateProductSwitchers(product);
   await storage.set(STORAGE_KEYS.activeProduct, product);
+  closeOpenProductDialogs(product);
   if (elements.worldMapDialog.open) elements.worldMapDialog.close();
   if (product === "resonance") {
     state.pendingLaunch = null;
@@ -2875,10 +2962,6 @@ function startFutureRadarPolling() {
 
 async function runFutureRadarNow() {
   if (state.futureRadar.runStarting) return;
-  if (!adminUsageToken) {
-    setFutureRadarLoading(false, "立即扫描属于管理员操作。请先从管理员入口连接 ADMIN_DASHBOARD_TOKEN；普通用户仍会自动接收后台扫描结果。");
-    return;
-  }
   state.futureRadar.runStarting = true;
   elements.futureRadarRun.disabled = true;
   elements.futureRadarRun.setAttribute("aria-busy", "true");
@@ -2888,8 +2971,6 @@ async function runFutureRadarNow() {
     const run = await api("/future-radar/run", {
       method: "POST",
       timeoutMs: 30_000,
-      preserveAuthOn401: true,
-      headers: { "X-Admin-Token": adminUsageToken },
     });
     showToast(run?.status === "running" ? "Radar Run 已启动，扫描将在后台继续。" : "Radar Run 已提交。", 4500);
     await loadFutureRadarSnapshot();
@@ -3491,6 +3572,7 @@ async function refreshRecruitmentSource() {
 }
 
 async function openRecruitment() {
+  updateProductSwitchers("recruitment");
   elements.recruitmentError.textContent = "";
   if (!elements.recruitmentDialog.open) {
     elements.recruitmentDialog.showModal();
@@ -4091,6 +4173,7 @@ elements.adminUsageRefresh.addEventListener("click", refreshAdminUsage);
 elements.adminUsageLock.addEventListener("click", lockAdminUsage);
 
 initOblivionArchive({ notify: showToast });
+setupProductSwitchers();
 setupRotaryCompasses();
 
 (async function bootstrap() {

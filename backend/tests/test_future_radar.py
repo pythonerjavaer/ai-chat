@@ -21,14 +21,16 @@ from backend.future_radar.adapters import (
     AdapterResult,
     DiscoveryLimitedError,
     LegacyDatabaseAdapter,
+    PublicFeedAdapter,
     WechatSourceAdapter,
+    adapter_for_source,
 )
 from backend.future_radar.normalization import (
     PRIMARY_CATEGORY_CODES,
     normalize_job,
 )
 from backend.future_radar.schema import migrate
-from backend.future_radar.schemas import FrostFireSyncV1, RadarJobInput
+from backend.future_radar.schemas import FrostFireSyncV1, RadarJobInput, SourceCreateRequest
 from backend.future_radar.service import FutureRadarService, SyncConflict
 from backend.recruitment_watch import normalize_html_text
 
@@ -807,7 +809,103 @@ def test_wechat_public_metadata_is_preserved_when_article_body_is_unavailable(
     assert refreshed["last_success_at"] is not None
 
 
-def test_future_radar_api_paginates_requires_admin_run_and_strict_sync(
+def test_public_feed_adapter_parses_rss_as_discovery_articles(monkeypatch, radar_service):
+    credential_marker = "sk" + "-proj-" + "NOT_A_REAL_KEY_TEST_VALUE_123456"
+    uuid_marker = "-".join(("12345678", "1234", "4123", "8123", "123456789abc"))
+    rss = f"""<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0"><channel><title>公开招聘订阅</title>
+      <item>
+        <title>某集团 2027 届校园招聘正式启动</title>
+        <link>https://careers.example.com/campus/2027?utm_source=feed</link>
+        <pubDate>Thu, 27 Aug 2026 09:30:00 GMT</pubDate>
+        <description><![CDATA[<p>面向应届毕业生。联系人 test@example.com，13800138000，
+        api_key={credential_marker}，
+        会话 {uuid_marker}。</p>]]></description>
+      </item>
+      <item><title>不安全链接</title><link>http://127.0.0.1/private</link></item>
+      <item><title>私有会话</title><link>https://chatgpt.com/c/private-conversation-placeholder</link></item>
+      <item><title>凭证查询</title><link>https://example.com/feed?token=secret-value</link></item>
+    </channel></rss>"""
+    page = SimpleNamespace(raw_text=rss, text="公开招聘订阅", fingerprint="feed-hash")
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.fetch_watch_page", lambda *_args, **_kwargs: page
+    )
+    source = create_source(
+        radar_service,
+        "public-campus-rss",
+        trust_level="discovery",
+        source_type="public_feed",
+        adapter_config={"adapter": "public_feed", "domain_delay_seconds": 0},
+    )
+    radar_service.repository.patch_source(
+        source["id"],
+        {"url": "https://feeds.example.com/campus.xml", "domain": "feeds.example.com"},
+    )
+
+    adapter = PublicFeedAdapter()
+    result = adapter.scan(radar_service.repository.get_source(source["id"]))
+    assert result.jobs == []
+    assert result.snapshot_complete is False
+    assert len(result.articles) == 1
+    article = result.articles[0]
+    assert article["article_url"] == "https://careers.example.com/campus/2027"
+    assert article["is_recruitment"] is True
+    assert article["recruitment_year"] == 2027
+    assert article["publish_time"] == "2026-08-27T09:30:00+00:00"
+    serialized = str(result.articles)
+    assert "test@example.com" not in serialized
+    assert "13800138000" not in serialized
+    assert "sk" + "-proj-" not in serialized
+    assert "12345678" not in serialized
+
+    selected = adapter_for_source(
+        radar_service.repository.get_source(source["id"]),
+        repository=radar_service.repository,
+        openai_api_key="test-key",
+        ai_model="test-model",
+    )
+    assert isinstance(selected, PublicFeedAdapter)
+
+    request = SourceCreateRequest.model_validate({
+        "id": "another-public-feed",
+        "name": "Another public feed",
+        "platform": "rss",
+        "source_type": "public_feed",
+        "url": "https://feeds.example.com/another.xml",
+        "trust_level": "discovery",
+        "adapter_config": {"adapter": "public_feed", "max_entries": 30},
+    })
+    assert request.source_type == "public_feed"
+
+
+def test_public_feed_adapter_rejects_dtd(monkeypatch):
+    page = SimpleNamespace(
+        raw_text="<!DOCTYPE rss [<!ENTITY x SYSTEM 'file:///etc/passwd'>]><rss/>",
+        text="rss",
+        fingerprint="unsafe-feed",
+    )
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.fetch_watch_page", lambda *_args, **_kwargs: page
+    )
+    with pytest.raises(DiscoveryLimitedError, match="credentials"):
+        PublicFeedAdapter().scan({
+            "id": "credential-feed",
+            "name": "credential-feed",
+            "url": "https://feeds.example.com/private.xml?token=secret-value",
+            "domain": "feeds.example.com",
+            "adapter_config": {"domain_delay_seconds": 0},
+        })
+    with pytest.raises(ValueError, match="DTD"):
+        PublicFeedAdapter().scan({
+            "id": "unsafe-feed",
+            "name": "unsafe-feed",
+            "url": "https://feeds.example.com/unsafe.xml",
+            "domain": "feeds.example.com",
+            "adapter_config": {"domain_delay_seconds": 0},
+        })
+
+
+def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
     radar_service, monkeypatch
 ):
     settings_values = vars(main.settings).copy()
@@ -820,6 +918,7 @@ def test_future_radar_api_paginates_requires_admin_run_and_strict_sync(
     })
     monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
     monkeypatch.setattr(main, "future_radar_service", radar_service)
+    monkeypatch.setattr(main, "_future_radar_user_last_run", {})
     radar_service.repository.patch_source(
         "mock-future-radar",
         {"enabled": True, "adapter_config": {"adapter": "mock", "round": 2}},
@@ -831,14 +930,30 @@ def test_future_radar_api_paginates_requires_admin_run_and_strict_sync(
             json={"source_ids": ["mock-future-radar"], "force": True},
         )
         assert unauthorized.status_code == 401
-
-        manual = client.post(
+        admin_token_only = client.post(
             "/api/future-radar/run",
             headers={"X-Admin-Token": "test-admin-dashboard-token"},
-            json={"source_ids": ["mock-future-radar"], "force": True},
+            json={"source_ids": ["mock-future-radar"]},
         )
-        assert manual.status_code == 200
-        assert manual.json()["new_jobs"] == 12
+        assert admin_token_only.status_code == 401
+
+        stale_consent_user = database.create_user(
+            "future-radar-stale-consent",
+            main.hash_password("correct-horse-123"),
+        )
+        stale_consent = client.post(
+            "/api/future-radar/run",
+            headers={
+                "Authorization": (
+                    "Bearer "
+                    + main.create_access_token(
+                        stale_consent_user["id"], stale_consent_user["username"]
+                    )
+                )
+            },
+            json={"source_ids": ["mock-future-radar"]},
+        )
+        assert stale_consent.status_code == 428
 
         registered = client.post(
             "/api/auth/register",
@@ -850,6 +965,82 @@ def test_future_radar_api_paginates_requires_admin_run_and_strict_sync(
         )
         assert registered.status_code == 201
         bearer = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+        manual = client.post(
+            "/api/future-radar/run",
+            headers=bearer,
+            json={"source_ids": ["mock-future-radar"], "force": True},
+        )
+        assert manual.status_code == 200
+        assert manual.json()["new_jobs"] == 12
+        assert manual.json()["trigger_type"] == "manual_user"
+
+        limited = client.post(
+            "/api/future-radar/run",
+            headers=bearer,
+            json={"source_ids": ["mock-future-radar"]},
+        )
+        assert limited.status_code == 429
+        assert int(limited.headers["Retry-After"]) > 0
+
+        with database.connect() as connection:
+            audit = connection.execute(
+                """
+                SELECT user_id, status_code FROM api_usage_events
+                WHERE route='/api/future-radar/run' AND user_id=?
+                ORDER BY id DESC LIMIT 2
+                """,
+                (registered.json()["user"]["id"],),
+            ).fetchall()
+        assert {row["status_code"] for row in audit} == {200, 429}
+
+        radar_service.repository.patch_source("mock-future-radar", {"enabled": False})
+        force_user = client.post(
+            "/api/auth/register",
+            json={
+                "username": "future-radar-force-user",
+                "password": "correct-horse-123",
+                "privacy_accepted": True,
+            },
+        ).json()
+        forced_disabled = client.post(
+            "/api/future-radar/run",
+            headers={"Authorization": f"Bearer {force_user['access_token']}"},
+            json={"source_ids": ["mock-future-radar"], "force": True},
+        )
+        assert forced_disabled.status_code == 200
+        assert forced_disabled.json()["sources_checked"] == 0
+        assert radar_service.repository.get_source("mock-future-radar")["enabled"] is False
+
+        busy_user = client.post(
+            "/api/auth/register",
+            json={
+                "username": "future-radar-busy-user",
+                "password": "correct-horse-123",
+                "privacy_accepted": True,
+            },
+        ).json()
+        busy_headers = {"Authorization": f"Bearer {busy_user['access_token']}"}
+        assert radar_service.repository.acquire_lock(
+            "future-radar-run", "security-test-owner", ttl_seconds=60
+        )
+        try:
+            busy = client.post(
+                "/api/future-radar/run",
+                headers=busy_headers,
+                json={"source_ids": ["mock-future-radar"]},
+            )
+            assert busy.status_code == 409
+        finally:
+            radar_service.repository.release_lock(
+                "future-radar-run", "security-test-owner"
+            )
+        retry_after_busy = client.post(
+            "/api/future-radar/run",
+            headers=busy_headers,
+            json={"source_ids": ["mock-future-radar"]},
+        )
+        assert retry_after_busy.status_code == 200
+
         page1 = client.get(
             "/api/future-radar/jobs?page=1&page_size=5&status=all", headers=bearer
         )

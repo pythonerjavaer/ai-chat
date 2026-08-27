@@ -5,20 +5,26 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import threading
 import time
+import urllib.parse
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from .. import database
 from ..recruitment import primary_employer_category
 from ..recruitment_search import search_current_recruitment_jobs
 from ..recruitment_watch import WatchFetchError, fetch_watch_page
+from ..recruitment_watch import normalize_html_text
 from .ai import extract_recruitment_content
 from .normalization import (
     PRIMARY_CATEGORY_CODES,
+    canonicalize_url,
     clean_text,
     normalize_taxonomy_value,
     stable_digest,
@@ -27,6 +33,67 @@ from .repository import RadarRepository
 
 
 logger = logging.getLogger(__name__)
+
+
+_PUBLIC_EMAIL = re.compile(r"(?i)\b[\w.+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
+_PUBLIC_PHONES = (
+    re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)"),
+    re.compile(r"(?<!\d)0\d{2,3}[- ]?\d{7,8}(?!\d)"),
+    re.compile(r"(?<!\d)\+\d{8,15}(?!\d)"),
+)
+_PUBLIC_SECRETS = (
+    re.compile(r"(?i)\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b"),
+    re.compile(
+        r"(?i)\b(?:authorization|cookie|set-cookie|api[_ -]?key|access[_ -]?token|"
+        r"refresh[_ -]?token)\s*[:=]\s*[^\s,;]+"
+    ),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{10,}\b"),
+)
+_PUBLIC_UUID = re.compile(
+    r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
+)
+_SENSITIVE_QUERY_KEYS = {
+    "access_token", "api_key", "apikey", "auth", "authorization", "cookie",
+    "key", "password", "refresh_token", "secret", "sig", "signature", "token",
+}
+
+
+def _redact_public_text(value: Any, *, limit: int) -> str:
+    """Keep a useful public excerpt without persisting contacts or credentials."""
+    # Redact before applying the output limit; truncating first could preserve
+    # the prefix of a credential that crosses the excerpt boundary.
+    text = clean_text(value, limit=1_500_000)
+    text = _PUBLIC_EMAIL.sub("[redacted-email]", text)
+    for pattern in _PUBLIC_PHONES:
+        text = pattern.sub("[redacted-phone]", text)
+    for pattern in _PUBLIC_SECRETS:
+        text = pattern.sub("[redacted-secret]", text)
+    text = _PUBLIC_UUID.sub("[redacted-uuid]", text)
+    return clean_text(text, limit=limit)
+
+
+def _public_reference_url(value: Any) -> str | None:
+    """Return a canonical public reference, excluding chats and credential URLs."""
+    candidate = clean_text(value, limit=2_000)
+    decoded = urllib.parse.unquote(candidate)
+    if _PUBLIC_EMAIL.search(decoded) or any(pattern.search(decoded) for pattern in _PUBLIC_SECRETS):
+        return None
+    try:
+        raw_query = urllib.parse.urlsplit(candidate).query
+    except ValueError:
+        return None
+    if any(key.casefold() in _SENSITIVE_QUERY_KEYS for key, _ in urllib.parse.parse_qsl(raw_query)):
+        return None
+    try:
+        canonical = canonicalize_url(candidate, allow_empty=False)
+    except ValueError:
+        return None
+    parsed = urllib.parse.urlsplit(canonical)
+    # ChatGPT share pages are import transports, never recruitment evidence;
+    # private /c UUIDs and public share IDs must not enter Radar provenance.
+    if parsed.hostname == "chatgpt.com":
+        return None
+    return canonical
 
 
 @dataclass
@@ -372,6 +439,155 @@ class OfficialJsonApiAdapter:
         )
 
 
+def _xml_local_name(tag: str) -> str:
+    return str(tag).rsplit("}", 1)[-1].casefold()
+
+
+def _xml_child_text(node: ET.Element, *names: str) -> str:
+    wanted = {name.casefold() for name in names}
+    for child in node:
+        if _xml_local_name(child.tag) in wanted:
+            return clean_text("".join(child.itertext()), limit=8_000)
+    return ""
+
+
+def _feed_entry_link(node: ET.Element) -> str | None:
+    for child in node:
+        if _xml_local_name(child.tag) != "link":
+            continue
+        href = clean_text(child.attrib.get("href"), limit=2_000)
+        relation = clean_text(child.attrib.get("rel") or "alternate", limit=40).casefold()
+        candidate = href or clean_text(child.text, limit=2_000)
+        if candidate and relation in {"alternate", ""}:
+            canonical = _public_reference_url(candidate)
+            if canonical:
+                return canonical
+    return None
+
+
+def _feed_publish_time(value: str) -> str | None:
+    raw = clean_text(value, limit=160)
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat()
+
+
+def _bounded_feed_number(
+    value: Any, *, default: float, minimum: float, maximum: float, name: str
+) -> float:
+    try:
+        number = float(default if value is None else value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"public_feed {name} must be numeric.") from exc
+    if not math.isfinite(number) or not minimum <= number <= maximum:
+        raise ValueError(f"public_feed {name} must be between {minimum:g} and {maximum:g}.")
+    return number
+
+
+class PublicFeedAdapter:
+    """Read a public RSS/Atom feed as discovery-only article metadata.
+
+    Feed entries never become verified jobs by themselves.  They are minimal
+    discovery signals whose linked official recruitment page must still pass
+    the existing verification path before a job is published.
+    """
+
+    CAMPUS_MARKERS = OfficialHtmlAdapter.CAMPUS_MARKERS
+
+    def scan(self, source: dict[str, Any]) -> AdapterResult:
+        if not source.get("url"):
+            raise DiscoveryLimitedError("Public RSS/Atom URL is not configured.")
+        if not _public_reference_url(source["url"]):
+            raise DiscoveryLimitedError(
+                "Public RSS/Atom URL cannot contain credentials or ChatGPT conversation references."
+            )
+        config = source.get("adapter_config", {})
+        timeout = _bounded_feed_number(
+            config.get("timeout_seconds"), default=10, minimum=1, maximum=60,
+            name="timeout_seconds",
+        )
+        domain_delay = _bounded_feed_number(
+            config.get("domain_delay_seconds"), default=1, minimum=0, maximum=10,
+            name="domain_delay_seconds",
+        )
+        DOMAIN_LIMITER.wait(
+            source.get("domain") or "",
+            domain_delay,
+        )
+        page = fetch_watch_page(
+            source["url"], (), timeout_seconds=timeout
+        )
+        raw = page.raw_text.lstrip()
+        if "<!DOCTYPE" in raw.upper() or "<!ENTITY" in raw.upper():
+            raise ValueError("RSS/Atom feed must not contain DTD or entity declarations.")
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError as exc:
+            raise ValueError("Public feed did not return valid RSS/Atom XML.") from exc
+        root_name = _xml_local_name(root.tag)
+        if root_name == "rss":
+            entries = [node for node in root.iter() if _xml_local_name(node.tag) == "item"]
+        elif root_name == "feed":
+            entries = [node for node in root if _xml_local_name(node.tag) == "entry"]
+        else:
+            raise ValueError("Public XML is neither an RSS nor an Atom feed.")
+
+        try:
+            max_entries = int(config.get("max_entries", 30))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("public_feed max_entries must be an integer.") from exc
+        if not 1 <= max_entries <= 100:
+            raise ValueError("public_feed max_entries must be between 1 and 100.")
+        publisher = _redact_public_text(
+            source.get("account_name") or source.get("name"), limit=160
+        )
+        articles: list[dict[str, Any]] = []
+        for entry in entries[:max_entries]:
+            title = _redact_public_text(_xml_child_text(entry, "title"), limit=300)
+            link = _feed_entry_link(entry)
+            if not title or not link:
+                continue
+            summary_html = _xml_child_text(
+                entry, "description", "summary", "content", "encoded"
+            )
+            try:
+                excerpt = normalize_html_text(summary_html) if "<" in summary_html else summary_html
+            except WatchFetchError:
+                excerpt = clean_text(summary_html, limit=1_500)
+            excerpt = _redact_public_text(excerpt, limit=1_500)
+            signal_text = f"{title} {excerpt}".casefold()
+            is_recruitment = any(marker.casefold() in signal_text for marker in self.CAMPUS_MARKERS)
+            year_match = re.search(r"(?<!\d)(20\d{2})(?!\d)", signal_text)
+            articles.append({
+                "publisher": publisher,
+                "article_title": title,
+                "article_url": link,
+                "publish_time": _feed_publish_time(
+                    _xml_child_text(entry, "pubdate", "published", "updated")
+                ),
+                "raw_excerpt": excerpt,
+                "is_recruitment": is_recruitment,
+                "recruitment_year": int(year_match.group(1)) if year_match else None,
+                "classification": "recruitment_signal" if is_recruitment else "other",
+            })
+        return AdapterResult(
+            articles=articles,
+            content_hash=page.fingerprint,
+            normalized_content=_redact_public_text(page.text, limit=20_000),
+            # A feed is a rolling window, not a complete snapshot of all jobs.
+            snapshot_complete=False,
+        )
+
+
 class OpenAIWebSearchAdapter:
     def scan(self, source: dict[str, Any]) -> AdapterResult:
         del source
@@ -481,6 +697,8 @@ def adapter_for_source(
         return LegacyDatabaseAdapter()
     if adapter_name == "official_api":
         return OfficialJsonApiAdapter()
+    if adapter_name == "public_feed":
+        return PublicFeedAdapter()
     if adapter_name in {"official_html", "ats", "other_public_source"}:
         return OfficialHtmlAdapter(repository=repository, api_key=openai_api_key, ai_model=ai_model)
     if adapter_name == "openai_web_search":

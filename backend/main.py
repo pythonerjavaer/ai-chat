@@ -108,6 +108,8 @@ _watch_lock_registry_guard = threading.Lock()
 _watch_lock_registry: dict[str, threading.Lock] = {}
 _watch_refresh_cooldown_guard = threading.Lock()
 _watch_refresh_last_request: dict[int, float] = {}
+_future_radar_run_cooldown_guard = threading.Lock()
+_future_radar_user_last_run: dict[int, float] = {}
 _watch_create_rate_guard = threading.Lock()
 _watch_create_requests: dict[int, deque[float]] = {}
 _model_rate_guard = threading.Lock()
@@ -120,6 +122,7 @@ _recruitment_source_refresh_state_guard = threading.Lock()
 _recruitment_source_last_refresh = 0.0
 _recruitment_source_last_count = 0
 WATCH_REFRESH_COOLDOWN_SECONDS = 15
+FUTURE_RADAR_MANUAL_RUN_COOLDOWN_SECONDS = 5 * 60
 WATCH_CREATE_WINDOW_SECONDS = 300
 WATCH_CREATE_LIMIT = 12
 WATCH_FETCH_SLOT_TIMEOUT_SECONDS = 10.0
@@ -185,6 +188,27 @@ def enforce_watch_create_rate(user_id: int) -> None:
                 headers={"Retry-After": str(retry_after)},
             )
         requests.append(now)
+
+
+def enforce_future_radar_run_rate(user_id: int) -> None:
+    """Let every signed-in user scan while bounding shared crawler/AI cost."""
+    now = time.monotonic()
+    with _future_radar_run_cooldown_guard:
+        last_request = _future_radar_user_last_run.get(user_id, 0.0)
+        retry_after = FUTURE_RADAR_MANUAL_RUN_COOLDOWN_SECONDS - (now - last_request)
+        if retry_after > 0:
+            raise HTTPException(
+                status_code=429,
+                detail="未来雷达刚刚扫描过，请稍后再试。",
+                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+            )
+        _future_radar_user_last_run[user_id] = now
+
+
+def release_future_radar_run_rate(user_id: int) -> None:
+    """Do not consume a user's cooldown when another global run was already active."""
+    with _future_radar_run_cooldown_guard:
+        _future_radar_user_last_run.pop(user_id, None)
 
 
 def enforce_model_request_rate(user_id: int, units: int) -> None:
@@ -1021,21 +1045,25 @@ def future_radar_sources(user: User, enabled: bool | None = None) -> dict:
 
 @app.post("/api/future-radar/run")
 async def run_future_radar(
-    _: Annotated[None, Depends(require_admin_dashboard_token)],
+    user: ConsentedUser,
     request: RadarRunRequest | None = None,
 ) -> dict:
     payload = request or RadarRunRequest()
     for source_id in payload.source_ids:
         if not future_radar_service.repository.get_source(source_id):
             raise HTTPException(status_code=404, detail=f"Radar source not found: {source_id}")
+    enforce_future_radar_run_rate(user["id"])
     try:
         return await asyncio.to_thread(
             future_radar_service.run,
-            trigger_type="manual",
+            trigger_type="manual_user",
             source_ids=payload.source_ids or None,
-            force=payload.force,
+            # Selecting a source already bypasses its interval. Never let a
+            # regular account reactivate a disabled source through `force`.
+            force=False,
         )
     except RadarRunBusy as exc:
+        release_future_radar_run_rate(user["id"])
         raise HTTPException(
             status_code=409,
             detail="A Future Radar run is already active.",
@@ -2285,6 +2313,8 @@ def delete_account(request: DeleteAccountRequest, user: User) -> Response:
         _space_lock_registry.pop(user["id"], None)
     with _watch_refresh_cooldown_guard:
         _watch_refresh_last_request.pop(user["id"], None)
+    with _future_radar_run_cooldown_guard:
+        _future_radar_user_last_run.pop(user["id"], None)
     with _watch_create_rate_guard:
         _watch_create_requests.pop(user["id"], None)
     with _model_rate_guard:

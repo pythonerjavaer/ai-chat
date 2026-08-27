@@ -1,16 +1,21 @@
-# ChatGPT 监控源 → 冰焰未来雷达受控桥接
+# ChatGPT / 公众号公开信源 → 冰焰未来雷达受控导入
 
-这套桥接把五个已经由用户授权的监控会话所产出的**新岗位结构化结果**，提交到冰焰的受保护接收 API。它不是 ChatGPT 账号直连：冰焰不会登录 ChatGPT、不会读取浏览器 Cookie，也不会自动回溯五个会话的历史内容。
+这套导入把用户明确公开或主动导出的**结构化招聘结果**，提交到冰焰的受保护接收 API。它不是 ChatGPT 账号直连：冰焰不会登录 ChatGPT、不会读取浏览器 Cookie，也不会自动回溯个人会话历史。
 
-桥接由三部分组成：
+必须区分两类 ChatGPT URL：
 
-1. 五个外部监控会话继续发现机会；本机私有映射把每个会话对应到稳定逻辑 `source_id`，并为新结果保留稳定条目标识；
-2. 本机 Codex 自动任务每 60 分钟唤醒一次，整理本轮新增或更新的结构化 JSON；
-3. [`scripts/frostfire_ingest.py`](../scripts/frostfire_ingest.py) 从标准输入读取 JSON，并以 `X-Recruitment-Token` 提交到 `https://frostfire-ai.onrender.com/api/recruitment/ingest`。
+- `https://chatgpt.com/c/...` 是账号内的私有会话页面，不是开放 API。即使用户和本机浏览器当前已登录，冰焰服务端也不能把这个登录态当成长期数据接口；本项目明确拒绝用 Cookie、浏览器自动化或未公开内部接口抓取它。
+- `https://chatgpt.com/share/...` 是用户主动创建的公开分享快照。任何拿到链接的人都可能看到快照，因此创建前必须去除个人资料和敏感内容。分享页是一个快照；原会话后来新增结果时，必须重新更新分享快照才会包含新内容。
 
-## 五个会话 ID
+当前支持三条真实路径：
 
-五个真实监控会话 UUID 只属于本机私有映射，不提交为 `source_thread_id`，也不写入 Git。建议固定使用以下五个逻辑槽位；实际会话主题可以在本机配置中记录：
+1. **首选：结构化 JSON 文件。** 让监控会话只输出完整 `FROSTFIRE_SYNC_V1`，保存为本地文件，然后导入；
+2. **公开 ChatGPT 分享快照。** 分享页必须包含一个完整的 `FROSTFIRE_SYNC_V1` JSON 代码块；导入器只解析该对象，忽略页面中的其他自然语言和指令；
+3. **公众号/公开网页。** 无需登录即可访问的单篇公开文章 URL 或公开 RSS/Atom 可作为 discovery 信号导入；它们不能替代企业招聘官网核验。
+
+## 五个逻辑来源
+
+五个真实私有会话 UUID 不提交为 `source_thread_id`，也不写入 Git、数据库或日志。可以继续使用以下五个逻辑槽位，但应用只接收结构化结果，不读取其对应的私有会话：
 
 | 本机配置名 | 提交时的 `source_id` | 私有值 |
 | --- | --- | --- |
@@ -20,9 +25,7 @@
 | `FROSTFIRE_RADAR_THREAD_4` | `chatgpt-radar-04` | 第 4 个监控会话 ID |
 | `FROSTFIRE_RADAR_THREAD_5` | `chatgpt-radar-05` | 第 5 个监控会话 ID |
 
-`source_id` 是可公开的稳定逻辑名称。五个真实会话 ID 只用于本机自动任务判断它应写入哪个 `source_id`，不要提交到冰焰，也不要写入 Git。请求模型仍保留可选 `source_thread_id` 以兼容其他受控来源：对上述五个逻辑来源，服务端不保存该值；对其他来源也只保存不可逆的短 SHA-256 引用，不保存或返回原文。
-
-如自动任务需要一个本机映射文件，可放在仓库外，例如 `~/.config/frostfire-radar/bridge.json`，并执行 `chmod 600 ~/.config/frostfire-radar/bridge.json`。该文件只保存五个来源映射和本机游标，不保存 Cookie、OpenAI API Key 或冰焰接收 Token，也不要复制进项目目录。
+`source_id` 是可公开的稳定逻辑名称。导入命令行的 `--source-id` 是唯一可信映射；它不能直接使用 UUID。分享页内的 `source_id` 会被覆盖，页面也不能注入 `source_name` 或私有会话标识。上游条目标识若呈 UUID 形状，导入器会先用逻辑来源和原值生成稳定摘要，再丢弃原 UUID。
 
 ## Secret 管理
 
@@ -49,7 +52,50 @@ Keychain 不可用时，自动任务可以在其受控进程环境中设置 `FRO
 - `RECRUITMENT_INGEST_TOKEN` / `FROSTFIRE_INGEST_TOKEN` 明文；
 - 五个会话的完整对话导出或与岗位无关的个人内容。
 
-## 提交器用法
+## 受控导入器用法
+
+先验证一个用户主动导出的结构化文件；默认只打印规范化结果，不联网提交：
+
+```bash
+python3 scripts/frostfire_source_import.py \
+  --source-id chatgpt-radar-01 \
+  --structured-json /path/to/FROSTFIRE_SYNC_V1.json
+```
+
+公开分享页必须是 `/share/`，不能是 `/c/`：
+
+```bash
+python3 scripts/frostfire_source_import.py \
+  --source-id chatgpt-radar-01 \
+  --chatgpt-share 'https://chatgpt.com/share/<PUBLIC_SHARE_ID>'
+```
+
+确认输出后加 `--submit`；脚本从 `FROSTFIRE_INGEST_TOKEN` 或同一 macOS Keychain service 读取 Token，并向 `/api/future-radar/sync` 提交。它不会把分享链接、页面正文或 Token 放进 payload。
+
+公开公众号文章只建立 discovery 文章记录：
+
+```bash
+python3 scripts/frostfire_source_import.py \
+  --source-id wechat-public-01 \
+  --public-article 'https://mp.weixin.qq.com/s/<PUBLIC_ARTICLE_ID>' \
+  --title '文章公开标题' \
+  --publisher '公众号公开名称' \
+  --submit
+```
+
+公开 RSS/Atom 同样只导入最多 10 条文章信号：
+
+```bash
+python3 scripts/frostfire_source_import.py \
+  --source-id public-campus-feed-01 \
+  --public-feed 'https://example.com/campus.xml' \
+  --publisher '公开招聘订阅' \
+  --submit
+```
+
+系统拒绝 HTTP、账号信息、非标准 HTTPS 端口、本机/内网/保留地址、不安全重定向、带凭证参数的 URL、超大响应、RSS DTD/实体和非 RSS/Atom XML。导入 payload 中任何 ChatGPT `/c/` 或 `/share/` URL 都会被拒绝，避免会话/分享 UUID 进入岗位或文章来源。公开网页摘要中的邮箱、电话、密钥样式文本和 UUID 会在截断前脱敏；结构化 JSON 中出现这些内容则拒绝整批。校验错误、HTTP 错误和服务端响应也会脱敏，不回显被拒绝的值或 Token。公开页面不可访问时会报告失败，不伪造成功心跳。
+
+原有低层提交器仍可接收旧招聘候选契约：
 
 提交器接受四种标准输入形态：单个岗位对象、最多 10 个岗位的数组、正式请求对象 `{"jobs": [...]}`，或空结果心跳 `{"jobs": [], "source_id": "chatgpt-radar-01", "source_updated_at": "<ISO 8601>"}`。请求批次和每个岗位都拒绝未声明字段；这与服务端 Pydantic `extra="forbid"` 契约一致。先执行不读 Secret、也不联网的检查：
 
@@ -76,16 +122,16 @@ python3 scripts/frostfire_ingest.py --timeout 90 < /path/to/new-jobs.json
 
 脚本不会打印 Token。成功时输出服务端的计数 JSON；HTTP 失败时只输出状态码和服务端的安全错误摘要。
 
-## 每 60 分钟的本机 Codex heartbeat
+## 持续更新与调度边界
 
-heartbeat 是**本机调度频率**，不是 Render 后台任务，也不是 ChatGPT API 轮询承诺。建议为五个来源建立一个 Codex 自动任务，每 60 分钟执行一次以下流程：
+定时器只能调度一次导入，不能凭空获得私有 ChatGPT 会话内容。要实现持续更新，必须有一个受支持的数据生产步骤：
 
-1. 读取仓库外的五个会话 ID 与各自上次成功的 `source_item_id` / `source_updated_at` 游标；
-2. 仅处理游标之后由授权监控会话明确产出的新条目或更新；
-3. 用本机会话映射写入对应的逻辑 `source_id` 和稳定 `source_item_id`，但不把真实会话 ID 写入 `source_thread_id`；有 ATS 岗位编号时同时写 `external_id`；
-4. 生成简短 `evidence`，只保留支持公司、岗位、城市、开放状态和日期的证据句；每批最多 10 个岗位；
-5. 先执行 `--dry-run`，再把同一 JSON 提交；只有服务端成功返回后才推进本机游标；
-6. 没有新结果时不伪造岗位，也不重复改写旧内容；为对应逻辑源提交空结果心跳，并只在心跳成功后推进本机同步时间：
+1. 外部监控服务通过正式 API/Webhook 直接生成新 JSON；或
+2. 用户让 ChatGPT 监控会话生成新的完整 JSON，并更新公开分享快照；或
+3. 用户导出新的本地 JSON；或
+4. 合法公开 RSS/Atom/文章页产生新内容。
+
+之后才可以按固定频率运行导入。若分享快照没有更新，反复请求同一链接只会得到同一批次；幂等键会阻止重复事件。公开来源可访问但确实没有新结果时，可以提交空心跳；来源不可访问或结构无效时不得伪造成功心跳：
 
 ```json
 {
@@ -97,7 +143,7 @@ heartbeat 是**本机调度频率**，不是 Render 后台任务，也不是 Cha
 
 空结果心跳会记录该源最新事件、把可连接来源恢复为 `synced`，并只在 `source_updated_at` 比已存时间更新时推进来源时间；它不会创建岗位，也不会清空历史候选库存。每个逻辑源应各自发送心跳，不能用一个来源代替另外四个。
 
-这份仓库只提供接收契约与安全提交器，不包含绕过 ChatGPT 登录去读取私人会话的抓取器。若本机 Codex 自动任务无法获得某个会话的授权结构化输出，应保留该源为未连接状态，不使用 Cookie 或 UI 自动化绕过限制。
+这份仓库不包含、也不应增加绕过 ChatGPT 登录去读取私人会话的抓取器。若没有新的公开快照或结构化输出，应保留该源为未连接/无更新状态，不使用 Cookie 或 UI 自动化绕过限制。
 
 ## 请求示例
 

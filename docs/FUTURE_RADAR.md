@@ -5,7 +5,7 @@
 ## 1. 当前架构
 
 ```text
-公开 HTTPS 页面 / 公开 JSON API / 旧岗位池 / 受控同步 / Mock
+公开 HTTPS 页面 / 公开 JSON API / RSS/Atom / 旧岗位池 / 受控同步 / Mock
                               │
                               ▼
                      Source Registry
@@ -30,7 +30,7 @@
 
 - `schema.py`：在现有 SQLite 上执行幂等、增量迁移 `future_radar_v1`。
 - `seeds.py`：初始化 Source Registry；不保存私有会话 ID、Cookie 或密钥。
-- `adapters.py`：公开 HTML、公开 JSON API、旧岗位池、OpenAI 网页补漏、受控同步、Mock 等来源适配器。
+- `adapters.py`：公开 HTML、公开 JSON API、公开 RSS/Atom、旧岗位池、OpenAI 网页补漏、受控同步、Mock 等来源适配器。
 - `normalization.py`：文本、日期、HTTPS URL、稳定外部 ID 和语义哈希规范化。
 - `service.py`：并发扫描、全局/来源锁、验证角色、合并、差异事件、关闭确认和幂等同步。
 - `repository.py`：SQLite 查询、分页、来源健康、运行记录、事件游标、来源快照和 AI 缓存。
@@ -72,6 +72,7 @@
 | `legacy_database` | 把旧 `recruitment_jobs` 岗位池兼容导入新情报层 |
 | `official_html` | 抓取允许访问的公开 HTTPS 页面，做校招标记和内容指纹；可选 AI 结构化提取 |
 | `official_api` | 按 `items_path` 和 `field_map` 映射公开 JSON API |
+| `public_feed` | 读取公开 RSS/Atom，最多保存受限的文章 discovery 元数据；不直接生成已核验岗位 |
 | `openai_web_search` | 复用现有受限 OpenAI 公共网页补漏管线 |
 | `manual` | 只接受受控 push，不主动抓取 |
 | `discovery_limited` | 明确报告“发现能力未配置”，不伪造成功 |
@@ -96,11 +97,13 @@ Source Registry 目前包含以下公开入口。聚合频道仅作为 discovery
 
 它们当前全部使用 `adapter=discovery_limited`，数据库状态是 `status=discovery_limited`、`verification_status=unverified`；产品语义是 **pending / 待配置公开发现入口**。仓库没有填写未经验证的公众号账号 ID、文章列表 URL、Cookie 或私有会话链接，也没有伪造抓取结果、成功心跳或岗位。扫描时会诚实记录 `DISCOVERY_LIMITED`，不会绕过登录、验证码、平台限制或网站条款。
 
-代码已经提供通用 `WechatSourceAdapter`，但它只读取管理员配置的合法公开 HTTPS 文章 URL；可选的 `article_title` / `publish_time` / `search_excerpt` 配置用于生成最小文章索引。若公开 URL 与标题已知但正文暂时不可访问，适配器会把不含联系方式的最小 discovery metadata 保存进 `source_articles`，生成 `ARTICLE_DISCOVERED`，并保持 `snapshot_complete=false`，因此不会误关岗位或冒充官网核验。管理员只有在获得合法、稳定、公开的入口后，才能把相应来源从 `discovery_limited` 改为 `wechat_public`。若没有这样的入口，就应继续保持受限状态。
+代码已经提供通用 `WechatSourceAdapter`，但它只读取配置的合法公开 HTTPS 文章 URL；可选的 `article_title` / `publish_time` / `search_excerpt` 配置用于生成最小文章索引。若公开 URL 与标题已知但正文暂时不可访问，适配器会把不含联系方式的最小 discovery metadata 保存进 `source_articles`，生成 `ARTICLE_DISCOVERED`，并保持 `snapshot_complete=false`，因此不会误关岗位或冒充官网核验。只有获得合法、稳定、公开的入口后，才能把相应来源从 `discovery_limited` 改为 `wechat_public`。若没有这样的入口，就应继续保持受限状态。
+
+公开 RSS/Atom 使用 `public_feed`。解析器拒绝 DTD/外部实体、不安全链接、ChatGPT 会话/分享链接、带凭证参数的 URL 和非公共 HTTPS 地址；响应最多 1.5 MB，超时、条目数与域名访问间隔都有上限。保存前会脱敏邮箱、电话、密钥样式文本和 UUID，只保留标题、链接、公开发布者、发布时间和不超过 1,500 字符的摘要；20,000 字符来源快照也使用相同脱敏。Feed 是滚动窗口，所以 `snapshot_complete=false`；条目从 feed 消失不会据此关闭岗位。公众号文章、RSS 和聚合页都只能承担 discovery 角色，岗位仍需企业官方招聘页面独立核验。
 
 ### Source API
 
-所有读取接口都需要用户 JWT。来源写接口使用 `X-Admin-Token`，不会把 source config 当作密钥存储；`adapter_config`、`query_config`、`region_config` 中名字包含 `secret`、`token`、`password`、`api_key` 或 `apikey` 的键会被拒绝。来源 URL 必须是公共 HTTPS URL并会被规范化。
+所有读取接口都需要用户 JWT。普通用户的手动扫描还要求已同意当前隐私条款；来源写接口继续使用 `X-Admin-Token`，不会把 source config 当作密钥存储；`adapter_config`、`query_config`、`region_config` 中名字包含 `secret`、`token`、`password`、`api_key` 或 `apikey` 的键会被拒绝。来源 URL 必须是公共 HTTPS URL并会被规范化。
 
 创建一个公开 JSON API 来源的示例：
 
@@ -151,11 +154,33 @@ Content-Type: application/json
 }
 ```
 
+公开 RSS/Atom 来源使用同一 Source API，`source_type` 与适配器都设为 `public_feed`，且保持 discovery：
+
+```json
+{
+  "id": "example-campus-feed",
+  "name": "示例公开校园招聘订阅",
+  "platform": "rss",
+  "source_type": "public_feed",
+  "url": "https://example.com/campus.xml",
+  "enabled": true,
+  "priority": 55,
+  "trust_level": "discovery",
+  "interval_minutes": 120,
+  "adapter_config": {
+    "adapter": "public_feed",
+    "max_entries": 30,
+    "timeout_seconds": 10,
+    "domain_delay_seconds": 1
+  }
+}
+```
+
 `trust_level=verification` 只应赋给已确认由招聘主体运营的官方入口；聚合站、镜像、搜索结果和公众号线索应保持 `discovery`。更新使用 `PATCH /api/future-radar/sources/{source_id}`；它接受名称、平台、公司、来源类型、公开 URL、公众号名称/公开账号标识、启用状态、优先级、信任级、间隔和三个 config 对象。`GET /api/future-radar/sources` 只返回可公开的运行健康字段，不回显适配器内部配置、账号标识或密钥。
 
 ## 4. API
 
-读取 API 使用 `Authorization: Bearer <JWT>`；管理 API 使用 `X-Admin-Token`；受控同步使用 `X-Recruitment-Token`。
+读取 API 和普通用户手动扫描使用 `Authorization: Bearer <JWT>`；手动扫描同时要求当前版本的隐私同意。来源配置管理 API 使用 `X-Admin-Token`；受控同步使用 `X-Recruitment-Token`。
 
 | 方法 | 路径 | 鉴权 | 作用 |
 | --- | --- | --- | --- |
@@ -169,7 +194,7 @@ Content-Type: application/json
 | `GET` | `/api/future-radar/runs` | JWT | 运行历史分页 |
 | `GET` | `/api/future-radar/runs/{run_id}` | JWT | 单次运行结果与错误 |
 | `GET` | `/api/future-radar/sources` | JWT | 来源公开健康状态；支持 `enabled` 筛选 |
-| `POST` | `/api/future-radar/run` | Admin | 扫描到期来源，或按 `source_ids`/`force` 手动扫描；并发冲突返回 409 |
+| `POST` | `/api/future-radar/run` | JWT + 当前隐私同意 | 扫描到期来源，或按 `source_ids` 扫描指定的已启用来源；每用户 5 分钟冷却，限流返回 429，并发冲突返回 409；请求中的 `force` 不会激活禁用来源 |
 | `POST` | `/api/future-radar/sync` | Ingest | 严格接收 `FROSTFIRE_SYNC_V1` 结构化批次 |
 | `POST` | `/api/future-radar/sources` | Admin | 创建来源 |
 | `PATCH` | `/api/future-radar/sources/{source_id}` | Admin | 更新来源运行配置 |
@@ -190,7 +215,7 @@ FastAPI lifespan 启动时会：
 4. 调度任务立即运行一次，此后每 `FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES` 分钟唤醒一次；
 5. 每次只选择满足各自 `monitor_sources.interval_minutes` 的到期来源。
 
-扫描使用最多 `FUTURE_RADAR_MAX_WORKERS` 个线程。SQLite 中的 30 分钟全局运行锁和 20 分钟单来源锁避免同一数据库上的重叠运行；手动运行冲突返回 HTTP 409。这个设计面向单实例 SQLite，不等同于跨主机分布式调度。
+扫描使用最多 `FUTURE_RADAR_MAX_WORKERS` 个线程。SQLite 中的 30 分钟全局运行锁和 20 分钟单来源锁避免同一数据库上的重叠运行；手动运行冲突返回 HTTP 409。普通用户手动扫描按已认证 `user_id` 设置 5 分钟冷却，不能靠传入 `X-Admin-Token` 绕过登录或隐私同意，也不能用 `force` 重新启用禁用来源。扫描请求只记录用户 ID、路由、状态码和耗时等无正文审计元数据。这个设计面向单实例 SQLite，不等同于跨主机分布式调度。
 
 ### 一次性 Worker CLI
 
@@ -243,7 +268,7 @@ AI 提取失败时会记录警告并降级：已经完成的确定性页面抓�
 | `OPENAI_API_KEY` | 无 | AI 提取和可选 OpenAI 网页补漏；必须只放服务端环境 |
 | `RECRUITMENT_WEB_SEARCH_ENABLED` | 见现有配置 | 是否启用 `openai-public-web-search` 来源 |
 | `RECRUITMENT_INGEST_TOKEN` | 无 | `/api/future-radar/sync` 的共享接收密钥 |
-| `ADMIN_DASHBOARD_TOKEN` | 无 | 手动运行与 Source API 的管理员密钥 |
+| `ADMIN_DASHBOARD_TOKEN` | 无 | 汇总使用面板与 Source 配置 API 的管理员密钥；普通用户手动扫描不使用此 Token |
 | `DATABASE_PATH` | 项目现有默认 | Future Radar 与主应用共用的 SQLite 文件 |
 
 所有密钥继续由本机 `.env`、Keychain 或 Render Secret 管理；不得写入 source config、Git、README 日志示例或同步 payload。

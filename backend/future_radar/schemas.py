@@ -17,7 +17,7 @@ from .normalization import (
 
 SourceType = Literal[
     "official_html", "official_api", "ats", "wechat_public",
-    "openai_web_search", "manual", "other_public_source",
+    "openai_web_search", "manual", "other_public_source", "public_feed",
 ]
 
 

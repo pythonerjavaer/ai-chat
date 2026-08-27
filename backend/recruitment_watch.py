@@ -22,7 +22,8 @@ DEFAULT_TIMEOUT_SECONDS = 8.0
 DEFAULT_MAX_BYTES = 1_500_000
 ALLOWED_CONTENT_TYPES = (
     "text/html", "application/xhtml+xml", "text/plain", "application/json",
-    "application/ld+json",
+    "application/ld+json", "application/rss+xml", "application/atom+xml",
+    "application/xml", "text/xml",
 )
 
 
@@ -170,6 +171,7 @@ class WatchFetchResult:
     content_bytes: int
     http_status: int
     text: str = ""
+    raw_text: str = ""
 
 
 def fetch_watch_page(
@@ -187,7 +189,10 @@ def fetch_watch_page(
         safe_url,
         headers={
             "User-Agent": "FrostFire-Recruitment-Watch/1.0",
-            "Accept": "text/html,application/xhtml+xml,text/plain;q=0.8",
+            "Accept": (
+                "text/html,application/xhtml+xml,application/rss+xml,"
+                "application/atom+xml,application/xml,text/xml,text/plain;q=0.8"
+            ),
         },
     )
     try:
@@ -233,4 +238,5 @@ def fetch_watch_page(
         content_bytes=len(payload),
         http_status=status,
         text=text,
+        raw_text=html,
     )
