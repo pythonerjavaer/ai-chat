@@ -27,6 +27,11 @@ class Settings:
     recruitment_web_search_interval_minutes: int
     recruitment_web_search_max_tool_calls: int
     admin_dashboard_token: str
+    future_radar_enabled: bool
+    future_radar_default_interval_minutes: int
+    future_radar_close_confirmations: int
+    future_radar_max_workers: int
+    future_radar_ai_model: str
 
 
 def load_settings() -> Settings:
@@ -89,6 +94,26 @@ def load_settings() -> Settings:
             ),
         ),
         admin_dashboard_token=os.getenv("ADMIN_DASHBOARD_TOKEN", "").strip(),
+        future_radar_enabled=os.getenv(
+            "FUTURE_RADAR_ENABLED", "true"
+        ).strip().lower() in {"1", "true", "yes", "on"},
+        future_radar_default_interval_minutes=max(
+            5,
+            int(os.getenv("FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES", "30").strip() or "30"),
+        ),
+        future_radar_close_confirmations=max(
+            2,
+            min(10, int(os.getenv("FUTURE_RADAR_CLOSE_CONFIRMATIONS", "2").strip() or "2")),
+        ),
+        future_radar_max_workers=max(
+            1,
+            min(8, int(os.getenv("FUTURE_RADAR_MAX_WORKERS", "4").strip() or "4")),
+        ),
+        future_radar_ai_model=(
+            os.getenv("FUTURE_RADAR_AI_MODEL", "").strip()
+            or os.getenv("RECRUITMENT_WEB_SEARCH_MODEL", "").strip()
+            or "gpt-5.4-nano"
+        ),
     )
 
 

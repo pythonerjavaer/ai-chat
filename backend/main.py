@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import secrets
+import sqlite3
 import threading
 import time
 import urllib.parse
@@ -73,6 +74,14 @@ from .live_sources import (
     is_priority_campus_listing,
 )
 from .config import settings
+from .future_radar.normalization import canonicalize_url as canonicalize_radar_url
+from .future_radar.schemas import (
+    FrostFireSyncV1,
+    RadarRunRequest,
+    SourceCreateRequest,
+    SourcePatchRequest,
+)
+from .future_radar.service import FutureRadarService, RadarRunBusy, SyncConflict
 from .security import (
     create_access_token,
     decode_access_token,
@@ -132,6 +141,15 @@ EXPECTED_CHATGPT_RADAR_SOURCES = [
 EXPECTED_CHATGPT_SOURCE_IDS = {
     source["source_id"] for source in EXPECTED_CHATGPT_RADAR_SOURCES
 }
+
+future_radar_service = FutureRadarService(
+    connect=database.connect,
+    openai_api_key=settings.openai_api_key,
+    ai_model=settings.future_radar_ai_model,
+    web_search_enabled=settings.recruitment_web_search_enabled,
+    close_confirmations=settings.future_radar_close_confirmations,
+    max_workers=settings.future_radar_max_workers,
+)
 
 
 class RecruitmentRefreshBusy(RuntimeError):
@@ -364,6 +382,26 @@ async def recruitment_refresh_loop() -> None:
         await asyncio.sleep(settings.recruitment_refresh_minutes * 60)
 
 
+async def future_radar_refresh_loop() -> None:
+    """Run due Radar sources server-side; the browser only polls stored events."""
+    while True:
+        try:
+            run = await asyncio.to_thread(
+                future_radar_service.run,
+                trigger_type="scheduled",
+            )
+            logger.info(
+                "Future Radar scheduled run completed: id=%s status=%s sources=%s/%s",
+                run.get("id"), run.get("status"), run.get("sources_succeeded"),
+                run.get("sources_checked"),
+            )
+        except RadarRunBusy:
+            logger.info("Future Radar scheduled run skipped because another run is active")
+        except Exception:
+            logger.exception("Future Radar scheduled run failed")
+        await asyncio.sleep(settings.future_radar_default_interval_minutes * 60)
+
+
 async def refresh_all_recruitment_watches() -> dict[str, int]:
     """Refresh every enabled watch while the web service is awake."""
     due_before = (
@@ -385,16 +423,20 @@ async def refresh_all_recruitment_watches() -> dict[str, int]:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.init_db()
+    future_radar_service.seed_registry()
     database.ensure_recruitment_ingest_sources(EXPECTED_CHATGPT_RADAR_SOURCES)
     database.purge_legacy_recruitment_samples()
-    task = None
+    tasks: list[asyncio.Task] = []
     if settings.recruitment_refresh_minutes > 0:
-        task = asyncio.create_task(recruitment_refresh_loop())
+        tasks.append(asyncio.create_task(recruitment_refresh_loop()))
+    if settings.future_radar_enabled:
+        tasks.append(asyncio.create_task(future_radar_refresh_loop()))
     try:
         yield
     finally:
-        if task:
+        for task in tasks:
             task.cancel()
+        for task in tasks:
             try:
                 await task
             except asyncio.CancelledError:
@@ -404,7 +446,7 @@ async def lifespan(_: FastAPI):
 PRIVACY_VERSION = "2026-08-22.2"
 
 
-app = FastAPI(title="Bingyan API", version="4.1.0", lifespan=lifespan)
+app = FastAPI(title="Bingyan API", version="5.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -773,6 +815,270 @@ def admin_usage(
             detail="Requested window creates too many buckets; increase bucket_minutes.",
         )
     return database.aggregate_admin_usage(hours, bucket_minutes)
+
+
+def _public_radar_source(source: dict) -> dict:
+    """Expose operational source health without leaking adapter internals."""
+    allowed = (
+        "id", "name", "platform", "company", "source_type", "url", "domain",
+        "account_name", "enabled", "priority", "trust_level", "interval_minutes",
+        "status", "verification_status", "last_checked_at", "last_success_at",
+        "last_error_at", "last_error", "consecutive_failures", "created_at", "updated_at",
+        "latest_article_title", "latest_article_at",
+    )
+    return {key: source.get(key) for key in allowed}
+
+
+def _reject_secret_like_config(value: object, *, path: str = "config") -> None:
+    """Source config is versioned operational data, never a secret store."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if any(marker in str(key).casefold() for marker in ("secret", "token", "password", "api_key", "apikey")):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{path}.{key} must be configured through server environment variables.",
+                )
+            _reject_secret_like_config(item, path=f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_secret_like_config(item, path=f"{path}[{index}]")
+
+
+@app.get("/api/future-radar/dashboard")
+def future_radar_dashboard(user: User) -> dict:
+    del user
+    return future_radar_service.repository.dashboard()
+
+
+@app.get("/api/future-radar/jobs")
+def future_radar_jobs(
+    user: User,
+    page: int = Query(default=1, ge=1, le=100_000),
+    page_size: int = Query(default=50, ge=1, le=100),
+    status_filter: Literal["open", "closed", "unknown", "all"] = Query(default="open", alias="status"),
+    verification_status: Literal["pending", "verified", "conflicted", "rejected"] | None = None,
+    company: str | None = Query(default=None, max_length=160),
+    city: str | None = Query(default=None, max_length=160),
+    region: str | None = Query(default=None, max_length=160),
+    employer_type: str | None = Query(default=None, max_length=80),
+    industry: str | None = Query(default=None, max_length=120),
+    program_id: str | None = Query(default=None, max_length=180),
+    source_id: str | None = Query(default=None, max_length=64),
+    q: str | None = Query(default=None, max_length=160),
+    event_type: Literal["NEW", "UPDATED", "CLOSED", "REOPENED", "VERIFIED"] | None = None,
+    opening_before: date | None = None,
+    opening_after: date | None = None,
+    closing_before: date | None = None,
+    closing_after: date | None = None,
+    sort: Literal["changed", "closing", "opening", "first_seen", "company"] = "changed",
+) -> dict:
+    filters = {
+        "status": status_filter,
+        "verification_status": verification_status,
+        "company": company,
+        "city": city,
+        "region": region,
+        "employer_type": employer_type,
+        "industry": industry,
+        "program_id": program_id,
+        "source_id": source_id,
+        "q": q,
+        "event_type": event_type,
+        "opening_before": opening_before.isoformat() if opening_before else None,
+        "opening_after": opening_after.isoformat() if opening_after else None,
+        "closing_before": closing_before.isoformat() if closing_before else None,
+        "closing_after": closing_after.isoformat() if closing_after else None,
+        "sort": sort,
+        "active_only": status_filter == "open",
+    }
+    result = future_radar_service.repository.list_jobs(
+        page=page, page_size=page_size, filters=filters
+    )
+    profile = database.get_recruitment_profile(user["id"])
+    enriched = []
+    for job in result["items"]:
+        scored = score_job(job, profile)
+        scored["employer_categories"] = sorted(semantic_employer_categories(scored))
+        enriched.append(scored)
+    result["items"] = enriched
+    result["jobs"] = enriched
+    result["tier_definitions"] = list(TIER_DEFINITIONS)
+    return result
+
+
+@app.get("/api/future-radar/jobs/{job_id}")
+def future_radar_job(job_id: str, user: User) -> dict:
+    job = future_radar_service.repository.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Radar job not found.")
+    scored = score_job(job, database.get_recruitment_profile(user["id"]))
+    scored["employer_categories"] = sorted(semantic_employer_categories(scored))
+    return scored
+
+
+@app.get("/api/future-radar/programs")
+def future_radar_programs(
+    user: User,
+    page: int = Query(default=1, ge=1, le=100_000),
+    page_size: int = Query(default=50, ge=1, le=100),
+    status_filter: Literal["open", "closed", "unknown", "all"] = Query(default="open", alias="status"),
+    q: str | None = Query(default=None, max_length=160),
+) -> dict:
+    del user
+    result = future_radar_service.repository.list_programs(
+        page=page, page_size=page_size, status=status_filter, q=q
+    )
+    result["programs"] = result["items"]
+    return result
+
+
+@app.get("/api/future-radar/programs/{program_id}")
+def future_radar_program(program_id: str, user: User) -> dict:
+    del user
+    program = future_radar_service.repository.get_program(program_id)
+    if not program:
+        raise HTTPException(status_code=404, detail="Recruitment program not found.")
+    return program
+
+
+@app.get("/api/future-radar/events")
+def future_radar_events(
+    user: User,
+    after_event_id: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    event_type: str | None = Query(default=None, max_length=40),
+) -> dict:
+    del user
+    result = future_radar_service.repository.list_events(
+        after_event_id=after_event_id, limit=limit,
+        event_type=event_type.upper() if event_type else None,
+    )
+    result["events"] = result["items"]
+    if after_event_id is not None and result["items"]:
+        result["dashboard"] = future_radar_service.repository.dashboard()
+    return result
+
+
+@app.get("/api/future-radar/changes")
+def future_radar_changes(
+    user: User,
+    after_event_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    return future_radar_events(user, after_event_id, limit, None)
+
+
+@app.get("/api/future-radar/runs")
+def future_radar_runs(
+    user: User,
+    page: int = Query(default=1, ge=1, le=100_000),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> dict:
+    del user
+    result = future_radar_service.repository.list_runs(page=page, page_size=page_size)
+    result["runs"] = result["items"]
+    return result
+
+
+@app.get("/api/future-radar/runs/{run_id}")
+def future_radar_run_detail(run_id: str, user: User) -> dict:
+    del user
+    run = future_radar_service.repository.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Radar run not found.")
+    return run
+
+
+@app.get("/api/future-radar/sources")
+def future_radar_sources(user: User, enabled: bool | None = None) -> dict:
+    del user
+    sources = [
+        _public_radar_source(source)
+        for source in future_radar_service.repository.list_sources(enabled=enabled)
+    ]
+    return {"items": sources, "sources": sources, "total": len(sources)}
+
+
+@app.post("/api/future-radar/run")
+async def run_future_radar(
+    _: Annotated[None, Depends(require_admin_dashboard_token)],
+    request: RadarRunRequest | None = None,
+) -> dict:
+    payload = request or RadarRunRequest()
+    for source_id in payload.source_ids:
+        if not future_radar_service.repository.get_source(source_id):
+            raise HTTPException(status_code=404, detail=f"Radar source not found: {source_id}")
+    try:
+        return await asyncio.to_thread(
+            future_radar_service.run,
+            trigger_type="manual",
+            source_ids=payload.source_ids or None,
+            force=payload.force,
+        )
+    except RadarRunBusy as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="A Future Radar run is already active.",
+            headers={"Retry-After": "20"},
+        ) from exc
+
+
+@app.post("/api/future-radar/sync")
+def sync_future_radar(
+    request: FrostFireSyncV1,
+    _: Annotated[None, Depends(require_recruitment_ingest_token)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict:
+    try:
+        return future_radar_service.sync(
+            request.model_dump(mode="json"), idempotency_key=idempotency_key
+        )
+    except SyncConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/future-radar/sources", status_code=status.HTTP_201_CREATED)
+def create_future_radar_source(
+    request: SourceCreateRequest,
+    _: Annotated[None, Depends(require_admin_dashboard_token)],
+) -> dict:
+    payload = request.model_dump(mode="json")
+    for key in ("adapter_config", "query_config", "region_config"):
+        _reject_secret_like_config(payload.get(key, {}), path=key)
+    if payload.get("url"):
+        try:
+            payload["url"] = canonicalize_radar_url(payload["url"], allow_empty=False)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        payload["domain"] = urllib.parse.urlsplit(payload["url"]).hostname
+    try:
+        return _public_radar_source(future_radar_service.repository.create_source(payload))
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Radar source ID already exists.") from exc
+
+
+@app.patch("/api/future-radar/sources/{source_id}")
+def patch_future_radar_source(
+    source_id: str,
+    request: SourcePatchRequest,
+    _: Annotated[None, Depends(require_admin_dashboard_token)],
+) -> dict:
+    changes = request.model_dump(mode="json", exclude_unset=True)
+    for key in ("adapter_config", "query_config", "region_config"):
+        if key in changes:
+            _reject_secret_like_config(changes[key], path=key)
+    if changes.get("url"):
+        try:
+            changes["url"] = canonicalize_radar_url(changes["url"], allow_empty=False)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        changes["domain"] = urllib.parse.urlsplit(changes["url"]).hostname
+    source = future_radar_service.repository.patch_source(source_id, changes)
+    if not source:
+        raise HTTPException(status_code=404, detail="Radar source not found.")
+    return _public_radar_source(source)
 
 
 @app.get("/api/workspaces")

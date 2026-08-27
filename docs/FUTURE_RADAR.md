@@ -1,0 +1,300 @@
+# Future Radar 架构与运行手册
+
+本文只描述仓库当前已实现的 `backend/future_radar` 服务端情报层和前端 Future Radar 界面。旧版 `/api/recruitment/*` 接口仍保留；新模块不会删除旧岗位池，而是通过 `legacy-recruitment-pipeline` 适配器兼容读取它。
+
+## 1. 当前架构
+
+```text
+公开 HTTPS 页面 / 公开 JSON API / 旧岗位池 / 受控同步 / Mock
+                              │
+                              ▼
+                     Source Registry
+                    monitor_sources
+                              │
+                due source + adapter dispatch
+                              │
+                              ▼
+          normalize → stable identity → semantic hash
+                              │
+                              ▼
+       program/job upsert → provenance → diff events
+                              │
+                              ▼
+             SQLite repository + REST read APIs
+                              │
+                              ▼
+          Future Radar UI（30 秒增量读取事件）
+```
+
+主要组件：
+
+- `schema.py`：在现有 SQLite 上执行幂等、增量迁移 `future_radar_v1`。
+- `seeds.py`：初始化 Source Registry；不保存私有会话 ID、Cookie 或密钥。
+- `adapters.py`：公开 HTML、公开 JSON API、旧岗位池、OpenAI 网页补漏、受控同步、Mock 等来源适配器。
+- `normalization.py`：文本、日期、HTTPS URL、稳定外部 ID 和语义哈希规范化。
+- `service.py`：并发扫描、全局/来源锁、验证角色、合并、差异事件、关闭确认和幂等同步。
+- `repository.py`：SQLite 查询、分页、来源健康、运行记录、事件游标、来源快照和 AI 缓存。
+- `ai.py`：对公开网页文本使用 OpenAI Responses API 做有界结构化提取。
+- `worker.py`：一次性服务端 CLI；它不是常驻守护进程。
+- `frontend/src/app.js`：读取 dashboard、岗位、项目、事件、来源与运行记录；浏览器只轮询已经落库的事件，不负责发起定时抓取。
+
+每个来源失败相互隔离。一次运行可能是 `success`、`partial_success` 或 `failed`；一个来源失败不会阻断其他来源，也不会把该来源的旧岗位误判为已关闭。只有完整且成功的来源快照才推进缺失计数，默认连续缺失两次后才解除该来源关联；当一个岗位已没有任何活跃来源时才关闭。
+
+## 2. SQLite 数据表
+
+迁移是 additive 和 idempotent，现有 `recruitment_jobs` 等旧表继续可用。
+
+| 表 | 用途 |
+| --- | --- |
+| `schema_migrations` | 记录 `future_radar_v1` 已应用 |
+| `radar_companies` | 规范化雇主实体 |
+| `monitor_sources` | Source Registry、优先级、扫描间隔、健康状态和内容哈希 |
+| `recruitment_programs` | 校招项目/批次；可先于具体岗位存在 |
+| `radar_jobs` | 规范化岗位、日期、状态、核验状态和当前主来源 |
+| `source_articles` | 来源文章/公告的最小索引，不保存整段会话 |
+| `job_sources` | 岗位与多个来源的关联、证据、活跃状态和缺失次数 |
+| `program_sources` | 招聘项目与多个来源的关联 |
+| `radar_events` | `NEW`、`UPDATED`、`VERIFIED`、`CLOSED`、`REOPENED` 及项目事件；整数 ID 可作增量游标 |
+| `radar_runs` | 每次 scheduled/manual/worker/sync 运行的结果、错误、AI 调用和 Token 计数 |
+| `radar_sync_batches` | `FROSTFIRE_SYNC_V1` 幂等键、payload hash 和重放结果 |
+| `radar_locks` | 有过期时间的全局运行锁与单来源锁 |
+| `radar_ai_cache` | 按内容哈希、模型和 schema 版本保存结构化提取结果 |
+| `radar_source_snapshots` | 每份最多 20,000 字符、每个来源只保留最近 10 份的规范化页面快照与扫描元数据 |
+
+同一岗位可以由多个来源发现。发现源只提供线索；只有 `trust_level=verification` 的真实官方来源，或数据库中已经可靠标为 `verification_status=verified` 的 `official_html` / `official_api` / `ats` 来源，才具有核验角色。Source API 新建官方来源时，管理员应通过 `trust_level=verification` 明确承担这项信任判断。低信任来源不能用一个 `closed` 字段直接关闭此前仍开放的岗位。
+
+## 3. Source Registry 与适配器
+
+当前支持的适配路径：
+
+| `adapter_config.adapter` | 行为 |
+| --- | --- |
+| `legacy_database` | 把旧 `recruitment_jobs` 岗位池兼容导入新情报层 |
+| `official_html` | 抓取允许访问的公开 HTTPS 页面，做校招标记和内容指纹；可选 AI 结构化提取 |
+| `official_api` | 按 `items_path` 和 `field_map` 映射公开 JSON API |
+| `openai_web_search` | 复用现有受限 OpenAI 公共网页补漏管线 |
+| `manual` | 只接受受控 push，不主动抓取 |
+| `discovery_limited` | 明确报告“发现能力未配置”，不伪造成功 |
+| `mock` | 本地确定性 1–5 轮生命周期测试 |
+
+### 已内置的真实公开来源
+
+Source Registry 目前包含以下公开入口。聚合频道仅作为 discovery 线索；企业招聘官网可以明确配置为 verification 核验源：
+
+- `public-iguopin-campus`：国聘网公开校园频道；
+- `public-sasac-xiaoxin-existing`：现有国资小新公开入口；
+- `public-bank-recruitment`：银行招聘网公开入口；
+- `official-dji-digital-2027`：大疆招聘官网的 2027 数字管理构建者计划；这是核验角色的真实官方 HTML 来源，使用页面标记做确定性项目/岗位解析，不调用 AI；
+- `legacy-recruitment-pipeline`：现有已核验岗位池；
+- `openai-public-web-search`：仅在 `RECRUITMENT_WEB_SEARCH_ENABLED=true` 时启用的公共网页补漏。
+
+公开入口可访问不等于其中每条内容已经成为已核验岗位。系统仍按来源角色、岗位字段和官方 HTTPS 证据分别处理。
+
+### 五个公众号来源的真实状态
+
+以下五个逻辑来源已在 Source Registry 占位：`国央校招`、`国聘`、`国资小新`、`国央求职网`、`银行招聘网`。
+
+它们当前全部使用 `adapter=discovery_limited`，数据库状态是 `status=discovery_limited`、`verification_status=unverified`；产品语义是 **pending / 待配置公开发现入口**。仓库没有填写未经验证的公众号账号 ID、文章列表 URL、Cookie 或私有会话链接，也没有伪造抓取结果、成功心跳或岗位。扫描时会诚实记录 `DISCOVERY_LIMITED`，不会绕过登录、验证码、平台限制或网站条款。
+
+代码已经提供通用 `WechatSourceAdapter`，但它只读取管理员配置的合法公开 HTTPS 文章 URL；可选的 `article_title` / `publish_time` / `search_excerpt` 配置用于生成最小文章索引。若公开 URL 与标题已知但正文暂时不可访问，适配器会把不含联系方式的最小 discovery metadata 保存进 `source_articles`，生成 `ARTICLE_DISCOVERED`，并保持 `snapshot_complete=false`，因此不会误关岗位或冒充官网核验。管理员只有在获得合法、稳定、公开的入口后，才能把相应来源从 `discovery_limited` 改为 `wechat_public`。若没有这样的入口，就应继续保持受限状态。
+
+### Source API
+
+所有读取接口都需要用户 JWT。来源写接口使用 `X-Admin-Token`，不会把 source config 当作密钥存储；`adapter_config`、`query_config`、`region_config` 中名字包含 `secret`、`token`、`password`、`api_key` 或 `apikey` 的键会被拒绝。来源 URL 必须是公共 HTTPS URL并会被规范化。
+
+创建一个公开 JSON API 来源的示例：
+
+```http
+POST /api/future-radar/sources
+X-Admin-Token: <ADMIN_DASHBOARD_TOKEN>
+Content-Type: application/json
+```
+
+```json
+{
+  "id": "example-official-careers-api",
+  "name": "示例企业官方招聘 API",
+  "platform": "official",
+  "company": "示例企业",
+  "source_type": "official_api",
+  "url": "https://careers.example.com/api/jobs",
+  "enabled": true,
+  "priority": 80,
+  "trust_level": "verification",
+  "interval_minutes": 120,
+  "adapter_config": {
+    "adapter": "official_api",
+    "items_path": "data.jobs",
+    "field_map": {
+      "external_id": "id",
+      "company": "company",
+      "title": "title",
+      "city": "city",
+      "official_url": "detail_url",
+      "application_url": "apply_url",
+      "opening_date": "opening_date",
+      "closing_date": "closing_date",
+      "status": "status"
+    },
+    "snapshot_complete": true,
+    "timeout_seconds": 10,
+    "domain_delay_seconds": 1
+  },
+  "query_config": {
+    "recruitment_year": 2027,
+    "scope": "campus"
+  },
+  "region_config": {
+    "timezone": "Asia/Shanghai",
+    "regions": ["中国"]
+  }
+}
+```
+
+`trust_level=verification` 只应赋给已确认由招聘主体运营的官方入口；聚合站、镜像、搜索结果和公众号线索应保持 `discovery`。更新使用 `PATCH /api/future-radar/sources/{source_id}`；它接受名称、平台、公司、来源类型、公开 URL、公众号名称/公开账号标识、启用状态、优先级、信任级、间隔和三个 config 对象。`GET /api/future-radar/sources` 只返回可公开的运行健康字段，不回显适配器内部配置、账号标识或密钥。
+
+## 4. API
+
+读取 API 使用 `Authorization: Bearer <JWT>`；管理 API 使用 `X-Admin-Token`；受控同步使用 `X-Recruitment-Token`。
+
+| 方法 | 路径 | 鉴权 | 作用 |
+| --- | --- | --- | --- |
+| `GET` | `/api/future-radar/dashboard` | JWT | 汇总近 7 天事件、岗位、项目、来源健康、最近运行和事件游标 |
+| `GET` | `/api/future-radar/jobs` | JWT | 岗位分页、个人画像评分与筛选 |
+| `GET` | `/api/future-radar/jobs/{job_id}` | JWT | 单岗位、来源链与个人画像评分 |
+| `GET` | `/api/future-radar/programs` | JWT | 招聘项目分页 |
+| `GET` | `/api/future-radar/programs/{program_id}` | JWT | 单招聘项目与来源链 |
+| `GET` | `/api/future-radar/events` | JWT | 事件列表；支持 `after_event_id` 增量游标 |
+| `GET` | `/api/future-radar/changes` | JWT | `/events` 的增量兼容别名 |
+| `GET` | `/api/future-radar/runs` | JWT | 运行历史分页 |
+| `GET` | `/api/future-radar/runs/{run_id}` | JWT | 单次运行结果与错误 |
+| `GET` | `/api/future-radar/sources` | JWT | 来源公开健康状态；支持 `enabled` 筛选 |
+| `POST` | `/api/future-radar/run` | Admin | 扫描到期来源，或按 `source_ids`/`force` 手动扫描；并发冲突返回 409 |
+| `POST` | `/api/future-radar/sync` | Ingest | 严格接收 `FROSTFIRE_SYNC_V1` 结构化批次 |
+| `POST` | `/api/future-radar/sources` | Admin | 创建来源 |
+| `PATCH` | `/api/future-radar/sources/{source_id}` | Admin | 更新来源运行配置 |
+
+`GET /jobs` 支持 `page`、`page_size`、`status`、`verification_status`、`company`、`city`、`region`、`employer_type`、`industry`、`program_id`、`source_id`、`q`、`event_type`、`opening_before`、`opening_after`、`closing_before`、`closing_after` 和 `sort=changed|closing|opening|first_seen|company`。前端岗位页已经提供搜索、公司、城市、行业、雇主类型、招聘项目、状态、核验、信源、事件、开放/截止日期范围和排序控件；原有雇主星域与 T0–T3（含 0.5 档）筛选继续保留。筛选与分页结果以 Radar API 为准，旧岗位池只为同一岗位补充既有个性化评分，不会再把无关岗位拼回结果集。
+
+`POST /sync` 的 `version` 必须是 `FROSTFIRE_SYNC_V1`。`programs`、`jobs`、`articles` 各最多 10 条，三者合计最多 20 条；现有五源自动桥接可以采用更严格的每批最多 10 条策略。请求可以带 `Idempotency-Key`；未提供时依次使用 `batch_id` 或 payload hash。同一幂等键重放同一 payload 返回原结果，复用到不同 payload 返回 409。未知字段、非 HTTPS URL、包含邮箱/电话号码的 evidence 会被 schema 拒绝。
+
+前端一次并行读取 dashboard、jobs、programs、events、sources 和 runs；某一个接口失败时保留其他已成功区域。只有 Future Radar 对话框可见时才每 30 秒读取增量事件。这个轮询不会触发抓取，也不是后台 scheduler。
+
+## 5. 调度与并发
+
+FastAPI lifespan 启动时会：
+
+1. 初始化数据库与 `future_radar_v1` 迁移；
+2. 幂等写入初始 Source Registry；
+3. 当 `FUTURE_RADAR_ENABLED=true` 时创建进程内调度任务；
+4. 调度任务立即运行一次，此后每 `FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES` 分钟唤醒一次；
+5. 每次只选择满足各自 `monitor_sources.interval_minutes` 的到期来源。
+
+扫描使用最多 `FUTURE_RADAR_MAX_WORKERS` 个线程。SQLite 中的 30 分钟全局运行锁和 20 分钟单来源锁避免同一数据库上的重叠运行；手动运行冲突返回 HTTP 409。这个设计面向单实例 SQLite，不等同于跨主机分布式调度。
+
+### 一次性 Worker CLI
+
+```bash
+python -m backend.future_radar.worker --once
+python -m backend.future_radar.worker --once --source legacy-recruitment-pipeline
+python -m backend.future_radar.worker --mock-round 1
+```
+
+CLI 初始化同一数据库、写入来源种子、执行一次扫描后退出。它适合本地、人工运维，或未来迁移到可靠共享数据库后的受控调度。当前 `render.yaml` **不会**增加独立 Worker：Render Free Web Service 与另一个 Worker 不能可靠共享这份临时 SQLite，双进程反而会造成状态分叉和重复调度。
+
+## 6. Mock 1–5 轮
+
+Mock 来源默认禁用，只用于测试。CLI 的 `--mock-round` 会临时启用并强制运行该来源。
+
+| 轮次 | 预期变化 |
+| --- | --- |
+| 1 | 创建 5 个招聘项目和 10 个岗位，发出 `NEW` |
+| 2 | 保留前 10 个岗位并新增 2 个岗位 |
+| 3 | 更新第 1 个岗位的截止日期，发出 `UPDATED` |
+| 4 | 把第 2 个岗位标为关闭，发出 `CLOSED` |
+| 5 | 第 2 个岗位重新开放，发出 `REOPENED` |
+
+重复同一轮会命中相同内容哈希，不重复建岗位或发事件。缺失关闭阈值、来源失败隔离和多来源合并由单元测试另外覆盖。
+
+## 7. OpenAI 结构化提取、缓存与降级
+
+`official_html` 来源只有显式设置 `adapter_config.ai_extract=true`，且页面指纹相对上次成功扫描发生变化时，才会调用 AI 提取。实现使用 OpenAI Responses API：
+
+- 页面正文被视为不可信数据，不执行页面中的指令；
+- 输入最多截取 32,000 字符；
+- `text.format` 使用 strict JSON Schema，最多返回 10 个项目和 30 个岗位；
+- `max_output_tokens=1800`，`store=false`；
+- 最多尝试两次；
+- 缓存键为 `schema_version + model + content_hash` 的 SHA-256；
+- 缓存命中不调用模型，记录 0 新 Token；
+- 运行表记录 AI 调用数和模型实际 input/output Token 合计。
+
+AI 提取失败时会记录警告并降级：已经完成的确定性页面抓取、校招关键词识别与项目线索仍可继续，AI 派生的岗位不会被伪造。一个来源失败或 OpenAI 暂时不可用也不会停止其他确定性来源。当前实现仍会把已经成功抓取的页面指纹记为该来源最新哈希，因此同一页面内容不变时不会反复花费 Token 重试 AI；需要等待页面发生变化后再提取。`openai_web_search` 是另一条现有补漏适配器，不共享上述页面结构化提取缓存。
+
+## 8. 环境变量
+
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `FUTURE_RADAR_ENABLED` | `true` | 是否在 FastAPI 进程内启动 Future Radar scheduler |
+| `FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES` | `30` | scheduler 唤醒间隔，最小 5 分钟；来源自身间隔仍单独生效 |
+| `FUTURE_RADAR_CLOSE_CONFIRMATIONS` | `2` | 完整成功快照连续缺失多少次后解除来源关联，限制 2–10 |
+| `FUTURE_RADAR_MAX_WORKERS` | `4` | 单次扫描线程上限，限制 1–8 |
+| `FUTURE_RADAR_AI_MODEL` | `RECRUITMENT_WEB_SEARCH_MODEL`，否则 `gpt-5.4-nano` | 公开 HTML 结构化提取模型 |
+| `OPENAI_API_KEY` | 无 | AI 提取和可选 OpenAI 网页补漏；必须只放服务端环境 |
+| `RECRUITMENT_WEB_SEARCH_ENABLED` | 见现有配置 | 是否启用 `openai-public-web-search` 来源 |
+| `RECRUITMENT_INGEST_TOKEN` | 无 | `/api/future-radar/sync` 的共享接收密钥 |
+| `ADMIN_DASHBOARD_TOKEN` | 无 | 手动运行与 Source API 的管理员密钥 |
+| `DATABASE_PATH` | 项目现有默认 | Future Radar 与主应用共用的 SQLite 文件 |
+
+所有密钥继续由本机 `.env`、Keychain 或 Render Secret 管理；不得写入 source config、Git、README 日志示例或同步 payload。
+
+## 9. 测试
+
+安装开发依赖后运行专用测试：
+
+```bash
+source backend/.venv/bin/activate
+python -m pytest -q backend/tests/test_future_radar.py
+```
+
+该测试覆盖 1–5 轮生命周期、同轮幂等、连续缺失关闭、失败隔离、多来源合并/核验升级、OpenAI 失败降级、sync 幂等冲突、HTML/空白非语义变化、公众号 `discovery_limited` 诚实状态、正文不可访问时的公开文章 metadata 保留与文章事件，以及 API 分页/组合筛选/鉴权/严格 schema。
+
+使用独立临时数据库做 CLI 冒烟测试，避免污染开发数据：
+
+```bash
+RADAR_SMOKE_DB="$(mktemp /tmp/frostfire-radar.XXXXXX.db)"
+for RADAR_ROUND in 1 2 3 4 5; do
+  DATABASE_PATH="$RADAR_SMOKE_DB" \
+    python -m backend.future_radar.worker --mock-round "$RADAR_ROUND"
+done
+```
+
+完整回归与前端构建：
+
+```bash
+python -m pytest -q
+cd frontend
+npm run build
+```
+
+## 10. Render Free 的真实限制
+
+当前 `render.yaml` 保持一个 `plan: free` 的 Web Service，不附加持久盘，也不创建独立 Worker。
+
+- Free 实例空闲后会休眠；休眠期间 FastAPI 进程不存在，进程内 scheduler 不会执行，因而不能承诺固定间隔或“全天实时”监控。
+- `DATABASE_PATH=/app/backend/data/ai_chat.db` 位于实例临时文件系统。重启、重新部署或实例替换可能丢失来源状态、运行游标、事件、缓存和岗位历史。
+- 冷启动后 scheduler 会再次启动并运行到期来源，但这不能恢复已经丢失的 SQLite 历史，也不能补偿所有休眠期间的错过扫描。
+- 增加一个独立 Free Worker 不能解决问题：它有自己的文件系统，无法可靠共享 Web Service 的 SQLite。
+- 现有部署适合演示和小规模测试，不满足长期、可审计、持续监控的生产 SLA。
+
+在不重构数据库的前提下，最小可持续方案是：单个常开 Render 服务、为该服务挂载持久盘、继续只运行一个进程内 scheduler，并对数据库做备份和运行失败告警。仓库目前没有执行这项付费升级。需要多实例或独立 worker 时，应先把 Future Radar 持久层迁移到真正的共享数据库（例如托管 PostgreSQL），再使用单独的调度器/worker、跨进程锁、重试与可观测性；不能直接让多个进程写各自的 SQLite。
+
+## 11. 当前仍存在的边界
+
+- 五个公众号都已进入 Registry，但在没有经过核验的合法公开文章列表入口前仍为 `discovery_limited`。系统不会读取私人 ChatGPT 会话、Cookie、登录后页面或绕过微信限制，也不会虚构“同步成功”。管理员提供公开 URL 与公开标题后，可保存 discovery metadata；自动发现公众号历史文章列表仍需要合法稳定的公开索引或经授权的数据源。
+- 通用抓取层目前覆盖公开 JSON API 和普通 HTTPS HTML；没有把 Playwright 作为任意动态 ATS 的通用后端 fallback。完全依赖 JavaScript、需要登录或有技术访问限制的 ATS，需要单独确认公开 API 或开发合规专用适配器。
+- OpenAI 补漏是低频 discovery，结构化 AI 只理解发生变化的公开页面；它不是无限自主 Agent，也不会自动把每条第三方线索无条件升级为官方事实。新增未知官网仍需要通过 Source Registry 建立并确认 verification 角色。
+- Source Management 第一版是受管理员 Token 保护的写 API 加前端只读健康页，尚未提供完整的可视化来源编辑器。
+- 当前使用站内 30 秒增量轮询，没有 SSE、WebSocket、系统级推送或已读红点；这些不影响服务端扫描与落库。
+- 公司实体目前使用规范化名称去重，没有面向管理员的可编辑别名表；复杂简称仍可能需要在来源映射或后续 resolver 中补充。
+- Render Free、单实例 SQLite 和进程内 scheduler 的持续性限制见上一节；因此当前代码是可运行 MVP，不应宣传为 24×7 生产 SLA。

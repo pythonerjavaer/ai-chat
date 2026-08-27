@@ -36,6 +36,16 @@ services:
         value: 360
       - key: RECRUITMENT_WEB_SEARCH_MAX_TOOL_CALLS
         value: 8
+      - key: FUTURE_RADAR_ENABLED
+        value: true
+      - key: FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES
+        value: 30
+      - key: FUTURE_RADAR_CLOSE_CONFIRMATIONS
+        value: 2
+      - key: FUTURE_RADAR_MAX_WORKERS
+        value: 4
+      - key: FUTURE_RADAR_AI_MODEL
+        value: gpt-5.4-nano
       - key: RECRUITMENT_INGEST_TOKEN
         generateValue: true
       - key: ADMIN_DASHBOARD_TOKEN

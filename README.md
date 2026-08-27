@@ -23,6 +23,7 @@
 - AI Space Token 账本：只统计成果胶囊的模型实际输入/输出 Token，并用账号级 Space 权益与每个 Space 的预算在服务端阻止超额调用；服务器规则整理和缓存命中的实际模型用量为 0。普通聊天、文档 Embedding 和冰焰交叉审查目前不计入这本账，不能把这里的余额理解为整个应用的 OpenAI 总额度。
 - 普通聊天的完整记录保存在数据库，但每次只把最近 16 条消息重新发送给模型，并把每轮最大输出限制为 700 Tokens；冰焰交叉审查最大输出为 1,800 Tokens。这样控制成本，也意味着更早的聊天内容不会自动进入当前模型上下文。
 - 未来雷达：岗位/职能、九类雇主星域、行业与城市均为真实筛选条件；同一字段内取并集，不同已填写字段之间同时生效。星域选项点击后先即时筛选浏览器内的当前结果，再把选择保存到服务端重新匹配。结果按个人职业价值模型分为 T0、T0.5、T1、T1.5、T2、T2.5、T3 七档，并可点击层级只查看该档、展开岗位查看主要加减分理由。分层是匹配优先级，不是录取概率：T0 ≥90，T0.5 为 85–89，T1 为 80–84，T1.5 为 75–79，T2 为 70–74，T2.5 为 65–69，T3 为 60–64；低于 60 分不进入重点池。
+- Future Radar 服务端情报层：`backend/future_radar` 在不删除旧 `/api/recruitment/*` 的前提下增加 Source Registry、招聘项目、岗位、多来源证据、运行记录、差异事件、内容哈希、关闭确认、幂等同步和分页 API。FastAPI 进程负责扫描到期来源；前端每 30 秒只增量读取已落库事件，不把浏览器轮询伪装成后台抓取。完整架构、数据表、API、来源配置、Mock 生命周期与部署限制见 [`docs/FUTURE_RADAR.md`](docs/FUTURE_RADAR.md)。
 - 已建立九组互不重叠的监控范围：央企能源与资源、央企科技通信与交通、烟草与高等级专卖体系、政策性金融与国有大行、券商基金资管、保险综合金融、互联网大中厂、快消外企咨询、量化私募。每组均扩展到同层级重点机构；它们是高信号搜索范围，不代表每家单位当前均有开放岗位，只有通过官方页面核验的当前校招机会才进入主池。
 - 动态源适配器：服务启动后按 `RECRUITMENT_REFRESH_MINUTES`（默认 30 分钟）扫描国聘网、国资小新、银行招聘网等公开招聘页面，并支持配置 Adzuna API 凭证。公开来源会先做校招标题、重点雇主和城市规则过滤；仍带“待打开核对”或“待官方核验”的候选只留在隔离区，不进入用户主池。
 - 可选 OpenAI 网页搜索补漏：设置 `RECRUITMENT_WEB_SEARCH_ENABLED=true` 后，服务按 `RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES`（默认 360 分钟）搜索九类重点雇主的当前校园岗位，限制网页搜索工具调用次数，过滤非目标单位、非当前目标届别、社招、当天截止/过期/尚未开放条目、搜索结果页和社交媒体链接；模型提交的日期只有在官方页出现同一日期时才会采用。每次调用记录工具次数和实际 Token，该能力会产生 OpenAI API 费用。
@@ -79,6 +80,7 @@
 ```text
 ai-chat/
 ├── backend/
+│   ├── future_radar/
 │   ├── tests/
 │   ├── ai_service.py
 │   ├── config.py
@@ -106,6 +108,7 @@ ai-chat/
 │   └── .env.example
 ├── docs/
 │   ├── CHATGPT_RADAR_BRIDGE.md
+│   ├── FUTURE_RADAR.md
 │   ├── RECRUITMENT_INGEST_OPENAPI.yaml
 │   ├── STORE_LISTING_ZH.md
 │   └── STORE_RELEASE_CHECKLIST.md
@@ -140,6 +143,11 @@ AI_MODEL=gpt-4o-mini
 EMBEDDING_MODEL=text-embedding-3-small
 DATABASE_PATH=
 CORS_ORIGINS=http://127.0.0.1:5500,http://localhost:5500
+FUTURE_RADAR_ENABLED=true
+FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES=30
+FUTURE_RADAR_CLOSE_CONFIRMATIONS=2
+FUTURE_RADAR_MAX_WORKERS=4
+FUTURE_RADAR_AI_MODEL=gpt-5.4-nano
 ```
 
 启动：
@@ -186,9 +194,9 @@ Docker 镜像会在构建阶段执行 Vite 生产构建。运行后，`/` 提供
 
 ### Render 免费演示部署
 
-根目录 `render.yaml` 当前使用 Render Free Web Service，且没有持久化磁盘。它只适合公开演示和小规模测试：空闲后会休眠，实例重新启动、重新部署或重启会清空 SQLite 中的账号、会话、文档、成果胶囊历史和未来雷达岗位数据；休眠期间进程内招聘刷新也不会继续执行。正式上线前必须接入外部持久数据库，或升级服务并使用受支持的持久存储。
+根目录 `render.yaml` 当前使用 Render Free Web Service，且没有持久化磁盘。它只适合公开演示和小规模测试：空闲后会休眠，实例重新启动、重新部署或重启会清空 SQLite 中的账号、会话、文档、成果胶囊历史和未来雷达岗位数据；休眠期间进程内招聘刷新也不会继续执行。Blueprint 只在同一个 Web Service 内启用 Future Radar scheduler，没有增加一个无法共享临时 SQLite 的独立 Worker。正式上线前必须接入外部持久数据库，或升级常开服务并使用受支持的持久存储。
 
-部署时必须在 Render 的环境变量页面填写 `OPENAI_API_KEY`、`CORS_ORIGINS` 和一个自行保存的强随机 `ADMIN_DASHBOARD_TOKEN`；`JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 由 Blueprint 自动生成。管理员面板入口是 `/?admin=usage`，Token 只保存在当前页面内存。`render.yaml` 为未来雷达启用每 6 小时一次的限频 OpenAI 网页搜索；如需零额外模型费用，可将 `RECRUITMENT_WEB_SEARCH_ENABLED` 改为 `false`。真实密钥不得写入仓库。
+部署时必须在 Render 的环境变量页面填写 `OPENAI_API_KEY`、`CORS_ORIGINS` 和一个自行保存的强随机 `ADMIN_DASHBOARD_TOKEN`；`JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 由 Blueprint 自动生成。管理员面板入口是 `/?admin=usage`，Token 只保存在当前页面内存。`FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES=30` 只表示清醒进程的调度唤醒间隔；各来源仍按自己的间隔判断是否到期，其中 OpenAI 公共网页补漏默认为 360 分钟。如需零额外模型费用，可将 `RECRUITMENT_WEB_SEARCH_ENABLED` 改为 `false`。真实密钥不得写入仓库。Future Radar 的长期运行边界和最小持久方案见 [`docs/FUTURE_RADAR.md`](docs/FUTURE_RADAR.md)。
 
 需要把五个授权监控会话的今后新结果桥接进未来雷达时，将服务端 `RECRUITMENT_INGEST_TOKEN` 的值保存到本机 macOS Keychain service `frostfire-recruitment-ingest`，五个真实会话 ID 与游标保存到仓库外的 `0600` 本机配置，再让本机 Codex heartbeat 每 60 分钟调用 `scripts/frostfire_ingest.py`。没有新岗位时仍按逻辑来源提交 `{"jobs":[],"source_id":"chatgpt-radar-01","source_updated_at":"<ISO 8601>"}`；它只记录本轮 0 计数并单调推进来源时间，不创建岗位、不清空候选库存。同步状态中的 `accepted` / `pending` / `rejected` 是各来源最新事件合计，`inventory_*` 才是历史候选库存。不要把接收 Token、ChatGPT Cookie、OpenAI API Key 或真实会话 ID 写入 README、OpenAPI 或 Git；自动任务只引用仓库外的私有映射，不把原始 UUID 写进公开 Prompt 或日志。完整配置见 [`docs/CHATGPT_RADAR_BRIDGE.md`](docs/CHATGPT_RADAR_BRIDGE.md)。Render Free 会休眠且 SQLite 不持久，本机 heartbeat 不能消除冷启动、漏跑或数据丢失风险。
 
@@ -261,6 +269,20 @@ npm run ios:open
 | `POST` | `/api/recruitment/refresh` | 使用已配置的官方/授权岗位源刷新数据 |
 | `POST` | `/api/recruitment/ingest` | 使用 `X-Recruitment-Token` 接收最多 10 个校招岗位或一个空结果来源心跳 |
 | `GET` | `/api/recruitment/sync/status` | 使用 `X-Recruitment-Token` 查询五源最新事件计数、历史候选库存与最近事件 |
+| `GET` | `/api/future-radar/dashboard` | Future Radar 汇总、来源健康、最近运行与事件游标 |
+| `GET` | `/api/future-radar/jobs` | Future Radar 岗位分页、筛选与个人画像评分 |
+| `GET` | `/api/future-radar/jobs/{job_id}` | 单个 Future Radar 岗位与多来源证据 |
+| `GET` | `/api/future-radar/programs` | 招聘项目分页 |
+| `GET` | `/api/future-radar/programs/{program_id}` | 单个招聘项目与来源链 |
+| `GET` | `/api/future-radar/events` | 事件列表与 `after_event_id` 增量读取 |
+| `GET` | `/api/future-radar/changes` | Future Radar 事件增量兼容别名 |
+| `GET` | `/api/future-radar/runs` | 扫描运行历史分页 |
+| `GET` | `/api/future-radar/runs/{run_id}` | 单次扫描的计数与错误 |
+| `GET` | `/api/future-radar/sources` | Source Registry 的公开健康字段 |
+| `POST` | `/api/future-radar/run` | 使用 `X-Admin-Token` 手动扫描到期或指定来源 |
+| `POST` | `/api/future-radar/sync` | 使用 `X-Recruitment-Token` 幂等接收 `FROSTFIRE_SYNC_V1` |
+| `POST` | `/api/future-radar/sources` | 使用 `X-Admin-Token` 创建来源 |
+| `PATCH` | `/api/future-radar/sources/{source_id}` | 使用 `X-Admin-Token` 更新来源运行配置 |
 
 聊天请求示例：
 
@@ -295,6 +317,12 @@ npm audit
 ```bash
 python3 -m unittest discover -s tests/scripts -v
 python3 scripts/frostfire_ingest.py --dry-run < /path/to/new-jobs.json
+```
+
+新 Future Radar 情报层的 1–5 轮生命周期、幂等、关闭确认、失败隔离、多来源合并、AI 降级、公众号受限状态与 API 测试：
+
+```bash
+python -m pytest -q backend/tests/test_future_radar.py
 ```
 
 测试覆盖认证、隐私同意、级联删号、用户隔离、本地 SQLite、RAG 来源、SSE 保存、工作区隔离、双域交叉审查与证据锁定、专业提示、金融计算、DOCX 提取、工具输入限制，以及 AI Space 的预检、三种运行模式、精确缓存、运行历史、Token 记录、官网变化雷达安全校验和未配置支付入口。

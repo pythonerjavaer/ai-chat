@@ -20,7 +20,10 @@ from typing import Callable, Iterable
 
 DEFAULT_TIMEOUT_SECONDS = 8.0
 DEFAULT_MAX_BYTES = 1_500_000
-ALLOWED_CONTENT_TYPES = ("text/html", "application/xhtml+xml", "text/plain")
+ALLOWED_CONTENT_TYPES = (
+    "text/html", "application/xhtml+xml", "text/plain", "application/json",
+    "application/ld+json",
+)
 
 
 class WatchFetchError(ValueError):

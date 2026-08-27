@@ -1,0 +1,233 @@
+"""Deterministic normalization and identity helpers for Future Radar."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import urllib.parse
+import unicodedata
+from datetime import date, datetime
+from typing import Any, Iterable
+
+from ..recruitment_watch import WatchFetchError, validate_public_https_url
+
+
+TRACKING_QUERY_KEYS = {
+    "fbclid", "gclid", "msclkid", "ref", "referrer", "source", "spm",
+}
+TRACKING_QUERY_PREFIXES = ("utm_", "mc_", "pk_")
+SEMANTIC_JOB_FIELDS = (
+    "external_id", "company", "title", "city", "region",
+    "employer_type", "industry", "official_url", "application_url",
+    "opening_date", "closing_date", "status", "verification_status",
+    "requirements", "tags",
+)
+SEMANTIC_PROGRAM_FIELDS = (
+    "external_id", "company", "program_name", "recruitment_year",
+    "recruitment_type", "region", "opening_date", "closing_date", "status",
+    "verification_status", "official_url",
+)
+
+
+def clean_text(value: Any, *, limit: int = 4_000) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = text.replace("\u200b", "").replace("\ufeff", "")
+    return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
+def normalized_key(value: Any) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", clean_text(value).casefold())
+
+
+def canonicalize_url(value: Any, *, allow_empty: bool = True) -> str | None:
+    raw = clean_text(value, limit=2_000)
+    if not raw and allow_empty:
+        return None
+    try:
+        safe = validate_public_https_url(raw, resolve_dns=False)
+    except WatchFetchError as exc:
+        raise ValueError(str(exc)) from exc
+    parsed = urllib.parse.urlsplit(safe)
+    query = []
+    for key, item in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+        folded = key.casefold()
+        if folded in TRACKING_QUERY_KEYS or folded.startswith(TRACKING_QUERY_PREFIXES):
+            continue
+        query.append((key, item))
+    path = re.sub(r"/{2,}", "/", parsed.path or "/")
+    if path != "/":
+        path = path.rstrip("/")
+    return urllib.parse.urlunsplit(
+        ("https", parsed.netloc.casefold(), path, urllib.parse.urlencode(query), "")
+    )
+
+
+def normalize_date(value: Any) -> str | None:
+    if value in (None, "", "unknown", "未知"):
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    raw = clean_text(value, limit=40)
+    match = re.fullmatch(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", raw)
+    if not match:
+        return None
+    try:
+        return date(*(int(part) for part in match.groups())).isoformat()
+    except ValueError:
+        return None
+
+
+def normalize_tags(values: Any) -> list[str]:
+    if not isinstance(values, (list, tuple, set)):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = clean_text(raw, limit=80)
+        key = value.casefold()
+        if value and key not in seen:
+            result.append(value)
+            seen.add(key)
+    return result[:30]
+
+
+def normalize_evidence(values: Any) -> list[str]:
+    if not isinstance(values, (list, tuple, set)):
+        return []
+    email = re.compile(r"(?i)\b[\w.+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
+    phone = re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")
+    result: list[str] = []
+    for raw in values:
+        value = clean_text(raw, limit=280)
+        if value and not email.search(value) and not phone.search(value):
+            result.append(value)
+    return list(dict.fromkeys(result))[:12]
+
+
+def stable_digest(*parts: Any, prefix: str = "radar", length: int = 24) -> str:
+    identity = "\x1f".join(normalized_key(part) for part in parts)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:length]
+    return f"{prefix}-{digest}"
+
+
+def stable_program_external_id(item: dict[str, Any]) -> str:
+    supplied = clean_text(item.get("external_id"), limit=180)
+    if supplied:
+        return supplied
+    return stable_digest(
+        item.get("company"),
+        item.get("recruitment_year"),
+        item.get("recruitment_type"),
+        item.get("program_name"),
+        prefix="program",
+    )
+
+
+def stable_job_external_id(item: dict[str, Any]) -> str:
+    supplied = clean_text(item.get("external_id"), limit=180)
+    if supplied:
+        return supplied
+    # A job identity deliberately excludes source and dates so it remains
+    # stable across mirrors and deadline updates.
+    return stable_digest(
+        item.get("company"),
+        item.get("program_external_id") or item.get("program_id"),
+        item.get("title"),
+        item.get("city"),
+        prefix="job",
+    )
+
+
+def semantic_hash(item: dict[str, Any], fields: Iterable[str]) -> str:
+    payload: dict[str, Any] = {}
+    for field in fields:
+        value = item.get(field)
+        if field == "tags":
+            value = sorted(normalize_tags(value), key=str.casefold)
+        elif isinstance(value, str):
+            value = clean_text(value)
+        payload[field] = value
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def normalize_program(item: dict[str, Any]) -> dict[str, Any]:
+    company = clean_text(item.get("company"), limit=160)
+    name = clean_text(item.get("program_name") or item.get("name"), limit=240)
+    if not company or not name:
+        raise ValueError("Program company and program_name are required.")
+    year = item.get("recruitment_year")
+    try:
+        year = int(year) if year not in (None, "") else None
+    except (TypeError, ValueError):
+        year = None
+    if year is not None and not 2020 <= year <= 2100:
+        year = None
+    normalized = {
+        "company": company,
+        "program_name": name,
+        "recruitment_year": year,
+        "recruitment_type": clean_text(item.get("recruitment_type") or "other", limit=40).lower(),
+        "region": clean_text(item.get("region"), limit=160),
+        "opening_date": normalize_date(item.get("opening_date")),
+        "closing_date": normalize_date(item.get("closing_date")),
+        "status": clean_text(item.get("status") or "open", limit=24).lower(),
+        "verification_status": clean_text(
+            item.get("verification_status") or "pending", limit=24
+        ).lower(),
+        "confidence_score": max(0.0, min(1.0, float(item.get("confidence_score") or 0))),
+        "official_url": canonicalize_url(item.get("official_url")),
+        "evidence": normalize_evidence(item.get("evidence")),
+    }
+    if normalized["status"] not in {"open", "closed", "unknown"}:
+        normalized["status"] = "unknown"
+    if normalized["verification_status"] not in {"pending", "verified", "conflicted", "rejected"}:
+        normalized["verification_status"] = "pending"
+    normalized["external_id"] = stable_program_external_id({**item, **normalized})
+    normalized["content_hash"] = semantic_hash(normalized, SEMANTIC_PROGRAM_FIELDS)
+    return normalized
+
+
+def normalize_job(item: dict[str, Any]) -> dict[str, Any]:
+    company = clean_text(item.get("company"), limit=160)
+    title = clean_text(item.get("title"), limit=280)
+    if not company or not title:
+        raise ValueError("Job company and title are required.")
+    official_url = canonicalize_url(item.get("official_url") or item.get("url"))
+    application_url = canonicalize_url(item.get("application_url")) or official_url
+    normalized = {
+        "program_id": clean_text(item.get("program_id"), limit=180) or None,
+        "program_external_id": clean_text(item.get("program_external_id"), limit=180) or None,
+        "company": company,
+        "title": title,
+        "city": clean_text(item.get("city"), limit=160),
+        "region": clean_text(item.get("region"), limit=160),
+        "employer_type": clean_text(item.get("employer_type"), limit=80),
+        "industry": clean_text(item.get("industry"), limit=120),
+        "official_url": official_url,
+        "application_url": application_url,
+        "opening_date": normalize_date(item.get("opening_date")),
+        "closing_date": normalize_date(item.get("closing_date")),
+        "status": clean_text(item.get("status") or "open", limit=24).lower(),
+        "verification_status": clean_text(
+            item.get("verification_status") or "pending", limit=24
+        ).lower(),
+        "confidence_score": max(0.0, min(1.0, float(item.get("confidence_score") or 0))),
+        "requirements": clean_text(item.get("requirements"), limit=8_000),
+        "tags": normalize_tags(item.get("tags")),
+        "evidence": normalize_evidence(item.get("evidence")),
+    }
+    if normalized["status"] not in {"open", "closed", "unknown"}:
+        normalized["status"] = "unknown"
+    if normalized["verification_status"] not in {"pending", "verified", "conflicted", "rejected"}:
+        normalized["verification_status"] = "pending"
+    normalized["external_id"] = stable_job_external_id({**item, **normalized})
+    normalized["content_hash"] = semantic_hash(normalized, SEMANTIC_JOB_FIELDS)
+    return normalized
+
+
+def changed_fields(before: dict[str, Any], after: dict[str, Any], fields: Iterable[str]) -> list[str]:
+    return [field for field in fields if before.get(field) != after.get(field)]
