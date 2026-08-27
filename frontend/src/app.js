@@ -5,6 +5,7 @@ import { Haptics, ImpactStyle } from "@capacitor/haptics";
 import { Preferences } from "@capacitor/preferences";
 import { MUSIC_CREATION_TEMPLATES, buildMusicBlueprint, soundscapeEngine } from "./music-creator.js";
 import { initOblivionArchive, openOblivionArchive } from "./oblivion-archive.js";
+import { resolveStartupProduct } from "./product-navigation.js";
 import "./styles.css";
 
 marked.setOptions({ gfm: true, breaks: true });
@@ -563,8 +564,7 @@ function translateError(message) {
 
 async function enterApp() {
   const pendingLaunch = state.pendingLaunch || await storage.get(STORAGE_KEYS.pendingProduct);
-  const activeProduct = state.activeProduct || await storage.get(STORAGE_KEYS.activeProduct);
-  const resumeProduct = queuedProductLaunch || pendingLaunch || activeProduct;
+  const resumeProduct = resolveStartupProduct({ queuedProductLaunch, pendingLaunch });
   queuedProductLaunch = null;
   if (WORKSPACE_ORDER.includes(resumeProduct)) state.workspace = resumeProduct;
   elements.authView.classList.add("hidden");
