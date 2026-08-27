@@ -13,10 +13,16 @@ from datetime import date, timedelta
 from typing import Any, Protocol
 
 from .. import database
+from ..recruitment import primary_employer_category
 from ..recruitment_search import search_current_recruitment_jobs
 from ..recruitment_watch import WatchFetchError, fetch_watch_page
 from .ai import extract_recruitment_content
-from .normalization import clean_text, stable_digest
+from .normalization import (
+    PRIMARY_CATEGORY_CODES,
+    clean_text,
+    normalize_taxonomy_value,
+    stable_digest,
+)
 from .repository import RadarRepository
 
 
@@ -142,6 +148,24 @@ class ManualAdapter:
         return AdapterResult(status="idle", snapshot_complete=False, message="Push-only source.")
 
 
+def _legacy_primary_category(item: dict[str, Any], tags: list[Any]) -> str:
+    """Map legacy metadata to one starfield without inspecting prose or names."""
+    explicit = normalize_taxonomy_value(item.get("primary_category"))
+    if explicit in PRIMARY_CATEGORY_CODES:
+        return explicit
+
+    # Only organization metadata participates.  Company, title, requirements
+    # and other prose are deliberately excluded so classification cannot drift
+    # because a role happens to mention another sector.
+    return primary_employer_category({
+        "employer_type": item.get("employer_type"),
+        "industry": item.get("industry"),
+        "organization_category": item.get("organization_category"),
+        "industry_tags": item.get("industry_tags"),
+        "tags": tags,
+    }) or ""
+
+
 class LegacyDatabaseAdapter:
     """Moves verified legacy jobs into Radar without deleting the old API."""
 
@@ -151,6 +175,7 @@ class LegacyDatabaseAdapter:
         for item in database.list_recruitment_jobs():
             tags = list(item.get("tags") or [])
             pending = bool({"待官方核验", "待打开核对"}.intersection(tags))
+            primary_category = _legacy_primary_category(item, tags)
             jobs.append({
                 "external_id": item["id"],
                 "company": item["company"],
@@ -159,6 +184,10 @@ class LegacyDatabaseAdapter:
                 "region": item.get("city", ""),
                 "employer_type": item.get("employer_type", ""),
                 "industry": item.get("industry", ""),
+                "primary_category": primary_category,
+                "organization_category": item.get("organization_category", ""),
+                "industry_tags": item.get("industry_tags") or [],
+                "role_tags": item.get("role_tags") or [],
                 "official_url": item.get("url") or None,
                 "application_url": item.get("url") or None,
                 "opening_date": item.get("opening_date"),
@@ -166,6 +195,8 @@ class LegacyDatabaseAdapter:
                 "status": item.get("status", "open"),
                 "verification_status": "pending" if pending else "verified",
                 "confidence_score": 0.55 if pending else 0.95,
+                "description": item.get("description", ""),
+                "responsibilities": item.get("responsibilities", ""),
                 "requirements": item.get("requirements", ""),
                 "tags": [*tags, "legacy-compatible"],
             })

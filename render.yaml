@@ -35,7 +35,7 @@ services:
       - key: RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES
         value: 360
       - key: RECRUITMENT_WEB_SEARCH_MAX_TOOL_CALLS
-        value: 8
+        value: 10
       - key: FUTURE_RADAR_ENABLED
         value: true
       - key: FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES

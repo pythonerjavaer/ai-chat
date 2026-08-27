@@ -74,7 +74,10 @@ from .live_sources import (
     is_priority_campus_listing,
 )
 from .config import settings
-from .future_radar.normalization import canonicalize_url as canonicalize_radar_url
+from .future_radar.normalization import (
+    PRIMARY_CATEGORY_CODES,
+    canonicalize_url as canonicalize_radar_url,
+)
 from .future_radar.schemas import (
     FrostFireSyncV1,
     RadarRunRequest,
@@ -560,7 +563,7 @@ class RecruitmentProfileRequest(BaseModel):
     desired_roles: list[str] = Field(default_factory=list, max_length=12)
     industries: list[str] = Field(default_factory=list, max_length=8)
     locations: list[str] = Field(default_factory=list, max_length=12)
-    employer_types: list[str] = Field(default_factory=list, max_length=9)
+    employer_types: list[str] = Field(default_factory=list, max_length=16)
 
 
 class RecruitmentIngestJob(BaseModel):
@@ -871,7 +874,18 @@ def future_radar_jobs(
     closing_before: date | None = None,
     closing_after: date | None = None,
     sort: Literal["changed", "closing", "opening", "first_seen", "company"] = "changed",
+    category: list[str] = Query(default=[]),
 ) -> dict:
+    allowed_categories = set(PRIMARY_CATEGORY_CODES)
+    selected_categories = {
+        str(value).strip() for value in category if str(value).strip()
+    }
+    unknown_categories = selected_categories - allowed_categories
+    if unknown_categories:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown Future Radar category: {sorted(unknown_categories)[0]}",
+        )
     filters = {
         "status": status_filter,
         "verification_status": verification_status,
@@ -890,16 +904,22 @@ def future_radar_jobs(
         "closing_after": closing_after.isoformat() if closing_after else None,
         "sort": sort,
         "active_only": status_filter == "open",
+        "primary_categories": sorted(selected_categories),
     }
+    profile = database.get_recruitment_profile(user["id"])
+
+    def enrich(job: dict) -> dict:
+        scored = score_job(job, profile)
+        scored["employer_categories"] = sorted(semantic_employer_categories(scored))
+        return scored
+
+    # Structured primary-category filtering happens in the same indexed SQL
+    # query as COUNT/LIMIT, before pagination. Secondary industry tags remain
+    # available for explanation without duplicating one job across starfields.
     result = future_radar_service.repository.list_jobs(
         page=page, page_size=page_size, filters=filters
     )
-    profile = database.get_recruitment_profile(user["id"])
-    enriched = []
-    for job in result["items"]:
-        scored = score_job(job, profile)
-        scored["employer_categories"] = sorted(semantic_employer_categories(scored))
-        enriched.append(scored)
+    enriched = [enrich(job) for job in result["items"]]
     result["items"] = enriched
     result["jobs"] = enriched
     result["tier_definitions"] = list(TIER_DEFINITIONS)
@@ -1244,7 +1264,8 @@ def recruitment_jobs(user: User) -> dict:
     ]
     jobs.sort(
         key=lambda item: (
-            -item["match_score"],
+            item.get("match_score") is None,
+            -(item.get("match_score") or 0),
             item["days_left"] is None,
             item["days_left"] if item["days_left"] is not None else 9999,
         )

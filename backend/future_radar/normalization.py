@@ -17,11 +17,24 @@ TRACKING_QUERY_KEYS = {
     "fbclid", "gclid", "msclkid", "ref", "referrer", "source", "spm",
 }
 TRACKING_QUERY_PREFIXES = ("utm_", "mc_", "pk_")
+PRIMARY_CATEGORY_CODES: tuple[str, ...] = (
+    "state_energy_resources",
+    "state_tech_telecom",
+    "tobacco_monopoly",
+    "policy_state_banks",
+    "securities_public_funds_asset_management",
+    "insurance_integrated_finance",
+    "internet_tech",
+    "consumer_foreign_consulting",
+    "quant_private_hedge",
+    "big_four_professional_services",
+)
 SEMANTIC_JOB_FIELDS = (
     "external_id", "company", "title", "city", "region",
-    "employer_type", "industry", "official_url", "application_url",
+    "employer_type", "industry", "primary_category", "organization_category",
+    "industry_tags", "role_tags", "official_url", "application_url",
     "opening_date", "closing_date", "status", "verification_status",
-    "requirements", "tags",
+    "description", "responsibilities", "requirements", "tags",
 )
 SEMANTIC_PROGRAM_FIELDS = (
     "external_id", "company", "program_name", "recruitment_year",
@@ -94,6 +107,29 @@ def normalize_tags(values: Any) -> list[str]:
     return result[:30]
 
 
+def normalize_taxonomy_value(value: Any, *, limit: int = 80) -> str:
+    """Normalize a machine taxonomy token without guessing its meaning."""
+    normalized = clean_text(value, limit=limit).casefold()
+    return re.sub(r"[\s\-]+", "_", normalized).strip("_")
+
+
+def normalize_taxonomy_tags(values: Any) -> list[str]:
+    """Return stable, case-insensitive and de-duplicated machine tags."""
+    if not isinstance(values, (list, tuple, set)):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = normalize_taxonomy_value(raw)
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+    # Taxonomy tags are an unordered set semantically.  Persisting a canonical
+    # order keeps diffing stable when upstream extractors emit the same tags in
+    # a different order.
+    return sorted(result)[:30]
+
+
 def normalize_evidence(values: Any) -> list[str]:
     if not isinstance(values, (list, tuple, set)):
         return []
@@ -147,6 +183,8 @@ def semantic_hash(item: dict[str, Any], fields: Iterable[str]) -> str:
         value = item.get(field)
         if field == "tags":
             value = sorted(normalize_tags(value), key=str.casefold)
+        elif field in {"industry_tags", "role_tags"}:
+            value = sorted(normalize_taxonomy_tags(value))
         elif isinstance(value, str):
             value = clean_text(value)
         payload[field] = value
@@ -198,6 +236,9 @@ def normalize_job(item: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Job company and title are required.")
     official_url = canonicalize_url(item.get("official_url") or item.get("url"))
     application_url = canonicalize_url(item.get("application_url")) or official_url
+    primary_category = normalize_taxonomy_value(item.get("primary_category"))
+    if primary_category and primary_category not in PRIMARY_CATEGORY_CODES:
+        raise ValueError(f"Unsupported primary_category: {primary_category}")
     normalized = {
         "program_id": clean_text(item.get("program_id"), limit=180) or None,
         "program_external_id": clean_text(item.get("program_external_id"), limit=180) or None,
@@ -207,6 +248,12 @@ def normalize_job(item: dict[str, Any]) -> dict[str, Any]:
         "region": clean_text(item.get("region"), limit=160),
         "employer_type": clean_text(item.get("employer_type"), limit=80),
         "industry": clean_text(item.get("industry"), limit=120),
+        "primary_category": primary_category,
+        "organization_category": normalize_taxonomy_value(
+            item.get("organization_category")
+        ),
+        "industry_tags": normalize_taxonomy_tags(item.get("industry_tags")),
+        "role_tags": normalize_taxonomy_tags(item.get("role_tags")),
         "official_url": official_url,
         "application_url": application_url,
         "opening_date": normalize_date(item.get("opening_date")),
@@ -216,6 +263,8 @@ def normalize_job(item: dict[str, Any]) -> dict[str, Any]:
             item.get("verification_status") or "pending", limit=24
         ).lower(),
         "confidence_score": max(0.0, min(1.0, float(item.get("confidence_score") or 0))),
+        "description": clean_text(item.get("description"), limit=8_000),
+        "responsibilities": clean_text(item.get("responsibilities"), limit=8_000),
         "requirements": clean_text(item.get("requirements"), limit=8_000),
         "tags": normalize_tags(item.get("tags")),
         "evidence": normalize_evidence(item.get("evidence")),

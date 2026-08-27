@@ -7,7 +7,10 @@ continue serving the legacy API while the richer radar tables are populated.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+
+from .normalization import PRIMARY_CATEGORY_CODES
 
 
 def migrate(connection: sqlite3.Connection) -> None:
@@ -99,6 +102,10 @@ def migrate(connection: sqlite3.Connection) -> None:
             region TEXT NOT NULL DEFAULT '',
             employer_type TEXT NOT NULL DEFAULT '',
             industry TEXT NOT NULL DEFAULT '',
+            primary_category TEXT NOT NULL DEFAULT '',
+            organization_category TEXT NOT NULL DEFAULT '',
+            industry_tags TEXT NOT NULL DEFAULT '[]',
+            role_tags TEXT NOT NULL DEFAULT '[]',
             official_url TEXT,
             application_url TEXT,
             opening_date TEXT,
@@ -106,6 +113,8 @@ def migrate(connection: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'open',
             verification_status TEXT NOT NULL DEFAULT 'pending',
             confidence_score REAL NOT NULL DEFAULT 0,
+            description TEXT NOT NULL DEFAULT '',
+            responsibilities TEXT NOT NULL DEFAULT '',
             requirements TEXT NOT NULL DEFAULT '',
             tags TEXT NOT NULL DEFAULT '[]',
             content_hash TEXT NOT NULL,
@@ -286,8 +295,22 @@ def migrate(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "radar_runs", "articles_discovered", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(connection, "radar_runs", "ai_calls", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(connection, "radar_runs", "model_tokens_used", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(connection, "radar_jobs", "primary_category", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "radar_jobs", "organization_category", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "radar_jobs", "industry_tags", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(connection, "radar_jobs", "role_tags", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(connection, "radar_jobs", "description", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "radar_jobs", "responsibilities", "TEXT NOT NULL DEFAULT ''")
+    _backfill_primary_categories(connection)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_radar_jobs_primary_category "
+        "ON radar_jobs(primary_category, status, last_changed_at DESC)"
+    )
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('future_radar_v1', datetime('now'))"
+    )
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('future_radar_v2_job_taxonomy', datetime('now'))"
     )
 
 
@@ -303,3 +326,38 @@ def _ensure_column(
     }
     if column not in existing:
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
+def _backfill_primary_categories(connection: sqlite3.Connection) -> None:
+    """Populate only explicit machine categories; never infer from job prose."""
+    allowed = set(PRIMARY_CATEGORY_CODES)
+    rows = connection.execute(
+        "SELECT id, primary_category, organization_category, tags FROM radar_jobs "
+        "WHERE primary_category IS NULL OR TRIM(primary_category)=''"
+    ).fetchall()
+    updates: list[tuple[str, str]] = []
+    for row in rows:
+        job_id, _current, organization_category, raw_tags = row
+        organization_code = str(organization_category or "").strip().casefold()
+        category = organization_code if organization_code in allowed else ""
+        if not category:
+            try:
+                tags = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+            except (TypeError, json.JSONDecodeError):
+                tags = []
+            exact_tags = {
+                str(value).strip().casefold()
+                for value in tags or []
+                if isinstance(value, str)
+            } if isinstance(tags, (list, tuple, set)) else set()
+            category = next(
+                (code for code in PRIMARY_CATEGORY_CODES if code in exact_tags), ""
+            )
+        if category:
+            updates.append((category, str(job_id)))
+    if updates:
+        connection.executemany(
+            "UPDATE radar_jobs SET primary_category=? "
+            "WHERE id=? AND (primary_category IS NULL OR TRIM(primary_category)='')",
+            updates,
+        )

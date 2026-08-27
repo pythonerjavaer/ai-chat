@@ -8,6 +8,12 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .normalization import (
+    PRIMARY_CATEGORY_CODES,
+    normalize_taxonomy_tags,
+    normalize_taxonomy_value,
+)
+
 
 SourceType = Literal[
     "official_html", "official_api", "ats", "wechat_public",
@@ -51,6 +57,14 @@ class RadarJobInput(BaseModel):
     region: str = Field(default="", max_length=160)
     employer_type: str = Field(default="", max_length=80)
     industry: str = Field(default="", max_length=120)
+    primary_category: str | None = Field(default=None, max_length=80)
+    organization_category: str = Field(default="", max_length=80)
+    industry_tags: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+        default_factory=list, max_length=30
+    )
+    role_tags: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+        default_factory=list, max_length=30
+    )
     official_url: str | None = Field(default=None, pattern=r"^https://", max_length=2_000)
     application_url: str | None = Field(default=None, pattern=r"^https://", max_length=2_000)
     opening_date: date | None = None
@@ -58,6 +72,8 @@ class RadarJobInput(BaseModel):
     status: Literal["open", "closed", "unknown"] = "open"
     verification_status: Literal["pending", "verified", "conflicted", "rejected"] = "pending"
     confidence_score: float = Field(default=0, ge=0, le=1)
+    description: str = Field(default="", max_length=8_000)
+    responsibilities: str = Field(default="", max_length=8_000)
     requirements: str = Field(default="", max_length=8_000)
     tags: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
         default_factory=list, max_length=30
@@ -70,6 +86,38 @@ class RadarJobInput(BaseModel):
     @classmethod
     def evidence_has_no_contacts(cls, values: list[str]) -> list[str]:
         return _validate_evidence(values)
+
+    @field_validator("primary_category", mode="before")
+    @classmethod
+    def primary_category_is_supported(cls, value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = normalize_taxonomy_value(value)
+        if normalized not in PRIMARY_CATEGORY_CODES:
+            raise ValueError("primary_category must be one of the supported category codes")
+        return normalized
+
+    @field_validator("organization_category", mode="before")
+    @classmethod
+    def organization_category_is_normalized(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            return value
+        return normalize_taxonomy_value(value)
+
+    @field_validator("industry_tags", "role_tags", mode="before")
+    @classmethod
+    def taxonomy_tags_are_normalized(cls, values: Any) -> list[str]:
+        if values is None:
+            return []
+        if not isinstance(values, list):
+            return values
+        if len(values) > 30:
+            raise ValueError("taxonomy tag lists may contain at most 30 items")
+        return normalize_taxonomy_tags(values)
 
 
 class RadarArticleInput(BaseModel):

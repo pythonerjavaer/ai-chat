@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterator
 
 JSON_SOURCE_FIELDS = ("adapter_config", "query_config", "region_config")
 JSON_RUN_FIELDS = ("errors", "source_ids")
+JSON_JOB_FIELDS = ("tags", "industry_tags", "role_tags")
 
 
 def utc_now() -> str:
@@ -352,7 +353,8 @@ class RadarRepository:
             "SELECT * FROM radar_jobs WHERE external_id = ?", (external_id,)
         ).fetchone())
         if item:
-            item["tags"] = _decode_json(item.get("tags"), [])
+            for field in JSON_JOB_FIELDS:
+                item[field] = _decode_json(item.get(field), [])
         return item
 
     @staticmethod
@@ -425,21 +427,25 @@ class RadarRepository:
             """
             INSERT INTO radar_jobs
                 (id, external_id, program_id, company_id, company, title, city, region,
-                 employer_type, industry, official_url, application_url, opening_date,
-                 closing_date, status, verification_status, confidence_score, requirements,
-                 tags, content_hash, source_id, first_seen_at, last_seen_at, last_changed_at,
-                 created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 employer_type, industry, primary_category, organization_category,
+                 industry_tags, role_tags, official_url, application_url, opening_date,
+                 closing_date, status, verification_status, confidence_score, description,
+                 responsibilities, requirements, tags, content_hash, source_id, first_seen_at,
+                 last_seen_at, last_changed_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id, item["external_id"], program_id, company_id, item["company"],
                 item["title"], item.get("city", ""), item.get("region", ""),
                 item.get("employer_type", ""), item.get("industry", ""),
+                item.get("primary_category", ""), item.get("organization_category", ""),
+                _json(item.get("industry_tags", [])), _json(item.get("role_tags", [])),
                 item.get("official_url"), item.get("application_url"),
                 item.get("opening_date"), item.get("closing_date"), item.get("status", "open"),
                 item.get("verification_status", "pending"), item.get("confidence_score", 0),
-                item.get("requirements", ""), _json(item.get("tags", [])), item["content_hash"],
-                source_id, now, now, now, now, now,
+                item.get("description", ""), item.get("responsibilities", ""),
+                item.get("requirements", ""), _json(item.get("tags", [])),
+                item["content_hash"], source_id, now, now, now, now, now,
             ),
         )
         return RadarRepository.find_job(connection, item["external_id"]) or {}
@@ -455,21 +461,25 @@ class RadarRepository:
             """
             UPDATE radar_jobs SET
                 program_id=?, company_id=?, company=?, title=?, city=?, region=?,
-                employer_type=?, industry=?, official_url=?, application_url=?,
-                opening_date=?, closing_date=?, status=?, verification_status=?,
-                confidence_score=?, requirements=?, tags=?, content_hash=?, source_id=?,
-                missing_successes=0, last_seen_at=?, last_changed_at=?, updated_at=?
+                employer_type=?, industry=?, primary_category=?, organization_category=?,
+                industry_tags=?, role_tags=?, official_url=?, application_url=?, opening_date=?,
+                closing_date=?, status=?, verification_status=?, confidence_score=?,
+                description=?, responsibilities=?, requirements=?, tags=?, content_hash=?,
+                source_id=?, missing_successes=0, last_seen_at=?, last_changed_at=?, updated_at=?
             WHERE id=?
             """,
             (
                 program_id, company_id, item["company"], item["title"], item.get("city", ""),
                 item.get("region", ""), item.get("employer_type", ""),
-                item.get("industry", ""), item.get("official_url"),
+                item.get("industry", ""), item.get("primary_category", ""),
+                item.get("organization_category", ""), _json(item.get("industry_tags", [])),
+                _json(item.get("role_tags", [])), item.get("official_url"),
                 item.get("application_url"), item.get("opening_date"), item.get("closing_date"),
                 item.get("status", "open"), item.get("verification_status", "pending"),
-                item.get("confidence_score", 0), item.get("requirements", ""),
-                _json(item.get("tags", [])), item["content_hash"], source_id,
-                now, now, now, job_id,
+                item.get("confidence_score", 0), item.get("description", ""),
+                item.get("responsibilities", ""), item.get("requirements", ""),
+                _json(item.get("tags", [])), item["content_hash"], source_id, now, now,
+                now, job_id,
             ),
         )
         return RadarRepository.find_job(connection, item["external_id"]) or {}
@@ -812,7 +822,8 @@ class RadarRepository:
     @staticmethod
     def _decode_job(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         item = dict(row)
-        item["tags"] = _decode_json(item.get("tags"), [])
+        for field in JSON_JOB_FIELDS:
+            item[field] = _decode_json(item.get(field), [])
         return item
 
     def _job_sources(self, connection: sqlite3.Connection, job_id: str) -> list[dict[str, Any]]:
@@ -841,18 +852,37 @@ class RadarRepository:
             params.append(status)
         if filters.get("active_only", status == "open"):
             where.append("(j.closing_date IS NULL OR j.closing_date>DATE('now'))")
-        for field in ("verification_status", "company", "city", "region", "employer_type", "industry", "program_id"):
+        for field in (
+            "verification_status", "company", "city", "region", "employer_type",
+            "industry", "primary_category", "organization_category", "program_id",
+        ):
             value = filters.get(field)
             if value:
                 where.append(f"j.{field}=?")
                 params.append(value)
+        primary_categories = filters.get("primary_categories")
+        if primary_categories:
+            if not isinstance(primary_categories, (list, tuple, set, frozenset)):
+                primary_categories = [primary_categories]
+            values = sorted({
+                str(value).strip()
+                for value in primary_categories
+                if str(value).strip()
+            })
+            if values:
+                placeholders = ",".join("?" for _ in values)
+                where.append(f"j.primary_category IN ({placeholders})")
+                params.extend(values)
         if filters.get("source_id"):
             where.append("EXISTS (SELECT 1 FROM job_sources x WHERE x.job_id=j.id AND x.source_id=?)")
             params.append(filters["source_id"])
         if filters.get("q"):
             needle = f"%{filters['q']}%"
-            where.append("(j.company LIKE ? OR j.title LIKE ? OR j.requirements LIKE ?)")
-            params.extend([needle, needle, needle])
+            where.append(
+                "(j.company LIKE ? OR j.title LIKE ? OR j.description LIKE ? "
+                "OR j.responsibilities LIKE ? OR j.requirements LIKE ?)"
+            )
+            params.extend([needle, needle, needle, needle, needle])
         if filters.get("event_type"):
             where.append(
                 "EXISTS (SELECT 1 FROM radar_events re "
@@ -873,12 +903,12 @@ class RadarRepository:
             params.append(filters["closing_after"])
         sort = filters.get("sort", "changed")
         order = {
-            "closing": "j.closing_date IS NULL, j.closing_date, j.last_changed_at DESC",
-            "opening": "j.opening_date IS NULL, j.opening_date DESC, j.last_changed_at DESC",
-            "first_seen": "j.first_seen_at DESC",
-            "company": "j.company COLLATE NOCASE, j.title COLLATE NOCASE",
-            "changed": "j.last_changed_at DESC",
-        }.get(sort, "j.last_changed_at DESC")
+            "closing": "j.closing_date IS NULL, j.closing_date, j.last_changed_at DESC, j.id",
+            "opening": "j.opening_date IS NULL, j.opening_date DESC, j.last_changed_at DESC, j.id",
+            "first_seen": "j.first_seen_at DESC, j.id",
+            "company": "j.company COLLATE NOCASE, j.title COLLATE NOCASE, j.id",
+            "changed": "j.last_changed_at DESC, j.id",
+        }.get(sort, "j.last_changed_at DESC, j.id")
         clause = " AND ".join(where)
         offset = (page - 1) * page_size
         with self._connect() as connection:

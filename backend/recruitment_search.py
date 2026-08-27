@@ -22,7 +22,7 @@ from .recruitment_watch import (
 logger = logging.getLogger(__name__)
 WEB_SEARCH_SOURCE = "OpenAI 网页搜索"
 WEB_SEARCH_STATE_KEY = "recruitment_web_search"
-MAX_SEARCH_JOBS = 64
+MAX_SEARCH_JOBS = 100
 MAX_JOBS_PER_CATEGORY = 10
 BLOCKED_DISCOVERY_HOSTS = {
     "baidu.com",
@@ -39,17 +39,12 @@ EMPLOYER_TYPE_BY_POOL = {
     "state_tech_transport": "央国企科技",
     "tobacco_monopoly": "烟草/专卖",
     "policy_and_major_banks": "银行/金融",
-    "securities_funds_asset": "券商/基金",
+    "securities_funds_asset": "券商/公募/资管",
     "insurance_fintech": "保险/综合金融",
     "internet_tech_scale": "互联网企业",
     "consumer_global_consulting": "外企/咨询",
-    "quant_private_capital": "量化私募",
-}
-
-EMPLOYER_TYPE_BY_NAME = {
-    employer.lower(): EMPLOYER_TYPE_BY_POOL[pool["id"]]
-    for pool in PERSONAL_MONITOR_POOLS
-    for employer in pool["employers"]
+    "quant_private_capital": "量化/私募/对冲",
+    "professional_services": "四大/专业服务",
 }
 
 # These institutions publish campus and affiliated-unit recruitment under
@@ -152,11 +147,11 @@ def _date_or_none(value: Any) -> str | None:
         return None
 
 
-def _priority_employer(company: str) -> str | None:
+def _priority_employer(company: str, employers: set[str] | None = None) -> str | None:
     normalized = company.strip().lower()
     matches = [
         employer
-        for employer in PRIORITY_EMPLOYERS
+        for employer in (employers or PRIORITY_EMPLOYERS)
         if employer in normalized or normalized in employer
     ]
     return max(matches, key=len) if matches else None
@@ -252,9 +247,26 @@ def _inspect_official_candidate_page(job: dict[str, Any]) -> CandidatePageEviden
     )
 
 
-def _normalize_job(item: dict[str, Any]) -> dict[str, Any] | None:
+def _normalize_job(
+    item: dict[str, Any], pool: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
     company = str(item.get("company", "")).strip()[:120]
-    employer_key = _priority_employer(company)
+    if pool is None:
+        pool = next(
+            (
+                candidate
+                for candidate in PERSONAL_MONITOR_POOLS
+                if _priority_employer(
+                    company,
+                    {str(value).casefold() for value in candidate.get("employers", [])},
+                )
+            ),
+            None,
+        )
+    if pool is None:
+        return None
+    pool_employers = {str(value).casefold() for value in pool.get("employers", [])}
+    employer_key = _priority_employer(company, pool_employers)
     if not employer_key:
         return None
     title = re.sub(r"\s+", " ", str(item.get("title", ""))).strip()[:240]
@@ -277,13 +289,15 @@ def _normalize_job(item: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if opening_date and opening_date > today:
         return None
-    category = EMPLOYER_TYPE_BY_NAME.get(employer_key)
-    if not category:
-        return None
+    category = EMPLOYER_TYPE_BY_POOL[pool["id"]]
+    primary_category = str(pool.get("primary_category") or pool["id"])
     observed_at = datetime.now(timezone.utc).isoformat()
     job_id = f"web-{hashlib.sha256(official_url.encode()).hexdigest()[:24]}"
     requirements = re.sub(r"\s+", " ", str(item.get("requirements", ""))).strip()[:1200]
-    tags = ["校园招聘", "动态监控", "AI网页搜索", "待打开核对", category]
+    tags = [
+        "校园招聘", "动态监控", "AI网页搜索", "待打开核对",
+        category, primary_category,
+    ]
     if needs_management_review:
         tags.append("待官方核验")
     return {
@@ -345,7 +359,7 @@ def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSear
     for item in payload.get("jobs", [])[:MAX_JOBS_PER_CATEGORY]:
         if not isinstance(item, dict):
             continue
-        job = _normalize_job(item)
+        job = _normalize_job(item, pool)
         if not job or job["url"] in seen_urls:
             continue
         evidence = _inspect_official_candidate_page(job)
@@ -409,12 +423,16 @@ def search_current_recruitment_jobs(client: OpenAI | None = None) -> WebRecruitm
         raise RuntimeError("All recruitment web-search pools failed.")
 
     jobs: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
+    jobs_by_url: dict[str, dict[str, Any]] = {}
     for result in results:
         for job in result.jobs:
-            if job["url"] in seen_urls:
+            existing = jobs_by_url.get(job["url"])
+            if existing:
+                existing["tags"] = list(dict.fromkeys([
+                    *existing.get("tags", []), *job.get("tags", []),
+                ]))
                 continue
-            seen_urls.add(job["url"])
+            jobs_by_url[job["url"]] = job
             jobs.append(job)
     return WebRecruitmentSearchResult(
         jobs=jobs[:MAX_SEARCH_JOBS],

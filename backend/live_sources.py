@@ -89,6 +89,7 @@ def _extract_deadline(url: str) -> str | None:
 PERSONAL_MONITOR_POOLS = [
     {
         "id": "state_energy_resources",
+        "primary_category": "state_energy_resources",
         "name": "央企能源与资源",
         "focus": "能源、矿产、化工、核工业与国家级资源集团面向应届生的公开机会、提前批和免笔试政策",
         "employers": [
@@ -100,6 +101,7 @@ PERSONAL_MONITOR_POOLS = [
     },
     {
         "id": "state_tech_transport",
+        "primary_category": "state_tech_telecom",
         "name": "央企科技、通信与交通",
         "focus": "通信运营商、航天军工、电子科技、铁路航空与央企研究院的高信号岗位",
         "employers": [
@@ -112,6 +114,7 @@ PERSONAL_MONITOR_POOLS = [
     },
     {
         "id": "tobacco_monopoly",
+        "primary_category": "tobacco_monopoly",
         "name": "烟草与高等级专卖体系",
         "focus": "国家烟草专卖体系、中国烟草总公司及省级中烟工业公司的总部、技术、财务、数字化与管理类校园机会",
         "employers": [
@@ -123,6 +126,7 @@ PERSONAL_MONITOR_POOLS = [
     },
     {
         "id": "policy_and_major_banks",
+        "primary_category": "policy_state_banks",
         "name": "政策性金融与国有大行",
         "focus": "政策行、国有六大行及总部金融科技、风控、研究和明确发布的应届生机会",
         "employers": [
@@ -132,8 +136,9 @@ PERSONAL_MONITOR_POOLS = [
     },
     {
         "id": "securities_funds_asset",
-        "name": "券商、基金与资管",
-        "focus": "头部券商、基金、AMC 与资管机构的研究、投行、风控、产品和金融科技岗位",
+        "primary_category": "securities_public_funds_asset_management",
+        "name": "券商、公募与资管",
+        "focus": "头部券商、公募基金、传统大型资产管理机构与 AMC 的研究、投行、风控、产品和金融科技岗位",
         "employers": [
             "中信证券", "中金公司", "华泰证券", "国泰海通", "中信建投", "招商证券",
             "广发证券", "申万宏源", "银河证券", "光大证券", "东方证券", "长城证券", "中信期货",
@@ -144,6 +149,7 @@ PERSONAL_MONITOR_POOLS = [
     },
     {
         "id": "insurance_fintech",
+        "primary_category": "insurance_integrated_finance",
         "name": "保险与综合金融",
         "focus": "头部保险、再保险、银行保险和综合金融科技岗位；与政策金融分开维护",
         "employers": [
@@ -154,6 +160,7 @@ PERSONAL_MONITOR_POOLS = [
     },
     {
         "id": "internet_tech_scale",
+        "primary_category": "internet_tech",
         "name": "互联网大厂与中厂",
         "focus": "互联网、AI、数据、产品、策略、风控与金融科技的应届生机会，不把城市分类页当作具体机会",
         "employers": [
@@ -166,14 +173,14 @@ PERSONAL_MONITOR_POOLS = [
     },
     {
         "id": "consumer_global_consulting",
+        "primary_category": "consumer_foreign_consulting",
         "name": "快消、外企与咨询",
-        "focus": "快消、消费品牌、外企、四大与战略咨询的管培、商业分析、市场和职能岗位",
+        "focus": "快消、消费品牌、外企与战略咨询的管培、商业分析、市场和职能岗位",
         "employers": [
             "宝洁", "联合利华", "欧莱雅", "雀巢", "玛氏", "可口可乐", "百事", "耐克", "Babycare",
             "达能", "亿滋", "蒙牛", "伊利", "安踏", "阿迪达斯", "宜家", "LVMH",
             "强生", "星巴克", "麦当劳", "Kearney 科尔尼", "麦肯锡", "波士顿咨询",
-            "Roland Berger", "罗兰贝格",
-            "德勤", "普华永道", "毕马威", "安永", "埃森哲", "Microsoft", "Google",
+            "Roland Berger", "罗兰贝格", "埃森哲", "Microsoft", "Google",
             "Amazon/AWS", "Amazon", "AWS", "Apple", "NVIDIA", "J.P. Morgan",
             "Goldman Sachs", "Morgan Stanley",
             "UBS", "Citi", "HSBC", "BlackRock",
@@ -181,9 +188,17 @@ PERSONAL_MONITOR_POOLS = [
     },
     {
         "id": "quant_private_capital",
-        "name": "量化与私募",
-        "focus": "仅保留有明确校园职位和官方投递链接的量化、私募和研究岗位；不把远期开放窗口当截止预警",
+        "primary_category": "quant_private_hedge",
+        "name": "量化、私募与对冲",
+        "focus": "仅保留有明确校园职位和官方投递链接的量化基金、私募证券、对冲基金和研究岗位；不把远期开放窗口当截止预警",
         "employers": ["幻方", "明汯", "衍复", "灵均", "宽德", "高瓴", "红杉中国", "Point72"],
+    },
+    {
+        "id": "professional_services",
+        "primary_category": "big_four_professional_services",
+        "name": "四大与专业服务",
+        "focus": "高质量专业服务机构的咨询、战略、交易、数据、人工智能、风险、审计与税务校园岗位",
+        "employers": ["Deloitte", "德勤", "PwC", "普华永道", "EY", "安永", "KPMG", "毕马威"],
     },
 ]
 

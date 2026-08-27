@@ -939,8 +939,9 @@ def test_recruitment_profile_matching_and_deadline_metadata():
         assert set(payload["data_status"]["tier_counts"]) == {
             "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3",
         }
-        assert len(payload["monitor_pools"]) == 9
+        assert len(payload["monitor_pools"]) == 10
         assert any(pool["id"] == "tobacco_monopoly" for pool in payload["monitor_pools"])
+        assert any(pool["id"] == "professional_services" for pool in payload["monitor_pools"])
         assert payload["jobs"]
         assert all("employer_categories" in job for job in payload["jobs"])
         titles = {job["title"] for job in payload["jobs"]}
@@ -1874,11 +1875,12 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
                 model="gpt-4o-mini",
             )
 
-    monkeypatch.setattr(
-        recruitment_search,
-        "PERSONAL_MONITOR_POOLS",
-        recruitment_search.PERSONAL_MONITOR_POOLS[:1],
+    internet_pool = next(
+        pool
+        for pool in recruitment_search.PERSONAL_MONITOR_POOLS
+        if pool["primary_category"] == "internet_tech"
     )
+    monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", [internet_pool])
     monkeypatch.setattr(
         recruitment_search,
         "_inspect_official_candidate_page",
@@ -1978,11 +1980,12 @@ def test_web_search_discards_candidate_with_unreadable_link(monkeypatch):
                 model="gpt-4o-mini",
             )
 
-    monkeypatch.setattr(
-        recruitment_search,
-        "PERSONAL_MONITOR_POOLS",
-        recruitment_search.PERSONAL_MONITOR_POOLS[:1],
+    internet_pool = next(
+        pool
+        for pool in recruitment_search.PERSONAL_MONITOR_POOLS
+        if pool["primary_category"] == "internet_tech"
     )
+    monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", [internet_pool])
     monkeypatch.setattr(
         recruitment_search,
         "_inspect_official_candidate_page",

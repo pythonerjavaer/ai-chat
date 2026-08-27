@@ -26,6 +26,8 @@ from .normalization import (
     clean_text,
     normalize_job,
     normalize_program,
+    normalize_tags,
+    normalize_taxonomy_tags,
     semantic_hash,
     stable_digest,
 )
@@ -405,7 +407,9 @@ class FutureRadarService:
                 after=program, fields=list(SEMANTIC_PROGRAM_FIELDS), source_id=source["id"], now=now,
             )
         else:
-            merged = self._merge_verified(existing, item)
+            merged = self._merge_verified(
+                existing, item, incoming_role=verification_role
+            )
             merged["content_hash"] = semantic_hash(merged, SEMANTIC_PROGRAM_FIELDS)
             fields = changed_fields(existing, merged, SEMANTIC_PROGRAM_FIELDS)
             if not fields:
@@ -458,7 +462,9 @@ class FutureRadarService:
                 fields=list(SEMANTIC_JOB_FIELDS), source_id=source["id"], now=now,
             )
         else:
-            merged = self._merge_verified(existing, item)
+            merged = self._merge_verified(
+                existing, item, incoming_role=verification_role
+            )
             # A discovery mirror alone cannot close a previously open job.
             if item["status"] == "closed" and verification_role != "verification":
                 merged["status"] = existing["status"]
@@ -494,17 +500,76 @@ class FutureRadarService:
         return job, event
 
     @staticmethod
-    def _merge_verified(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    def _merge_verified(
+        existing: dict[str, Any],
+        incoming: dict[str, Any],
+        *,
+        incoming_role: str = "discovery",
+    ) -> dict[str, Any]:
         merged = dict(incoming)
-        if existing.get("verification_status") == "verified" and incoming.get("verification_status") != "verified":
+        existing_verified = existing.get("verification_status") == "verified"
+        if existing_verified and incoming.get("verification_status") != "verified":
             merged["verification_status"] = "verified"
             merged["confidence_score"] = max(
                 float(existing.get("confidence_score") or 0),
                 float(incoming.get("confidence_score") or 0),
             )
-        for field in ("official_url", "application_url", "opening_date", "closing_date"):
-            if not merged.get(field) and existing.get(field):
+
+        def empty(value: Any) -> bool:
+            return value is None or value == "" or value == [] or value == {}
+
+        # Normalization materializes omitted optional fields as empty strings or
+        # lists.  An incomplete observation must enrich a record, not erase
+        # facts already collected from another source.
+        preserve_when_empty = (
+            "city", "region", "employer_type", "industry", "primary_category",
+            "organization_category", "industry_tags", "role_tags", "official_url",
+            "application_url", "opening_date", "closing_date", "description",
+            "responsibilities", "requirements", "tags",
+        )
+        for field in preserve_when_empty:
+            if empty(merged.get(field)) and not empty(existing.get(field)):
                 merged[field] = existing[field]
+
+        def list_value(value: Any) -> list[Any]:
+            return list(value) if isinstance(value, (list, tuple, set)) else []
+
+        # Human-facing source tags accumulate provenance and review markers.
+        # Prefer the authoritative observation first when the 30-tag cap is hit.
+        if "tags" in existing or "tags" in incoming:
+            existing_tags = list_value(existing.get("tags"))
+            incoming_tags = list_value(incoming.get("tags"))
+            ordered_tags = (
+                [*incoming_tags, *existing_tags]
+                if incoming_role == "verification"
+                else [*existing_tags, *incoming_tags]
+            )
+            merged["tags"] = normalize_tags(ordered_tags)
+
+        protected_fields = (
+            "company", "title", "city", "region", "employer_type", "industry",
+            "primary_category", "organization_category", "industry_tags", "role_tags",
+            "official_url", "application_url", "opening_date", "closing_date", "status",
+            "description", "responsibilities", "requirements",
+        )
+        protected_from_discovery = existing_verified and incoming_role != "verification"
+        if protected_from_discovery:
+            for field in protected_fields:
+                if not empty(existing.get(field)):
+                    merged[field] = existing[field]
+
+        # Machine tags are unordered taxonomy sets.  Verification sources may
+        # complement one another; a discovery source cannot dilute an already
+        # verified non-empty taxonomy.
+        for field in ("industry_tags", "role_tags"):
+            existing_values = list_value(existing.get(field))
+            incoming_values = list_value(incoming.get(field))
+            if protected_from_discovery and existing_values:
+                merged[field] = normalize_taxonomy_tags(existing_values)
+            else:
+                merged[field] = normalize_taxonomy_tags(
+                    [*existing_values, *incoming_values]
+                )
         return merged
 
     @staticmethod

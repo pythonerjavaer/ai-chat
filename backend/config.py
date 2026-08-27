@@ -89,8 +89,8 @@ def load_settings() -> Settings:
         recruitment_web_search_max_tool_calls=max(
             1,
             min(
-                8,
-                int(os.getenv("RECRUITMENT_WEB_SEARCH_MAX_TOOL_CALLS", "8").strip() or "8"),
+                10,
+                int(os.getenv("RECRUITMENT_WEB_SEARCH_MAX_TOOL_CALLS", "10").strip() or "10"),
             ),
         ),
         admin_dashboard_token=os.getenv("ADMIN_DASHBOARD_TOKEN", "").strip(),

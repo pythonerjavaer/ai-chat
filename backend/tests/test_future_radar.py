@@ -17,9 +17,18 @@ os.environ.setdefault("FUTURE_RADAR_ENABLED", "false")
 from fastapi.testclient import TestClient
 
 from backend import database, main
-from backend.future_radar.adapters import AdapterResult, DiscoveryLimitedError, WechatSourceAdapter
-from backend.future_radar.normalization import normalize_job
-from backend.future_radar.schemas import FrostFireSyncV1
+from backend.future_radar.adapters import (
+    AdapterResult,
+    DiscoveryLimitedError,
+    LegacyDatabaseAdapter,
+    WechatSourceAdapter,
+)
+from backend.future_radar.normalization import (
+    PRIMARY_CATEGORY_CODES,
+    normalize_job,
+)
+from backend.future_radar.schema import migrate
+from backend.future_radar.schemas import FrostFireSyncV1, RadarJobInput
 from backend.future_radar.service import FutureRadarService, SyncConflict
 from backend.recruitment_watch import normalize_html_text
 
@@ -155,6 +164,299 @@ def event_types(service: FutureRadarService) -> list[str]:
             str(row[0])
             for row in connection.execute("SELECT event_type FROM radar_events ORDER BY id")
         ]
+
+
+def test_structured_job_taxonomy_schema_accepts_normalizes_and_rejects():
+    payload = {
+        **sample_job("structured-schema-job"),
+        "primary_category": "big-four-professional-services",
+        "organization_category": "Professional Services",
+        "industry_tags": ["Asset Management", "asset-management", "Advisory"],
+        "role_tags": ["AI", "ai", "Data Science"],
+        "description": "AI and data advisory graduate role.",
+        "responsibilities": "Build data products and advise clients.",
+    }
+    parsed = RadarJobInput.model_validate(payload)
+    assert parsed.primary_category == "big_four_professional_services"
+    assert parsed.organization_category == "professional_services"
+    assert parsed.industry_tags == ["advisory", "asset_management"]
+    assert parsed.role_tags == ["ai", "data_science"]
+
+    assert len(PRIMARY_CATEGORY_CODES) == 10
+    with pytest.raises(ValidationError, match="primary_category"):
+        RadarJobInput.model_validate({**payload, "primary_category": "unknown_sector"})
+    with pytest.raises(ValidationError, match="industry_tags"):
+        RadarJobInput.model_validate({**payload, "industry_tags": "asset_management"})
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        RadarJobInput.model_validate({**payload, "company_tier": "T0"})
+
+
+def test_structured_job_taxonomy_normalization_and_hash_are_stable():
+    first = normalize_job({
+        **sample_job("structured-hash-job"),
+        "primary_category": "quant_private_hedge",
+        "organization_category": "Private Fund",
+        "industry_tags": ["Quant", "private fund", "QUANT"],
+        "role_tags": ["Data Science", "AI", "data-science"],
+        "description": "  Systematic   investment research. ",
+        "responsibilities": "Research signals.\nBuild models.",
+    })
+    second = normalize_job({
+        **sample_job("structured-hash-job"),
+        "primary_category": "quant_private_hedge",
+        "organization_category": "private_fund",
+        "industry_tags": ["PRIVATE-FUND", "quant"],
+        "role_tags": ["ai", "data science"],
+        "description": "Systematic investment research.",
+        "responsibilities": "Research signals. Build models.",
+    })
+    assert first["organization_category"] == "private_fund"
+    assert first["industry_tags"] == ["private_fund", "quant"]
+    assert first["role_tags"] == ["ai", "data_science"]
+    assert first["industry_tags"] == second["industry_tags"]
+    assert first["role_tags"] == second["role_tags"]
+    assert first["content_hash"] == second["content_hash"]
+
+    changed = normalize_job({**second, "description": "Different verified duties."})
+    assert changed["content_hash"] != first["content_hash"]
+
+
+def test_structured_job_taxonomy_repository_roundtrip_and_idempotent_migration(
+    radar_service,
+):
+    source = create_source(radar_service, "structured-taxonomy-source")
+    initial = {
+        **sample_job("structured-roundtrip-job"),
+        "primary_category": "securities_public_funds_asset_management",
+        "organization_category": "public_fund",
+        "industry_tags": ["asset_management", "Public Fund", "asset_management"],
+        "role_tags": ["investment research", "AI", "ai"],
+        "description": "Investment research role with an AI focus.",
+        "responsibilities": "Research funds and build analytical tools.",
+    }
+    updated = {
+        **initial,
+        "role_tags": ["investment_research", "ai", "risk"],
+        "responsibilities": "Research funds, build tools, and model risk.",
+    }
+    adapter = SequenceAdapter([
+        AdapterResult(jobs=[initial], content_hash="structured-roundtrip-v1"),
+        AdapterResult(jobs=[updated], content_hash="structured-roundtrip-v2"),
+    ])
+    radar_service.adapter_factory = lambda _source: adapter
+
+    assert radar_service.run(source_ids=[source["id"]], force=True)["new_jobs"] == 1
+    first = radar_service.repository.get_job("structured-roundtrip-job")
+    assert first["primary_category"] == "securities_public_funds_asset_management"
+    assert first["organization_category"] == "public_fund"
+    assert first["industry_tags"] == ["asset_management", "public_fund"]
+    assert first["role_tags"] == ["ai", "investment_research"]
+    assert first["description"] == "Investment research role with an AI focus."
+    assert first["responsibilities"] == "Research funds and build analytical tools."
+
+    assert radar_service.run(source_ids=[source["id"]], force=True)["updated_jobs"] == 1
+    listed = radar_service.repository.list_jobs(
+        page=1, page_size=10, filters={"status": "all", "active_only": False}
+    )["items"]
+    stored = next(item for item in listed if item["external_id"] == "structured-roundtrip-job")
+    assert stored["role_tags"] == ["ai", "investment_research", "risk"]
+    assert stored["responsibilities"] == "Research funds, build tools, and model risk."
+
+    with radar_service.repository._connect() as connection:
+        migrate(connection)
+        migrate(connection)
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(radar_jobs)")
+        }
+        assert {
+            "primary_category", "organization_category", "industry_tags", "role_tags",
+            "description", "responsibilities",
+        }.issubset(columns)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations "
+            "WHERE version='future_radar_v2_job_taxonomy'"
+        ).fetchone()[0] == 1
+
+
+def test_structured_job_taxonomy_migration_upgrades_legacy_job_table():
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE radar_jobs (
+            id TEXT PRIMARY KEY,
+            external_id TEXT NOT NULL UNIQUE,
+            program_id TEXT,
+            company_id TEXT,
+            company TEXT NOT NULL,
+            title TEXT NOT NULL,
+            city TEXT NOT NULL DEFAULT '',
+            region TEXT NOT NULL DEFAULT '',
+            employer_type TEXT NOT NULL DEFAULT '',
+            industry TEXT NOT NULL DEFAULT '',
+            official_url TEXT,
+            application_url TEXT,
+            opening_date TEXT,
+            closing_date TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            verification_status TEXT NOT NULL DEFAULT 'pending',
+            confidence_score REAL NOT NULL DEFAULT 0,
+            requirements TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '[]',
+            content_hash TEXT NOT NULL,
+            source_id TEXT,
+            missing_successes INTEGER NOT NULL DEFAULT 0,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            last_changed_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    timestamps = ("2026-08-28T00:00:00+00:00",) * 5
+    connection.execute(
+        """
+        INSERT INTO radar_jobs
+            (id, external_id, company, title, tags, content_hash,
+             first_seen_at, last_seen_at, last_changed_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "legacy-tag-row", "legacy-tag-row", "Legacy Co", "Graduate Role",
+            '["legacy-compatible","quant_private_hedge"]', "legacy-hash",
+            *timestamps,
+        ),
+    )
+    try:
+        migrate(connection)
+        assert connection.execute(
+            "SELECT primary_category FROM radar_jobs WHERE id='legacy-tag-row'"
+        ).fetchone()[0] == "quant_private_hedge"
+        connection.execute(
+            """
+            INSERT INTO radar_jobs
+                (id, external_id, company, title, organization_category, tags,
+                 content_hash, first_seen_at, last_seen_at, last_changed_at,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-org-row", "legacy-org-row", "Legacy Org", "Graduate Role",
+                "big_four_professional_services", "legacy-org-hash", *timestamps,
+            ),
+        )
+        migrate(connection)
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(radar_jobs)")
+        }
+        assert {
+            "primary_category", "organization_category", "industry_tags", "role_tags",
+            "description", "responsibilities",
+        }.issubset(columns)
+        assert connection.execute(
+            "SELECT primary_category FROM radar_jobs WHERE id='legacy-org-row'"
+        ).fetchone()[0] == "big_four_professional_services"
+    finally:
+        connection.close()
+
+
+def test_legacy_adapter_persists_metadata_categories_and_repository_pages_them(
+    radar_service, monkeypatch
+):
+    rows = [
+        {
+            "id": "legacy-public-fund", "company": "示例机构甲", "title": "投研岗",
+            "employer_type": "券商/公募/资管", "industry": "资产管理",
+            "url": "https://example.com/legacy/public", "tags": ["校园招聘"],
+            "requirements": "面向应届生", "status": "open",
+        },
+        {
+            "id": "legacy-explicit", "company": "示例机构乙", "title": "量化岗",
+            "employer_type": "券商/公募/资管", "industry": "资产管理",
+            "primary_category": "quant_private_hedge",
+            "url": "https://example.com/legacy/quant", "tags": ["校园招聘"],
+            "requirements": "面向应届生", "status": "open",
+        },
+        {
+            "id": "legacy-tag-code", "company": "示例机构丙", "title": "咨询岗",
+            "employer_type": "其他", "industry": "其他",
+            "url": "https://example.com/legacy/advisory",
+            "tags": ["校园招聘", "big_four_professional_services"],
+            "requirements": "面向应届生", "status": "open",
+        },
+        {
+            "id": "legacy-private-fund", "company": "示例机构丁", "title": "量化研究岗",
+            "employer_type": "私募证券", "industry": "资产管理",
+            "industry_tags": ["asset_management", "quant", "private_fund"],
+            "url": "https://example.com/legacy/private", "tags": ["校园招聘"],
+            "requirements": "面向应届生", "status": "open",
+        },
+        {
+            "id": "legacy-no-name-inference", "company": "Deloitte", "title": "咨询岗",
+            "employer_type": "其他", "industry": "其他",
+            "url": "https://example.com/legacy/unclassified", "tags": ["校园招聘"],
+            "requirements": "面向应届生", "status": "open",
+        },
+    ]
+    monkeypatch.setattr(database, "list_recruitment_jobs", lambda: deepcopy(rows))
+    source = create_source(radar_service, "legacy-category-regression")
+    radar_service.adapter_factory = lambda _source: LegacyDatabaseAdapter()
+    assert radar_service.run(source_ids=[source["id"]], force=True)["new_jobs"] == 5
+
+    assert radar_service.repository.get_job("legacy-public-fund")["primary_category"] == (
+        "securities_public_funds_asset_management"
+    )
+    assert radar_service.repository.get_job("legacy-explicit")["primary_category"] == (
+        "quant_private_hedge"
+    )
+    assert radar_service.repository.get_job("legacy-private-fund")["primary_category"] == (
+        "quant_private_hedge"
+    )
+    assert radar_service.repository.get_job("legacy-no-name-inference")["primary_category"] == ""
+    filters = {
+        "status": "all", "active_only": False,
+        "primary_categories": ["quant_private_hedge", "big_four_professional_services"],
+    }
+    first = radar_service.repository.list_jobs(page=1, page_size=1, filters=filters)
+    second = radar_service.repository.list_jobs(page=2, page_size=1, filters=filters)
+    assert first["total"] == second["total"] == 3
+    assert first["items"][0]["id"] != second["items"][0]["id"]
+
+
+def test_verified_structured_job_fields_survive_incomplete_discovery_merge():
+    existing = normalize_job({
+        **sample_job("merge-protected"),
+        "verification_status": "verified",
+        "primary_category": "big_four_professional_services",
+        "organization_category": "professional_services",
+        "industry_tags": ["professional_services"],
+        "role_tags": ["ai", "technology_consulting"],
+        "description": "Verified description",
+        "responsibilities": "Verified responsibilities",
+        "requirements": "Verified requirements",
+        "tags": ["official"],
+    })
+    incoming = normalize_job({
+        **sample_job("merge-protected"),
+        "primary_category": "quant_private_hedge",
+        "organization_category": "private_fund",
+        "industry_tags": ["private_fund"],
+        "role_tags": ["sales"],
+        "description": "",
+        "responsibilities": "",
+        "requirements": "",
+        "tags": ["mirror"],
+    })
+    merged = FutureRadarService._merge_verified(
+        existing, incoming, incoming_role="discovery"
+    )
+    for field in (
+        "primary_category", "organization_category", "industry_tags", "role_tags",
+        "description", "responsibilities", "requirements",
+    ):
+        assert merged[field] == existing[field]
+    assert merged["verification_status"] == "verified"
 
 
 def test_mock_five_round_lifecycle_and_repeated_round_is_idempotent(radar_service):
@@ -546,3 +848,108 @@ def test_future_radar_api_paginates_requires_admin_run_and_strict_sync(
             json={"version": "FROSTFIRE_SYNC_V2", "source_id": "strict-schema-source"},
         )
         assert wrong_version.status_code == 422
+
+
+def test_future_radar_filters_by_one_primary_starfield_and_accepts_all_profile_categories(
+    radar_service, monkeypatch
+):
+    source = create_source(radar_service, "structured-category-filter")
+    public_fund = {
+        **sample_job("category-public-fund", title="Investment Research Analyst"),
+        "company": "示例公募基金",
+        "employer_type": "公募基金",
+        "industry": "资产管理",
+        "primary_category": "securities_public_funds_asset_management",
+        "organization_category": "public_fund",
+        "industry_tags": ["asset_management", "public_fund"],
+        "role_tags": ["investment_research"],
+        "responsibilities": "负责基金投研、组合分析和行业研究。",
+    }
+    private_fund = {
+        **sample_job("category-private-fund", title="Quantitative Researcher"),
+        "company": "示例量化私募",
+        "employer_type": "私募证券",
+        "industry": "资产管理",
+        "primary_category": "quant_private_hedge",
+        "organization_category": "private_fund",
+        "industry_tags": ["asset_management", "quant", "private_fund"],
+        "role_tags": ["quant_research"],
+        "responsibilities": "负责系统化投资研究、量化模型与组合研究。",
+    }
+    professional_services = {
+        **sample_job("category-professional-services", title="AI & Data Consulting"),
+        "company": "示例专业服务机构",
+        "employer_type": "四大/专业服务",
+        "industry": "专业服务",
+        "primary_category": "big_four_professional_services",
+        "organization_category": "professional_services",
+        "industry_tags": ["professional_services"],
+        "role_tags": ["ai", "data_science", "technology_consulting"],
+        "responsibilities": "负责人工智能、数据科学与技术咨询项目。",
+    }
+    radar_service.adapter_factory = lambda _source: StaticAdapter(
+        AdapterResult(
+            jobs=[public_fund, private_fund, professional_services],
+            content_hash="structured-category-filter-v1",
+        )
+    )
+    assert radar_service.run(source_ids=[source["id"]], force=True)["new_jobs"] == 3
+
+    settings_values = vars(main.settings).copy()
+    settings_values.update({
+        "database_path": database.settings.database_path,
+        "future_radar_enabled": False,
+        "recruitment_refresh_minutes": 0,
+    })
+    monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
+    monkeypatch.setattr(main, "future_radar_service", radar_service)
+
+    with TestClient(main.app) as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "future-radar-category-user",
+                "password": "correct-horse-123",
+                "privacy_accepted": True,
+            },
+        )
+        assert registered.status_code == 201
+        bearer = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+
+        saved = client.put(
+            "/api/recruitment/profile",
+            headers=bearer,
+            json={"employer_types": list(PRIMARY_CATEGORY_CODES)},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["employer_types"] == list(PRIMARY_CATEGORY_CODES)
+
+        public_only = client.get(
+            "/api/future-radar/jobs?status=all"
+            "&category=securities_public_funds_asset_management",
+            headers=bearer,
+        )
+        assert public_only.status_code == 200
+        assert public_only.json()["total"] == 1
+        assert [item["external_id"] for item in public_only.json()["items"]] == [
+            "category-public-fund"
+        ]
+
+        two_starfields = client.get(
+            "/api/future-radar/jobs?status=all"
+            "&category=quant_private_hedge"
+            "&category=big_four_professional_services",
+            headers=bearer,
+        )
+        assert two_starfields.status_code == 200
+        assert two_starfields.json()["total"] == 2
+        assert {item["primary_category"] for item in two_starfields.json()["items"]} == {
+            "quant_private_hedge",
+            "big_four_professional_services",
+        }
+
+        invalid = client.get(
+            "/api/future-radar/jobs?status=all&category=unknown-sector",
+            headers=bearer,
+        )
+        assert invalid.status_code == 422
