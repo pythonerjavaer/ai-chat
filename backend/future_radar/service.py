@@ -420,7 +420,13 @@ class FutureRadarService:
                     **source.get("adapter_config", {}),
                     # A transient orchestration flag: never stored in the
                     # source registry or returned by the API.
-                    "_force_refresh": bool(force),
+                    # Manual Deep Scan is an explicit request for fresh
+                    # discovery.  It therefore re-runs optional AI extraction
+                    # even when the public page content hash is unchanged.
+                    # Scheduled scans may still reuse deterministic extraction
+                    # results; business/entity hashes continue to prevent
+                    # duplicate jobs and events in every mode.
+                    "_force_refresh": bool(force or scan_type == "deep"),
                 },
             }
             if scan_type == "quick":

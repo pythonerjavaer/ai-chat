@@ -259,8 +259,9 @@ class RadarRepository:
         """Deep Scan has no post-run cooldown; active work is protected by locks.
 
         The argument is retained for a stable API and future provider-specific
-        policies.  Content-hash/AI cache reuse and external provider/domain
-        safety limits remain independent of this manual-run policy.
+        policies.  Manual Deep scans explicitly bypass optional AI extraction
+        cache reuse; external provider/domain safety limits remain independent
+        of this manual-run policy.
         """
         del source_ids
         return 0

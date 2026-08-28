@@ -263,7 +263,7 @@ Mock 来源默认禁用，只用于测试。CLI 的 `--mock-round` 会临时启�
 
 ## 7. OpenAI 结构化提取、缓存与降级
 
-`official_html` 来源只有显式设置 `adapter_config.ai_extract=true` 时才具备 AI 提取能力；Quick Scan 会临时强制关闭它。普通 scheduled/Deep 扫描按页面内容指纹复用结构化提取缓存，因此相同内容不会重复调用模型；管理员 Force Scan 会跳过缓存读取并重新提取。实现使用 OpenAI Responses API：
+`official_html` 来源只有显式设置 `adapter_config.ai_extract=true` 时才具备 AI 提取能力；Quick Scan 会临时强制关闭它。自动 scheduled 扫描按页面内容指纹复用结构化提取缓存；用户主动发起的 Deep Scan 每次都会跳过缓存并重新提取，管理员 Force Scan 也会跳过缓存。岗位与事件仍通过业务内容哈希去重，不会因为重新提取而重复入库。实现使用 OpenAI Responses API：
 
 - 页面正文被视为不可信数据，不执行页面中的指令；
 - 输入最多截取 32,000 字符；

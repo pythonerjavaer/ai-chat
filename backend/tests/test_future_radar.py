@@ -1991,6 +1991,40 @@ def test_manual_scan_source_families_ignore_scheduler_intervals(radar_service):
     assert radar_service.repository.deep_scan_retry_after() == 0
 
 
+def test_manual_deep_scan_bypasses_optional_ai_extraction_cache(radar_service):
+    source = create_source(
+        radar_service,
+        "manual-deep-wechat",
+        trust_level="discovery",
+        source_type="wechat_public",
+        adapter_config={"adapter": "wechat_public", "ai_extract": True},
+    )
+    refresh_flags: list[bool] = []
+
+    class RecordingAdapter:
+        def scan(self, current_source):
+            refresh_flags.append(bool(
+                current_source.get("adapter_config", {}).get("_force_refresh")
+            ))
+            return AdapterResult(content_hash=f"deep-refresh-{len(refresh_flags)}")
+
+    radar_service.adapter_factory = lambda _source: RecordingAdapter()
+    deep = radar_service.run(
+        trigger_type="manual_deep",
+        scan_type="deep",
+        source_ids=[source["id"]],
+    )
+    scheduled = radar_service.run(
+        trigger_type="scheduled-test",
+        scan_type="scheduled",
+        source_ids=[source["id"]],
+    )
+
+    assert deep["status"] == "success"
+    assert scheduled["status"] == "success"
+    assert refresh_flags == [True, False]
+
+
 def test_database_run_lock_blocks_duplicate_after_refresh_and_releases_immediately(
     radar_service,
 ):
