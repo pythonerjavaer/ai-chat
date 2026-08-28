@@ -34,6 +34,70 @@ BLOCKED_DISCOVERY_HOSTS = {
     "zhihu.com",
 }
 
+# Search engines and social sites are not evidence, even when they happen to
+# contain the claimed title.  A small set of recruitment-only subdomains is
+# allowed before the parent-domain block is applied.  In particular, Baidu's
+# public careers site lives below the otherwise blocked ``baidu.com`` root.
+EXPLICIT_RECRUITMENT_HOSTS = {
+    "talent.baidu.com",
+}
+
+# A discovery result is only promoted when its final host is known to belong
+# to the claimed employer or to an established multi-tenant ATS.  This mapping
+# is intentionally conservative: an unknown host remains a useful, pending
+# candidate and can be added after its ownership has been checked.
+OFFICIAL_RECRUITMENT_DOMAINS_BY_EMPLOYER = {
+    "百度": ("talent.baidu.com",),
+    "拼多多": ("pddglobalhr.com",),
+    "大疆": ("careers.dji.com",),
+    "荣耀": ("honor.com",),
+    "中国电信": ("chinatelecom.com.cn",),
+    "海尔": ("haier.net",),
+    "小米": ("xiaomi.com",),
+    "腾讯": ("join.qq.com", "careers.tencent.com"),
+    "阿里巴巴": ("talent.alibaba.com", "job.alibaba.com"),
+    "字节跳动": ("jobs.bytedance.com",),
+    "美团": ("zhaopin.meituan.com",),
+    "京东": ("campus.jd.com", "zhaopin.jd.com"),
+    "华为": ("career.huawei.com",),
+    "网易": ("campus.163.com", "hr.163.com"),
+    "快手": ("campus.kuaishou.cn", "zhaopin.kuaishou.cn"),
+    "滴滴": ("talent.didiglobal.com",),
+    "携程": ("careers.trip.com", "job.ctrip.com"),
+    "科大讯飞": ("career.iflytek.com",),
+    "哔哩哔哩": ("job.bilibili.com",),
+    "B站": ("job.bilibili.com",),
+    "OPPO": ("career.oppo.com",),
+    "vivo": ("hr.vivo.com",),
+    "蔚来": ("careers.nio.com",),
+    "小鹏": ("jobs.xiaopeng.com",),
+    "理想汽车": ("campus.lixiang.com",),
+    "比亚迪": ("hr.byd.com",),
+    "中国银行": ("bankofchina.com",),
+    "工商银行": ("icbc.com.cn",),
+    "农业银行": ("abchina.com",),
+    "建设银行": ("ccb.com",),
+    "交通银行": ("bankcomm.com",),
+    "邮储银行": ("psbc.com",),
+    "国家开发银行": ("cdb.com.cn",),
+    "中国进出口银行": ("eximbank.gov.cn",),
+    "中国农业发展银行": ("adbc.com.cn",),
+}
+
+KNOWN_AUTHORIZED_ATS_DOMAINS = {
+    "mokahr.com",
+    "hotjob.cn",
+    "hotjob.net",
+    "beisen.com",
+    "myworkdayjobs.com",
+    "myworkdaysite.com",
+    "successfactors.com",
+    "successfactors.eu",
+    "oraclecloud.com",
+    "jobs.feishu.cn",
+    "zhiye.com",
+}
+
 EMPLOYER_TYPE_BY_POOL = {
     "state_energy_resources": "央国企",
     "state_tech_transport": "央国企科技",
@@ -112,9 +176,18 @@ class CandidatePageEvidence:
     """Deterministic evidence collected from the supplied original page."""
 
     readable: bool
+    # Backward-compatible promotion gate used by both radar adapters.  The
+    # inspector only sets it when every evidence dimension below is true; it no
+    # longer means that a title-shaped string merely appeared somewhere.
     title_confirmed: bool
     closed: bool = False
     page_text: str = ""
+    employer_confirmed: bool = False
+    domain_confirmed: bool = False
+    cohort_confirmed: bool = False
+    open_confirmed: bool = False
+    identity_confirmed: bool = False
+    final_url: str = ""
 
 
 def _search_prompt(pool: dict[str, Any]) -> str:
@@ -177,6 +250,8 @@ def _safe_official_url(value: str) -> str | None:
     hostname = (urllib.parse.urlsplit(display_url).hostname or "").lower()
     if not hostname:
         return None
+    if hostname in EXPLICIT_RECRUITMENT_HOSTS:
+        return display_url
     if any(hostname == blocked or hostname.endswith(f".{blocked}") for blocked in BLOCKED_DISCOVERY_HOSTS):
         return None
     return display_url
@@ -193,23 +268,81 @@ _CLOSED_PAGE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_OPEN_PAGE_PATTERN = re.compile(
+    r"(?:立即(?:申请|投递|报名)|现在申请|申请职位|投递简历|我要申请|"
+    r"申请入口|投递入口|网申入口|报名入口|开放(?:申请|投递|报名)|"
+    r"(?:校园招聘|校招).{0,16}(?:正式)?(?:启动|开启|开放)|"
+    r"(?:启动|开启|开放).{0,16}(?:校园招聘|校招)|"
+    r"\bapply\s+now\b|\bapply\s+for\b|\bsubmit\s+(?:an?\s+)?application\b|"
+    r"\bopen\s+for\s+applications?\b|\baccepting\s+applications?\b)",
+    re.IGNORECASE,
+)
 
-def _date_appears_in_page(page_text: str, iso_date: str | None) -> bool:
+_CAMPUS_PAGE_PATTERN = re.compile(
+    r"(?:校园招聘|校招|应届(?:生|毕业生)?|毕业生|管培生|提前批|"
+    r"\bcampus\b|\bgraduate(?:s|\s+program(?:me)?)?\b)",
+    re.IGNORECASE,
+)
+
+_OPENING_DATE_LABEL = (
+    r"(?:开放|启动|开始|起始|申请开始|投递开始|网申开始|"
+    r"报名开始|开放申请|开放投递|开放报名|"
+    r"applications?\s+open(?:ing)?|opening\s+date|starts?\s+on)"
+)
+_CLOSING_DATE_LABEL = (
+    r"(?:申请截止|投递截止|网申截止|报名截止|截止日期|截止时间|"
+    r"截止|截至|application\s+deadline|closing\s+date|applications?\s+close|deadline)"
+)
+
+
+def _date_pattern(value: date) -> str:
+    year = str(value.year)
+    month = str(value.month)
+    day = str(value.day)
+    return (
+        rf"(?:{year}\s*[-/.]\s*0?{month}\s*[-/.]\s*0?{day}"
+        rf"|{year}\s*年\s*0?{month}\s*月\s*0?{day}\s*日?)"
+    )
+
+
+def _semantic_date_appears_in_page(
+    page_text: str,
+    iso_date: str | None,
+    *,
+    semantic: str,
+) -> bool:
+    """Match an application date only next to a label with the same meaning.
+
+    Publication dates, footer dates and unrelated event dates are deliberately
+    ignored.  ``semantic='application'`` is a conservative compatibility mode
+    for callers that do not know whether a value is an opening or closing date.
+    """
     if not iso_date:
         return False
     try:
         value = date.fromisoformat(iso_date)
     except ValueError:
         return False
-    compact = re.sub(r"\s+", "", page_text.casefold())
-    variants = {
-        value.isoformat(),
-        f"{value.year}/{value.month:02d}/{value.day:02d}",
-        f"{value.year}.{value.month:02d}.{value.day:02d}",
-        f"{value.year}年{value.month}月{value.day}日",
-        f"{value.year}年{value.month:02d}月{value.day:02d}日",
+    labels_by_semantic = {
+        "opening": _OPENING_DATE_LABEL,
+        "closing": _CLOSING_DATE_LABEL,
+        "application": rf"(?:{_OPENING_DATE_LABEL}|{_CLOSING_DATE_LABEL})",
     }
-    return any(variant.casefold() in compact for variant in variants)
+    labels = labels_by_semantic.get(semantic)
+    if labels is None:
+        raise ValueError("semantic must be 'opening', 'closing', or 'application'.")
+    normalized = re.sub(r"\s+", " ", str(page_text or "")).casefold()
+    date_expression = _date_pattern(value)
+    return bool(
+        re.search(rf"{labels}.{{0,32}}?{date_expression}", normalized, re.IGNORECASE)
+        or re.search(rf"{date_expression}.{{0,24}}?{labels}", normalized, re.IGNORECASE)
+    )
+
+
+def _date_appears_in_page(page_text: str, iso_date: str | None) -> bool:
+    return _semantic_date_appears_in_page(
+        page_text, iso_date, semantic="application"
+    )
 
 
 def _targets_current_graduate_cohort(value: str) -> bool:
@@ -220,12 +353,134 @@ def _targets_current_graduate_cohort(value: str) -> bool:
     return str(target_year) in normalized or f"{short_year}届" in normalized
 
 
-def _inspect_official_candidate_page(job: dict[str, Any]) -> CandidatePageEvidence:
-    """Open the supplied page and check whether its body supports the title.
+def _hostname_matches(hostname: str, allowed: str) -> bool:
+    normalized_host = hostname.strip(".").casefold()
+    normalized_allowed = allowed.strip(".").casefold()
+    return (
+        normalized_host == normalized_allowed
+        or normalized_host.endswith(f".{normalized_allowed}")
+    )
 
-    This is deliberately deterministic and sends no page contents to an AI
-    provider. A reachable page is preserved as a candidate, but it is only
-    promoted to verified when the claimed title is present in the page body.
+
+def _company_evidence_aliases(company: str) -> set[str]:
+    """Return conservative employer names suitable for page-body evidence."""
+    raw = re.sub(r"\s+", " ", str(company or "")).strip()
+    if not raw:
+        return set()
+    candidates = {raw}
+    candidates.update(re.findall(r"[A-Za-z][A-Za-z0-9.&+\-]{2,}|[一-鿿]{2,}", raw))
+    for suffix in (
+        "集团股份有限公司", "股份有限公司", "集团有限公司",
+        "有限责任公司", "有限公司", "集团", "公司",
+    ):
+        if raw.endswith(suffix):
+            candidates.add(raw[: -len(suffix)])
+    aliases: set[str] = set()
+    for candidate in candidates:
+        key = _evidence_key(candidate)
+        if len(key) >= 2 and key not in {"集团", "公司", "bank", "group"}:
+            aliases.add(key)
+    return aliases
+
+
+def _official_domain_confirmed(company: str, url: str) -> bool:
+    hostname = (urllib.parse.urlsplit(url).hostname or "").casefold()
+    if not hostname:
+        return False
+    if any(_hostname_matches(hostname, domain) for domain in KNOWN_AUTHORIZED_ATS_DOMAINS):
+        return True
+    company_key = _evidence_key(company)
+    for employer, domains in OFFICIAL_RECRUITMENT_DOMAINS_BY_EMPLOYER.items():
+        employer_key = _evidence_key(employer)
+        if not employer_key or not (
+            employer_key in company_key or company_key in employer_key
+        ):
+            continue
+        if any(_hostname_matches(hostname, domain) for domain in domains):
+            return True
+    return False
+
+
+def _is_campaign_title(title: str, company: str) -> bool:
+    """Recognize a campaign row without treating a role as a campaign."""
+    residual = _evidence_key(title)
+    for alias in _company_evidence_aliases(company):
+        residual = residual.replace(alias, "")
+    residual = re.sub(r"20\d{2}|年|届", "", residual)
+    for marker in (
+        "全球校园招聘", "校园招聘", "秋季招聘", "春季招聘", "校招",
+        "应届生招聘", "graduateprogram", "campusrecruitment",
+        "招聘公告", "招聘启事", "正式启动", "启动", "开启", "计划",
+    ):
+        residual = residual.replace(_evidence_key(marker), "")
+    return not residual
+
+
+def _evaluate_official_candidate_page(
+    job: dict[str, Any], page_text: str, final_url: str
+) -> CandidatePageEvidence:
+    """Evaluate already-fetched official-page evidence with one shared gate."""
+    page_text = str(page_text or "")
+    page_key = _evidence_key(page_text)
+    final_url = str(final_url or job.get("url", ""))
+    company = str(job.get("company", ""))
+    company_aliases = _company_evidence_aliases(company)
+    employer_confirmed = bool(
+        page_key and any(alias in page_key for alias in company_aliases)
+    )
+    domain_confirmed = _official_domain_confirmed(company, final_url)
+    cohort_confirmed = bool(
+        _CAMPUS_PAGE_PATTERN.search(page_text)
+        and _targets_current_graduate_cohort(page_text)
+    )
+    title_key = _evidence_key(str(job.get("title", "")))
+    exact_title_confirmed = bool(title_key and title_key in page_key)
+    campaign_confirmed = bool(
+        _is_campaign_title(str(job.get("title", "")), company)
+        and _CAMPUS_PAGE_PATTERN.search(page_text)
+    )
+    identity_confirmed = exact_title_confirmed or campaign_confirmed
+    closed = bool(_CLOSED_PAGE_PATTERN.search(page_text))
+    future_closing_confirmed = bool(
+        job.get("closing_date")
+        and str(job["closing_date"]) > date.today().isoformat()
+        and _semantic_date_appears_in_page(
+            page_text, str(job["closing_date"]), semantic="closing"
+        )
+    )
+    open_confirmed = bool(
+        not closed
+        and (_OPEN_PAGE_PATTERN.search(page_text) or future_closing_confirmed)
+    )
+    verified = bool(
+        page_key
+        and domain_confirmed
+        and employer_confirmed
+        and cohort_confirmed
+        and open_confirmed
+        and identity_confirmed
+    )
+    return CandidatePageEvidence(
+        readable=bool(page_key),
+        title_confirmed=verified,
+        closed=closed,
+        page_text=page_text,
+        employer_confirmed=employer_confirmed,
+        domain_confirmed=domain_confirmed,
+        cohort_confirmed=cohort_confirmed,
+        open_confirmed=open_confirmed,
+        identity_confirmed=identity_confirmed,
+        final_url=final_url,
+    )
+
+
+def _inspect_official_candidate_page(job: dict[str, Any]) -> CandidatePageEvidence:
+    """Fetch and attest one candidate without trusting model assertions.
+
+    Reachability alone preserves a discovery candidate.  Promotion requires a
+    known employer/ATS domain, employer identity, current graduate cohort,
+    exact role (or an explicitly generic campaign identity), and positive
+    evidence that applications are open.
     """
     try:
         result = fetch_watch_page(
@@ -236,14 +491,10 @@ def _inspect_official_candidate_page(job: dict[str, Any]) -> CandidatePageEviden
         )
     except (OSError, ValueError, WatchFetchError):
         return CandidatePageEvidence(readable=False, title_confirmed=False)
-    page_text = str(result.text or "")
-    page_key = _evidence_key(page_text)
-    title_key = _evidence_key(str(job.get("title", "")))
-    return CandidatePageEvidence(
-        readable=bool(page_key),
-        title_confirmed=bool(title_key and title_key in page_key),
-        closed=bool(_CLOSED_PAGE_PATTERN.search(page_text)),
-        page_text=page_text,
+    return _evaluate_official_candidate_page(
+        job,
+        str(result.text or ""),
+        str(getattr(result, "final_url", "") or job.get("url", "")),
     )
 
 
@@ -292,7 +543,13 @@ def _normalize_job(
     category = EMPLOYER_TYPE_BY_POOL[pool["id"]]
     primary_category = str(pool.get("primary_category") or pool["id"])
     observed_at = datetime.now(timezone.utc).isoformat()
-    job_id = f"web-{hashlib.sha256(official_url.encode()).hexdigest()[:24]}"
+    # Campaign pages commonly contain many roles.  URL-only identity collapsed
+    # every role on such a page into one record, making a successful scan look
+    # almost empty.  Include the stable role identity while keeping retries
+    # idempotent.
+    identity = "\0".join((company.casefold(), title.casefold(),
+                           str(item.get("city", "")).strip().casefold(), official_url))
+    job_id = f"web-{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
     requirements = re.sub(r"\s+", " ", str(item.get("requirements", ""))).strip()[:1200]
     tags = [
         "校园招聘", "动态监控", "AI网页搜索", "待打开核对",
@@ -325,6 +582,62 @@ def _usage_value(response: Any, name: str) -> int:
     return max(0, int(getattr(usage, name, 0) or 0))
 
 
+def _response_value(value: Any, field: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(field, default)
+    return getattr(value, field, default)
+
+
+def _completed_web_search_sources(response: Any) -> tuple[set[str], int]:
+    """Return sanitized citations from completed hosted web-search calls."""
+    source_urls: set[str] = set()
+    completed_calls = 0
+    for output in getattr(response, "output", []) or []:
+        if _response_value(output, "type") != "web_search_call":
+            continue
+        if str(_response_value(output, "status", "")).casefold() != "completed":
+            continue
+        completed_calls += 1
+        action = _response_value(output, "action", {}) or {}
+        for source in _response_value(action, "sources", []) or []:
+            candidate = _safe_official_url(str(_response_value(source, "url", "")))
+            if candidate:
+                source_urls.add(candidate)
+    if completed_calls == 0:
+        raise RuntimeError("Web search returned no completed web_search_call.")
+    return source_urls, completed_calls
+
+
+def _candidate_was_cited(candidate_url: str, source_urls: set[str]) -> bool:
+    """Require an exact cited URL or a citation on the same HTTPS host."""
+    candidate = _safe_official_url(candidate_url)
+    if not candidate:
+        return False
+    candidate_parts = urllib.parse.urlsplit(candidate)
+    candidate_fetch_url = urllib.parse.urlunsplit((
+        candidate_parts.scheme,
+        candidate_parts.netloc,
+        candidate_parts.path or "/",
+        candidate_parts.query,
+        "",
+    ))
+    candidate_host = (candidate_parts.hostname or "").casefold()
+    for source_url in source_urls:
+        source_parts = urllib.parse.urlsplit(source_url)
+        source_fetch_url = urllib.parse.urlunsplit((
+            source_parts.scheme,
+            source_parts.netloc,
+            source_parts.path or "/",
+            source_parts.query,
+            "",
+        ))
+        if candidate_fetch_url == source_fetch_url:
+            return True
+        if candidate_host and candidate_host == (source_parts.hostname or "").casefold():
+            return True
+    return False
+
+
 def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSearchResult:
     response = api_client.responses.create(
         model=settings.recruitment_web_search_model,
@@ -349,47 +662,61 @@ def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSear
             }
         },
         include=["web_search_call.action.sources"],
+        tool_choice="required",
         max_tool_calls=1,
         max_output_tokens=1_600,
         store=False,
     )
+    cited_source_urls, tool_calls = _completed_web_search_sources(response)
     payload = json.loads(response.output_text)
     normalized: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
+    seen_jobs: set[tuple[str, str, str, str]] = set()
     for item in payload.get("jobs", [])[:MAX_JOBS_PER_CATEGORY]:
         if not isinstance(item, dict):
             continue
         job = _normalize_job(item, pool)
-        if not job or job["url"] in seen_urls:
+        if not job:
+            continue
+        if not _candidate_was_cited(job["url"], cited_source_urls):
+            continue
+        job_key = (
+            job["company"].casefold(), job["title"].casefold(),
+            job["city"].casefold(), job["url"],
+        )
+        if job_key in seen_jobs:
             continue
         evidence = _inspect_official_candidate_page(job)
-        if not evidence.readable or evidence.closed:
+        if evidence.closed:
             continue
         job["opening_date"] = (
             job["opening_date"]
-            if _date_appears_in_page(evidence.page_text, job["opening_date"])
+            if evidence.readable and _semantic_date_appears_in_page(
+                evidence.page_text, job["opening_date"], semantic="opening"
+            )
             else None
         )
         job["closing_date"] = (
             job["closing_date"]
-            if _date_appears_in_page(evidence.page_text, job["closing_date"])
+            if evidence.readable and _semantic_date_appears_in_page(
+                evidence.page_text, job["closing_date"], semantic="closing"
+            )
             else None
         )
-        job["tags"].append("链接已验证")
         if evidence.title_confirmed:
+            job["tags"].append("链接已验证")
             job["tags"].append("标题已验证")
             job["tags"] = [
                 tag for tag in job["tags"]
                 if tag not in {"待官方核验", "待打开核对"}
             ]
-        elif "待官方核验" not in job["tags"]:
-            job["tags"].append("待官方核验")
-        seen_urls.add(job["url"])
+        else:
+            job["tags"].append(
+                "链接可访问" if evidence.readable else "官方页暂不可读"
+            )
+            if "待官方核验" not in job["tags"]:
+                job["tags"].append("待官方核验")
+        seen_jobs.add(job_key)
         normalized.append(job)
-    tool_calls = sum(
-        getattr(output, "type", "") == "web_search_call"
-        for output in getattr(response, "output", [])
-    )
     return WebRecruitmentSearchResult(
         jobs=normalized,
         input_tokens=_usage_value(response, "input_tokens"),
@@ -423,16 +750,20 @@ def search_current_recruitment_jobs(client: OpenAI | None = None) -> WebRecruitm
         raise RuntimeError("All recruitment web-search pools failed.")
 
     jobs: list[dict[str, Any]] = []
-    jobs_by_url: dict[str, dict[str, Any]] = {}
+    jobs_by_identity: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for result in results:
         for job in result.jobs:
-            existing = jobs_by_url.get(job["url"])
+            key = (
+                job["company"].casefold(), job["title"].casefold(),
+                job["city"].casefold(), job["url"],
+            )
+            existing = jobs_by_identity.get(key)
             if existing:
                 existing["tags"] = list(dict.fromkeys([
                     *existing.get("tags", []), *job.get("tags", []),
                 ]))
                 continue
-            jobs_by_url[job["url"]] = job
+            jobs_by_identity[key] = job
             jobs.append(job)
     return WebRecruitmentSearchResult(
         jobs=jobs[:MAX_SEARCH_JOBS],

@@ -27,15 +27,15 @@
 - Future Radar 内置的确定性官网监控会同时核对活动标记与具体岗位名称：大疆官网的明确岗位及荣耀官网列出的重点校招职位可以直接形成已核验岗位；拼多多、中国电信、海尔和小米的官网总入口只形成 2027 招聘项目，不把“校园招聘”总称冒充具体岗位。国聘等 JavaScript/聚合入口继续只承担 discovery，OpenAI 搜索、RSS 或公众号线索也必须再由官网 verification 来源核验后才进入公开主池。
 - 已建立十组监控范围：央企能源与资源、央企科技通信与交通、烟草与高等级专卖体系、政策性金融与国有大行、券商公募资管、保险综合金融、互联网大中厂、快消外企咨询、量化私募对冲、四大专业服务。跨属性机构可保留多个行业标签，同时使用一个主星域分类；监控清单是高信号搜索范围，不代表每家单位当前均有开放岗位，只有通过官方页面核验的当前校招机会才进入主池。
 - 动态源适配器：服务启动后按 `RECRUITMENT_REFRESH_MINUTES`（默认 30 分钟）扫描国聘网、国资小新、银行招聘网等公开招聘页面，并支持配置 Adzuna API 凭证。公开来源会先做校招标题、重点雇主和城市规则过滤；仍带“待打开核对”或“待官方核验”的候选只留在隔离区，不进入用户主池。
-- 可选 OpenAI 网页搜索补漏：设置 `RECRUITMENT_WEB_SEARCH_ENABLED=true` 后，服务按 `RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES`（默认 360 分钟）搜索十类重点雇主的当前校园岗位，限制网页搜索工具调用次数，过滤非目标单位、非当前目标届别、社招、当天截止/过期/尚未开放条目、搜索结果页和社交媒体链接；模型提交的日期只有在官方页出现同一日期时才会采用。每次调用记录工具次数和实际 Token，该能力会产生 OpenAI API 费用。
+- 可选 OpenAI 公网搜索补漏：设置 `RECRUITMENT_WEB_SEARCH_ENABLED=true` 后，服务按 `RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES`（默认 360 分钟）搜索十类重点雇主及五个公众号逻辑来源的公开网页索引。公众号路径使用 `wechat_web_search` 发现已经被公网索引的公开文章与官方招聘入口，并不是读取微信公众号后台、登录后历史或私有接口。结果会过滤非目标届别、社招、当天截止/过期/尚未开放条目、搜索结果页和社交媒体链接；模型提交的日期只有在官方页出现同一日期时才会采用。网页搜索与 Future Radar 结构化提取默认使用 `gpt-5.4-mini`，每次调用记录工具次数和实际 Token，并产生 OpenAI API 费用。
 - 行动卡片准入：主池只展示带可点击 HTTPS 链接，且官方正文同时支持公司、校园招聘和具体岗位标题的机会；无链接、城市招聘导航页、非校招、未核验、当天截止及已过期岗位不会展示。官方页未写截止日期的已核验开放岗位可以显示，但不会进入截止预警。
-- 五源已核验快照：仓库只保存 5 个授权监控会话最近一次通过服务端核验的公开岗位字段，不保存会话 ID、Cookie、接收 Token 或私密聊天内容。Render Free 冷启动后会逐个重新打开官方页面；只有仍通过核验的岗位才恢复，页面已关闭的岗位会下线，临时无法访问的岗位不会在空数据库中盲目恢复。
+- 受控同步已核验快照：仓库只保存经受控同步接收、并由服务端重新核验的公开岗位字段，不保存会话 ID、Cookie、接收 Token 或私密聊天内容。Render Free 冷启动后会逐个重新打开官方页面；只有仍通过核验的岗位才恢复，页面已关闭的岗位会下线，临时无法访问的岗位不会在空数据库中盲目恢复。
 - 首页截止预警：登录后直接显示 7 天内到期的已核验机会，无需先打开未来雷达；截止日当天及更早的岗位不会从岗位 API 返回。只有原公告明确标注的截止日期才会触发预警。
 - 我的官网变化雷达：每个账号可添加最多 12 个公开 HTTPS 企业招聘页和关注关键词。抓取前会拒绝账号信息、本机/内网/保留地址、非标准 HTTPS 端口和不安全跳转，并限制响应类型、大小与超时。
 - 官网变化检测完全使用可见文本规范化、SHA-256 指纹和确定性关键词匹配，不把招聘网页发送给模型，也不消耗 OpenAI Token。首次检查只建立基线；服务清醒时会定时比较变化，用户也可手动刷新。最近变化会在应用首页持续显示“去核对”提醒，直到用户标记为已核对。
 - 动态监控接收 API：受 `RECRUITMENT_INGEST_TOKEN` 保护，供另行部署并获得授权的外部任务写入结构化校招岗位。单批最多 10 个岗位，也支持 `{"jobs":[],"source_id":"chatgpt-radar-01","source_updated_at":"<ISO 8601>"}` 空结果心跳；批次和岗位均拒绝未声明字段。新契约记录五个逻辑 `source_id`、稳定条目/外部 ID、来源更新时间和简短证据，并提供只含聚合状态的同步状态接口；五个真实会话 ID 不提交、不入库、不进 Git。可选 `source_thread_id` 只用于兼容其他来源，服务端至多保留不可逆短哈希。当前仓库仍不包含一个永不休眠、覆盖全网的外部采集服务。
-- 五源受控导入：ChatGPT 的私有 `/c/...` 会话地址不是开放读取 API，冰焰不会依赖登录态、Cookie 或未公开内部接口读取它们。可行路径是把会话更新为不含隐私的 `FROSTFIRE_SYNC_V1`，由用户创建/更新公开 `https://chatgpt.com/share/...` 快照，或直接导出同一 JSON；`scripts/frostfire_source_import.py` 只提取完整结构化对象，并由本机 Keychain Token 幂等提交。分享链接是快照，不会在原会话新增消息后自动变成持续数据流。
-- 公众号与公开订阅源：已知、无需登录即可访问的公众号文章 URL 可以作为 discovery 文章受控导入；公开 RSS/Atom 可以配置为 `public_feed` 来源。两者都只产生线索，仍须企业官方招聘 HTTPS 页面核验后才会成为公开岗位；系统不绕过微信登录、验证码、反爬或平台限制。
+- 五源本机只读桥接：用户已经登录的本机浏览器可由 Codex 自动任务读取页面中**当前可见的助手消息 DOM**，只提取招聘表格字段和真实锚点链接，再交给 `scripts/frostfire_chatgpt_bridge.py` 脱敏、分批和维护本机哈希游标。桥接不读取 Cookie、Authorization、隐藏接口、页面存储或完整会话，也不向 ChatGPT 发送消息；Render 服务端不会登录或直接访问这些私有会话。浏览器结果统一以待核验候选提交到 `/api/recruitment/ingest`，先进入隔离区，再由服务端打开官方 HTTPS 页面核对公司、校招、岗位、日期与关闭状态；未通过核验的条目不进入公开岗位池。
+- 公众号与公开索引：五个公众号逻辑来源在 Deep Scan 中通过 OpenAI 公网 Web Search 做 discovery，不直接抓取微信公众号后台，也不绕过微信登录、验证码或反爬。国务院国资委招聘列表（含公开移动版 fallback）和银行招聘网由确定性解析器生成最小文章线索；公开 RSS/Atom 与用户提供的公开文章也只能产生 discovery。所有第三方线索仍须企业官方招聘 HTTPS 页面核验后才会成为公开岗位。
 - 服务端先隔离候选，再区分已核验、待核验、拒绝与关闭；只有服务端可读取的官方 HTTPS 页面正文同时支持校招、公司和岗位身份，且满足有效期与城市规则时，才提升到岗位池。提交日期只有在官网正文出现同一确切日期时才进入正式岗位；每次重复 heartbeat 也会重新读取官方页，若页面显示关闭就下线，暂时访问失败则保留此前的 last-known-good。外部 `evidence` 最多 12 条、每条 1–280 个字符且必须为单行，邮箱或电话号码会被拒绝；它只保留简短来源上下文，不能替代官方页面核验。岗位会按稳定外部 ID、来源条目 ID 或规范化岗位身份去重，更早的来源版本不会覆盖新版本。
 - 外部监控 OpenAPI 契约见 [`docs/RECRUITMENT_INGEST_OPENAPI.yaml`](docs/RECRUITMENT_INGEST_OPENAPI.yaml)，五源桥接、Secret、heartbeat 与幂等说明见 [`docs/CHATGPT_RADAR_BRIDGE.md`](docs/CHATGPT_RADAR_BRIDGE.md)。契约已指向 `https://frostfire-ai.onrender.com`；发送方只能配置 Render 生成的接收 Token，不能写入 ChatGPT Cookie 或 OpenAI API Key。
 - 订阅能力的服务端边界：已有 Free/Pro 权益模型、额度查询和一个默认关闭的 Apple 交易校验入口；未配置交易校验时接口明确拒绝，不会把演示按钮伪装成已完成收款。
@@ -115,6 +115,7 @@ ai-chat/
 │   ├── STORE_LISTING_ZH.md
 │   └── STORE_RELEASE_CHECKLIST.md
 ├── scripts/
+│   ├── frostfire_chatgpt_bridge.py
 │   ├── frostfire_ingest.py
 │   └── frostfire_source_import.py
 ├── tests/
@@ -150,7 +151,7 @@ FUTURE_RADAR_ENABLED=true
 FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES=30
 FUTURE_RADAR_CLOSE_CONFIRMATIONS=2
 FUTURE_RADAR_MAX_WORKERS=4
-FUTURE_RADAR_AI_MODEL=gpt-5.4-nano
+FUTURE_RADAR_AI_MODEL=gpt-5.4-mini
 ```
 
 启动：
@@ -201,7 +202,7 @@ Docker 镜像会在构建阶段执行 Vite 生产构建。运行后，`/` 提供
 
 部署时必须在 Render 的环境变量页面填写 `OPENAI_API_KEY`、`CORS_ORIGINS` 和一个自行保存的强随机 `ADMIN_DASHBOARD_TOKEN`；`JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 由 Blueprint 自动生成。管理员面板入口是 `/?admin=usage`，Token 只保存在当前页面内存。`FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES=30` 只表示清醒进程的调度唤醒间隔；各来源仍按自己的间隔判断是否到期，其中 OpenAI 公共网页补漏默认为 360 分钟。如需零额外模型费用，可将 `RECRUITMENT_WEB_SEARCH_ENABLED` 改为 `false`。真实密钥不得写入仓库。Future Radar 的长期运行边界和最小持久方案见 [`docs/FUTURE_RADAR.md`](docs/FUTURE_RADAR.md)。
 
-需要导入 ChatGPT 监控结果时，将服务端 `RECRUITMENT_INGEST_TOKEN` 保存到本机 macOS Keychain service `frostfire-recruitment-ingest`，再使用公开 `/share/` 快照或本地结构化 JSON 调用 `scripts/frostfire_source_import.py`。私有 `/c/...` 链接会被明确拒绝；分享页或本地文件中的 `source_id` 也不能覆盖命令行指定的本机逻辑来源。若要持续更新，数据生产方必须在每轮产生新的完整 JSON 后更新分享快照并重新运行导入，或直接推送 JSON；目前没有 ChatGPT 个人历史会话读取 API。不要把接收 Token、Cookie、OpenAI API Key、私有会话 URL 或会话全文写入 Git、数据库或任务日志。完整边界和命令见 [`docs/CHATGPT_RADAR_BRIDGE.md`](docs/CHATGPT_RADAR_BRIDGE.md)。Render Free 会休眠且 SQLite 不持久，定时导入不能消除冷启动、漏跑或数据丢失风险。
+需要同步 ChatGPT 监控结果时，由本机 Codex 自动任务在用户已登录的浏览器中只读可见助手消息，将脱敏后的结构化行传给 `scripts/frostfire_chatgpt_bridge.py`。脚本先 dry-run，再从 macOS Keychain 读取接收凭证并提交；游标文件只保存逻辑来源和消息摘要，不保存会话地址、消息正文或官方链接。也可继续使用用户主动导出的结构化 JSON 或公开分享快照，但二者都是显式导入，不等于云端账号直连。本机自动同步依赖 Mac、Codex、网络和浏览器登录会话持续可用；Render 不会替它读取私有页面，因此这不是 24/7 云直连。完整边界见 [`docs/CHATGPT_RADAR_BRIDGE.md`](docs/CHATGPT_RADAR_BRIDGE.md)。Render Free 会休眠且 SQLite 不持久，定时导入不能消除冷启动、漏跑或数据丢失风险。
 
 ## 移动端
 
@@ -311,6 +312,7 @@ python -m pytest -q
 
 ```bash
 cd frontend
+npm test
 npm run build
 npm audit
 ```
@@ -324,7 +326,7 @@ python3 scripts/frostfire_source_import.py --source-id chatgpt-share-01 \
   --structured-json /path/to/FROSTFIRE_SYNC_V1.json
 ```
 
-新 Future Radar 情报层的 1–5 轮生命周期、幂等、关闭确认、失败隔离、多来源合并、AI 降级、公众号受限状态与 API 测试：
+新 Future Radar 情报层的 1–5 轮生命周期、幂等、关闭确认、失败隔离、多来源合并、AI 降级、公众号公网发现、公开索引与 API 测试：
 
 ```bash
 python -m pytest -q backend/tests/test_future_radar.py

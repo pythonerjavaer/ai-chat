@@ -63,7 +63,7 @@ def _safe_source_failure(
     platform = str(source.get("platform") or "").casefold()
     fingerprint = f"{type(exc).__name__} {exc}".casefold()
     if (
-        adapter == "openai_web_search"
+        adapter in {"openai_web_search", "wechat_web_search"}
         or source_type == "openai_web_search"
         or platform == "openai"
     ):
@@ -532,8 +532,18 @@ class FutureRadarService:
             for raw in result.jobs:
                 try:
                     item = normalize_job(raw)
+                    item_verification_role = verification_role
                     if (
-                        verification_role == "verification"
+                        item["external_id"] in result.verified_job_external_ids
+                        and item.get("official_url")
+                    ):
+                        # The adapter found the row, then independently fetched
+                        # the supplied official page and matched the exact job
+                        # title.  Promote only this attested row; other rows from
+                        # the same discovery batch remain pending.
+                        item_verification_role = "verification"
+                    if (
+                        item_verification_role == "verification"
                         and item.get("official_url")
                         and (
                             not mixed_verification_source
@@ -557,7 +567,7 @@ class FutureRadarService:
                             program_id = existing_program["id"] if existing_program else None
                     job, event = self._upsert_job(
                         connection, item=item, program_id=program_id, source=source,
-                        verification_role=verification_role, run_id=run_id, now=now,
+                        verification_role=item_verification_role, run_id=run_id, now=now,
                     )
                     seen_job_ids.add(job["id"])
                     if event == "NEW":

@@ -27,8 +27,8 @@ EXISTING_PUBLIC_SOURCES = (
     ),
     (
         "public-sasac-xiaoxin-existing",
-        "国资小新现有公开入口",
-        "https://www.gdpdd.com/s/xiaoxin/index.html",
+        "国资委招聘公开栏目（国资小新官方来源）",
+        "https://www.sasac.gov.cn/n2588035/n2588325/n2588350/index.html",
     ),
     ("public-bank-recruitment", "银行招聘网公开入口", "https://yhks.cn/"),
 )
@@ -264,6 +264,7 @@ VERIFIED_OFFICIAL_SOURCES = (
 def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
     for source_id, name in WECHAT_SOURCE_NAMES:
+        discovery_adapter = "wechat_web_search" if web_search_enabled else "discovery_limited"
         sources.append({
             "id": source_id,
             "name": name,
@@ -277,10 +278,10 @@ def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
             "priority": 70,
             "trust_level": "discovery",
             "interval_minutes": 360,
-            "adapter_config": {"adapter": "discovery_limited"},
+            "adapter_config": {"adapter": discovery_adapter},
             "query_config": {"recruitment_year": 2027, "scope": "campus"},
             "region_config": {"timezone": "Asia/Shanghai", "regions": ["中国大陆", "香港"]},
-            "status": "discovery_limited",
+            "status": "pending" if web_search_enabled else "discovery_limited",
             "verification_status": "unverified",
         })
     for source in VERIFIED_OFFICIAL_SOURCES:
@@ -288,6 +289,17 @@ def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
         item["domain"] = urllib.parse.urlsplit(str(item["url"])).hostname
         sources.append(item)
     for source_id, name, url in EXISTING_PUBLIC_SOURCES:
+        adapter_config = {"adapter": "official_html", "ai_extract": False}
+        if source_id == "public-sasac-xiaoxin-existing":
+            adapter_config = {
+                "adapter": "public_recruitment_index",
+                "discovery_kind": "sasac",
+            }
+        elif source_id == "public-bank-recruitment":
+            adapter_config = {
+                "adapter": "public_recruitment_index",
+                "discovery_kind": "bank",
+            }
         sources.append({
             "id": source_id,
             "name": name,
@@ -299,7 +311,7 @@ def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
             "priority": 55,
             "trust_level": "discovery",
             "interval_minutes": 120,
-            "adapter_config": {"adapter": "official_html", "ai_extract": False},
+            "adapter_config": adapter_config,
             "query_config": {"recruitment_year": 2027, "scope": "campus"},
             "region_config": {"timezone": "Asia/Shanghai", "regions": ["中国大陆", "香港"]},
             "status": "pending",

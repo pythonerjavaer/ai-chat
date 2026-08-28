@@ -80,7 +80,7 @@ def load_settings() -> Settings:
         recruitment_web_search_model=(
             os.getenv("RECRUITMENT_WEB_SEARCH_MODEL", "").strip()
             or os.getenv("AI_MODEL", "").strip()
-            or "gpt-5.4-nano"
+            or "gpt-5.4-mini"
         ),
         recruitment_web_search_interval_minutes=max(
             60,
@@ -112,7 +112,7 @@ def load_settings() -> Settings:
         future_radar_ai_model=(
             os.getenv("FUTURE_RADAR_AI_MODEL", "").strip()
             or os.getenv("RECRUITMENT_WEB_SEARCH_MODEL", "").strip()
-            or "gpt-5.4-nano"
+            or "gpt-5.4-mini"
         ),
     )
 

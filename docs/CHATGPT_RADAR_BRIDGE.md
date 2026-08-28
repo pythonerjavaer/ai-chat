@@ -1,31 +1,17 @@
-# ChatGPT / 公众号公开信源 → 冰焰未来雷达受控导入
+# ChatGPT 本机只读桥接 / 公众号公网发现 → 冰焰未来雷达
 
-这套导入把用户明确公开或主动导出的**结构化招聘结果**，提交到冰焰的受保护接收 API。它不是 ChatGPT 账号直连：冰焰不会登录 ChatGPT、不会读取浏览器 Cookie，也不会自动回溯个人会话历史。
+当前实现有两条彼此独立的 discovery 路径，二者都不能把第三方内容直接当作公开岗位：
 
-必须区分两类 ChatGPT URL：
+1. **私有 ChatGPT 本机只读桥接。** 用户在自己的 Mac 浏览器中保持登录，本机 Codex 自动任务只读取页面已经渲染出来的助手消息 DOM，从招聘表格单元格和真实锚点中提取允许字段。它不读取 Cookie、Authorization、页面存储、隐藏 API、完整会话或用户消息，也不向 ChatGPT 发送内容。Render 不登录 ChatGPT，也不直接访问私有会话。
+2. **五个公众号逻辑来源的公网发现。** Future Radar 的 `wechat_web_search` 使用 OpenAI Web Search 搜索公网已经索引的公开文章、招聘栏目和企业官方招聘入口。它不是微信公众号后台连接器，不读取登录后文章列表、订阅消息或私有历史，也不绕过登录、验证码和平台限制。
 
-- `https://chatgpt.com/c/...` 是账号内的私有会话页面，不是开放 API。即使用户和本机浏览器当前已登录，冰焰服务端也不能把这个登录态当成长期数据接口；本项目明确拒绝用 Cookie、浏览器自动化或未公开内部接口抓取它。
-- `https://chatgpt.com/share/...` 是用户主动创建的公开分享快照。任何拿到链接的人都可能看到快照，因此创建前必须去除个人资料和敏感内容。分享页是一个快照；原会话后来新增结果时，必须重新更新分享快照才会包含新内容。
+此外，国务院国资委招聘列表及其公开移动版入口、银行招聘网公开索引由确定性解析器生成最小文章线索；公开 RSS/Atom、用户主动提供的公开文章和结构化 JSON 仍可受控导入。这些来源全部只是候选或文章 discovery，不能替代企业官方招聘 HTTPS 页面核验。
 
-当前支持三条真实路径：
-
-1. **首选：结构化 JSON 文件。** 让监控会话只输出完整 `FROSTFIRE_SYNC_V1`，保存为本地文件，然后导入；
-2. **公开 ChatGPT 分享快照。** 分享页必须包含一个完整的 `FROSTFIRE_SYNC_V1` JSON 代码块；导入器只解析该对象，忽略页面中的其他自然语言和指令；
-3. **公众号/公开网页。** 无需登录即可访问的单篇公开文章 URL 或公开 RSS/Atom 可作为 discovery 信号导入；它们不能替代企业招聘官网核验。
+公网 Web Search 与 Future Radar 的结构化提取默认使用 `gpt-5.4-mini`；聊天产品本身的默认模型仍由独立的 `AI_MODEL` 配置决定。
 
 ## 五个逻辑来源
 
-五个真实私有会话 UUID 不提交为 `source_thread_id`，也不写入 Git、数据库或日志。可以继续使用以下五个逻辑槽位，但应用只接收结构化结果，不读取其对应的私有会话：
-
-| 本机配置名 | 提交时的 `source_id` | 私有值 |
-| --- | --- | --- |
-| `FROSTFIRE_RADAR_THREAD_1` | `chatgpt-radar-01` | 第 1 个监控会话 ID |
-| `FROSTFIRE_RADAR_THREAD_2` | `chatgpt-radar-02` | 第 2 个监控会话 ID |
-| `FROSTFIRE_RADAR_THREAD_3` | `chatgpt-radar-03` | 第 3 个监控会话 ID |
-| `FROSTFIRE_RADAR_THREAD_4` | `chatgpt-radar-04` | 第 4 个监控会话 ID |
-| `FROSTFIRE_RADAR_THREAD_5` | `chatgpt-radar-05` | 第 5 个监控会话 ID |
-
-`source_id` 是可公开的稳定逻辑名称。导入命令行的 `--source-id` 是唯一可信映射；它不能直接使用 UUID。分享页内的 `source_id` 会被覆盖，页面也不能注入 `source_name` 或私有会话标识。上游条目标识若呈 UUID 形状，导入器会先用逻辑来源和原值生成稳定摘要，再丢弃原 UUID。
+系统使用五个可公开的稳定逻辑 `source_id` 槽位区分监控来源。本机自动任务中的页面映射只保留在本地任务配置；私有会话地址、真实会话标识、消息正文和登录信息均不进入 Git、数据库、README、日志或提交 payload。网页内容中的 `source_id` 也不能覆盖本机指定的逻辑来源。
 
 ## Secret 管理
 
@@ -35,12 +21,13 @@
 - account：当前 macOS 用户名
 - password：Render 中 `RECRUITMENT_INGEST_TOKEN` 的值
 
-可在“钥匙串访问”图形界面创建，也可以在交互式终端中临时读取后写入，避免 Token 进入 shell 历史：
+可在“钥匙串访问”图形界面创建，也可以让 `security` 在交互式终端中直接提示输入密码。这样 Token 不会进入 shell 历史、环境变量或进程参数：
 
 ```bash
-read -r -s FROSTFIRE_TOKEN
-security add-generic-password -U -a "$USER" -s frostfire-recruitment-ingest -w "$FROSTFIRE_TOKEN"
-unset FROSTFIRE_TOKEN
+security add-generic-password -U \
+  -a "$USER" \
+  -s frostfire-recruitment-ingest \
+  -w
 ```
 
 Keychain 不可用时，自动任务可以在其受控进程环境中设置 `FROSTFIRE_INGEST_TOKEN`。不要把它写入仓库内 `.env`、JSON、YAML、日志或任务 Prompt。
@@ -52,48 +39,35 @@ Keychain 不可用时，自动任务可以在其受控进程环境中设置 `FRO
 - `RECRUITMENT_INGEST_TOKEN` / `FROSTFIRE_INGEST_TOKEN` 明文；
 - 五个会话的完整对话导出或与岗位无关的个人内容。
 
-## 受控导入器用法
+## 本机浏览器桥接用法
 
-先验证一个用户主动导出的结构化文件；默认只打印规范化结果，不联网提交：
+浏览器控制层与校验脚本分开：Codex 自动任务负责在用户已登录的本机浏览器中读取当前可见 DOM，并在内存中转换为一个只包含 `source_id`、逻辑消息标识和结构化 `rows` 的对象；`scripts/frostfire_chatgpt_bridge.py` 不打开 ChatGPT，也不接受会话地址、Cookie 或整段页面正文。
 
-```bash
-python3 scripts/frostfire_source_import.py \
-  --source-id chatgpt-radar-01 \
-  --structured-json /path/to/FROSTFIRE_SYNC_V1.json
-```
-
-公开分享页必须是 `/share/`，不能是 `/c/`：
+先对已经脱敏的浏览器输出执行 dry-run；它不会读取 Keychain、联网提交或推进游标：
 
 ```bash
-python3 scripts/frostfire_source_import.py \
-  --source-id chatgpt-radar-01 \
-  --chatgpt-share 'https://chatgpt.com/share/<PUBLIC_SHARE_ID>'
+python3 scripts/frostfire_chatgpt_bridge.py --dry-run \
+  < /path/to/sanitized-browser-message.json
 ```
 
-确认输出后加 `--submit`；脚本从 `FROSTFIRE_INGEST_TOKEN` 或同一 macOS Keychain service 读取 Token，并向 `/api/future-radar/sync` 提交。它不会把分享链接、页面正文或 Token 放进 payload。
-
-公开公众号文章只建立 discovery 文章记录：
+确认后提交：
 
 ```bash
-python3 scripts/frostfire_source_import.py \
-  --source-id wechat-public-01 \
-  --public-article 'https://mp.weixin.qq.com/s/<PUBLIC_ARTICLE_ID>' \
-  --title '文章公开标题' \
-  --publisher '公众号公开名称' \
-  --submit
+python3 scripts/frostfire_chatgpt_bridge.py --submit \
+  < /path/to/sanitized-browser-message.json
 ```
 
-公开 RSS/Atom 同样只导入最多 10 条文章信号：
+脚本具有以下硬边界：
 
-```bash
-python3 scripts/frostfire_source_import.py \
-  --source-id public-campus-feed-01 \
-  --public-feed 'https://example.com/campus.xml' \
-  --publisher '公开招聘订阅' \
-  --submit
-```
+- 顶层只允许 `source_id`、`message_id` 和 `rows`；每行只允许招聘字段，且必须包含公司、具体岗位和官方 HTTPS URL；
+- 消息标识立即与逻辑来源一起做 SHA-256，只把摘要写入本机 `Application Support/Frostfire` 游标文件；游标以原子方式更新并设为当前用户可读写；
+- 每批最多 10 条，先形成 discovery-only 结构，再转换为 `/api/recruitment/ingest` 契约；桥接自带的“已验证”标签会被剥除；
+- 只有所有批次都提交成功才推进游标；同一消息重试不会重复创建批次；可访问且明确没有新岗位时可提交空心跳，读取失败或结构无效时不得伪造成功；
+- payload、游标和安全输出都不包含会话地址、原消息标识、消息正文、Cookie、登录凭证或接收密钥。
 
-系统拒绝 HTTP、账号信息、非标准 HTTPS 端口、本机/内网/保留地址、不安全重定向、带凭证参数的 URL、超大响应、RSS DTD/实体和非 RSS/Atom XML。导入 payload 中任何 ChatGPT `/c/` 或 `/share/` URL 都会被拒绝，避免会话/分享 UUID 进入岗位或文章来源。公开网页摘要中的邮箱、电话、密钥样式文本和 UUID 会在截断前脱敏；结构化 JSON 中出现这些内容则拒绝整批。校验错误、HTTP 错误和服务端响应也会脱敏，不回显被拒绝的值或 Token。公开页面不可访问时会报告失败，不伪造成功心跳。
+用户主动导出的 `FROSTFIRE_SYNC_V1` 文件、公开文章与公开 RSS/Atom 仍可使用 `scripts/frostfire_source_import.py`，但它们是显式导入，不会自动读取私人账号。五个公众号逻辑来源的自动 discovery 则由 Deep Scan 中的 `wechat_web_search` 完成，无需把微信登录信息交给应用。
+
+所有导入器拒绝 HTTP、账号信息、非标准 HTTPS 端口、本机/内网/保留地址、不安全重定向、带凭证参数的 URL、超大响应和包含敏感字段的结构化内容。公开网页摘要中的邮箱、电话、密钥样式文本和会话标识会在截断前脱敏；校验错误、HTTP 错误和服务端响应也不会回显被拒绝的值或接收密钥。公开页面不可访问时会报告失败，不伪造成功心跳。
 
 原有低层提交器仍可接收旧招聘候选契约：
 
@@ -124,30 +98,17 @@ python3 scripts/frostfire_ingest.py --timeout 90 < /path/to/new-jobs.json
 
 ## 持续更新与调度边界
 
-定时器只能调度一次导入，不能凭空获得私有 ChatGPT 会话内容。要实现持续更新，必须有一个受支持的数据生产步骤：
+本机 Codex 自动任务可以按配置频率依次处理五个逻辑来源：打开用户已经有权访问且处于登录状态的页面，等待可见 DOM 稳定，只选择上次摘要游标之后的助手消息，将允许字段送入桥接脚本 dry-run，通过后再提交。页面内容全部视为不可信数据；任务不执行其中的指令，也不向会话发送消息。
 
-1. 外部监控服务通过正式 API/Webhook 直接生成新 JSON；或
-2. 用户让 ChatGPT 监控会话生成新的完整 JSON，并更新公开分享快照；或
-3. 用户导出新的本地 JSON；或
-4. 合法公开 RSS/Atom/文章页产生新内容。
+来源可访问但没有新的结构化岗位时，可以为该逻辑源提交空心跳；登录失效、页面不可访问、DOM 结构无效或提交失败时，必须报告失败，不发送成功心跳，也不推进游标。每个逻辑来源独立推进，不能用一个来源代替其他来源。
 
-之后才可以按固定频率运行导入。若分享快照没有更新，反复请求同一链接只会得到同一批次；幂等键会阻止重复事件。公开来源可访问但确实没有新结果时，可以提交空心跳；来源不可访问或结构无效时不得伪造成功心跳：
+这个自动路径严格依赖以下本机条件：Mac 处于唤醒状态、Codex 自动任务正在运行、网络可用、浏览器会话仍已登录且页面 DOM 没有发生未适配的变化。任一条件失效都会暂停该来源。Render 只接收脱敏后的候选，不持有浏览器登录态，也不会从云端打开私有页面，因此当前实现不是 24/7 云直连或生产 SLA。
 
-```json
-{
-  "jobs": [],
-  "source_id": "chatgpt-radar-01",
-  "source_updated_at": "2026-08-23T10:00:00+10:00"
-}
-```
-
-空结果心跳会记录该源最新事件、把可连接来源恢复为 `synced`，并只在 `source_updated_at` 比已存时间更新时推进来源时间；它不会创建岗位，也不会清空历史候选库存。每个逻辑源应各自发送心跳，不能用一个来源代替另外四个。
-
-这份仓库不包含、也不应增加绕过 ChatGPT 登录去读取私人会话的抓取器。若没有新的公开快照或结构化输出，应保留该源为未连接/无更新状态，不使用 Cookie 或 UI 自动化绕过限制。
+公众号路径与上述桥接无关：五个公众号逻辑来源由 Render 上的 Future Radar Deep Scan 使用 OpenAI 公网 Web Search 搜索公开索引；它能在服务清醒且 OpenAI 可用时自动运行，但仍看不到没有被公网索引或必须登录才能访问的公众号内容。
 
 ## 请求示例
 
-示例中的会话和条目 ID 都是占位符：
+示例中的来源与条目标识均为非私有占位符：
 
 ```json
 {

@@ -5,7 +5,7 @@
 ## 1. 当前架构
 
 ```text
-公开 HTTPS 页面 / 公开 JSON API / RSS/Atom / 旧岗位池 / 受控同步 / Mock
+公开 HTTPS / JSON / RSS / 公开招聘索引 / OpenAI 公网 discovery / 受控同步 / Mock
                               │
                               ▼
                      Source Registry
@@ -30,7 +30,8 @@
 
 - `schema.py`：在现有 SQLite 上执行幂等、增量迁移 `future_radar_v1`。
 - `seeds.py`：初始化 Source Registry；不保存私有会话 ID、Cookie 或密钥。
-- `adapters.py`：公开 HTML、公开 JSON API、公开 RSS/Atom、旧岗位池、OpenAI 网页补漏、受控同步、Mock 等来源适配器。
+- `adapters.py`：公开 HTML、公开 JSON API、公开 RSS/Atom、公开招聘索引、五个公众号逻辑来源的 OpenAI 公网发现、旧岗位池、受控同步和 Mock 等来源适配器。
+- `public_discovery.py`：确定性解析国务院国资委招聘列表与银行招聘网公开索引，只输出经过 URL 与文本净化的文章线索，不生成已核验岗位。
 - `normalization.py`：文本、日期、HTTPS URL、稳定外部 ID 和语义哈希规范化。
 - `service.py`：并发扫描、按扫描类型的运行锁、单来源锁、验证角色、合并、差异事件、关闭确认和幂等同步。
 - `repository.py`：SQLite 查询、分页、来源健康、运行记录、事件游标、来源快照和 AI 缓存。
@@ -73,7 +74,9 @@
 | `official_html` | 抓取允许访问的公开 HTTPS 页面，做校招标记和内容指纹；可选 AI 结构化提取 |
 | `official_api` | 按 `items_path` 和 `field_map` 映射公开 JSON API |
 | `public_feed` | 读取公开 RSS/Atom，最多保存受限的文章 discovery 元数据；不直接生成已核验岗位 |
+| `public_recruitment_index` | 确定性解析已知的国务院国资委/银行公开招聘索引，生成最小文章线索；不调用模型，不直接生成已核验岗位 |
 | `openai_web_search` | 复用现有受限 OpenAI 公共网页补漏管线 |
+| `wechat_web_search` | 使用 OpenAI Web Search 搜索指定公众号名称对应的**公网已索引内容**与新官方招聘入口；不读取微信公众号后台、登录态或私有文章历史 |
 | `manual` | 只接受受控 push，不主动抓取 |
 | `discovery_limited` | 明确报告“发现能力未配置”，不伪造成功 |
 | `mock` | 本地确定性 1–5 轮生命周期测试 |
@@ -83,8 +86,8 @@
 Source Registry 目前包含以下公开入口。聚合频道仅作为 discovery 线索；企业招聘官网可以明确配置为 verification 核验源：
 
 - `public-iguopin-campus`：国聘网公开校园频道；
-- `public-sasac-xiaoxin-existing`：现有国资小新公开入口；
-- `public-bank-recruitment`：银行招聘网公开入口；
+- `public-sasac-xiaoxin-existing`：国务院国资委招聘公开列表；确定性解析器优先读取网页入口，失败时尝试其公开移动版入口，只保存文章 discovery 元数据；
+- `public-bank-recruitment`：银行招聘网公开索引；确定性解析器过滤导航、商业培训噪声与不安全链接，并把录用公示和在招信号分开标记；
 - `official-dji-digital-2027`：大疆招聘官网的 2027 数字管理构建者计划；这是核验角色的真实官方 HTML 来源，使用页面标记做确定性项目/岗位解析，不调用 AI；
 - `official-pdd-campus-2027`、`official-china-telecom-campus-2027`、`official-haier-campus-2027`、`official-xiaomi-campus-2027`：官网正文明确存在 2027 校招标记的项目级来源；它们只建立招聘项目，不把“2027 校园招聘”这类项目总称伪装成具体岗位；
 - `official-honor-campus-2027`：荣耀官网的 2027 校招项目和官网首页逐字列出的三个“重点校招职位”；只有页面仍同时包含活动标记和具体岗位名称时才生成已核验岗位。由于具体 ATS 详情页是无法由确定性抓取器核验岗位正文的 JavaScript 壳，卡片安全回退到已经核验的荣耀官方概览页；
@@ -94,19 +97,25 @@ Source Registry 目前包含以下公开入口。聚合频道仅作为 discovery
 
 公开入口可访问不等于其中每条内容已经成为已核验岗位。系统仍按来源角色、岗位字段和官方 HTTPS 证据分别处理。
 
-2026-08-28 使用项目自身抓取器复核生产种子时：大疆、国聘、现有国资小新入口和银行招聘网均能建立 HTTPS 连接；国聘页面只返回 SPA 壳，另外两个聚合页虽然有正文但混有社招、旧届和导航条目。旧配置把这三个 discovery 入口交给 `official_html`，同时关闭 AI 且没有公司和岗位标记，因此扫描“成功但 0 岗位”是确定结果，并非刷新按钮失效。它们继续作为 discovery 线索，而不是被提升为 verification。新增的确定性官网来源不依赖这些聚合页，也不绕过 JavaScript、登录、验证码或反爬限制。
+国聘页面仍可能只返回 SPA 壳；公开索引也可能临时不可访问或混有社招、旧届、导航与录用公示。系统不会把“页面可访问”当作在招岗位，也不会在索引失败时伪造成功心跳。国务院国资委和银行公开索引只负责确定性地产生标题、公开链接、发布时间、届别与分类线索；它们继续保持 discovery 角色。新增的确定性官网来源不依赖这些聚合页，也不绕过 JavaScript、登录、验证码或反爬限制。
 
-`official_html` 的确定性配置支持 `required_markers` 和 `configured_jobs`。项目必须命中全部活动标记；岗位还必须逐字命中各自 `job_marker`。只有管理员明确标为 `trust_level=verification` 的官方来源才能把这些条目升级为 `verified`。配置的截止日期已经过去、或命中显式 `closed_markers` 时，适配器产生关闭观察；页面暂时丢失标记时采用现有连续两次完整快照缺失规则，不会一次失败就下线。OpenAI 网页搜索、RSS、公众号文章和聚合页始终是 discovery：即使模型声称“已验证”，服务也会降为 `pending`，直到同一岗位获得官方 verification 来源。
+`official_html` 的确定性配置支持 `required_markers` 和 `configured_jobs`。项目必须命中全部活动标记；岗位还必须逐字命中各自 `job_marker`。只有管理员明确标为 `trust_level=verification` 的官方来源才能把这些条目升级为 `verified`。配置的截止日期已经过去、或命中显式 `closed_markers` 时，适配器产生关闭观察；页面暂时丢失标记时采用现有连续两次完整快照缺失规则，不会一次失败就下线。OpenAI 网页搜索、RSS、公众号文章和聚合页本身始终是 discovery；模型自述不能构成核验。只有 discovery 适配器随后确定性打开企业官方 HTTPS 页面，并在该页确认公司、校招、具体岗位和关闭状态的单个条目，才可获得逐条核验凭据；文章记录永远不能核验岗位。
 
 ### 五个公众号来源的真实状态
 
-以下五个逻辑来源已在 Source Registry 占位：`国央校招`、`国聘`、`国资小新`、`国央求职网`、`银行招聘网`。
+以下五个逻辑来源已在 Source Registry 注册：`国央校招`、`国聘`、`国资小新`、`国央求职网`、`银行招聘网`。
 
-它们当前全部使用 `adapter=discovery_limited`，数据库状态是 `status=discovery_limited`、`verification_status=unverified`；产品语义是 **pending / 待配置公开发现入口**。仓库没有填写未经验证的公众号账号 ID、文章列表 URL、Cookie 或私有会话链接，也没有伪造抓取结果、成功心跳或岗位。扫描时会诚实记录 `DISCOVERY_LIMITED`，不会绕过登录、验证码、平台限制或网站条款。
+当 `RECRUITMENT_WEB_SEARCH_ENABLED=true` 时，它们使用 `adapter=wechat_web_search`。适配器把来源名称作为检索范围，通过 OpenAI Web Search 查找公网已经索引的公开文章、招聘栏目和企业官方招聘入口；它不是微信账号连接器，不读取微信公众号后台、登录后文章列表、订阅消息、Cookie 或隐藏接口，也不保证完整覆盖某个账号的历史。若搜索没有可靠结果就返回空数组；OpenAI 不可用时该来源报告失败，不伪造成功或岗位。
 
-代码已经提供通用 `WechatSourceAdapter`，但它只读取配置的合法公开 HTTPS 文章 URL；可选的 `article_title` / `publish_time` / `search_excerpt` 配置用于生成最小文章索引。若公开 URL 与标题已知但正文暂时不可访问，适配器会把不含联系方式的最小 discovery metadata 保存进 `source_articles`，生成 `ARTICLE_DISCOVERED`，并保持 `snapshot_complete=false`，因此不会误关岗位或冒充官网核验。只有获得合法、稳定、公开的入口后，才能把相应来源从 `discovery_limited` 改为 `wechat_public`。若没有这样的入口，就应继续保持受限状态。
+搜索返回的文章只保存经净化的发布者、标题、公共 HTTPS 链接、公开日期和短摘要，并保持 `snapshot_complete=false`。搜索返回的岗位先按当前届别、校招、城市、截止状态与目标雇主过滤，再确定性打开其企业招聘官网或授权 ATS 页面；只有页面可读、未关闭且支持具体岗位标题的条目才具有逐条核验资格。关闭公网搜索时，五个来源回退到 `discovery_limited`，而不是假装已经直连微信。
 
 公开 RSS/Atom 使用 `public_feed`。解析器拒绝 DTD/外部实体、不安全链接、ChatGPT 会话/分享链接、带凭证参数的 URL 和非公共 HTTPS 地址；响应最多 1.5 MB，超时、条目数与域名访问间隔都有上限。保存前会脱敏邮箱、电话、密钥样式文本和 UUID，只保留标题、链接、公开发布者、发布时间和不超过 1,500 字符的摘要；20,000 字符来源快照也使用相同脱敏。Feed 是滚动窗口，所以 `snapshot_complete=false`；条目从 feed 消失不会据此关闭岗位。公众号文章、RSS 和聚合页都只能承担 discovery 角色，岗位仍需企业官方招聘页面独立核验。
+
+### 本机 ChatGPT 只读桥接
+
+私有 ChatGPT 监控结果不由 Render 抓取。唯一支持的自动路径运行在用户本机：用户先在浏览器中保持登录，本机 Codex 自动任务只读取当前页面可见的助手消息 DOM，从招聘表格单元格和真实锚点中提取允许字段，再把已经脱敏的结构化行交给 `scripts/frostfire_chatgpt_bridge.py`。该路径不读取 Cookie、Authorization、页面存储、隐藏 API、完整会话或用户消息，也不向 ChatGPT 发送消息。
+
+桥接脚本立即摘要化消息游标，本机状态文件只保存逻辑来源和不可逆摘要；岗位按每批最多 10 条提交到 `/api/recruitment/ingest`。服务端先把候选放入隔离区，再重新读取企业官方 HTTPS 页面，核对公司、校招、岗位、日期与关闭状态。未核验、被拒绝或已关闭的候选不会进入公开岗位 API。这个本机流程依赖 Mac、Codex、网络和浏览器登录会话持续可用；它不是 Render 内的 24/7 云直连。
 
 ### Source API
 
@@ -202,6 +211,7 @@ Content-Type: application/json
 | `GET` | `/api/future-radar/runs/{run_id}` | JWT | 单次运行结果与错误 |
 | `GET` | `/api/future-radar/sources` | JWT | 来源公开健康状态；支持 `enabled` 筛选 |
 | `POST` | `/api/future-radar/run` | JWT + 当前隐私同意 | `scan_type=quick`（默认）核对确定性官网、ATS、公开 API、Feed 与旧岗位池，不调用 AI；`scan_type=deep` 运行已配置的 OpenAI Web Search、公众号及新入口发现来源。手动请求不修改也不受 Scheduler 的来源间隔影响；同类型运行冲突返回 409，完成后后端可立即重跑。`source_ids` 只能缩小到对应模式的安全来源集合。`force=true` 还需要 `X-Admin-Token`，可忽略 due time 与 AI 内容缓存，但不能激活禁用来源或绕过并发锁、来源锁、外站限速和安全校验 |
+| `POST` | `/api/recruitment/ingest` | Ingest | 接收本机 ChatGPT 桥接的结构化候选；先隔离并重新核验官方 HTTPS 页面，未核验候选不公开 |
 | `POST` | `/api/future-radar/sync` | Ingest | 严格接收 `FROSTFIRE_SYNC_V1` 结构化批次 |
 | `POST` | `/api/future-radar/sources` | Admin | 创建来源 |
 | `PATCH` | `/api/future-radar/sources/{source_id}` | Admin | 更新来源运行配置 |
@@ -233,7 +243,7 @@ FastAPI lifespan 启动时会：
 
 `Quick Scan` 的流程是：选择已启用的确定性来源 → 获取公开官网/ATS/API/Feed 或读取旧岗位池 → 计算内容指纹并规范化 → 核验、合并和生成差异事件。即使某个官网来源配置了可选 AI 提取，Quick 也会在本轮强制关闭它。
 
-`Deep Scan` 的流程是：选择已启用的发现类来源 → 运行 OpenAI Web Search、已配置的公众号公开入口及新官方 URL discovery → 将结果作为待核验线索写入隔离区 → 只有获得官方 HTTPS 核验来源后才进入公开岗位池。Deep 完成后同样没有固定手动冷却；重复点击期间由数据库 Run Lock 防止重复调用 OpenAI。
+`Deep Scan` 的流程是：选择已启用的发现类来源 → 运行十类重点雇主 OpenAI Web Search，并为五个公众号逻辑来源搜索公网已索引页面与新官方 URL → 保存最小文章线索、过滤岗位候选并逐条访问官方 HTTPS 页面 → 仅让通过确定性官网核验的条目进入公开岗位池。Deep 不访问微信公众号后台，也不读取本机 ChatGPT 会话。Deep 完成后同样没有固定手动冷却；重复点击期间由数据库 Run Lock 防止重复调用 OpenAI。
 
 `Force Scan` 是 Quick/Deep 请求上的管理员选项。它忽略自动来源 due time 和 AI 内容缓存读取，但不允许制造相同并行任务，也不绕过域名/供应商的安全限速。
 
@@ -284,10 +294,11 @@ AI 提取失败时会记录警告并降级：已经完成的确定性页面抓�
 | `FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES` | `30` | scheduler 唤醒间隔，最小 5 分钟；来源自身间隔仍单独生效 |
 | `FUTURE_RADAR_CLOSE_CONFIRMATIONS` | `2` | 完整成功快照连续缺失多少次后解除来源关联，限制 2–10 |
 | `FUTURE_RADAR_MAX_WORKERS` | `4` | 单次扫描线程上限，限制 1–8 |
-| `FUTURE_RADAR_AI_MODEL` | `RECRUITMENT_WEB_SEARCH_MODEL`，否则 `gpt-5.4-nano` | 公开 HTML 结构化提取模型 |
+| `FUTURE_RADAR_AI_MODEL` | `RECRUITMENT_WEB_SEARCH_MODEL`，否则 `gpt-5.4-mini` | 公开 HTML 结构化提取模型 |
 | `OPENAI_API_KEY` | 无 | AI 提取和可选 OpenAI 网页补漏；必须只放服务端环境 |
-| `RECRUITMENT_WEB_SEARCH_ENABLED` | 见现有配置 | 是否启用 `openai-public-web-search` 来源 |
-| `RECRUITMENT_INGEST_TOKEN` | 无 | `/api/future-radar/sync` 的共享接收密钥 |
+| `RECRUITMENT_WEB_SEARCH_ENABLED` | 本地示例 `false`；当前 Render Blueprint `true` | 是否启用 `openai-public-web-search` 与五个 `wechat_web_search` 公网 discovery 来源 |
+| `RECRUITMENT_WEB_SEARCH_MODEL` | `gpt-5.4-mini` | 重点雇主与公众号公网 Web Search 模型 |
+| `RECRUITMENT_INGEST_TOKEN` | 无 | `/api/recruitment/ingest` 与 `/api/future-radar/sync` 的共享接收密钥 |
 | `ADMIN_DASHBOARD_TOKEN` | 无 | 汇总使用面板、Source 配置 API 与 Force Scan 的管理员密钥；普通 Quick/Deep 不使用此 Token |
 | `DATABASE_PATH` | 项目现有默认 | Future Radar 与主应用共用的 SQLite 文件 |
 
@@ -302,7 +313,7 @@ source backend/.venv/bin/activate
 python -m pytest -q backend/tests/test_future_radar.py
 ```
 
-该测试覆盖 1–5 轮生命周期、同轮幂等、连续缺失关闭、失败隔离、多来源合并/核验升级、OpenAI 失败降级、sync 幂等冲突、HTML/空白非语义变化、公众号 `discovery_limited` 诚实状态、正文不可访问时的公开文章 metadata 保留与文章事件，以及 Quick/Deep/Force、运行锁、来源锁、刷新不可绕过锁、API 分页/组合筛选/鉴权/严格 schema。
+该测试覆盖 1–5 轮生命周期、同轮幂等、连续缺失关闭、失败隔离、多来源合并/核验升级、OpenAI 失败降级、sync 幂等冲突、HTML/空白非语义变化、公众号公网 Web Search、关闭搜索时的 `discovery_limited` 回退、国务院国资委/银行公开索引、正文不可访问时的公开文章 metadata 保留与文章事件，以及 Quick/Deep/Force、运行锁、来源锁、刷新不可绕过锁、API 分页/组合筛选/鉴权/严格 schema。本机桥接的脱敏、分批、哈希游标与隔离提交由 `tests/scripts/test_frostfire_chatgpt_bridge.py` 覆盖。
 
 使用独立临时数据库做 CLI 冒烟测试，避免污染开发数据：
 
@@ -336,7 +347,8 @@ npm run build
 
 ## 11. 当前仍存在的边界
 
-- 五个公众号都已进入 Registry，但在没有经过核验的合法公开文章列表入口前仍为 `discovery_limited`。系统不会读取私人 ChatGPT 会话、Cookie、登录后页面或绕过微信限制，也不会虚构“同步成功”。管理员提供公开 URL 与公开标题后，可保存 discovery metadata；自动发现公众号历史文章列表仍需要合法稳定的公开索引或经授权的数据源。
+- 五个公众号逻辑来源通过 OpenAI 公网搜索发现公开线索，而不是微信公众号后台直连；搜索引擎未索引、需要登录或被平台限制的内容仍不可见，不能据此承诺完整账号历史。
+- 私有 ChatGPT 的自动桥接只在用户本机、已登录浏览器和 Codex 在线时读取可见助手消息 DOM；Render 不持有登录态，也不读取 Cookie、隐藏 API 或完整会话，因此该桥接不是 24×7 云服务。
 - 通用抓取层目前覆盖公开 JSON API 和普通 HTTPS HTML；没有把 Playwright 作为任意动态 ATS 的通用后端 fallback。完全依赖 JavaScript、需要登录或有技术访问限制的 ATS，需要单独确认公开 API 或开发合规专用适配器。
 - OpenAI 补漏是低频 discovery，结构化 AI 只理解发生变化的公开页面；它不是无限自主 Agent，也不会自动把每条第三方线索无条件升级为官方事实。新增未知官网仍需要通过 Source Registry 建立并确认 verification 角色。
 - Source Management 第一版是受管理员 Token 保护的写 API 加前端只读健康页，尚未提供完整的可视化来源编辑器。

@@ -16,9 +16,16 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Protocol
 
+from openai import OpenAI
+
 from .. import database
 from ..recruitment import primary_employer_category
-from ..recruitment_search import search_current_recruitment_jobs
+from ..recruitment_search import (
+    _inspect_official_candidate_page,
+    _normalize_job as normalize_web_search_job,
+    _semantic_date_appears_in_page,
+    search_current_recruitment_jobs,
+)
 from ..recruitment_watch import WatchFetchError, fetch_watch_page
 from ..recruitment_watch import normalize_html_text
 from .ai import extract_recruitment_content
@@ -29,6 +36,10 @@ from .normalization import (
     normalize_date,
     normalize_taxonomy_value,
     stable_digest,
+)
+from .public_discovery import (
+    discover_bank_recruitment_articles,
+    discover_sasac_recruitment_articles,
 )
 from .repository import RadarRepository
 
@@ -77,7 +88,11 @@ def _public_reference_url(value: Any) -> str | None:
     """Return a canonical public reference, excluding chats and credential URLs."""
     candidate = clean_text(value, limit=2_000)
     decoded = urllib.parse.unquote(candidate)
-    if _PUBLIC_EMAIL.search(decoded) or any(pattern.search(decoded) for pattern in _PUBLIC_SECRETS):
+    if (
+        _PUBLIC_EMAIL.search(decoded)
+        or any(pattern.search(decoded) for pattern in _PUBLIC_PHONES)
+        or any(pattern.search(decoded) for pattern in _PUBLIC_SECRETS)
+    ):
         return None
     try:
         raw_query = urllib.parse.urlsplit(candidate).query
@@ -109,6 +124,12 @@ class AdapterResult:
     message: str = ""
     ai_calls: int = 0
     model_tokens_used: int = 0
+    # Discovery adapters may deterministically open an official HTTPS page
+    # after finding a candidate.  Keep that per-item attestation separate from
+    # the source's broad trust level: a web-search source is still discovery,
+    # while an exact row whose official page contains the claimed title can be
+    # promoted by the service.
+    verified_job_external_ids: set[str] = field(default_factory=set)
 
 
 class SourceAdapter(Protocol):
@@ -210,10 +231,336 @@ class WechatSourceAdapter:
         return result
 
 
+WECHAT_DISCOVERY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "articles": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "url": {"type": "string"},
+                    "publish_date": {"type": ["string", "null"]},
+                    "excerpt": {"type": "string"},
+                },
+                "required": ["title", "url", "publish_date", "excerpt"],
+                "additionalProperties": False,
+            },
+        },
+        "jobs": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "company": {"type": "string"},
+                    "title": {"type": "string"},
+                    "city": {"type": "string"},
+                    "industry": {"type": "string"},
+                    "official_url": {"type": "string"},
+                    "opening_date": {"type": ["string", "null"]},
+                    "closing_date": {"type": ["string", "null"]},
+                    "requirements": {"type": "string"},
+                    "category": {"type": "string"},
+                },
+                "required": [
+                    "company", "title", "city", "industry", "official_url",
+                    "opening_date", "closing_date", "requirements", "category",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["articles", "jobs"],
+    "additionalProperties": False,
+}
+
+
+def _response_field(value: Any, name: str, default: Any = None) -> Any:
+    """Read one Responses API field from either SDK objects or test dictionaries."""
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _completed_web_search_calls(response: Any) -> list[Any]:
+    """Return only tool calls whose provider status explicitly completed."""
+    output = _response_field(response, "output", [])
+    if not isinstance(output, (list, tuple)):
+        return []
+    return [
+        item
+        for item in output
+        if clean_text(_response_field(item, "type"), limit=80).casefold()
+        == "web_search_call"
+        and clean_text(_response_field(item, "status"), limit=80).casefold()
+        == "completed"
+    ]
+
+
+def _web_search_source_urls(calls: list[Any]) -> set[str]:
+    """Extract allowlisted public citations from completed web-search calls."""
+    result: set[str] = set()
+    for call in calls:
+        action = _response_field(call, "action")
+        sources = _response_field(action, "sources", [])
+        if not isinstance(sources, (list, tuple)):
+            continue
+        for source in sources:
+            url = _public_reference_url(_response_field(source, "url"))
+            if url:
+                result.add(url)
+    return result
+
+
+def _article_url_supported_by_search_sources(
+    article_url: str, source_urls: set[str]
+) -> bool:
+    """Require an exact citation or the same public hostname as one citation."""
+    if article_url in source_urls:
+        return True
+    hostname = (urllib.parse.urlsplit(article_url).hostname or "").casefold()
+    if not hostname:
+        return False
+    return any(
+        (urllib.parse.urlsplit(source_url).hostname or "").casefold() == hostname
+        for source_url in source_urls
+    )
+
+
+class WechatWebSearchAdapter:
+    """Discover public article signals without automating WeChat login.
+
+    Search results are candidates only. Every job is fetched again from its
+    official HTTPS page and attested per item; articles never verify jobs.
+    """
+
+    def __init__(self, *, api_key: str, ai_model: str):
+        self.api_key = api_key
+        self.ai_model = ai_model
+
+    @staticmethod
+    def _prompt(source: dict[str, Any]) -> str:
+        today = date.today()
+        target_year = today.year + (1 if today.month >= 6 else 0)
+        account = clean_text(source.get("account_name") or source.get("name"), limit=160)
+        return f"""
+今天是 {today.isoformat()}。在公开网页中搜索与“{account}”相关的最新校园招聘内容，
+重点寻找 {target_year} 届校招、应届生、Graduate、管培生和提前批机会。
+
+要求：
+1. articles 只能返回真实、可打开的公开 HTTPS 文章或公开招聘栏目链接；不得臆造 URL。
+2. jobs 只返回当前仍开放的具体岗位；排除社招、实习、城市导航页、转载汇总页和已截止岗位。
+3. jobs.official_url 必须是企业招聘官网或企业授权 ATS 的直接 HTTPS 页面，不能是公众号、搜索页或媒体转载。
+4. 日期只有原文明确写明才填 YYYY-MM-DD，否则为 null；不得把发布日期当截止日期。
+5. 找不到可靠内容时返回空数组，不要用常识补写。
+""".strip()
+
+    def scan(self, source: dict[str, Any]) -> AdapterResult:
+        if not self.api_key:
+            raise RuntimeError("OpenAI API is not configured for public discovery.")
+        response = OpenAI(api_key=self.api_key).responses.create(
+            model=self.ai_model,
+            tools=[{
+                "type": "web_search",
+                "search_context_size": "medium",
+                "user_location": {
+                    "type": "approximate",
+                    "country": "CN",
+                    "timezone": "Asia/Shanghai",
+                },
+            }],
+            input=self._prompt(source),
+            # Only one tool is supplied.  Requiring a tool call prevents the
+            # model from returning plausible-looking JSON from parametric
+            # memory while silently skipping public web discovery.
+            tool_choice="required",
+            text={"format": {
+                "type": "json_schema",
+                "name": "wechat_public_recruitment_discovery",
+                "strict": True,
+                "schema": WECHAT_DISCOVERY_SCHEMA,
+            }},
+            include=["web_search_call.action.sources"],
+            max_tool_calls=2,
+            max_output_tokens=2_400,
+            store=False,
+        )
+        completed_search_calls = _completed_web_search_calls(response)
+        if not completed_search_calls:
+            # Do not parse or trust output_text unless the provider confirms a
+            # completed web-search call.  Raising lets the service mark only
+            # this source failed instead of recording a healthy fake scan.
+            raise RuntimeError("OpenAI public web search did not complete.")
+        search_source_urls = _web_search_source_urls(completed_search_calls)
+        try:
+            payload = json.loads(response.output_text)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("OpenAI public web search returned invalid structured data.") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("OpenAI public web search returned invalid structured data.")
+        publisher = _redact_public_text(
+            source.get("account_name") or source.get("name"), limit=160
+        )
+        articles: list[dict[str, Any]] = []
+        seen_article_urls: set[str] = set()
+        for raw in payload.get("articles", [])[:8]:
+            if not isinstance(raw, dict):
+                continue
+            url = _public_reference_url(raw.get("url"))
+            title = _redact_public_text(raw.get("title"), limit=300)
+            if (
+                not url
+                or not title
+                or url in seen_article_urls
+                or not _article_url_supported_by_search_sources(url, search_source_urls)
+            ):
+                continue
+            excerpt = _redact_public_text(raw.get("excerpt"), limit=1_500)
+            signal = f"{title} {excerpt}".casefold()
+            is_recruitment = any(marker in signal for marker in (
+                "校招", "校园招聘", "应届", "毕业生", "graduate", "campus", "管培", "提前批",
+            ))
+            year_match = re.search(r"(?<!\d)(20\d{2})(?!\d)", signal)
+            articles.append({
+                "publisher": publisher,
+                "article_title": title,
+                "article_url": url,
+                "publish_time": normalize_date(raw.get("publish_date")),
+                "raw_excerpt": excerpt,
+                "is_recruitment": is_recruitment,
+                "recruitment_year": int(year_match.group(1)) if year_match else None,
+                "classification": "recruitment_signal" if is_recruitment else "other",
+            })
+            seen_article_urls.add(url)
+
+        jobs: list[dict[str, Any]] = []
+        verified_ids: set[str] = set()
+        seen_job_ids: set[str] = set()
+        for raw in payload.get("jobs", [])[:10]:
+            if not isinstance(raw, dict):
+                continue
+            discovered = normalize_web_search_job(raw)
+            if not discovered or discovered["id"] in seen_job_ids:
+                continue
+            evidence = _inspect_official_candidate_page(discovered)
+            # A deterministic closed-page signal is terminal.  Temporary
+            # fetch/readability failures are not: preserving the safe URL as a
+            # pending candidate prevents transient ATS failures from silently
+            # erasing a legitimate discovery signal.
+            if evidence.closed:
+                continue
+            if evidence.readable:
+                discovered["opening_date"] = (
+                    discovered["opening_date"]
+                    if _semantic_date_appears_in_page(
+                        evidence.page_text,
+                        discovered["opening_date"],
+                        semantic="opening",
+                    )
+                    else None
+                )
+                discovered["closing_date"] = (
+                    discovered["closing_date"]
+                    if _semantic_date_appears_in_page(
+                        evidence.page_text,
+                        discovered["closing_date"],
+                        semantic="closing",
+                    )
+                    else None
+                )
+            else:
+                # Dates asserted by discovery output are never retained when
+                # the official page could not be read and semantically checked.
+                discovered["opening_date"] = None
+                discovered["closing_date"] = None
+
+            discovered["tags"] = [
+                tag for tag in discovered["tags"]
+                if tag not in {
+                    "待官方核验", "待打开核对", "链接已验证", "标题已验证",
+                    "链接可访问", "官方页暂不可读", "公众号公开发现",
+                }
+            ]
+            if evidence.title_confirmed:
+                discovered["tags"].extend(["链接已验证", "标题已验证", "公众号公开发现"])
+                verified_ids.add(discovered["id"])
+            elif evidence.readable:
+                discovered["tags"].extend(["链接可访问", "公众号公开发现", "待官方核验"])
+            else:
+                discovered["tags"].extend([
+                    "官方页暂不可读", "公众号公开发现", "待官方核验",
+                ])
+            jobs.append({
+                "external_id": discovered["id"],
+                "company": discovered["company"],
+                "title": discovered["title"],
+                "city": discovered.get("city", ""),
+                "region": discovered.get("city", ""),
+                "employer_type": discovered.get("employer_type", ""),
+                "industry": discovered.get("industry", ""),
+                "official_url": discovered["url"],
+                "application_url": discovered["url"],
+                "opening_date": discovered.get("opening_date"),
+                "closing_date": discovered.get("closing_date"),
+                "status": "open",
+                "verification_status": "verified" if discovered["id"] in verified_ids else "pending",
+                "confidence_score": 0.9 if discovered["id"] in verified_ids else 0.6,
+                "requirements": discovered.get("requirements", ""),
+                "tags": list(dict.fromkeys(discovered.get("tags", []))),
+            })
+            seen_job_ids.add(discovered["id"])
+
+        digest = hashlib.sha256(json.dumps(
+            {"articles": articles, "jobs": jobs}, ensure_ascii=False,
+            sort_keys=True, default=str,
+        ).encode("utf-8")).hexdigest()
+        usage = getattr(response, "usage", None)
+        return AdapterResult(
+            jobs=jobs,
+            articles=articles,
+            content_hash=digest,
+            snapshot_complete=False,
+            status="healthy" if articles or jobs else "discovery_only",
+            message=(
+                "Public article discovery completed."
+                if articles or jobs else "No new public recruitment signal was found."
+            ),
+            ai_calls=len(completed_search_calls),
+            model_tokens_used=max(0, int(getattr(usage, "total_tokens", 0) or 0)),
+            verified_job_external_ids=verified_ids,
+        )
+
+
 class ManualAdapter:
     def scan(self, source: dict[str, Any]) -> AdapterResult:
         del source
         return AdapterResult(status="idle", snapshot_complete=False, message="Push-only source.")
+
+
+class PublicRecruitmentIndexAdapter:
+    """Parse known public listings into article signals without AI claims."""
+
+    def scan(self, source: dict[str, Any]) -> AdapterResult:
+        kind = clean_text(source.get("adapter_config", {}).get("discovery_kind"), limit=40)
+        if kind == "sasac":
+            batch = discover_sasac_recruitment_articles()
+        elif kind == "bank":
+            batch = discover_bank_recruitment_articles()
+        else:
+            raise ValueError("public_recruitment_index requires a supported discovery_kind")
+        return AdapterResult(
+            articles=batch.radar_articles(),
+            content_hash=batch.content_hash,
+            normalized_content=" ".join(
+                article["article_title"] for article in batch.radar_articles()
+            )[:20_000],
+            snapshot_complete=False,
+            status="healthy",
+            message=f"Discovered {len(batch.articles)} public recruitment article signals.",
+        )
 
 
 def _legacy_primary_category(item: dict[str, Any], tags: list[Any]) -> str:
@@ -704,12 +1051,18 @@ class OpenAIWebSearchAdapter:
             }
             for item in result.jobs
         ]
+        verified_job_external_ids = {
+            str(item["id"])
+            for item in result.jobs
+            if "标题已验证" in item.get("tags", [])
+        }
         digest = hashlib.sha256(json.dumps(
             jobs, ensure_ascii=False, sort_keys=True, default=str
         ).encode("utf-8")).hexdigest()
         return AdapterResult(
-            jobs=jobs, content_hash=digest, snapshot_complete=True,
+            jobs=jobs, content_hash=digest, snapshot_complete=False,
             ai_calls=result.tool_calls, model_tokens_used=result.total_tokens,
+            verified_job_external_ids=verified_job_external_ids,
         )
 
 
@@ -788,6 +1141,8 @@ def adapter_for_source(
         return OfficialJsonApiAdapter()
     if adapter_name == "public_feed":
         return PublicFeedAdapter()
+    if adapter_name == "public_recruitment_index":
+        return PublicRecruitmentIndexAdapter()
     if adapter_name in {"official_html", "ats", "other_public_source"}:
         return OfficialHtmlAdapter(repository=repository, api_key=openai_api_key, ai_model=ai_model)
     if adapter_name == "openai_web_search":
@@ -796,6 +1151,8 @@ def adapter_for_source(
         return WechatSourceAdapter(
             repository=repository, api_key=openai_api_key, ai_model=ai_model
         )
+    if adapter_name == "wechat_web_search":
+        return WechatWebSearchAdapter(api_key=openai_api_key, ai_model=ai_model)
     if adapter_name == "discovery_limited":
         return DiscoveryLimitedAdapter()
     return ManualAdapter()

@@ -57,6 +57,8 @@ from .recruitment import TIER_DEFINITIONS, job_matches_profile, score_job, seman
 from .recruitment_search import (
     WEB_SEARCH_SOURCE,
     WEB_SEARCH_STATE_KEY,
+    _evaluate_official_candidate_page,
+    _semantic_date_appears_in_page,
     search_current_recruitment_jobs,
 )
 from .recruitment_watch import (
@@ -1803,17 +1805,9 @@ def refresh_recruitment(
 
 
 _TRACKING_QUERY_KEYS = {"fbclid", "gclid", "msclkid"}
-_CAMPUS_PAGE_MARKERS = (
-    "校园招聘", "秋季招聘", "秋招", "校招", "应届生", "应届毕业生",
-    "graduate", "graduates", "campus", "early career",
-)
-_GENERIC_IDENTITY_TERMS = {
-    "校园招聘", "秋季招聘", "秋招", "校招", "应届", "应届生", "毕业生",
-    "招聘", "岗位", "职位", "graduate", "graduates", "campus", "career",
-}
-_CLOSED_PAGE_PATTERN = re.compile(
-    r"(?:已截止|申请已结束|报名已结束|网申已结束|投递已结束|职位已关闭|岗位已关闭|"
-    r"申请通道已关闭|不再接受申请|\bclosed\b|\bexpired\b|no\s+longer\s+accepting)",
+_EXPLICIT_NON_CAMPUS_PAGE_PATTERN = re.compile(
+    r"(?:仅限社会招聘|社会招聘|社招岗位|\bexperienced\s+hires?\b|"
+    r"\bexperienced\s+professionals?\b)",
     re.IGNORECASE,
 )
 
@@ -1846,71 +1840,6 @@ def _normalized_identity(value: str) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
 
 
-def _page_contains_identity(page_text: str, value: str) -> bool:
-    normalized_page = _normalized_identity(page_text)
-    normalized_value = _normalized_identity(value)
-    if len(normalized_value) >= 3 and normalized_value in normalized_page:
-        return True
-    pieces = []
-    for piece in re.split(r"[\s/|·,，、()（）\[\]【】:_-]+", value.casefold()):
-        normalized_piece = _normalized_identity(piece)
-        if (
-            len(normalized_piece) >= 3
-            and normalized_piece not in _GENERIC_IDENTITY_TERMS
-        ):
-            pieces.append(normalized_piece)
-    return bool(pieces) and any(piece in normalized_page for piece in pieces)
-
-
-def _meaningful_title_terms(title: str) -> list[str]:
-    value = title.casefold()
-    value = re.sub(r"20\d{2}\s*(?:年|届)?", " ", value)
-    for generic in sorted(_GENERIC_IDENTITY_TERMS, key=len, reverse=True):
-        value = value.replace(generic, " ")
-    terms = []
-    for term in re.findall(r"[a-z][a-z0-9+.#-]{1,}|[\u4e00-\u9fff]{2,}", value):
-        normalized = _normalized_identity(term)
-        if len(normalized) >= 2 and normalized not in _GENERIC_IDENTITY_TERMS:
-            terms.append(normalized)
-    return list(dict.fromkeys(terms))
-
-
-def _page_contains_strict_title(page_text: str, title: str) -> bool:
-    normalized_page = _normalized_identity(page_text)
-    normalized_title = _normalized_identity(title)
-    if len(normalized_title) >= 4 and normalized_title in normalized_page:
-        return True
-    terms = _meaningful_title_terms(title)
-    if len(terms) < 2:
-        return False
-    matched = [term for term in terms if term in normalized_page]
-    required_terms = max(2, math.ceil(len(terms) * 0.75))
-    total_chars = sum(len(term) for term in terms)
-    matched_chars = sum(len(term) for term in matched)
-    return (
-        len(matched) >= required_terms
-        and matched_chars >= max(8, math.ceil(total_chars * 0.75))
-    )
-
-
-def _page_contains_date(page_text: str, iso_date: str | None) -> bool:
-    if not iso_date:
-        return False
-    try:
-        value = date.fromisoformat(iso_date)
-    except ValueError:
-        return False
-    compact_page = re.sub(r"\s+", "", page_text.casefold())
-    variants = {
-        value.isoformat(),
-        f"{value.year}/{value.month:02d}/{value.day:02d}",
-        f"{value.year}.{value.month:02d}.{value.day:02d}",
-        f"{value.year}年{value.month}月{value.day}日",
-        f"{value.year}年{value.month:02d}月{value.day:02d}日",
-    }
-    return any(variant.casefold() in compact_page for variant in variants)
-
-
 def _verify_ingest_candidate(
     candidate: dict,
 ) -> tuple[str, str | None, dict[str, str | None]]:
@@ -1933,18 +1862,48 @@ def _verify_ingest_candidate(
         logger.exception("Unexpected recruitment candidate verification failure")
         return "pending", "official_page_fetch_failed", verified_dates
     page_text = str(page.text or "")
-    normalized_page = page_text.casefold()
-    if _CLOSED_PAGE_PATTERN.search(normalized_page):
+    final_url = str(
+        getattr(page, "final_url", "") or candidate["canonical_url"]
+    )
+    evidence = _evaluate_official_candidate_page(
+        {
+            "company": candidate["company"],
+            "title": candidate["title"],
+            "url": candidate["canonical_url"],
+            "closing_date": candidate.get("closing_date"),
+        },
+        page_text,
+        final_url,
+    )
+    if evidence.closed:
         return "closed", "official_page_closed", verified_dates
-    if not any(marker in normalized_page for marker in _CAMPUS_PAGE_MARKERS):
-        return "rejected", "page_missing_campus_signal", verified_dates
-    if not _page_contains_identity(page_text, candidate["company"]):
+    if (
+        _EXPLICIT_NON_CAMPUS_PAGE_PATTERN.search(page_text)
+        and not evidence.cohort_confirmed
+    ):
+        return "rejected", "official_page_non_campus", verified_dates
+    if not evidence.readable:
+        return "pending", "official_page_unreadable", verified_dates
+    if not evidence.domain_confirmed:
+        return "pending", "page_missing_official_domain_evidence", verified_dates
+    if not evidence.employer_confirmed:
         return "pending", "page_missing_company_evidence", verified_dates
-    if not _page_contains_strict_title(page_text, candidate["title"]):
+    if not evidence.cohort_confirmed:
+        return "pending", "page_missing_current_cohort_evidence", verified_dates
+    if not evidence.identity_confirmed:
         return "pending", "page_missing_title_evidence", verified_dates
-    for field in ("opening_date", "closing_date"):
+    if not evidence.open_confirmed:
+        return "pending", "page_missing_open_application_evidence", verified_dates
+    for field, semantic in (
+        ("opening_date", "opening"),
+        ("closing_date", "closing"),
+    ):
         submitted_date = candidate.get(field)
-        if submitted_date and _page_contains_date(page_text, submitted_date):
+        if submitted_date and _semantic_date_appears_in_page(
+            page_text,
+            submitted_date,
+            semantic=semantic,
+        ):
             verified_dates[field] = submitted_date
     return "verified", None, verified_dates
 

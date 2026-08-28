@@ -23,8 +23,11 @@ QUICK_SCAN_ADAPTERS = frozenset({
     "public_feed",
     "legacy_database",
     "other_public_source",
+    "public_recruitment_index",
 })
-DEEP_SCAN_ADAPTERS = frozenset({"openai_web_search", "wechat_public"})
+DEEP_SCAN_ADAPTERS = frozenset({
+    "openai_web_search", "wechat_public", "wechat_web_search",
+})
 
 PUBLIC_JOB_EVENT_FIELDS = (
     "company", "title", "city", "region", "status",

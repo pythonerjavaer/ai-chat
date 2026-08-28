@@ -34,6 +34,13 @@ from backend.ai_service import (
 from backend.recruitment_watch import WatchFetchResult, fetch_watch_page
 
 
+CURRENT_RECRUITMENT_COHORT_YEAR = (
+    date.today().year + (1 if date.today().month >= 6 else 0)
+)
+CURRENT_RECRUITMENT_COHORT = f"{CURRENT_RECRUITMENT_COHORT_YEAR}届"
+TEST_AUTHORIZED_ATS = "https://app.mokahr.com"
+
+
 def register(client: TestClient, username: str) -> tuple[str, dict]:
     response = client.post(
         "/api/auth/register",
@@ -962,20 +969,24 @@ def test_recruitment_profile_matching_and_deadline_metadata():
 
 
 def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs(monkeypatch):
+    live_title = f"{CURRENT_RECRUITMENT_COHORT}校园招聘数据岗"
     monkeypatch.setattr(
         main,
         "fetch_watch_page",
         lambda *_args, **_kwargs: SimpleNamespace(
-            text="测试重点机构 2099届校园招聘数据岗 校园招聘 应届毕业生"
+            text=(
+                f"测试重点机构 {live_title} 校园招聘 "
+                "应届毕业生 立即申请 投递截止：2099年8月25日"
+            )
         ),
     )
     payload = {
         "jobs": [
             {
                 "company": "测试重点机构",
-                "title": "2099届校园招聘数据岗",
+                "title": live_title,
                 "city": "北京",
-                "official_url": "https://example.com/campus/data-2099",
+                "official_url": f"{TEST_AUTHORIZED_ATS}/campus/data-current",
                 "closing_date": "2099-08-25",
                 "tags": ["校园招聘", "数据"],
             },
@@ -1011,7 +1022,7 @@ def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs(mo
         ]
         token, _ = register(client, "dynamic-recruiter")
         jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
-        assert any(job["title"] == "2099届校园招聘数据岗" for job in jobs)
+        assert any(job["title"] == live_title for job in jobs)
         assert not any(job["title"] == "2020届校园招聘岗位" for job in jobs)
         closed = client.post(
             "/api/recruitment/ingest",
@@ -1020,31 +1031,34 @@ def test_recruitment_ingest_accepts_live_campus_jobs_and_rejects_expired_jobs(mo
         )
         assert closed.status_code == 200
         assert closed.json()["skipped"] == [
-            {"title": "2099届校园招聘数据岗", "reason": "closed"}
+            {"title": live_title, "reason": "closed"}
         ]
         jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
-        assert not any(job["title"] == "2099届校园招聘数据岗" for job in jobs)
+        assert not any(job["title"] == live_title for job in jobs)
 
 
 def test_recruitment_ingest_is_idempotent_allows_shared_pages_and_hides_thread_ids(monkeypatch):
     raw_thread_id = "private-chat-thread-must-not-leak"
+    data_title = f"{CURRENT_RECRUITMENT_COHORT}校园招聘数据分析岗"
+    product_title = f"{CURRENT_RECRUITMENT_COHORT}校园招聘产品策略岗"
     monkeypatch.setattr(
         main,
         "fetch_watch_page",
         lambda *_args, **_kwargs: SimpleNamespace(
             text=(
-                "桥接测试集团 2099届校园招聘数据分析岗 "
-                "桥接测试集团 2099届校园招聘产品策略岗 校园招聘 campus"
+                f"桥接测试集团 {data_title} "
+                f"桥接测试集团 {product_title} "
+                "校园招聘 campus 立即申请"
             )
         ),
     )
     jobs_payload = [
         {
             "company": "桥接测试集团",
-            "title": "2099届校园招聘数据分析岗",
+            "title": data_title,
             "city": "北京",
             "official_url": (
-                "https://example.com/campus/shared?jobList=1&utm_source=chatgpt#data"
+                f"{TEST_AUTHORIZED_ATS}/campus/shared?jobList=1&utm_source=chatgpt#data"
             ),
             "closing_date": "2099-09-01",
             "source_id": "chatgpt-radar-01",
@@ -1054,10 +1068,10 @@ def test_recruitment_ingest_is_idempotent_allows_shared_pages_and_hides_thread_i
         },
         {
             "company": "桥接测试集团",
-            "title": "2099届校园招聘产品策略岗",
+            "title": product_title,
             "city": "北京",
             "official_url": (
-                "https://example.com/campus/shared?utm_medium=monitor&jobList=1#product"
+                f"{TEST_AUTHORIZED_ATS}/campus/shared?utm_medium=monitor&jobList=1#product"
             ),
             "closing_date": "2099-09-01",
             "source_id": "chatgpt-radar-01",
@@ -1096,8 +1110,8 @@ def test_recruitment_ingest_is_idempotent_allows_shared_pages_and_hides_thread_i
             if job["company"] == "桥接测试集团"
         ]
         assert {job["title"] for job in bridged} == {
-            "2099届校园招聘数据分析岗",
-            "2099届校园招聘产品策略岗",
+            data_title,
+            product_title,
         }
         with database.connect() as connection:
             canonical_urls = {
@@ -1130,7 +1144,8 @@ def test_recruitment_ingest_is_idempotent_allows_shared_pages_and_hides_thread_i
 
 
 def test_repeated_ingest_rechecks_official_page_and_closes_removed_job(monkeypatch):
-    page = {"text": "复核集团 2099届校园招聘战略岗 校园招聘 应届毕业生"}
+    title = f"{CURRENT_RECRUITMENT_COHORT}校园招聘战略岗"
+    page = {"text": f"复核集团 {title} 校园招聘 应届毕业生 立即申请"}
     monkeypatch.setattr(
         main,
         "fetch_watch_page",
@@ -1138,9 +1153,9 @@ def test_repeated_ingest_rechecks_official_page_and_closes_removed_job(monkeypat
     )
     job = {
         "company": "复核集团",
-        "title": "2099届校园招聘战略岗",
+        "title": title,
         "city": "北京",
-        "official_url": "https://example.com/campus/recheck-role",
+        "official_url": f"{TEST_AUTHORIZED_ATS}/campus/recheck-role",
         "source_id": "chatgpt-radar-03",
         "external_id": "recheck-role",
     }
@@ -1166,27 +1181,32 @@ def test_repeated_ingest_rechecks_official_page_and_closes_removed_job(monkeypat
 
 
 def test_recruitment_ingest_quarantines_unverifiable_and_rejects_noncampus_pages(monkeypatch):
+    pending_title = f"{CURRENT_RECRUITMENT_COHORT}校园招聘研究岗"
+    noncampus_title = f"{CURRENT_RECRUITMENT_COHORT}届审计岗"
+
     def fake_fetch(url, *_args, **_kwargs):
         if url.endswith("/unreachable"):
             raise recruitment_watch.WatchFetchError("temporary failure")
-        return SimpleNamespace(text="核验失败集团 2099届审计岗 官方招聘页面")
+        return SimpleNamespace(
+            text=f"核验失败集团 {noncampus_title} 仅限社会招聘"
+        )
 
     monkeypatch.setattr(main, "fetch_watch_page", fake_fetch)
     payload = {
         "jobs": [
             {
                 "company": "待核验集团",
-                "title": "2099届校园招聘研究岗",
+                "title": pending_title,
                 "city": "上海",
-                "official_url": "https://example.com/unreachable",
+                "official_url": f"{TEST_AUTHORIZED_ATS}/unreachable",
                 "source_id": "chatgpt-radar-02",
                 "external_id": "pending-role",
             },
             {
                 "company": "核验失败集团",
-                "title": "2099届审计岗",
+                "title": noncampus_title,
                 "city": "上海",
-                "official_url": "https://example.com/no-campus-signal",
+                "official_url": f"{TEST_AUTHORIZED_ATS}/no-campus-signal",
                 "source_id": "chatgpt-radar-02",
                 "external_id": "rejected-role",
                 "tags": ["应届"],
@@ -1204,7 +1224,7 @@ def test_recruitment_ingest_quarantines_unverifiable_and_rejects_noncampus_pages
         assert response.json()["rejected"] == 1
         assert {item["reason"] for item in response.json()["skipped"]} == {
             "official_page_fetch_failed",
-            "page_missing_campus_signal",
+            "official_page_non_campus",
         }
         token, _ = register(client, "bridge-quarantine-user")
         titles = {
@@ -1213,24 +1233,103 @@ def test_recruitment_ingest_quarantines_unverifiable_and_rejects_noncampus_pages
                 "/api/recruitment/jobs", headers=auth(token)
             ).json()["jobs"]
         }
-        assert "2099届校园招聘研究岗" not in titles
-        assert "2099届审计岗" not in titles
+        assert pending_title not in titles
+        assert noncampus_title not in titles
+
+
+def test_recruitment_ingest_requires_complete_official_page_evidence(monkeypatch):
+    current_title = f"{CURRENT_RECRUITMENT_COHORT}校园招聘数据分析岗"
+    generic_title = "校园招聘战略分析岗"
+
+    def fake_fetch(url, *_args, **_kwargs):
+        if url.endswith("/unknown-domain"):
+            text = f"未知域名集团 {current_title} 校园招聘 立即申请"
+        elif url.endswith("/missing-open"):
+            text = f"静态公告集团 {current_title} 校园招聘"
+        elif url.endswith("/wrong-cohort"):
+            text = f"届别错误集团 2099届 {generic_title} 立即申请"
+        else:
+            text = (
+                f"正式证据集团 {current_title} 校园招聘 立即申请 "
+                "发布日期：2099年9月10日"
+            )
+        return SimpleNamespace(text=text, final_url=url)
+
+    monkeypatch.setattr(main, "fetch_watch_page", fake_fetch)
+    jobs = [
+        {
+            "company": "未知域名集团",
+            "title": current_title,
+            "city": "北京",
+            "official_url": "https://example.com/unknown-domain",
+            "source_id": "chatgpt-radar-01",
+            "external_id": "unknown-domain-evidence",
+        },
+        {
+            "company": "静态公告集团",
+            "title": current_title,
+            "city": "北京",
+            "official_url": f"{TEST_AUTHORIZED_ATS}/missing-open",
+            "source_id": "chatgpt-radar-02",
+            "external_id": "missing-open-evidence",
+        },
+        {
+            "company": "届别错误集团",
+            "title": generic_title,
+            "city": "北京",
+            "official_url": f"{TEST_AUTHORIZED_ATS}/wrong-cohort",
+            "source_id": "chatgpt-radar-03",
+            "external_id": "wrong-cohort-evidence",
+        },
+        {
+            "company": "正式证据集团",
+            "title": current_title,
+            "city": "北京",
+            "official_url": f"{TEST_AUTHORIZED_ATS}/complete-evidence",
+            "opening_date": "2099-09-10",
+            "closing_date": "2099-09-10",
+            "source_id": "chatgpt-radar-04",
+            "external_id": "complete-evidence",
+        },
+    ]
+    headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/recruitment/ingest", headers=headers, json={"jobs": jobs}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["accepted"] == 1
+        assert response.json()["pending"] == 3
+        assert {item["reason"] for item in response.json()["skipped"]} == {
+            "page_missing_official_domain_evidence",
+            "page_missing_open_application_evidence",
+            "page_missing_current_cohort_evidence",
+        }
+        with database.connect() as connection:
+            verified_dates = connection.execute(
+                "SELECT verified_opening_date, verified_closing_date "
+                "FROM recruitment_ingest_candidates WHERE external_id = ?",
+                ("complete-evidence",),
+            ).fetchone()
+        assert tuple(verified_dates) == (None, None)
 
 
 def test_recruitment_ingest_ignores_stale_source_updates(monkeypatch):
+    title = f"{CURRENT_RECRUITMENT_COHORT}校园招聘战略岗"
     monkeypatch.setattr(
         main,
         "fetch_watch_page",
         lambda *_args, **_kwargs: SimpleNamespace(
-            text="时序测试集团 2099届校园招聘战略岗 校园招聘"
+            text=f"时序测试集团 {title} 校园招聘 立即申请"
         ),
     )
     headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
     current = {
         "company": "时序测试集团",
-        "title": "2099届校园招聘战略岗",
+        "title": title,
         "city": "深圳",
-        "official_url": "https://example.com/campus/timeline",
+        "official_url": f"{TEST_AUTHORIZED_ATS}/campus/timeline",
         "source_id": "chatgpt-radar-03",
         "external_id": "timeline-role",
         "source_updated_at": "2099-08-20T10:00:00Z",
@@ -1259,9 +1358,11 @@ def test_recruitment_ingest_ignores_stale_source_updates(monkeypatch):
 
 
 def test_recruitment_ingest_requires_strict_title_and_preserves_last_known_good(monkeypatch):
+    initial_title = f"{CURRENT_RECRUITMENT_COHORT}校园招聘量化研究岗"
+    changed_title = f"{CURRENT_RECRUITMENT_COHORT}校园招聘产品经理岗"
     page = {
         "text": (
-            "存量保护集团 2099届校园招聘量化研究岗 校园招聘 "
+            f"存量保护集团 {initial_title} 校园招聘 "
             "截止日期 2099年10月31日"
         )
     }
@@ -1273,9 +1374,9 @@ def test_recruitment_ingest_requires_strict_title_and_preserves_last_known_good(
     headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
     initial = {
         "company": "存量保护集团",
-        "title": "2099届校园招聘量化研究岗",
+        "title": initial_title,
         "city": "北京",
-        "official_url": "https://example.com/campus/last-known-good",
+        "official_url": f"{TEST_AUTHORIZED_ATS}/campus/last-known-good",
         "closing_date": "2099-10-31",
         "source_id": "chatgpt-radar-04",
         "external_id": "last-known-good-role",
@@ -1283,7 +1384,7 @@ def test_recruitment_ingest_requires_strict_title_and_preserves_last_known_good(
     }
     changed = {
         **initial,
-        "title": "2099届校园招聘产品经理岗",
+        "title": changed_title,
         "source_updated_at": "2099-08-21T10:00:00Z",
     }
     with TestClient(main.app) as client:
@@ -1293,7 +1394,7 @@ def test_recruitment_ingest_requires_strict_title_and_preserves_last_known_good(
         assert accepted.status_code == 200
         assert accepted.json()["accepted"] == 1
 
-        page["text"] = "存量保护集团 2099届校园招聘 校园招聘"
+        page["text"] = f"存量保护集团 {CURRENT_RECRUITMENT_COHORT}校园招聘 校园招聘"
         pending = client.post(
             "/api/recruitment/ingest", headers=headers, json={"jobs": [changed]}
         )
@@ -1301,7 +1402,7 @@ def test_recruitment_ingest_requires_strict_title_and_preserves_last_known_good(
         assert pending.json()["pending"] == 1
         assert pending.json()["skipped"] == [
             {
-                "title": "2099届校园招聘产品经理岗",
+                "title": changed_title,
                 "reason": "page_missing_title_evidence",
             }
         ]
@@ -1310,10 +1411,10 @@ def test_recruitment_ingest_requires_strict_title_and_preserves_last_known_good(
         jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
         protected = [job for job in jobs if job["company"] == "存量保护集团"]
         assert len(protected) == 1
-        assert protected[0]["title"] == "2099届校园招聘量化研究岗"
+        assert protected[0]["title"] == initial_title
         assert protected[0]["closing_date"] == "2099-10-31"
 
-        page["text"] = "存量保护集团 2099届校园招聘产品经理岗 校园招聘"
+        page["text"] = f"存量保护集团 {changed_title} 校园招聘 立即申请"
         reverified = client.post(
             "/api/recruitment/ingest", headers=headers, json={"jobs": [changed]}
         )
@@ -1323,11 +1424,11 @@ def test_recruitment_ingest_requires_strict_title_and_preserves_last_known_good(
         jobs = client.get("/api/recruitment/jobs", headers=auth(token)).json()["jobs"]
         promoted = [job for job in jobs if job["company"] == "存量保护集团"]
         assert len(promoted) == 1
-        assert promoted[0]["title"] == "2099届校园招聘产品经理岗"
+        assert promoted[0]["title"] == changed_title
         assert promoted[0]["closing_date"] is None
 
         page["text"] = (
-            "存量保护集团 2099届校园招聘产品经理岗 校园招聘，申请已结束"
+            f"存量保护集团 {changed_title} 校园招聘，申请已结束"
         )
         closed = client.post(
             "/api/recruitment/ingest",
@@ -1338,7 +1439,7 @@ def test_recruitment_ingest_requires_strict_title_and_preserves_last_known_good(
         assert closed.json()["closed"] == 1
         assert closed.json()["skipped"] == [
             {
-                "title": "2099届校园招聘产品经理岗",
+                "title": changed_title,
                 "reason": "official_page_closed",
             }
         ]
@@ -1415,11 +1516,12 @@ def test_recruitment_ingest_heartbeat_uses_latest_event_and_monotonic_timestamp(
 
 
 def test_recruitment_ingest_schema_canonicalization_and_cross_source_merge(monkeypatch):
+    title = f"{CURRENT_RECRUITMENT_COHORT}校园招聘战略分析岗"
     monkeypatch.setattr(
         main,
         "fetch_watch_page",
         lambda *_args, **_kwargs: SimpleNamespace(
-            text="跨源合并集团 2099届校园招聘战略分析岗 校园招聘"
+            text=f"跨源合并集团 {title} 校园招聘 立即申请"
         ),
     )
     canonical = main.canonicalize_recruitment_url(
@@ -1434,9 +1536,9 @@ def test_recruitment_ingest_schema_canonicalization_and_cross_source_merge(monke
     headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
     common = {
         "company": "跨源合并集团",
-        "title": "2099届校园招聘战略分析岗",
+        "title": title,
         "city": "深圳",
-        "official_url": "https://example.com/campus/cross-source",
+        "official_url": f"{TEST_AUTHORIZED_ATS}/campus/cross-source",
         "external_id": "shared-vacancy-42",
     }
     with TestClient(main.app) as client:
@@ -1867,10 +1969,17 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
     class FakeResponses:
         def create(self, **kwargs):
             assert kwargs["tools"][0]["type"] == "web_search"
+            assert kwargs["tool_choice"] == "required"
             assert kwargs["max_tool_calls"] <= 6
             return SimpleNamespace(
                 output_text=__import__("json").dumps(payload),
-                output=[SimpleNamespace(type="web_search_call")],
+                output=[SimpleNamespace(
+                    type="web_search_call",
+                    status="completed",
+                    action=SimpleNamespace(sources=[SimpleNamespace(
+                        url="https://careers.pddglobalhr.com/campus/grad/product"
+                    )]),
+                )],
                 usage=SimpleNamespace(input_tokens=800, output_tokens=160, total_tokens=960),
                 model="gpt-4o-mini",
             )
@@ -1899,6 +2008,249 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
     assert result.tool_calls == 1
     assert result.total_tokens == 960
     assert result.failed_pools == ()
+
+
+def test_candidate_page_rejects_title_match_on_unrelated_https_host(monkeypatch):
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    title = f"{target_year}届校园招聘数据分析师"
+    monkeypatch.setattr(
+        recruitment_search,
+        "fetch_watch_page",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text=f"百度 {title} 立即申请",
+            final_url="https://example.com/not-an-official-employer-page",
+        ),
+    )
+
+    evidence = recruitment_search._inspect_official_candidate_page({
+        "url": "https://example.com/not-an-official-employer-page",
+        "company": "百度",
+        "title": title,
+        "closing_date": None,
+    })
+
+    assert evidence.readable is True
+    assert evidence.employer_confirmed is True
+    assert evidence.identity_confirmed is True
+    assert evidence.cohort_confirmed is True
+    assert evidence.open_confirmed is True
+    assert evidence.domain_confirmed is False
+    assert evidence.title_confirmed is False
+
+
+def test_candidate_page_verifies_baidu_recruitment_host_and_all_evidence(monkeypatch):
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    deadline = date.today() + timedelta(days=30)
+    deadline_text = f"{deadline.year}年{deadline.month}月{deadline.day}日"
+    title = f"{target_year}届校园招聘数据分析师"
+    official_url = "https://talent.baidu.com/external/baidu/index.html#/job/123"
+    monkeypatch.setattr(
+        recruitment_search,
+        "fetch_watch_page",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text=f"百度 {title} 投递截止：{deadline_text}",
+            final_url=official_url,
+        ),
+    )
+
+    evidence = recruitment_search._inspect_official_candidate_page({
+        "url": official_url,
+        "company": "百度",
+        "title": title,
+        "closing_date": deadline.isoformat(),
+    })
+
+    assert recruitment_search._safe_official_url(official_url) is not None
+    assert recruitment_search._safe_official_url(
+        "https://www.baidu.com/s?wd=campus+recruitment"
+    ) is None
+    assert evidence.domain_confirmed is True
+    assert evidence.employer_confirmed is True
+    assert evidence.identity_confirmed is True
+    assert evidence.cohort_confirmed is True
+    assert evidence.open_confirmed is True
+    assert evidence.closed is False
+    assert evidence.title_confirmed is True
+
+
+def test_candidate_page_requires_employer_identity_even_on_known_ats(monkeypatch):
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    title = f"{target_year}届校园招聘数据分析师"
+    ats_url = "https://app.mokahr.com/campus_apply/tenant/123"
+    monkeypatch.setattr(
+        recruitment_search,
+        "fetch_watch_page",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text=f"{title} 立即申请",
+            final_url=ats_url,
+        ),
+    )
+
+    evidence = recruitment_search._inspect_official_candidate_page({
+        "url": ats_url,
+        "company": "百度",
+        "title": title,
+        "closing_date": None,
+    })
+
+    assert evidence.domain_confirmed is True
+    assert evidence.employer_confirmed is False
+    assert evidence.title_confirmed is False
+
+
+def test_recruitment_dates_require_application_semantics():
+    application_date = "2099-09-10"
+
+    assert recruitment_search._date_appears_in_page(
+        "发布日期：2099年9月10日", application_date
+    ) is False
+    assert recruitment_search._semantic_date_appears_in_page(
+        "投递截止日期：2099年9月10日",
+        application_date,
+        semantic="closing",
+    ) is True
+    assert recruitment_search._semantic_date_appears_in_page(
+        "投递截止日期：2099年9月10日",
+        application_date,
+        semantic="opening",
+    ) is False
+    assert recruitment_search._semantic_date_appears_in_page(
+        "开放申请日期：2099-09-10",
+        application_date,
+        semantic="opening",
+    ) is True
+
+
+def test_web_search_keeps_incomplete_attestation_pending(monkeypatch):
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    payload = {"jobs": [{
+        "company": "百度",
+        "title": f"{target_year}届校园招聘数据分析师",
+        "city": "北京",
+        "industry": "互联网",
+        "official_url": "https://talent.baidu.com/external/baidu/index.html#/job/123",
+        "opening_date": None,
+        "closing_date": None,
+        "requirements": f"面向{target_year}届毕业生",
+        "category": "互联网企业",
+    }]}
+
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                output_text=__import__("json").dumps(payload),
+                output=[SimpleNamespace(
+                    type="web_search_call",
+                    status="completed",
+                    action=SimpleNamespace(sources=[SimpleNamespace(
+                        url="https://talent.baidu.com/external/baidu/index.html"
+                    )]),
+                )],
+                usage=SimpleNamespace(input_tokens=8, output_tokens=2, total_tokens=10),
+                model="test-model",
+            )
+
+    internet_pool = next(
+        pool for pool in recruitment_search.PERSONAL_MONITOR_POOLS
+        if pool["primary_category"] == "internet_tech"
+    )
+    monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", [internet_pool])
+    monkeypatch.setattr(
+        recruitment_search,
+        "_inspect_official_candidate_page",
+        lambda _job: recruitment_search.CandidatePageEvidence(
+            readable=True,
+            title_confirmed=False,
+            page_text=f"百度 {target_year}届校园招聘",
+            employer_confirmed=True,
+            domain_confirmed=True,
+            cohort_confirmed=True,
+            open_confirmed=False,
+            identity_confirmed=False,
+        ),
+    )
+
+    result = recruitment_search.search_current_recruitment_jobs(
+        SimpleNamespace(responses=FakeResponses())
+    )
+
+    assert len(result.jobs) == 1
+    assert "待官方核验" in result.jobs[0]["tags"]
+    assert "标题已验证" not in result.jobs[0]["tags"]
+    assert "链接已验证" not in result.jobs[0]["tags"]
+
+
+def test_web_search_rejects_pool_without_completed_tool_call():
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                output_text='{"jobs": []}',
+                output=[SimpleNamespace(type="message", status="completed")],
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                model="test-model",
+            )
+
+    pool = next(
+        item for item in recruitment_search.PERSONAL_MONITOR_POOLS
+        if item["primary_category"] == "internet_tech"
+    )
+    try:
+        recruitment_search._search_pool(
+            SimpleNamespace(responses=FakeResponses()), pool
+        )
+    except RuntimeError as exc:
+        assert "completed web_search_call" in str(exc)
+    else:
+        raise AssertionError("A response without completed web search was accepted")
+
+
+def test_web_search_rejects_uncited_structured_job(monkeypatch):
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    payload = {"jobs": [{
+        "company": "百度",
+        "title": f"{target_year}届校园招聘数据分析师",
+        "city": "北京",
+        "industry": "互联网",
+        "official_url": "https://talent.baidu.com/external/baidu/index.html#/job/123",
+        "opening_date": None,
+        "closing_date": None,
+        "requirements": f"面向{target_year}届毕业生",
+        "category": "互联网企业",
+    }]}
+
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                output_text=__import__("json").dumps(payload),
+                output=[SimpleNamespace(
+                    type="web_search_call",
+                    status="completed",
+                    action=SimpleNamespace(sources=[SimpleNamespace(
+                        url="https://careers.pddglobalhr.com/campus"
+                    )]),
+                )],
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                model="test-model",
+            )
+
+    pool = next(
+        item for item in recruitment_search.PERSONAL_MONITOR_POOLS
+        if item["primary_category"] == "internet_tech"
+    )
+    monkeypatch.setattr(
+        recruitment_search,
+        "_inspect_official_candidate_page",
+        lambda _job: (_ for _ in ()).throw(
+            AssertionError("uncited job reached official-page inspection")
+        ),
+    )
+
+    result = recruitment_search._search_pool(
+        SimpleNamespace(responses=FakeResponses()), pool
+    )
+
+    assert result.jobs == []
+    assert result.tool_calls == 1
 
 
 def test_web_search_marks_policy_bank_management_trainee_claims_for_review():
@@ -1956,7 +2308,7 @@ def test_web_search_rejects_old_cohort_today_deadline_and_future_opening():
     }) is None
 
 
-def test_web_search_discards_candidate_with_unreadable_link(monkeypatch):
+def test_web_search_keeps_unreadable_official_candidate_pending(monkeypatch):
     payload = {
         "jobs": [{
             "company": "拼多多",
@@ -1975,7 +2327,13 @@ def test_web_search_discards_candidate_with_unreadable_link(monkeypatch):
         def create(self, **_kwargs):
             return SimpleNamespace(
                 output_text=__import__("json").dumps(payload),
-                output=[SimpleNamespace(type="web_search_call")],
+                output=[SimpleNamespace(
+                    type="web_search_call",
+                    status="completed",
+                    action=SimpleNamespace(sources=[SimpleNamespace(
+                        url="https://careers.pddglobalhr.com/campus/grad/product"
+                    )]),
+                )],
                 usage=SimpleNamespace(input_tokens=8, output_tokens=2, total_tokens=10),
                 model="gpt-4o-mini",
             )
@@ -1994,7 +2352,12 @@ def test_web_search_discards_candidate_with_unreadable_link(monkeypatch):
     result = recruitment_search.search_current_recruitment_jobs(
         SimpleNamespace(responses=FakeResponses())
     )
-    assert result.jobs == []
+    assert len(result.jobs) == 1
+    assert result.jobs[0]["opening_date"] is None
+    assert result.jobs[0]["closing_date"] is None
+    assert "官方页暂不可读" in result.jobs[0]["tags"]
+    assert "待官方核验" in result.jobs[0]["tags"]
+    assert "标题已验证" not in result.jobs[0]["tags"]
 
 
 def test_web_search_keeps_successful_pools_when_one_pool_fails(monkeypatch):
@@ -2017,6 +2380,52 @@ def test_web_search_keeps_successful_pools_when_one_pool_fails(monkeypatch):
     result = recruitment_search.search_current_recruitment_jobs(SimpleNamespace())
     assert result.total_tokens == 15
     assert result.failed_pools == (pools[0]["id"],)
+
+
+def test_web_search_keeps_multiple_roles_from_one_official_campaign_page(monkeypatch):
+    pool = next(
+        item for item in recruitment_search.PERSONAL_MONITOR_POOLS
+        if item["primary_category"] == "internet_tech"
+    )
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    shared_url = "https://careers.pddglobalhr.com/campus/graduate"
+    jobs = []
+    for title, city in (
+        (f"{target_year}届校园招聘产品策略岗", "上海"),
+        (f"{target_year}届校园招聘数据分析岗", "深圳"),
+    ):
+        job = recruitment_search._normalize_job({
+            "company": "拼多多",
+            "title": title,
+            "city": city,
+            "industry": "互联网",
+            "official_url": shared_url,
+            "opening_date": None,
+            "closing_date": "2099-09-01",
+            "requirements": f"面向{target_year}届毕业生",
+            "category": "互联网企业",
+        }, pool)
+        assert job is not None
+        jobs.append(job)
+
+    monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", [pool])
+    monkeypatch.setattr(
+        recruitment_search,
+        "_search_pool",
+        lambda _client, _pool: recruitment_search.WebRecruitmentSearchResult(
+            jobs=jobs,
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+            tool_calls=1,
+            model="test-model",
+        ),
+    )
+
+    result = recruitment_search.search_current_recruitment_jobs(SimpleNamespace())
+    assert len(result.jobs) == 2
+    assert len({job["id"] for job in result.jobs}) == 2
+    assert {job["url"] for job in result.jobs} == {shared_url}
 
 
 def test_docx_extraction_preserves_readable_content():

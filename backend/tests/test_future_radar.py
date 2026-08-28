@@ -4,6 +4,7 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -25,8 +26,11 @@ from backend.future_radar.adapters import (
     DiscoveryLimitedError,
     LegacyDatabaseAdapter,
     OfficialHtmlAdapter,
+    OpenAIWebSearchAdapter,
     PublicFeedAdapter,
     WechatSourceAdapter,
+    WechatWebSearchAdapter,
+    _public_reference_url,
     adapter_for_source,
 )
 from backend.future_radar.normalization import (
@@ -672,6 +676,33 @@ def test_same_job_from_two_sources_merges_provenance_and_verification(radar_serv
     assert "VERIFIED" in event_types(radar_service)
 
 
+def test_discovery_adapter_promotes_only_deterministically_attested_job(radar_service):
+    source = create_source(
+        radar_service,
+        "web-search-with-official-attestation",
+        trust_level="discovery",
+        source_type="openai_web_search",
+        adapter_config={"adapter": "openai_web_search"},
+    )
+    attested = sample_job("official-title-match", verification_status="verified")
+    pending = sample_job("unconfirmed-search-row", verification_status="verified")
+    radar_service.adapter_factory = lambda _source: StaticAdapter(AdapterResult(
+        jobs=[attested, pending],
+        content_hash="attested-per-item-v1",
+        verified_job_external_ids={"official-title-match"},
+    ))
+
+    result = radar_service.run(source_ids=[source["id"]], force=True)
+
+    assert result["new_jobs"] == 2
+    verified = radar_service.repository.get_job("official-title-match")
+    unconfirmed = radar_service.repository.get_job("unconfirmed-search-row")
+    assert verified["verification_status"] == "verified"
+    assert verified["sources"][0]["verification_role"] == "verification"
+    assert unconfirmed["verification_status"] == "pending"
+    assert unconfirmed["sources"][0]["verification_role"] == "discovery"
+
+
 def test_same_program_merges_and_official_source_upgrades_verified(radar_service):
     discovery = create_source(
         radar_service, "program-discovery-source", trust_level="discovery"
@@ -1086,6 +1117,306 @@ def test_wechat_public_metadata_is_preserved_when_article_body_is_unavailable(
     assert refreshed["last_success_at"] is not None
 
 
+def test_wechat_web_search_discovers_public_article_and_attests_official_job(
+    monkeypatch,
+):
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    opening_date = date.today().isoformat()
+    closing_date = f"{target_year}-12-31"
+    payload = {
+        "articles": [{
+            "title": f"拼多多 {target_year} 届校园招聘启动",
+            "url": "https://mp.weixin.qq.com/s/public-article-id",
+            "publish_date": date.today().isoformat(),
+            "excerpt": f"面向 {target_year} 届毕业生的校园招聘。",
+        }],
+        "jobs": [{
+            "company": "拼多多",
+            "title": f"{target_year}届校园招聘产品策略岗",
+            "city": "上海",
+            "industry": "互联网",
+            "official_url": "https://careers.pddglobalhr.com/campus/product",
+            "opening_date": opening_date,
+            "closing_date": closing_date,
+            "requirements": f"面向{target_year}届毕业生",
+            "category": "互联网企业",
+        }],
+    }
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            assert kwargs["tools"][0]["type"] == "web_search"
+            assert kwargs["tool_choice"] == "required"
+            return SimpleNamespace(
+                output_text=__import__("json").dumps(payload),
+                output=[SimpleNamespace(
+                    type="web_search_call",
+                    status="completed",
+                    action=SimpleNamespace(sources=[{
+                        "type": "url",
+                        "url": payload["articles"][0]["url"],
+                    }]),
+                )],
+                usage=SimpleNamespace(total_tokens=321),
+            )
+
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.OpenAI",
+        lambda **_kwargs: SimpleNamespace(responses=FakeResponses()),
+    )
+    monkeypatch.setattr(
+        "backend.future_radar.adapters._inspect_official_candidate_page",
+        lambda job: SimpleNamespace(
+            readable=True,
+            closed=False,
+            title_confirmed=True,
+            page_text=(
+                f"{job['title']}，申请开始：{opening_date}，"
+                f"投递截止：{closing_date}，立即申请。"
+            ),
+        ),
+    )
+    adapter = WechatWebSearchAdapter(api_key="test-key", ai_model="test-model")
+    result = adapter.scan({"name": "国央校招", "account_name": "国央校招"})
+
+    assert len(result.articles) == 1
+    assert result.articles[0]["classification"] == "recruitment_signal"
+    assert len(result.jobs) == 1
+    assert result.jobs[0]["verification_status"] == "verified"
+    assert result.jobs[0]["opening_date"] == opening_date
+    assert result.jobs[0]["closing_date"] == closing_date
+    assert "链接已验证" in result.jobs[0]["tags"]
+    assert result.jobs[0]["external_id"] in result.verified_job_external_ids
+    assert result.ai_calls == 1
+    assert result.model_tokens_used == 321
+
+
+def test_wechat_web_search_preserves_unreadable_and_unverified_jobs_as_pending(
+    monkeypatch,
+):
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    opening_date = date.today().isoformat()
+    closing_date = f"{target_year}-12-31"
+    payload = {
+        "articles": [],
+        "jobs": [
+            {
+                "company": "拼多多",
+                "title": f"{target_year}届校园招聘暂不可读岗位",
+                "city": "上海",
+                "industry": "互联网",
+                "official_url": "https://careers.pddglobalhr.com/campus/unreadable",
+                "opening_date": opening_date,
+                "closing_date": closing_date,
+                "requirements": f"面向{target_year}届毕业生",
+                "category": "互联网企业",
+            },
+            {
+                "company": "拼多多",
+                "title": f"{target_year}届校园招聘证据不足岗位",
+                "city": "北京",
+                "industry": "互联网",
+                "official_url": "https://careers.pddglobalhr.com/campus/unverified",
+                "opening_date": opening_date,
+                "closing_date": closing_date,
+                "requirements": f"面向{target_year}届毕业生",
+                "category": "互联网企业",
+            },
+            {
+                "company": "拼多多",
+                "title": f"{target_year}届校园招聘已关闭岗位",
+                "city": "深圳",
+                "industry": "互联网",
+                "official_url": "https://careers.pddglobalhr.com/campus/closed",
+                "opening_date": opening_date,
+                "closing_date": closing_date,
+                "requirements": f"面向{target_year}届毕业生",
+                "category": "互联网企业",
+            },
+        ],
+    }
+
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                output_text=__import__("json").dumps(payload),
+                output=[SimpleNamespace(
+                    type="web_search_call",
+                    status="completed",
+                    action=SimpleNamespace(sources=[]),
+                )],
+                usage=SimpleNamespace(total_tokens=432),
+            )
+
+    def inspect(job):
+        if "暂不可读" in job["title"]:
+            return SimpleNamespace(
+                readable=False,
+                closed=False,
+                title_confirmed=False,
+                page_text="",
+            )
+        if "已关闭" in job["title"]:
+            return SimpleNamespace(
+                readable=True,
+                closed=True,
+                title_confirmed=False,
+                page_text="职位已关闭",
+            )
+        return SimpleNamespace(
+            readable=True,
+            closed=False,
+            title_confirmed=False,
+            # Both values occur, but only as publication/event dates.  They
+            # must not survive as application opening/closing dates.
+            page_text=(
+                f"发布日期：{opening_date}；校园宣讲活动日期：{closing_date}。"
+            ),
+        )
+
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.OpenAI",
+        lambda **_kwargs: SimpleNamespace(responses=FakeResponses()),
+    )
+    monkeypatch.setattr(
+        "backend.future_radar.adapters._inspect_official_candidate_page", inspect,
+    )
+
+    result = WechatWebSearchAdapter(
+        api_key="test-key", ai_model="test-model"
+    ).scan({"name": "国央校招", "account_name": "国央校招"})
+
+    assert len(result.jobs) == 2
+    assert result.verified_job_external_ids == set()
+    by_title = {job["title"]: job for job in result.jobs}
+    unreadable = by_title[f"{target_year}届校园招聘暂不可读岗位"]
+    unverified = by_title[f"{target_year}届校园招聘证据不足岗位"]
+
+    assert unreadable["verification_status"] == "pending"
+    assert unreadable["opening_date"] is None
+    assert unreadable["closing_date"] is None
+    assert "官方页暂不可读" in unreadable["tags"]
+    assert "链接已验证" not in unreadable["tags"]
+    assert "链接可访问" not in unreadable["tags"]
+
+    assert unverified["verification_status"] == "pending"
+    assert unverified["opening_date"] is None
+    assert unverified["closing_date"] is None
+    assert "链接可访问" in unverified["tags"]
+    assert "待官方核验" in unverified["tags"]
+    assert "链接已验证" not in unverified["tags"]
+    assert all("已关闭岗位" not in title for title in by_title)
+
+
+def test_wechat_web_search_rejects_json_without_completed_search_call(monkeypatch):
+    payload = {
+        "articles": [{
+            "title": "某企业 2027 届校园招聘",
+            "url": "https://public.example.com/campus/2027",
+            "publish_date": None,
+            "excerpt": "看似完整但没有真实工具调用的模型输出。",
+        }],
+        "jobs": [],
+    }
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            assert kwargs["tool_choice"] == "required"
+            return SimpleNamespace(
+                output_text=__import__("json").dumps(payload),
+                output=[SimpleNamespace(
+                    type="web_search_call",
+                    status="failed",
+                    action=SimpleNamespace(sources=[{
+                        "url": "https://public.example.com/campus/2027",
+                    }]),
+                )],
+                usage=SimpleNamespace(total_tokens=100),
+            )
+
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.OpenAI",
+        lambda **_kwargs: SimpleNamespace(responses=FakeResponses()),
+    )
+    adapter = WechatWebSearchAdapter(api_key="test-key", ai_model="test-model")
+
+    with pytest.raises(RuntimeError, match="did not complete"):
+        adapter.scan({"name": "国央校招", "account_name": "国央校招"})
+
+
+def test_wechat_web_search_articles_require_cited_url_or_same_hostname(monkeypatch):
+    payload = {
+        "articles": [
+            {
+                "title": "某企业 2027 届校园招聘启动",
+                "url": "https://public.example.com/articles/campus-2027?utm_source=model",
+                "publish_date": None,
+                "excerpt": "面向 2027 届毕业生。",
+            },
+            {
+                "title": "某银行 2027 届校园招聘公告",
+                "url": "https://bank.example.org/campus/2027",
+                "publish_date": None,
+                "excerpt": "公开招聘公告。",
+            },
+            {
+                "title": "未被搜索来源支持的 2027 届校园招聘",
+                "url": "https://unsupported.example.net/campus/2027",
+                "publish_date": None,
+                "excerpt": "该 URL 只存在于模型 JSON。",
+            },
+        ],
+        "jobs": [],
+    }
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                output_text=__import__("json").dumps(payload),
+                output=[{
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": {"sources": [
+                        {
+                            "type": "url",
+                            "url": "https://public.example.com/articles/campus-2027",
+                        },
+                        SimpleNamespace(
+                            type="url", url="https://bank.example.org/search/result"
+                        ),
+                        {"type": "url", "url": "http://127.0.0.1/private"},
+                    ]},
+                }],
+                usage=SimpleNamespace(total_tokens=200),
+            )
+
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.OpenAI",
+        lambda **_kwargs: SimpleNamespace(responses=FakeResponses()),
+    )
+    result = WechatWebSearchAdapter(
+        api_key="test-key", ai_model="test-model"
+    ).scan({"name": "国央校招", "account_name": "国央校招"})
+
+    assert [article["article_url"] for article in result.articles] == [
+        "https://public.example.com/articles/campus-2027",
+        "https://bank.example.org/campus/2027",
+    ]
+    assert result.status == "healthy"
+    assert result.ai_calls == 1
+
+
+def test_openai_web_search_is_not_a_complete_source_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.search_current_recruitment_jobs",
+        lambda: SimpleNamespace(jobs=[], tool_calls=1, total_tokens=12),
+    )
+
+    result = OpenAIWebSearchAdapter().scan({})
+
+    assert result.snapshot_complete is False
+
+
 def test_public_feed_adapter_parses_rss_as_discovery_articles(monkeypatch, radar_service):
     credential_marker = "sk" + "-proj-" + "NOT_A_REAL_KEY_TEST_VALUE_123456"
     uuid_marker = "-".join(("12345678", "1234", "4123", "8123", "123456789abc"))
@@ -1153,6 +1484,21 @@ def test_public_feed_adapter_parses_rss_as_discovery_articles(monkeypatch, radar
         "adapter_config": {"adapter": "public_feed", "max_entries": 30},
     })
     assert request.source_type == "public_feed"
+
+
+def test_public_reference_url_rejects_phone_numbers():
+    mobile = "138" + "0013" + "8000"
+    landline = "010" + "-" + "12345678"
+
+    assert _public_reference_url(
+        f"https://public.example.com/articles/{mobile}"
+    ) is None
+    assert _public_reference_url(
+        f"https://public.example.com/articles?contact={landline}"
+    ) is None
+    assert _public_reference_url(
+        "https://public.example.com/articles/campus-2027"
+    ) == "https://public.example.com/articles/campus-2027"
 
 
 def test_public_feed_adapter_rejects_dtd(monkeypatch):
@@ -1794,7 +2140,7 @@ def test_user_manual_scan_always_bridges_current_verified_legacy_pool(
     assert len(captured["source_ids"]) > 1
     assert all(
         source.get("adapter_config", {}).get("adapter")
-        in {"official_html", "legacy_database"}
+        in {"official_html", "legacy_database", "public_recruitment_index"}
         for source in radar_service.repository.user_scannable_sources()
     )
     assert captured["force"] is False
