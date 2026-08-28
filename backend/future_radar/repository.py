@@ -14,6 +14,18 @@ JSON_SOURCE_FIELDS = ("adapter_config", "query_config", "region_config")
 JSON_RUN_FIELDS = ("errors", "source_ids")
 JSON_JOB_FIELDS = ("tags", "industry_tags", "role_tags")
 
+RUN_LOCK_TTL_SECONDS = 30 * 60
+SOURCE_LOCK_TTL_SECONDS = 20 * 60
+QUICK_SCAN_ADAPTERS = frozenset({
+    "official_html",
+    "official_api",
+    "ats",
+    "public_feed",
+    "legacy_database",
+    "other_public_source",
+})
+DEEP_SCAN_ADAPTERS = frozenset({"openai_web_search", "wechat_public"})
+
 PUBLIC_JOB_EVENT_FIELDS = (
     "company", "title", "city", "region", "status",
     "opening_date", "closing_date", "verification_status",
@@ -163,9 +175,9 @@ class RadarRepository:
             if selected and source["id"] not in selected:
                 continue
             # Registry placeholders without a lawful public discovery entry
-            # are status signals, not runnable crawlers.  Explicit operator
-            # runs can still inspect them, but normal scheduled/manual scans
-            # must not turn five known limitations into five fake failures.
+            # are status signals, not runnable crawlers. A scheduler pass must
+            # not turn known limitations into fake source failures. Manual
+            # Quick/Deep selection also excludes them by adapter family.
             if (
                 not selected
                 and source.get("adapter_config", {}).get("adapter")
@@ -187,34 +199,77 @@ class RadarRepository:
                 due.append(source)
         return due
 
-    def user_scannable_sources(
-        self, *, source_ids: list[str] | None = None
-    ) -> list[dict[str, Any]]:
-        """Return deterministic sources that a signed-in user may refresh now.
+    @staticmethod
+    def _adapter_name(source: dict[str, Any]) -> str:
+        return str(
+            source.get("adapter_config", {}).get("adapter")
+            or source.get("source_type")
+            or ""
+        ).strip().casefold()
 
-        A manual click intentionally bypasses the schedule interval, but it
-        must not trigger placeholder, mock, push-only, or billable AI sources.
-        The internal legacy bridge is the sole exception to the ``manual``
-        source type because it only re-indexes rows that already carry both
-        server-side verification markers.
+    @classmethod
+    def _manual_scan_family(cls, source: dict[str, Any]) -> str | None:
+        """Classify runnable sources without consulting scheduler due-times.
+
+        A manual Quick Scan is deliberately deterministic.  Deep Scan owns
+        discovery providers, including publicly configured WeChat articles and
+        OpenAI web discovery.  ``discovery_limited`` placeholders are registry
+        health signals rather than runnable sources and therefore belong to
+        neither family.
         """
+        adapter = cls._adapter_name(source)
+        if source.get("id") == "legacy-recruitment-pipeline" and adapter == "legacy_database":
+            return "quick"
+        if adapter in QUICK_SCAN_ADAPTERS:
+            return "quick"
+        if adapter in DEEP_SCAN_ADAPTERS:
+            return "deep"
+        return None
+
+    def manual_scan_sources(
+        self,
+        scan_type: str,
+        source_ids: list[str] | None = None,
+        force: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return sources for a user-initiated scan.
+
+        Manual scans intentionally ignore ``interval_minutes``: that field is
+        exclusively a Scheduler cadence.  ``force`` is accepted as part of the
+        service contract and bypasses freshness/due-time selection, but it does
+        not reactivate a disabled source or make an unsafe placeholder
+        runnable.  Run, source, domain and provider safety locks are enforced
+        later by the service/adapters.
+        """
+        del force  # Selection already ignores due/freshness; safety remains.
+        normalized_type = str(scan_type or "").strip().casefold()
+        if normalized_type not in {"quick", "deep"}:
+            raise ValueError("scan_type must be 'quick' or 'deep'.")
         selected = set(source_ids or [])
-        scannable: list[dict[str, Any]] = []
+        result: list[dict[str, Any]] = []
         for source in self.list_sources(enabled=True):
             if selected and source["id"] not in selected:
                 continue
-            adapter = str(
-                source.get("adapter_config", {}).get("adapter") or ""
-            ).casefold()
-            if source["id"] == "legacy-recruitment-pipeline" and adapter == "legacy_database":
-                scannable.append(source)
+            if self._manual_scan_family(source) != normalized_type:
                 continue
-            if source.get("source_type") == "manual":
-                continue
-            if adapter != "official_html":
-                continue
-            scannable.append(source)
-        return scannable
+            result.append(source)
+        return result
+
+    def deep_scan_retry_after(self, source_ids: list[str] | None = None) -> int:
+        """Deep Scan has no post-run cooldown; active work is protected by locks.
+
+        The argument is retained for a stable API and future provider-specific
+        policies.  Content-hash/AI cache reuse and external provider/domain
+        safety limits remain independent of this manual-run policy.
+        """
+        del source_ids
+        return 0
+
+    def user_scannable_sources(
+        self, *, source_ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Backward-compatible alias for the deterministic Quick Scan set."""
+        return self.manual_scan_sources("quick", source_ids=source_ids)
 
     def create_source(self, source: dict[str, Any]) -> dict[str, Any]:
         now = utc_now()
@@ -287,7 +342,7 @@ class RadarRepository:
 
     def acquire_lock(self, name: str, owner: str, ttl_seconds: int) -> bool:
         now = datetime.now(timezone.utc)
-        expires = (now + timedelta(seconds=max(10, ttl_seconds))).isoformat()
+        expires = (now + timedelta(seconds=max(1, ttl_seconds))).isoformat()
         now_iso = now.isoformat()
         with self.transaction() as connection:
             row = connection.execute(
@@ -307,23 +362,53 @@ class RadarRepository:
             )
         return True
 
+    def renew_lock(self, name: str, owner: str, ttl_seconds: int) -> bool:
+        """Extend a lease only while the caller still owns it.
+
+        The owner predicate prevents a delayed heartbeat from reclaiming a
+        lease that another worker acquired after expiry.
+        """
+        now = datetime.now(timezone.utc)
+        expires = (now + timedelta(seconds=max(1, ttl_seconds))).isoformat()
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE radar_locks SET expires_at=?, updated_at=?
+                WHERE lock_name=? AND owner=?
+                """,
+                (expires, now.isoformat(), name, owner),
+            )
+        return cursor.rowcount == 1
+
     def release_lock(self, name: str, owner: str) -> None:
         with self.transaction() as connection:
             connection.execute(
                 "DELETE FROM radar_locks WHERE lock_name = ? AND owner = ?", (name, owner)
             )
 
-    def create_run(self, trigger_type: str, source_ids: list[str]) -> dict[str, Any]:
-        run_id = str(uuid.uuid4())
+    def create_run(
+        self,
+        trigger_type: str,
+        source_ids: list[str],
+        *,
+        scan_type: str = "scheduled",
+        force: bool = False,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        run_id = run_id or str(uuid.uuid4())
         now = utc_now()
         with self.transaction() as connection:
             connection.execute(
                 """
                 INSERT INTO radar_runs
-                    (id, trigger_type, started_at, status, errors, source_ids, created_at)
-                VALUES (?, ?, ?, 'running', '[]', ?, ?)
+                    (id, trigger_type, scan_type, force_scan, started_at, status,
+                     errors, source_ids, created_at)
+                VALUES (?, ?, ?, ?, ?, 'running', '[]', ?, ?)
                 """,
-                (run_id, trigger_type, now, _json(source_ids), now),
+                (
+                    run_id, trigger_type, str(scan_type), int(bool(force)), now,
+                    _json(source_ids), now,
+                ),
             )
         return self.get_run(run_id) or {"id": run_id, "status": "running"}
 
@@ -333,7 +418,7 @@ class RadarRepository:
                 """
                 UPDATE radar_runs SET
                     finished_at=?, status=?, sources_checked=?, sources_succeeded=?,
-                    sources_failed=?, programs_discovered=?, new_jobs=?, updated_jobs=?,
+                    sources_failed=?, sources_skipped=?, programs_discovered=?, new_jobs=?, updated_jobs=?,
                     closed_jobs=?, reopened_jobs=?, unchanged_jobs=?, articles_discovered=?,
                     ai_calls=?, model_tokens_used=?, errors=?
                 WHERE id=?
@@ -341,6 +426,7 @@ class RadarRepository:
                 (
                     utc_now(), summary["status"], summary["sources_checked"],
                     summary["sources_succeeded"], summary["sources_failed"],
+                    summary.get("sources_skipped", 0),
                     summary["programs_discovered"], summary["new_jobs"],
                     summary["updated_jobs"], summary["closed_jobs"],
                     summary["reopened_jobs"], summary["unchanged_jobs"],
@@ -358,7 +444,55 @@ class RadarRepository:
         if item:
             for field in JSON_RUN_FIELDS:
                 item[field] = _decode_json(item.get(field), [])
+            item["force_scan"] = bool(item.get("force_scan"))
         return item
+
+    def active_run_types(self) -> list[str]:
+        """Return run types whose rows still own a live database lease.
+
+        Service-created run IDs are also their lock-owner IDs.  This lets the
+        dashboard distinguish a genuinely renewed long-running task from an
+        abandoned row, or from a newer worker that acquired an expired lease.
+        """
+        now = datetime.now(timezone.utc)
+        failure = _json([{
+            "source_id": "",
+            "code": "RUN_LEASE_EXPIRED",
+            "message": "The Radar worker lease expired before completion.",
+        }])
+        with self.transaction() as connection:
+            running = connection.execute(
+                """
+                SELECT r.id, r.scan_type,
+                       CASE WHEN l.owner=r.id AND l.expires_at>? THEN 1 ELSE 0 END
+                           AS lease_active
+                FROM radar_runs r
+                LEFT JOIN radar_locks l
+                  ON l.lock_name=('future-radar-run:' || r.scan_type)
+                WHERE r.status='running'
+                  AND r.scan_type IN ('quick', 'deep', 'scheduled')
+                """,
+                (now.isoformat(),),
+            ).fetchall()
+            expired_ids = [str(row["id"]) for row in running if not row["lease_active"]]
+            if expired_ids:
+                connection.executemany(
+                    """
+                    UPDATE radar_runs SET status='failed', finished_at=?, errors=?
+                    WHERE id=? AND status='running'
+                    """,
+                    [
+                        (now.isoformat(), failure, run_id)
+                        for run_id in expired_ids
+                    ],
+                )
+        order = {"quick": 1, "deep": 2, "scheduled": 3}
+        active = {
+            str(row["scan_type"] or "scheduled")
+            for row in running
+            if row["lease_active"]
+        }
+        return sorted(active, key=lambda value: (order.get(value, 4), value))
 
     def list_runs(self, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
         offset = (page - 1) * page_size
@@ -373,6 +507,7 @@ class RadarRepository:
             item = dict(row)
             for field in JSON_RUN_FIELDS:
                 item[field] = _decode_json(item.get(field), [])
+            item["force_scan"] = bool(item.get("force_scan"))
             items.append(item)
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
@@ -1198,6 +1333,7 @@ class RadarRepository:
         today = date.today()
         soon = (today + timedelta(days=7)).isoformat()
         recent = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        active_run_types = self.active_run_types()
         with self._connect() as connection:
             event_counts = {
                 row["event_type"]: int(row["count"])
@@ -1239,6 +1375,19 @@ class RadarRepository:
             latest_event_id = int(connection.execute(
                 "SELECT COALESCE(MAX(id),0) FROM radar_events"
             ).fetchone()[0])
+            active_run_rows = connection.execute(
+                """
+                SELECT id, trigger_type, scan_type, started_at, status, source_ids
+                FROM radar_runs WHERE status='running' ORDER BY started_at DESC
+                """
+            ).fetchall()
+        active_runs = [
+            {
+                **dict(row),
+                "source_ids": _decode_json(row["source_ids"], []),
+            }
+            for row in active_run_rows
+        ]
         return {
             "counts": {
                 "new": event_counts.get("NEW", 0),
@@ -1261,4 +1410,7 @@ class RadarRepository:
             "last_scan": self.get_run(last_run["id"]) if last_run else None,
             "last_successful_scan": last_success["finished_at"] if last_success else None,
             "last_event_id": latest_event_id,
+            "active_run_types": active_run_types,
+            "active_runs": active_runs,
+            "run_in_progress": bool(active_run_types),
         }

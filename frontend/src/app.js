@@ -18,7 +18,7 @@ import {
   createCoalescedRadarReload,
   filterJobsByStarfields,
   formatScoringFactors,
-  formatRadarCooldown,
+  futureRadarActiveRunTypes,
   futureRadarAiSearchNotice,
   futureRadarRunErrorCopy,
   futureRadarRunSuccessCopy,
@@ -26,7 +26,6 @@ import {
   isDefaultFutureRadarJobsView,
   jobTierBucket,
   mergeFutureRadarJobs,
-  parseRadarRetryAfter,
   partitionJobsByPriority,
   starfieldLabel,
 } from "./recruitment-radar.js";
@@ -48,9 +47,11 @@ const STORAGE_KEYS = {
 };
 const WORKSPACE_ORDER = ["legal", "general", "finance"];
 const CHATGPT_MONITOR_SOURCE_COUNT = 5;
-const RECRUITMENT_REFRESH_LABEL = "公开源 + AI 补漏 ↻";
+const RECRUITMENT_REFRESH_LABEL = "同步候选源 ↻";
 const FUTURE_RADAR_POLL_INTERVAL_MS = 30_000;
-const FUTURE_RADAR_MANUAL_COOLDOWN_SECONDS = 5 * 60;
+const FUTURE_RADAR_RUN_STATUS_POLL_MS = 2_500;
+const FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS = 20;
+const FUTURE_RADAR_SCAN_TYPES = Object.freeze(["quick", "deep"]);
 const WORKSPACE_META = {
   legal: { symbol: "§", eyebrow: "FROST", themeName: "寒冰域", label: "寒冰域", hero: "有些东西决定世界如何运行，也决定什么不能被越过。", description: "当前从合同、合规、义务、期限与风险开始。", lens: "来源" },
   general: { symbol: "✦", eyebrow: "AURORA", themeName: "极光域", label: "极光域", hero: "让散落的信息逐渐形成属于你的知识世界。", description: "当前从资料、文档、对话与可追溯问答开始。", lens: "来源" },
@@ -129,9 +130,12 @@ const state = {
     pollingTimer: null,
     polling: false,
     loading: false,
-    runStarting: false,
-    runCooldownUntil: 0,
-    runCooldownTimer: null,
+    runStarting: { quick: false, deep: false },
+    runDelayUntil: { quick: 0, deep: 0 },
+    runDelayTimer: { quick: null, deep: null },
+    runStatusPollTimer: { quick: null, deep: null },
+    runStatusPollPending: { quick: false, deep: false },
+    activeRunTypes: new Set(),
     filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: "open", verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" },
   },
   pendingLaunch: null,
@@ -215,7 +219,9 @@ const elements = {
   recruitmentDeadlineAlerts: $("recruitment-deadline-alerts"),
   recruitmentWatchForm: $("recruitment-watch-form"), recruitmentWatchCompany: $("recruitment-watch-company"),
   recruitmentWatchAdd: $("recruitment-watch-add"), recruitmentWatchList: $("recruitment-watch-list"),
-  futureRadarRun: $("future-radar-run"), futureRadarActionStatus: $("future-radar-action-status"), futureRadarDashboard: $("future-radar-dashboard"),
+  futureRadarRun: $("future-radar-run"), futureRadarRunLabel: $("future-radar-run-label"),
+  futureRadarDeepRun: $("future-radar-deep-run"), futureRadarDeepRunLabel: $("future-radar-deep-run-label"),
+  futureRadarActionStatus: $("future-radar-action-status"), futureRadarDashboard: $("future-radar-dashboard"),
   futureRadarLastScan: $("future-radar-last-scan"), futureRadarLastSuccess: $("future-radar-last-success"),
   futureRadarSourceHealth: $("future-radar-source-health"), futureRadarLiveState: $("future-radar-live-state"),
   futureRadarLoading: $("future-radar-loading"), futureRadarError: $("future-radar-error"),
@@ -268,8 +274,8 @@ const elements = {
 
 if (elements.recruitmentRefresh) {
   elements.recruitmentRefresh.textContent = RECRUITMENT_REFRESH_LABEL;
-  elements.recruitmentRefresh.title = "同步公开招聘来源，并在 15 分钟冷却允许时运行一次低频 AI 补漏；会产生少量 Token 消耗。";
-  elements.recruitmentRefresh.setAttribute("aria-label", "刷新公开源并运行低频 AI 补漏");
+  elements.recruitmentRefresh.title = "同步已有候选源与官网哨站；如需寻找新入口，请单独启动 Deep Scan。";
+  elements.recruitmentRefresh.setAttribute("aria-label", "同步已有候选源与官网哨站");
 }
 
 function activeWorkspace() {
@@ -759,6 +765,7 @@ function applyUser() {
 
 async function logout(showMessage = true) {
   await soundscapeEngine.destroy();
+  FUTURE_RADAR_SCAN_TYPES.forEach(stopFutureRadarRunStatusPolling);
   state.music.playing = false;
   state.music.minimized = false;
   state.music.status = state.music.enabled ? "resume_pending" : "idle";
@@ -2441,47 +2448,6 @@ function renderRecruitmentSyncStatus(rawStatus) {
   state.recruitmentSyncStatus = status;
 }
 
-function formatHistoricalAiSearch(webSearch, triggeredThisRun = false) {
-  if (!webSearch || typeof webSearch !== "object") return "AI 补漏尚无历史运行记录";
-  const status = String(webSearch.status || "").toLowerCase();
-  const timestamp = webSearch.completed_at || webSearch.last_attempt_at || webSearch.updated_at || webSearch.last_run_at;
-  const label = triggeredThisRun ? "本次 AI 补漏" : "上次 AI 补漏";
-  const timeCopy = timestamp ? `（${formatSyncTime(timestamp, "")}）` : "";
-  if (status === "success" || status === "completed") {
-    const jobsValue = webSearch.jobs ?? webSearch.count ?? webSearch.candidates;
-    const jobs = Number(jobsValue);
-    return jobsValue == null || !Number.isFinite(jobs)
-      ? `${label}${timeCopy}已完成`
-      : `${label}${timeCopy}发现 ${jobs.toLocaleString("zh-CN")} 条候选`;
-  }
-  if (status === "error" || status === "failed") return `${label}${timeCopy}未完成`;
-  if (status === "running" || status === "in_progress") return `AI 补漏正在独立后台运行${timeCopy}`;
-  return `${label}${timeCopy}暂无可展示结果`;
-}
-
-function formatDeepSearchOutcome(sourceResult) {
-  const webSearch = sourceResult?.web_search;
-  const ranThisTime = sourceResult?.web_search_ran === true
-    || sourceResult?.web_search_triggered === true
-    || webSearch?.triggered_this_run === true;
-  const aiUnavailable = futureRadarAiSearchNotice({
-    source_id: "openai-public-web-search",
-    ...webSearch,
-  });
-  if (webSearch?.status === "error" && aiUnavailable) return aiUnavailable;
-  if (ranThisTime) return formatHistoricalAiSearch(webSearch, true);
-  const nextDueCopy = sourceResult?.next_due_at
-    ? `，${formatSyncTime(sourceResult.next_due_at, "稍后")} 后可再次运行`
-    : "";
-  const skipCopy = {
-    deep_search_cooldown: `AI 补漏：15 分钟冷却中，本次未调用模型${nextDueCopy}`,
-    web_search_disabled: "AI 补漏：服务端未启用，本次未调用模型",
-    web_search_not_started: "AI 补漏：本次未能启动，未将历史结果计作本轮",
-    deep_search_not_requested: "AI 补漏：本次未请求模型",
-  }[sourceResult?.skip_reason];
-  return skipCopy || `${formatHistoricalAiSearch(webSearch, false)}；本次未调用模型`;
-}
-
 function radarCollection(payload, keys = []) {
   if (Array.isArray(payload)) return payload;
   for (const key of ["items", ...keys]) {
@@ -2508,7 +2474,7 @@ function radarStatusCopy(value) {
     open: "开放中", closed: "已关闭", reopened: "重新开放", running: "扫描中",
     success: "正常", succeeded: "正常", completed: "已完成", partial_success: "部分完成",
     partial: "部分完成", pending: "待核验", verified: "已核验", conflicted: "存在冲突",
-    failed: "失败", error: "异常", disabled: "已停用", healthy: "健康",
+    failed: "失败", error: "异常", skipped: "已跳过", disabled: "已停用", healthy: "健康",
     discovery_limited: "发现受限", access_restricted: "访问受限", unknown: "未知",
   }[raw] || String(value || "未知");
 }
@@ -2518,7 +2484,7 @@ function radarStatusClass(value) {
   if (/verified|success|succeeded|completed|healthy|open|synced|new|discovered|reopened|official_source_found/.test(raw)) return "healthy";
   if (/running|progress|syncing|updated/.test(raw)) return "running";
   if (/error|fail|conflict|restricted/.test(raw)) return "error";
-  if (/partial|pending|warning|limited/.test(raw)) return "warning";
+  if (/partial|pending|warning|limited|skipped/.test(raw)) return "warning";
   if (/closed|disabled|paused/.test(raw)) return "muted";
   return "pending";
 }
@@ -2529,40 +2495,153 @@ function setFutureRadarActionStatus(message, tone = "pending") {
   elements.futureRadarActionStatus.className = `radar-action-status ${tone}`;
 }
 
-function futureRadarCooldownRemaining() {
-  return Math.max(0, Math.ceil((state.futureRadar.runCooldownUntil - Date.now()) / 1000));
+function futureRadarRunButton(scanType) {
+  return scanType === "deep" ? elements.futureRadarDeepRun : elements.futureRadarRun;
 }
 
-function renderFutureRadarRunAvailability(running = false) {
-  if (!elements.futureRadarRun || state.futureRadar.runStarting) return;
-  const cooldown = futureRadarCooldownRemaining();
-  elements.futureRadarRun.disabled = running || cooldown > 0;
-  elements.futureRadarRun.querySelector("span").textContent = running
-    ? "扫描进行中"
-    : cooldown > 0
-      ? `${formatRadarCooldown(cooldown)}后可扫描`
-      : "立即扫描";
+function futureRadarRunLabel(scanType) {
+  return scanType === "deep" ? elements.futureRadarDeepRunLabel : elements.futureRadarRunLabel;
 }
 
-function startFutureRadarRunCooldown(seconds, message, tone = "warning") {
-  window.clearInterval(state.futureRadar.runCooldownTimer);
+function futureRadarDelayRemaining(scanType) {
+  return Math.max(0, Math.ceil(((state.futureRadar.runDelayUntil[scanType] || 0) - Date.now()) / 1000));
+}
+
+function syncFutureRadarActiveRuns(dashboard = state.futureRadar.dashboard || {}) {
+  state.futureRadar.activeRunTypes = new Set(futureRadarActiveRunTypes(dashboard));
+  return state.futureRadar.activeRunTypes;
+}
+
+function renderFutureRadarRunAvailability(dashboard = state.futureRadar.dashboard || {}) {
+  const activeRunTypes = syncFutureRadarActiveRuns(dashboard);
+  FUTURE_RADAR_SCAN_TYPES.forEach((scanType) => {
+    const button = futureRadarRunButton(scanType);
+    const label = futureRadarRunLabel(scanType);
+    if (!button || !label) return;
+    const running = state.futureRadar.runStarting[scanType] || activeRunTypes.has(scanType);
+    const remaining = futureRadarDelayRemaining(scanType);
+    button.disabled = running || remaining > 0;
+    button.toggleAttribute("aria-busy", running);
+    label.textContent = running
+      ? "扫描中..."
+      : remaining > 0
+        ? "扫描完成"
+        : scanType === "deep" ? "深度扫描" : "立即扫描";
+    if (remaining > 0) {
+      button.title = `本次扫描已完成；${remaining} 秒后可再次扫描，避免误触。`;
+    } else {
+      button.title = scanType === "deep"
+        ? "运行智能发现，寻找新的招聘项目与官方入口。"
+        : "优先核对已知官网、ATS、API 与招聘页面，不主动运行 AI 发现。";
+    }
+  });
+}
+
+function startFutureRadarRunDelay(scanType, seconds, message, tone = "healthy") {
+  window.clearInterval(state.futureRadar.runDelayTimer[scanType]);
   const duration = Math.max(0, Math.ceil(Number(seconds) || 0));
-  state.futureRadar.runCooldownUntil = Date.now() + duration * 1000;
+  state.futureRadar.runDelayUntil[scanType] = Date.now() + duration * 1000;
   const tick = () => {
-    const remaining = futureRadarCooldownRemaining();
+    const remaining = futureRadarDelayRemaining(scanType);
     if (remaining <= 0) {
-      window.clearInterval(state.futureRadar.runCooldownTimer);
-      state.futureRadar.runCooldownTimer = null;
-      state.futureRadar.runCooldownUntil = 0;
-      renderFutureRadarRunAvailability(false);
-      setFutureRadarActionStatus("扫描入口已恢复，可以再次核对到期信源。", "healthy");
+      window.clearInterval(state.futureRadar.runDelayTimer[scanType]);
+      state.futureRadar.runDelayTimer[scanType] = null;
+      state.futureRadar.runDelayUntil[scanType] = 0;
+      renderFutureRadarRunAvailability();
+      setFutureRadarActionStatus(`${scanType === "deep" ? "Deep Scan" : "Quick Scan"} 已可再次启动。`, "healthy");
       return;
     }
-    renderFutureRadarRunAvailability(false);
-    setFutureRadarActionStatus(`${message} · ${formatRadarCooldown(remaining)}后可再次扫描。`, tone);
+    renderFutureRadarRunAvailability();
+    setFutureRadarActionStatus(`${message} · 前端防误触 ${remaining} 秒后解除。`, tone);
   };
   tick();
-  state.futureRadar.runCooldownTimer = window.setInterval(tick, 1000);
+  state.futureRadar.runDelayTimer[scanType] = window.setInterval(tick, 1000);
+}
+
+function futureRadarRunTone(run = {}) {
+  const status = String(run.status || "success").toLowerCase();
+  if (status === "failed" || status === "error") return "error";
+  if (status === "partial_success" || status === "partial" || Number(run.sources_skipped || 0) > 0) return "warning";
+  return "healthy";
+}
+
+function markFutureRadarRunActive(scanType) {
+  const dashboard = state.futureRadar.dashboard || {};
+  const activeRunTypes = new Set(futureRadarActiveRunTypes(dashboard));
+  activeRunTypes.add(scanType);
+  renderFutureRadarDashboard({
+    ...dashboard,
+    active_run_types: [...activeRunTypes],
+    run_in_progress: true,
+  });
+}
+
+function stopFutureRadarRunStatusPolling(scanType) {
+  window.clearTimeout(state.futureRadar.runStatusPollTimer[scanType]);
+  state.futureRadar.runStatusPollTimer[scanType] = null;
+}
+
+function scheduleFutureRadarRunStatusPoll(scanType) {
+  stopFutureRadarRunStatusPolling(scanType);
+  state.futureRadar.runStatusPollTimer[scanType] = window.setTimeout(() => {
+    state.futureRadar.runStatusPollTimer[scanType] = null;
+    pollFutureRadarRunUntilTerminal(scanType);
+  }, FUTURE_RADAR_RUN_STATUS_POLL_MS);
+}
+
+function latestFutureRadarRunForType(scanType) {
+  const matchesType = (run = {}) => {
+    const runType = String(run.scan_type || run.run_type || run.trigger_type || "")
+      .toLowerCase()
+      .replace(/^manual_/, "");
+    return runType === scanType;
+  };
+  return state.futureRadar.runs.find(matchesType)
+    || (matchesType(state.futureRadar.dashboard?.last_scan) ? state.futureRadar.dashboard.last_scan : null);
+}
+
+async function pollFutureRadarRunUntilTerminal(scanType) {
+  if (state.futureRadar.runStatusPollPending[scanType] || !state.token) return;
+  state.futureRadar.runStatusPollPending[scanType] = true;
+  const scanLabel = scanType === "deep" ? "Deep Scan" : "Quick Scan";
+  try {
+    const dashboard = await api("/future-radar/dashboard");
+    renderFutureRadarDashboard(dashboard);
+    if (futureRadarActiveRunTypes(dashboard).includes(scanType)) {
+      setFutureRadarLoading(true, "");
+      setFutureRadarActionStatus(`${scanLabel} 仍在服务端扫描；页面会持续跟踪直到完成…`, "running");
+      scheduleFutureRadarRunStatusPoll(scanType);
+      return;
+    }
+
+    stopFutureRadarRunStatusPolling(scanType);
+    setFutureRadarActionStatus(`${scanLabel} 已结束，正在刷新岗位池与扫描记录…`, "running");
+    const snapshotReadable = await loadFutureRadarSnapshot();
+    const terminalRun = latestFutureRadarRunForType(scanType);
+    const resultCopy = snapshotReadable && terminalRun
+      ? `${scanLabel}：${futureRadarRunSuccessCopy(terminalRun, state.futureRadar.totalJobs)}`
+      : `${scanLabel} 已在服务端结束；最新岗位池已重新读取。`;
+    const tone = futureRadarRunTone(terminalRun || {});
+    showToast(resultCopy, 7000);
+    startFutureRadarRunDelay(scanType, FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS, resultCopy, tone);
+  } catch (_) {
+    if (!state.token) {
+      stopFutureRadarRunStatusPolling(scanType);
+      return;
+    }
+    markFutureRadarRunActive(scanType);
+    setFutureRadarLoading(true, "");
+    setFutureRadarActionStatus(`${scanLabel} 的请求窗口已结束，正在重新确认服务端运行状态…`, "running");
+    scheduleFutureRadarRunStatusPoll(scanType);
+  } finally {
+    state.futureRadar.runStatusPollPending[scanType] = false;
+  }
+}
+
+function startFutureRadarRunStatusPolling(scanType) {
+  markFutureRadarRunActive(scanType);
+  stopFutureRadarRunStatusPolling(scanType);
+  pollFutureRadarRunUntilTerminal(scanType);
 }
 
 function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
@@ -2597,14 +2676,23 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   elements.futureRadarLastScan.textContent = formatRadarTime(lastScan, "等待首次扫描");
   elements.futureRadarLastSuccess.textContent = formatRadarTime(lastSuccess, "尚无成功记录");
   elements.futureRadarSourceHealth.textContent = `${healthy.toLocaleString("zh-CN")} / ${total.toLocaleString("zh-CN")} 健康`;
-  const running = Boolean(valueAtPaths(dashboard, ["run_in_progress", "is_running"]))
-    || /running|in_progress/.test(String(valueAtPaths(dashboard, ["status", "last_scan.status", "latest_run.status"]) || "").toLowerCase());
-  renderFutureRadarRunAvailability(running);
+  const activeRunTypes = futureRadarActiveRunTypes(dashboard);
+  const running = activeRunTypes.length > 0;
+  renderFutureRadarRunAvailability(dashboard);
   const liveClass = running ? "running" : errors > 0 ? "warning" : total > 0 ? "healthy" : "pending";
+  const runningCopy = activeRunTypes.includes("quick") && activeRunTypes.includes("deep")
+    ? "Quick / Deep 扫描中"
+    : activeRunTypes.includes("deep")
+      ? "Deep Scan 扫描中"
+      : activeRunTypes.includes("quick")
+        ? "Quick Scan 扫描中"
+        : activeRunTypes.includes("scheduled")
+          ? "自动雷达扫描中"
+          : "雷达正在扫描";
   elements.futureRadarLiveState.className = `radar-live-state ${liveClass}`;
   elements.futureRadarLiveState.replaceChildren(
     makeElement("i"),
-    document.createTextNode(running ? "雷达正在扫描" : errors > 0 ? `${errors} 个信源异常` : total > 0 ? "情报链路在线" : "等待雷达状态"),
+    document.createTextNode(running ? runningCopy : errors > 0 ? `${errors} 个信源异常` : total > 0 ? "情报链路在线" : "等待雷达状态"),
   );
 }
 
@@ -2987,7 +3075,13 @@ async function pollFutureRadarEvents() {
   try {
     const cursor = state.futureRadar.lastEventId;
     const query = cursor == null ? "?limit=50" : `?limit=50&after_event_id=${encodeURIComponent(cursor)}`;
-    const payload = await api(`/future-radar/events${query}`);
+    const [payload, dashboard] = await Promise.all([
+      api(`/future-radar/events${query}`),
+      state.futureRadar.activeRunTypes.size
+        ? api("/future-radar/dashboard").catch(() => null)
+        : Promise.resolve(null),
+    ]);
+    if (dashboard) renderFutureRadarDashboard(dashboard);
     const incoming = radarCollection(payload, ["events", "changes"]);
     const knownIds = new Set(state.futureRadar.events.map(eventIdentity));
     const novel = incoming.filter((event) => !knownIds.has(eventIdentity(event)));
@@ -3018,50 +3112,59 @@ function startFutureRadarPolling() {
   state.futureRadar.pollingTimer = window.setInterval(pollFutureRadarEvents, FUTURE_RADAR_POLL_INTERVAL_MS);
 }
 
-async function runFutureRadarNow() {
-  if (state.futureRadar.runStarting) return;
-  const existingCooldown = futureRadarCooldownRemaining();
-  if (existingCooldown > 0) {
-    setFutureRadarActionStatus(`扫描冷却中，${formatRadarCooldown(existingCooldown)}后可再次扫描；当前岗位池不会被清空。`, "warning");
+async function runFutureRadarNow(scanType = "quick") {
+  if (!FUTURE_RADAR_SCAN_TYPES.includes(scanType)) return;
+  if (state.futureRadar.runStarting[scanType] || state.futureRadar.activeRunTypes.has(scanType)) return;
+  const existingDelay = futureRadarDelayRemaining(scanType);
+  if (existingDelay > 0) {
+    setFutureRadarActionStatus(`扫描已完成；前端防误触将在 ${existingDelay} 秒后解除。`, "healthy");
     return;
   }
-  state.futureRadar.runStarting = true;
-  elements.futureRadarRun.disabled = true;
-  elements.futureRadarRun.setAttribute("aria-busy", "true");
-  elements.futureRadarRun.querySelector("span").textContent = "正在启动扫描…";
+  state.futureRadar.runStarting[scanType] = true;
+  renderFutureRadarRunAvailability();
   setFutureRadarLoading(true, "");
-  setFutureRadarActionStatus("正在核对到期信源；完成后会重新读取岗位池与扫描记录…", "running");
+  const scanLabel = scanType === "deep" ? "Deep Scan" : "Quick Scan";
+  setFutureRadarActionStatus(scanType === "deep"
+    ? "Deep Scan 正在寻找新的招聘项目与官方入口；同类型运行不会重复创建…"
+    : "Quick Scan 正在核对已知官网、ATS、API 与招聘页面；同类型运行不会重复创建…", "running");
   try {
+    stopFutureRadarRunStatusPolling(scanType);
     const run = await api("/future-radar/run", {
       method: "POST",
+      body: JSON.stringify({ scan_type: scanType }),
       timeoutMs: 120_000,
     });
-    setFutureRadarActionStatus("扫描已返回，正在刷新岗位池、信源健康与变化记录…", "running");
+    setFutureRadarActionStatus(`${scanLabel} 已返回，正在刷新岗位池、信源健康与变化记录…`, "running");
     const snapshotReadable = await loadFutureRadarSnapshot();
-    const resultCopy = snapshotReadable
+    const runResultCopy = snapshotReadable
       ? futureRadarRunSuccessCopy(run, state.futureRadar.totalJobs)
       : "扫描已完成，但最新岗位池暂时无法重新读取；页面保留现有结果。";
-    const status = String(run?.status || "success").toLowerCase();
-    const tone = status === "failed" ? "error" : status === "partial_success" ? "warning" : "healthy";
+    const resultCopy = `${scanLabel}：${runResultCopy}`;
+    const tone = futureRadarRunTone(run);
     showToast(resultCopy, 7000);
-    startFutureRadarRunCooldown(FUTURE_RADAR_MANUAL_COOLDOWN_SECONDS, resultCopy, tone);
+    startFutureRadarRunDelay(scanType, FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS, resultCopy, tone);
   } catch (error) {
-    const copy = futureRadarRunErrorCopy(error);
-    const retryAfter = parseRadarRetryAfter(error.retryAfter);
+    const copy = futureRadarRunErrorCopy(error, scanType);
     const tone = [409, 429].includes(Number(error.status)) ? "warning" : "error";
-    setFutureRadarLoading(false, copy);
-    showToast(copy, 6500);
-    if (retryAfter > 0) {
-      const cooldownCopy = Number(error.status) === 409
-        ? "已有一轮扫描正在运行"
-        : "扫描冷却中；岗位池仍保留上次成功结果";
-      startFutureRadarRunCooldown(retryAfter, cooldownCopy, tone);
+    const timedOut = /请求超时|timed?\s*out|timeout/i.test(String(error.message || ""));
+    if (timedOut) {
+      const trackingCopy = `${scanLabel} 的前端请求窗口已结束；正在查询服务端运行锁，扫描不会被重复启动。`;
+      setFutureRadarLoading(true, "");
+      showToast(trackingCopy, 6500);
+      setFutureRadarActionStatus(trackingCopy, "running");
+      startFutureRadarRunStatusPolling(scanType);
+    } else if (Number(error.status) === 409) {
+      setFutureRadarLoading(true, "");
+      showToast(copy, 6500);
+      setFutureRadarActionStatus(copy, tone);
+      startFutureRadarRunStatusPolling(scanType);
     } else {
+      setFutureRadarLoading(false, copy);
+      showToast(copy, 6500);
       setFutureRadarActionStatus(copy, tone);
     }
   } finally {
-    state.futureRadar.runStarting = false;
-    elements.futureRadarRun.removeAttribute("aria-busy");
+    state.futureRadar.runStarting[scanType] = false;
     renderFutureRadarDashboard(state.futureRadar.dashboard || {});
   }
 }
@@ -3620,13 +3723,13 @@ async function refreshRecruitmentSource() {
   elements.recruitmentRefresh.disabled = true;
   elements.recruitmentRefresh.classList.add("is-syncing");
   elements.recruitmentRefresh.setAttribute("aria-busy", "true");
-  elements.recruitmentRefresh.textContent = "公开源 + AI 补漏同步中…";
+  elements.recruitmentRefresh.textContent = "候选源同步中…";
   elements.recruitmentError.textContent = "";
-  setRecruitmentStatus("正在同步公开来源、官网哨站与低频 AI 补漏；AI 有 15 分钟冷却并会产生少量 Token 消耗…");
-  setFutureRadarActionStatus("正在刷新公开来源和官网哨站；AI 补漏仅在 15 分钟冷却允许时运行…", "running");
+  setRecruitmentStatus("正在同步已有候选来源与官网哨站；如需发现新入口，可按需启动 Deep Scan…");
+  setFutureRadarActionStatus("正在同步已有候选来源和官网哨站；本次不主动运行 Deep Discovery…", "running");
   try {
     const results = await Promise.allSettled([
-      api("/recruitment/refresh?deep_search=true", { method: "POST", timeoutMs: 90000 }),
+      api("/recruitment/refresh", { method: "POST", timeoutMs: 90000 }),
       api("/recruitment/watches/refresh", { method: "POST", timeoutMs: 90000 }),
     ]);
     if (results.every((result) => result.status === "rejected")) throw results[0].reason;
@@ -3639,9 +3742,7 @@ async function refreshRecruitmentSource() {
         ? "公开源：沿用 60 秒内的缓存结果"
         : `公开源：返回 ${Number(sourceResult.count || 0).toLocaleString()} 条候选（非新增数）`
       : "公开源：本次未完成";
-    const webSearchCopy = sourceResult
-      ? formatDeepSearchOutcome(sourceResult)
-      : "AI 补漏：本次未完成";
+    const webSearchCopy = "Deep Discovery：本次未请求；可使用 Deep Scan 按需启动";
     const watchResult = watchesOk ? results[1].value : null;
     const checkedWatches = Number(watchResult?.checked ?? watchResult?.count ?? watchResult?.refreshed);
     const watchCopy = watchesOk
@@ -4078,7 +4179,8 @@ $("recruitment-close").addEventListener("click", () => {
   elements.recruitmentDialog.close();
 });
 elements.recruitmentDialog.addEventListener("close", stopFutureRadarPolling);
-elements.futureRadarRun.addEventListener("click", runFutureRadarNow);
+elements.futureRadarRun.addEventListener("click", () => runFutureRadarNow("quick"));
+elements.futureRadarDeepRun.addEventListener("click", () => runFutureRadarNow("deep"));
 elements.futureRadarPagePrev.addEventListener("click", () => loadFutureRadarJobPage(state.futureRadar.page - 1));
 elements.futureRadarPageNext.addEventListener("click", () => loadFutureRadarJobPage(state.futureRadar.page + 1));
 elements.futureRadarFilterForm.addEventListener("submit", (event) => {

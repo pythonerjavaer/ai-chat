@@ -1,6 +1,8 @@
 import asyncio
 import os
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -64,6 +66,30 @@ class FailingAdapter:
     def scan(self, source):
         del source
         raise RuntimeError(self.message)
+
+
+class BlockingAdapter:
+    """Hold one source fetch open so API run/source locks can be observed."""
+
+    def __init__(
+        self,
+        started: threading.Event,
+        release: threading.Event,
+        calls: list[str],
+    ):
+        self.started = started
+        self.release = release
+        self.calls = calls
+
+    def scan(self, source):
+        self.calls.append(source["id"])
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise AssertionError("BlockingAdapter was not released by the test")
+        return AdapterResult(
+            content_hash=f"blocking-{source['id']}",
+            snapshot_complete=False,
+        )
 
 
 @pytest.fixture
@@ -1169,7 +1195,6 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
     })
     monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
     monkeypatch.setattr(main, "future_radar_service", radar_service)
-    monkeypatch.setattr(main, "_future_radar_user_last_run", {})
     radar_service.repository.patch_source(
         "mock-future-radar",
         {"enabled": True, "adapter_config": {"adapter": "mock", "round": 2}},
@@ -1231,14 +1256,15 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
         )
         assert manual.status_code == 200
         assert manual.json()["sources_checked"] > 0
-        assert manual.json()["trigger_type"] == "manual_user"
+        assert manual.json()["trigger_type"] == "manual_quick"
+        assert manual.json()["scan_type"] == "quick"
 
-        limited = client.post(
+        rerun = client.post(
             "/api/future-radar/run",
             headers=bearer,
         )
-        assert limited.status_code == 429
-        assert int(limited.headers["Retry-After"]) > 0
+        assert rerun.status_code == 200
+        assert rerun.json()["scan_type"] == "quick"
 
         with database.connect() as connection:
             audit = connection.execute(
@@ -1249,9 +1275,8 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
                 """,
                 (registered.json()["user"]["id"],),
             ).fetchall()
-        assert {row["status_code"] for row in audit} == {200, 429}
+        assert [row["status_code"] for row in audit] == [200, 200]
 
-        radar_service.repository.patch_source("mock-future-radar", {"enabled": False})
         force_user = client.post(
             "/api/auth/register",
             json={
@@ -1260,13 +1285,24 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
                 "privacy_accepted": True,
             },
         ).json()
-        forced_disabled = client.post(
+        bearer_only_force = client.post(
             "/api/future-radar/run",
             headers={"Authorization": f"Bearer {force_user['access_token']}"},
-            json={"source_ids": ["mock-future-radar"], "force": True},
+            json={"force": True},
         )
-        assert forced_disabled.status_code == 422
-        assert radar_service.repository.get_source("mock-future-radar")["enabled"] is False
+        assert bearer_only_force.status_code == 401
+
+        admin_force = client.post(
+            "/api/future-radar/run",
+            headers={
+                "Authorization": f"Bearer {force_user['access_token']}",
+                "X-Admin-Token": "test-admin-dashboard-token",
+            },
+            json={"force": True},
+        )
+        assert admin_force.status_code == 200
+        assert admin_force.json()["scan_type"] == "quick"
+        assert admin_force.json()["force_scan"] is True
 
         busy_user = client.post(
             "/api/auth/register",
@@ -1278,7 +1314,7 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
         ).json()
         busy_headers = {"Authorization": f"Bearer {busy_user['access_token']}"}
         assert radar_service.repository.acquire_lock(
-            "future-radar-run", "security-test-owner", ttl_seconds=60
+            "future-radar-run:quick", "security-test-owner", ttl_seconds=60
         )
         try:
             busy = client.post(
@@ -1288,7 +1324,7 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
             assert busy.status_code == 409
         finally:
             radar_service.repository.release_lock(
-                "future-radar-run", "security-test-owner"
+                "future-radar-run:quick", "security-test-owner"
             )
         retry_after_busy = client.post(
             "/api/future-radar/run",
@@ -1342,6 +1378,216 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
         assert wrong_version.status_code == 422
 
 
+def test_future_radar_api_quick_run_lock_survives_refresh_and_releases_immediately(
+    radar_service, monkeypatch
+):
+    settings_values = vars(main.settings).copy()
+    settings_values.update({
+        "database_path": database.settings.database_path,
+        "future_radar_enabled": False,
+        "recruitment_refresh_minutes": 0,
+    })
+    monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
+    monkeypatch.setattr(main, "future_radar_service", radar_service)
+
+    source_id = "official-dji-digital-2027"
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+    radar_service.adapter_factory = lambda _source: BlockingAdapter(
+        started, release, calls
+    )
+
+    with TestClient(main.app) as first_browser, TestClient(main.app) as refreshed_browser:
+        registered = first_browser.post(
+            "/api/auth/register",
+            json={
+                "username": "future-radar-refresh-lock-user",
+                "password": "correct-horse-123",
+                "privacy_accepted": True,
+            },
+        )
+        assert registered.status_code == 201
+        headers = {
+            "Authorization": f"Bearer {registered.json()['access_token']}"
+        }
+        request = {"scan_type": "quick", "source_ids": [source_id]}
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first_run = pool.submit(
+                first_browser.post,
+                "/api/future-radar/run",
+                headers=headers,
+                json=request,
+            )
+            assert started.wait(timeout=3), "the first quick scan never started"
+
+            # A second browser/process-facing request still observes the
+            # database-backed lock. Refreshing the page cannot bypass it.
+            duplicate = refreshed_browser.post(
+                "/api/future-radar/run",
+                headers=headers,
+                json=request,
+            )
+            assert duplicate.status_code == 409
+            assert "quick" in duplicate.json()["detail"].casefold()
+            assert calls == [source_id]
+
+            release.set()
+            completed = first_run.result(timeout=5)
+
+        assert completed.status_code == 200
+        assert completed.json()["scan_type"] == "quick"
+
+        # There is no post-run five-minute server cooldown. Once the run lock
+        # is released, the very next request is accepted.
+        radar_service.adapter_factory = lambda _source: StaticAdapter(
+            AdapterResult(content_hash="immediate-quick-rerun", snapshot_complete=False)
+        )
+        immediate = refreshed_browser.post(
+            "/api/future-radar/run",
+            headers=headers,
+            json=request,
+        )
+        assert immediate.status_code == 200
+        assert immediate.json()["scan_type"] == "quick"
+
+
+def test_future_radar_api_deep_run_lock_prevents_duplicate_openai_call(
+    radar_service, monkeypatch
+):
+    settings_values = vars(main.settings).copy()
+    settings_values.update({
+        "database_path": database.settings.database_path,
+        "future_radar_enabled": False,
+        "recruitment_refresh_minutes": 0,
+    })
+    monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
+    monkeypatch.setattr(main, "future_radar_service", radar_service)
+
+    source_id = "openai-public-web-search"
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+    radar_service.adapter_factory = lambda _source: BlockingAdapter(
+        started, release, calls
+    )
+
+    with TestClient(main.app) as first_browser, TestClient(main.app) as second_browser:
+        # Lifespan seeding reflects the fixture's intentionally disabled OpenAI
+        # configuration, so enable this controlled fake only after both app
+        # instances have started.
+        radar_service.repository.patch_source(source_id, {"enabled": True})
+        registered = first_browser.post(
+            "/api/auth/register",
+            json={
+                "username": "future-radar-deep-lock-user",
+                "password": "correct-horse-123",
+                "privacy_accepted": True,
+            },
+        )
+        headers = {
+            "Authorization": f"Bearer {registered.json()['access_token']}"
+        }
+        request = {"scan_type": "deep", "source_ids": [source_id]}
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first_run = pool.submit(
+                first_browser.post,
+                "/api/future-radar/run",
+                headers=headers,
+                json=request,
+            )
+            assert started.wait(timeout=3), "the first deep scan never started"
+            duplicate = second_browser.post(
+                "/api/future-radar/run",
+                headers=headers,
+                json=request,
+            )
+            assert duplicate.status_code == 409
+            assert "deep" in duplicate.json()["detail"].casefold()
+            assert calls == [source_id]
+            release.set()
+            completed = first_run.result(timeout=5)
+
+        assert completed.status_code == 200
+        assert completed.json()["scan_type"] == "deep"
+
+        # Deep Scan also has no fixed post-run cooldown. The active run/source
+        # lock only denies concurrent duplicate calls.
+        radar_service.adapter_factory = lambda _source: StaticAdapter(
+            AdapterResult(content_hash="immediate-deep-rerun", snapshot_complete=False)
+        )
+        immediate = second_browser.post(
+            "/api/future-radar/run",
+            headers=headers,
+            json=request,
+        )
+        assert immediate.status_code == 200
+
+
+def test_future_radar_api_source_lock_skips_busy_source_but_scans_free_source(
+    radar_service, monkeypatch
+):
+    settings_values = vars(main.settings).copy()
+    settings_values.update({
+        "database_path": database.settings.database_path,
+        "future_radar_enabled": False,
+        "recruitment_refresh_minutes": 0,
+    })
+    monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
+    monkeypatch.setattr(main, "future_radar_service", radar_service)
+
+    busy_source = "official-dji-digital-2027"
+    free_source = "official-pdd-campus-2027"
+    calls: list[str] = []
+    already_released = threading.Event()
+    already_released.set()
+    radar_service.adapter_factory = lambda _source: BlockingAdapter(
+        threading.Event(), already_released, calls
+    )
+    owner = "api-source-lock-test-owner"
+    assert radar_service.repository.acquire_lock(
+        f"future-radar-source:{busy_source}", owner, ttl_seconds=60
+    )
+
+    try:
+        with TestClient(main.app) as client:
+            registered = client.post(
+                "/api/auth/register",
+                json={
+                    "username": "future-radar-source-lock-user",
+                    "password": "correct-horse-123",
+                    "privacy_accepted": True,
+                },
+            )
+            headers = {
+                "Authorization": f"Bearer {registered.json()['access_token']}"
+            }
+            response = client.post(
+                "/api/future-radar/run",
+                headers=headers,
+                json={
+                    "scan_type": "quick",
+                    "source_ids": [busy_source, free_source],
+                },
+            )
+    finally:
+        radar_service.repository.release_lock(
+            f"future-radar-source:{busy_source}", owner
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["sources_skipped"] == 1
+    assert any(
+        error["source_id"] == busy_source and error["code"] == "SOURCE_BUSY"
+        for error in result["errors"]
+    )
+    assert busy_source not in calls
+    assert calls == [free_source]
+
+
 def test_future_radar_public_api_never_exposes_unverified_legacy_candidates(
     radar_service, monkeypatch
 ):
@@ -1392,7 +1638,6 @@ def test_future_radar_public_api_never_exposes_unverified_legacy_candidates(
     })
     monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
     monkeypatch.setattr(main, "future_radar_service", radar_service)
-    monkeypatch.setattr(main, "_future_radar_user_last_run", {})
 
     with TestClient(main.app) as client:
         registered = client.post(
@@ -1523,7 +1768,6 @@ def test_user_manual_scan_always_bridges_current_verified_legacy_pool(
     })
     monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
     monkeypatch.setattr(main, "future_radar_service", radar_service)
-    monkeypatch.setattr(main, "_future_radar_user_last_run", {})
     monkeypatch.setattr(radar_service.repository, "due_sources", lambda: [])
     captured: dict = {}
 
@@ -1707,3 +1951,400 @@ def test_future_radar_filters_by_one_primary_starfield_and_accepts_all_profile_c
             headers=bearer,
         )
         assert invalid.status_code == 422
+
+
+def test_manual_scan_source_families_ignore_scheduler_intervals(radar_service):
+    quick = create_source(
+        radar_service,
+        "manual-quick-official",
+        source_type="official_html",
+        adapter_config={"adapter": "official_html", "ai_extract": True},
+    )
+    deep = create_source(
+        radar_service,
+        "manual-deep-openai",
+        trust_level="discovery",
+        source_type="openai_web_search",
+        adapter_config={"adapter": "openai_web_search"},
+    )
+    radar_service.repository.patch_source(quick["id"], {"interval_minutes": 43_200})
+    radar_service.repository.patch_source(deep["id"], {"interval_minutes": 43_200})
+    radar_service.repository.update_source_success(
+        quick["id"], content_hash="quick-already-checked"
+    )
+    radar_service.repository.update_source_success(
+        deep["id"], content_hash="deep-already-checked"
+    )
+
+    quick_ids = {
+        source["id"]
+        for source in radar_service.repository.manual_scan_sources("quick")
+    }
+    deep_ids = {
+        source["id"]
+        for source in radar_service.repository.manual_scan_sources("deep")
+    }
+    assert quick["id"] in quick_ids
+    assert deep["id"] not in quick_ids
+    assert deep["id"] in deep_ids
+    assert quick["id"] not in deep_ids
+    assert radar_service.repository.deep_scan_retry_after() == 0
+
+
+def test_database_run_lock_blocks_duplicate_after_refresh_and_releases_immediately(
+    radar_service,
+):
+    import threading
+
+    from backend.future_radar.service import RadarRunBusy
+
+    source = create_source(
+        radar_service,
+        "run-lock-official",
+        source_type="official_html",
+        adapter_config={"adapter": "official_html", "ai_extract": False},
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+    outcomes: list[dict] = []
+    failures: list[Exception] = []
+
+    class BlockingAdapter:
+        def scan(self, current_source):
+            calls.append(current_source["id"])
+            entered.set()
+            assert release.wait(timeout=5)
+            return AdapterResult(content_hash="blocking-quick")
+
+    radar_service.adapter_factory = lambda _source: BlockingAdapter()
+
+    def run_first():
+        try:
+            outcomes.append(radar_service.run(
+                trigger_type="manual_user",
+                scan_type="quick",
+                source_ids=[source["id"]],
+            ))
+        except Exception as exc:  # pragma: no cover - assertion reports detail
+            failures.append(exc)
+
+    thread = threading.Thread(target=run_first, daemon=True)
+    thread.start()
+    assert entered.wait(timeout=5)
+    assert radar_service.repository.active_run_types() == ["quick"]
+
+    # A new service represents a page refresh, browser, or second web worker.
+    refreshed_service = FutureRadarService(
+        connect=radar_service.repository._connect,
+        openai_api_key="test-key",
+        ai_model="test-radar-model",
+        web_search_enabled=False,
+    )
+    with pytest.raises(RadarRunBusy) as busy:
+        refreshed_service.run(
+            trigger_type="manual_user",
+            scan_type="quick",
+            source_ids=[source["id"]],
+        )
+    assert busy.value.scan_type == "quick"
+    assert busy.value.lock_type == "run"
+    assert table_count(radar_service, "radar_runs") == 1
+    assert calls == [source["id"]]
+
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert not failures
+    assert outcomes[0]["status"] == "success"
+    assert radar_service.repository.active_run_types() == []
+
+    radar_service.adapter_factory = lambda _source: StaticAdapter(
+        AdapterResult(content_hash="immediate-second-quick")
+    )
+    second = radar_service.run(
+        trigger_type="manual_user",
+        scan_type="quick",
+        source_ids=[source["id"]],
+    )
+    assert second["status"] == "success"
+    assert table_count(radar_service, "radar_runs") == 2
+
+
+def test_busy_source_is_skipped_while_other_source_continues(radar_service):
+    busy_source = create_source(
+        radar_service,
+        "source-lock-busy",
+        source_type="official_html",
+        adapter_config={"adapter": "official_html", "ai_extract": False},
+    )
+    free_source = create_source(
+        radar_service,
+        "source-lock-free",
+        source_type="official_html",
+        adapter_config={"adapter": "official_html", "ai_extract": False},
+    )
+    calls: list[str] = []
+
+    class CountingAdapter:
+        def scan(self, source):
+            calls.append(source["id"])
+            return AdapterResult(content_hash=f"checked:{source['id']}")
+
+    radar_service.adapter_factory = lambda _source: CountingAdapter()
+    lock_name = f"future-radar-source:{busy_source['id']}"
+    assert radar_service.repository.acquire_lock(
+        lock_name, "other-run-owner", ttl_seconds=60
+    )
+    try:
+        result = radar_service.run(
+            trigger_type="manual_user",
+            scan_type="quick",
+            source_ids=[busy_source["id"], free_source["id"]],
+        )
+    finally:
+        radar_service.repository.release_lock(lock_name, "other-run-owner")
+
+    assert result["status"] == "partial_success"
+    assert result["sources_checked"] == 2
+    assert result["sources_succeeded"] == 1
+    assert result["sources_failed"] == 0
+    assert result["sources_skipped"] == 1
+    assert result["errors"] == [{
+        "source_id": busy_source["id"],
+        "code": "SOURCE_BUSY",
+        "message": "该信源已有扫描任务正在运行，本轮已跳过。",
+    }]
+    assert calls == [free_source["id"]]
+
+
+def test_concurrent_deep_clicks_do_not_duplicate_openai_call(radar_service):
+    import threading
+
+    from backend.future_radar.service import RadarRunBusy
+
+    source = create_source(
+        radar_service,
+        "deep-openai-lock",
+        trust_level="discovery",
+        source_type="openai_web_search",
+        adapter_config={"adapter": "openai_web_search"},
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    ai_calls: list[str] = []
+    first_result: list[dict] = []
+
+    class BlockingOpenAIAdapter:
+        def scan(self, current_source):
+            ai_calls.append(current_source["id"])
+            entered.set()
+            assert release.wait(timeout=5)
+            return AdapterResult(
+                content_hash="deep-discovery-result",
+                ai_calls=1,
+            )
+
+    radar_service.adapter_factory = lambda _source: BlockingOpenAIAdapter()
+    thread = threading.Thread(
+        target=lambda: first_result.append(radar_service.run(
+            trigger_type="manual_user",
+            scan_type="deep",
+            source_ids=[source["id"]],
+        )),
+        daemon=True,
+    )
+    thread.start()
+    assert entered.wait(timeout=5)
+    with pytest.raises(RadarRunBusy):
+        radar_service.run(
+            trigger_type="manual_user",
+            scan_type="deep",
+            source_ids=[source["id"]],
+        )
+    assert ai_calls == [source["id"]]
+    assert table_count(radar_service, "radar_runs") == 1
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert first_result[0]["ai_calls"] == 1
+
+
+def test_orchestration_exception_finalizes_created_run(radar_service, monkeypatch):
+    source = create_source(
+        radar_service,
+        "orchestration-failure-official",
+        source_type="official_html",
+        adapter_config={"adapter": "official_html", "ai_extract": False},
+    )
+
+    class BrokenExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            raise RuntimeError("executor failed before submission")
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        "backend.future_radar.service.ThreadPoolExecutor", BrokenExecutor
+    )
+    with pytest.raises(RuntimeError, match="executor failed"):
+        radar_service.run(
+            trigger_type="manual_user",
+            scan_type="quick",
+            source_ids=[source["id"]],
+        )
+    latest = radar_service.repository.list_runs(page_size=1)["items"][0]
+    assert latest["status"] == "failed"
+    assert latest["finished_at"] is not None
+    assert latest["errors"][0]["code"] == "RUN_FAILED"
+    assert radar_service.repository.active_run_types() == []
+
+
+def test_force_refresh_bypasses_ai_cache_without_disabling_future_cache(radar_service):
+    from backend.future_radar.ai import extract_recruitment_content
+
+    calls: list[dict] = []
+    response = SimpleNamespace(
+        output_text=(
+            '{"is_recruitment":false,"programs":[],"jobs":[]}'
+        ),
+        model="test-radar-model",
+        usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+    )
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return response
+
+    client = SimpleNamespace(responses=FakeResponses())
+    arguments = {
+        "repository": radar_service.repository,
+        "content": "A deterministic public recruitment page.",
+        "content_hash": "same-content-hash",
+        "source_url": "https://example.com/campus",
+        "model": "test-radar-model",
+        "api_key": "test-key",
+        "client": client,
+    }
+
+    first = extract_recruitment_content(**arguments)
+    cached = extract_recruitment_content(**arguments)
+    forced = extract_recruitment_content(**arguments, force_refresh=True)
+    cached_after_force = extract_recruitment_content(**arguments)
+
+    assert first["cache_hit"] is False
+    assert cached["cache_hit"] is True
+    assert forced["cache_hit"] is False
+    assert cached_after_force["cache_hit"] is True
+    assert len(calls) == 2
+
+
+def test_run_and_source_leases_renew_beyond_initial_ttl(radar_service):
+    import threading
+    import time
+    from datetime import datetime, timezone
+
+    from backend.future_radar.service import RadarRunBusy
+
+    source = create_source(
+        radar_service,
+        "renewed-lease-official",
+        source_type="official_html",
+        adapter_config={"adapter": "official_html", "ai_extract": False},
+    )
+    service = FutureRadarService(
+        connect=radar_service.repository._connect,
+        openai_api_key="test-key",
+        ai_model="test-radar-model",
+        web_search_enabled=False,
+        run_lock_ttl_seconds=1,
+        source_lock_ttl_seconds=1,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+    outcomes: list[dict] = []
+    failures: list[Exception] = []
+
+    class BlockingAdapter:
+        def scan(self, current_source):
+            calls.append(current_source["id"])
+            entered.set()
+            assert release.wait(timeout=8)
+            return AdapterResult(content_hash="renewed-lease-result")
+
+    service.adapter_factory = lambda _source: BlockingAdapter()
+
+    def first_run():
+        try:
+            outcomes.append(service.run(
+                trigger_type="manual_quick",
+                scan_type="quick",
+                source_ids=[source["id"]],
+            ))
+        except Exception as exc:  # pragma: no cover - assertion reports detail
+            failures.append(exc)
+
+    thread = threading.Thread(target=first_run, daemon=True)
+    thread.start()
+    assert entered.wait(timeout=5)
+
+    # Cross the original one-second expiry. Both heartbeats must have renewed
+    # their leases rather than relying on the initial TTL.
+    time.sleep(1.4)
+    assert radar_service.repository.active_run_types() == ["quick"]
+    with radar_service.repository._connect() as connection:
+        leases = {
+            row["lock_name"]: dict(row)
+            for row in connection.execute(
+                "SELECT * FROM radar_locks WHERE lock_name IN (?, ?)",
+                (
+                    "future-radar-run:quick",
+                    f"future-radar-source:{source['id']}",
+                ),
+            ).fetchall()
+        }
+    now = datetime.now(timezone.utc)
+    assert datetime.fromisoformat(
+        leases["future-radar-run:quick"]["expires_at"]
+    ) > now
+    assert datetime.fromisoformat(
+        leases[f"future-radar-source:{source['id']}"]["expires_at"]
+    ) > now
+
+    # The renewed run lease still rejects an identical scan after its initial
+    # TTL, and the renewed source lease makes another run skip only that source.
+    contender = FutureRadarService(
+        connect=radar_service.repository._connect,
+        openai_api_key="test-key",
+        ai_model="test-radar-model",
+        web_search_enabled=False,
+        run_lock_ttl_seconds=1,
+        source_lock_ttl_seconds=1,
+        adapter_factory=lambda _source: BlockingAdapter(),
+    )
+    with pytest.raises(RadarRunBusy):
+        contender.run(
+            trigger_type="manual_quick",
+            scan_type="quick",
+            source_ids=[source["id"]],
+        )
+    scheduled = contender.run(
+        trigger_type="scheduled-test",
+        scan_type="scheduled",
+        source_ids=[source["id"]],
+    )
+    assert scheduled["sources_skipped"] == 1
+    assert calls == [source["id"]]
+
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert not failures
+    assert outcomes[0]["status"] == "success"
+    assert radar_service.repository.active_run_types() == []

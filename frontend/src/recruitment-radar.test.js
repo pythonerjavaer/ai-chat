@@ -8,6 +8,7 @@ import {
   filterJobsByStarfields,
   formatRadarCooldown,
   formatScoringFactors,
+  futureRadarActiveRunTypes,
   futureRadarAiSearchNotice,
   futureRadarRunErrorCopy,
   futureRadarRunSuccessCopy,
@@ -182,13 +183,14 @@ test("verified carryover is only eligible in the unfiltered open-jobs view", () 
   assert.equal(isDefaultFutureRadarJobsView({ status: "open", sort: "changed", company: "某公司" }), false);
 });
 
-test("manual scan feedback explains cooldowns and completed scan deltas", () => {
+test("manual scan feedback distinguishes active runs from provider rate limits", () => {
   assert.equal(parseRadarRetryAfter("61"), 61);
   assert.equal(formatRadarCooldown(61), "1 分 01 秒");
   assert.match(
-    futureRadarRunErrorCopy({ status: 429, retryAfter: "61", message: "rate limited" }),
-    /扫描冷却中.*1 分 01 秒.*保留上次成功结果/,
+    futureRadarRunErrorCopy({ status: 429, retryAfter: "61", message: "rate limited" }, "deep"),
+    /深度发现信源.*外部服务速率限制.*Quick Scan 不受影响/,
   );
+  assert.match(futureRadarRunErrorCopy({ status: 409 }, "quick"), /Quick Scan 已在扫描中.*不会创建重复任务/);
   assert.match(futureRadarRunErrorCopy({ message: "请求超时，请稍后重试。" }), /服务端可能仍在继续.*岗位池不会被清空/);
   assert.equal(
     futureRadarRunErrorCopy({ status: 428, message: "provider detail must not render" }),
@@ -200,8 +202,20 @@ test("manual scan feedback explains cooldowns and completed scan deltas", () => 
   );
   assert.match(
     futureRadarRunSuccessCopy({ status: "partial_success", sources_checked: 3, sources_succeeded: 2, sources_failed: 1, new_jobs: 4, updated_jobs: 2 }, 16),
-    /2\/3 个信源成功.*新增 4、更新 2、关闭 0.*16 条/,
+    /2\/3 个信源完成.*新增 4、更新 2、关闭 0.*16 条/,
   );
+  assert.match(
+    futureRadarRunSuccessCopy({ status: "partial_success", sources_checked: 2, sources_succeeded: 1, sources_skipped: 1 }, 16),
+    /1\/2 个信源完成，1 个运行中信源已跳过/,
+  );
+});
+
+test("active run types restore per-type locks from the dashboard", () => {
+  assert.deepEqual(futureRadarActiveRunTypes({ active_run_types: ["quick"] }), ["quick"]);
+  assert.deepEqual(futureRadarActiveRunTypes({ active_runs: [{ scan_type: "deep" }] }), ["deep"]);
+  assert.deepEqual(futureRadarActiveRunTypes({ active_run_types: ["scheduled"] }), ["scheduled"]);
+  assert.deepEqual(futureRadarActiveRunTypes({ run_in_progress: true }), ["quick", "deep"]);
+  assert.deepEqual(futureRadarActiveRunTypes({ run_in_progress: false }), []);
 });
 
 test("OpenAI quota failures produce a safe actionable notice without leaking diagnostics", () => {

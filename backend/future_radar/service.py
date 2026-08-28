@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,7 +32,12 @@ from .normalization import (
     semantic_hash,
     stable_digest,
 )
-from .repository import RadarRepository, utc_now
+from .repository import (
+    RUN_LOCK_TTL_SECONDS,
+    SOURCE_LOCK_TTL_SECONDS,
+    RadarRepository,
+    utc_now,
+)
 from .seeds import initial_sources
 
 
@@ -86,7 +92,86 @@ def _safe_source_failure(
 
 
 class RadarRunBusy(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        scan_type: str = "scheduled",
+        lock_type: str = "run",
+    ) -> None:
+        super().__init__(message)
+        self.scan_type = scan_type
+        self.lock_type = lock_type
+
+
+class RadarSourceBusy(RuntimeError):
+    def __init__(self, source_id: str) -> None:
+        super().__init__(f"Source {source_id} is already running.")
+        self.source_id = source_id
+
+
+class RadarLeaseLost(RuntimeError):
     pass
+
+
+class _LeaseHeartbeat:
+    """Keep one SQLite lease alive for the complete protected operation."""
+
+    def __init__(
+        self,
+        repository: RadarRepository,
+        *,
+        lock_name: str,
+        owner: str,
+        ttl_seconds: int,
+    ) -> None:
+        self.repository = repository
+        self.lock_name = lock_name
+        self.owner = owner
+        self.ttl_seconds = max(1, int(ttl_seconds))
+        self.interval_seconds = max(
+            0.05, min(30.0, self.ttl_seconds / 4)
+        )
+        self._stop = threading.Event()
+        self._lost = threading.Event()
+        self._thread = threading.Thread(
+            target=self._maintain,
+            name="future-radar-lease-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _maintain(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            try:
+                renewed = self.repository.renew_lock(
+                    self.lock_name,
+                    self.owner,
+                    self.ttl_seconds,
+                )
+            except Exception as exc:
+                # SQLite contention is normally transient and the heartbeat
+                # has several attempts before the lease expires.
+                logger.warning(
+                    "Future Radar lease heartbeat retry lock_type=%s error_type=%s",
+                    "source" if ":source:" in self.lock_name else "run",
+                    type(exc).__name__,
+                )
+                continue
+            if not renewed:
+                self._lost.set()
+                return
+
+    def ensure_owned(self) -> None:
+        if self._lost.is_set():
+            raise RadarLeaseLost("Future Radar database lease ownership was lost.")
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=max(1.0, self.interval_seconds + 0.5))
 
 
 class SyncConflict(ValueError):
@@ -104,6 +189,8 @@ class FutureRadarService:
         close_confirmations: int = 2,
         max_workers: int = 4,
         adapter_factory: Callable[[dict[str, Any]], SourceAdapter] | None = None,
+        run_lock_ttl_seconds: int = RUN_LOCK_TTL_SECONDS,
+        source_lock_ttl_seconds: int = SOURCE_LOCK_TTL_SECONDS,
     ) -> None:
         self.repository = RadarRepository(connect)
         self.openai_api_key = openai_api_key
@@ -112,6 +199,8 @@ class FutureRadarService:
         self.close_confirmations = max(2, min(10, int(close_confirmations)))
         self.max_workers = max(1, min(8, int(max_workers)))
         self.adapter_factory = adapter_factory
+        self.run_lock_ttl_seconds = max(1, int(run_lock_ttl_seconds))
+        self.source_lock_ttl_seconds = max(1, int(source_lock_ttl_seconds))
 
     def seed_registry(self) -> None:
         self.repository.seed_sources(
@@ -135,6 +224,7 @@ class FutureRadarService:
             "sources_checked": 0,
             "sources_succeeded": 0,
             "sources_failed": 0,
+            "sources_skipped": 0,
             "programs_discovered": 0,
             "new_jobs": 0,
             "updated_jobs": 0,
@@ -152,27 +242,66 @@ class FutureRadarService:
         *,
         trigger_type: str = "scheduled",
         source_ids: list[str] | None = None,
+        scan_type: str = "scheduled",
         force: bool = False,
     ) -> dict[str, Any]:
+        normalized_scan_type = str(scan_type or "scheduled").strip().casefold()
+        if normalized_scan_type not in {"scheduled", "quick", "deep"}:
+            raise ValueError("scan_type must be 'scheduled', 'quick', or 'deep'.")
         owner = str(uuid.uuid4())
-        if not self.repository.acquire_lock("future-radar-run", owner, ttl_seconds=30 * 60):
-            raise RadarRunBusy("A Future Radar run is already active.")
-        try:
-            sources = (
-                [source for source_id in source_ids or []
-                 if (source := self.repository.get_source(source_id)) and (source["enabled"] or force)]
-                if source_ids
-                else self.repository.due_sources()
+        run_lock_name = f"future-radar-run:{normalized_scan_type}"
+        if not self.repository.acquire_lock(
+            run_lock_name, owner, ttl_seconds=self.run_lock_ttl_seconds
+        ):
+            raise RadarRunBusy(
+                f"A {normalized_scan_type} Future Radar run is already active.",
+                scan_type=normalized_scan_type,
             )
-            run = self.repository.create_run(trigger_type, [source["id"] for source in sources])
-            summary = self._empty_summary()
+        run_lease = _LeaseHeartbeat(
+            self.repository,
+            lock_name=run_lock_name,
+            owner=owner,
+            ttl_seconds=self.run_lock_ttl_seconds,
+        )
+        run_lease.start()
+        run: dict[str, Any] | None = None
+        summary = self._empty_summary()
+        try:
+            if normalized_scan_type == "scheduled":
+                sources = (
+                    [source for source_id in source_ids or []
+                     if (source := self.repository.get_source(source_id))
+                     and (source["enabled"] or force)]
+                    if source_ids
+                    else self.repository.due_sources()
+                )
+            else:
+                sources = self.repository.manual_scan_sources(
+                    normalized_scan_type,
+                    source_ids=source_ids,
+                    force=force,
+                )
+            run = self.repository.create_run(
+                trigger_type,
+                [source["id"] for source in sources],
+                scan_type=normalized_scan_type,
+                force=force,
+                run_id=owner,
+            )
+            run_lease.ensure_owned()
             if not sources:
                 summary["status"] = "success"
                 return self.repository.finish_run(run["id"], summary)
 
             with ThreadPoolExecutor(max_workers=min(self.max_workers, len(sources))) as executor:
                 futures = {
-                    executor.submit(self._scan_source, source, run["id"]): source
+                    executor.submit(
+                        self._scan_source,
+                        source,
+                        run["id"],
+                        normalized_scan_type,
+                        force,
+                    ): source
                     for source in sources
                 }
                 for future in as_completed(futures):
@@ -180,6 +309,14 @@ class FutureRadarService:
                     summary["sources_checked"] += 1
                     try:
                         result = future.result()
+                    except RadarSourceBusy:
+                        summary["sources_skipped"] += 1
+                        summary["errors"].append({
+                            "source_id": source["id"],
+                            "code": "SOURCE_BUSY",
+                            "message": "该信源已有扫描任务正在运行，本轮已跳过。",
+                        })
+                        continue
                     except DiscoveryLimitedError:
                         message = "该信源尚未配置可合法访问的公开入口。"
                         self.repository.update_source_limited(source["id"], message)
@@ -218,25 +355,88 @@ class FutureRadarService:
                         summary[key] += int(result.get(key, 0))
                     summary["errors"].extend(result.get("errors", []))
 
-            if summary["sources_succeeded"] and summary["sources_failed"]:
+            run_lease.ensure_owned()
+            if summary["sources_succeeded"] and (
+                summary["sources_failed"] or summary["sources_skipped"]
+            ):
                 summary["status"] = "partial_success"
             elif summary["sources_failed"]:
                 summary["status"] = "failed"
+            elif summary["sources_skipped"]:
+                summary["status"] = "skipped"
             else:
                 summary["status"] = "success"
             return self.repository.finish_run(run["id"], summary)
+        except Exception:
+            # A run row must never remain permanently RUNNING merely because
+            # orchestration itself failed after creation.  Individual source
+            # failures are handled above and do not reach this block.
+            if run:
+                stored = self.repository.get_run(run["id"])
+                if stored and stored.get("status") == "running":
+                    summary["status"] = "failed"
+                    summary["errors"].append({
+                        "source_id": "",
+                        "code": "RUN_FAILED",
+                        "message": "Future Radar orchestration did not complete.",
+                    })
+                    try:
+                        self.repository.finish_run(run["id"], summary)
+                    except Exception:
+                        logger.exception(
+                            "Future Radar failed to finalize aborted run_id=%s",
+                            run["id"],
+                        )
+            raise
         finally:
-            self.repository.release_lock("future-radar-run", owner)
+            run_lease.stop()
+            self.repository.release_lock(run_lock_name, owner)
 
-    def _scan_source(self, source: dict[str, Any], run_id: str) -> dict[str, Any]:
+    def _scan_source(
+        self,
+        source: dict[str, Any],
+        run_id: str,
+        scan_type: str = "scheduled",
+        force: bool = False,
+    ) -> dict[str, Any]:
         started = time.monotonic()
         owner = str(uuid.uuid4())
         lock_name = f"future-radar-source:{source['id']}"
-        if not self.repository.acquire_lock(lock_name, owner, ttl_seconds=20 * 60):
-            raise RadarRunBusy(f"Source {source['id']} is already running.")
+        if not self.repository.acquire_lock(
+            lock_name, owner, ttl_seconds=self.source_lock_ttl_seconds
+        ):
+            raise RadarSourceBusy(str(source["id"]))
+        source_lease = _LeaseHeartbeat(
+            self.repository,
+            lock_name=lock_name,
+            owner=owner,
+            ttl_seconds=self.source_lock_ttl_seconds,
+        )
+        source_lease.start()
         try:
-            result = self._adapter(source).scan(source)
+            scan_source = {
+                **source,
+                "adapter_config": {
+                    **source.get("adapter_config", {}),
+                    # A transient orchestration flag: never stored in the
+                    # source registry or returned by the API.
+                    "_force_refresh": bool(force),
+                },
+            }
+            if scan_type == "quick":
+                # Quick Scan must stay deterministic even when an operator has
+                # enabled optional AI extraction for a known HTML source.
+                scan_source = {
+                    **scan_source,
+                    "adapter_config": {
+                        **scan_source.get("adapter_config", {}),
+                        "ai_extract": False,
+                    },
+                }
+            result = self._adapter(scan_source).scan(scan_source)
+            source_lease.ensure_owned()
             processed = self.process_result(source=source, result=result, run_id=run_id)
+            source_lease.ensure_owned()
             if result.normalized_content and result.content_hash:
                 self.repository.save_snapshot(
                     source["id"], result.content_hash, result.normalized_content,
@@ -260,6 +460,7 @@ class FutureRadarService:
             )
             return processed
         finally:
+            source_lease.stop()
             self.repository.release_lock(lock_name, owner)
 
     def process_result(
@@ -692,7 +893,9 @@ class FutureRadarService:
                 raise SyncConflict("Idempotency key was already used for a different payload.")
             return {**existing["result"], "idempotent_replay": True}
 
-        run = self.repository.create_run("sync", [source_id])
+        run = self.repository.create_run(
+            "sync", [source_id], scan_type="sync", force=False
+        )
         result = AdapterResult(
             programs=list(payload.get("programs") or []),
             jobs=list(payload.get("jobs") or []),

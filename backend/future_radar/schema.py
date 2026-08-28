@@ -201,12 +201,15 @@ def migrate(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS radar_runs (
             id TEXT PRIMARY KEY,
             trigger_type TEXT NOT NULL DEFAULT 'scheduled',
+            scan_type TEXT NOT NULL DEFAULT 'scheduled',
+            force_scan INTEGER NOT NULL DEFAULT 0,
             started_at TEXT NOT NULL,
             finished_at TEXT,
             status TEXT NOT NULL DEFAULT 'running',
             sources_checked INTEGER NOT NULL DEFAULT 0,
             sources_succeeded INTEGER NOT NULL DEFAULT 0,
             sources_failed INTEGER NOT NULL DEFAULT 0,
+            sources_skipped INTEGER NOT NULL DEFAULT 0,
             programs_discovered INTEGER NOT NULL DEFAULT 0,
             new_jobs INTEGER NOT NULL DEFAULT 0,
             updated_jobs INTEGER NOT NULL DEFAULT 0,
@@ -295,6 +298,9 @@ def migrate(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "radar_runs", "articles_discovered", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(connection, "radar_runs", "ai_calls", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(connection, "radar_runs", "model_tokens_used", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(connection, "radar_runs", "scan_type", "TEXT NOT NULL DEFAULT 'scheduled'")
+    _ensure_column(connection, "radar_runs", "force_scan", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(connection, "radar_runs", "sources_skipped", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(connection, "radar_jobs", "primary_category", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(connection, "radar_jobs", "organization_category", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(connection, "radar_jobs", "industry_tags", "TEXT NOT NULL DEFAULT '[]'")

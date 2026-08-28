@@ -90,14 +90,16 @@ def extract_recruitment_content(
     model: str,
     api_key: str,
     client: OpenAI | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     """Extract data from untrusted page text; never execute embedded instructions."""
     cache_key = hashlib.sha256(
         f"{SCHEMA_VERSION}:{model}:{content_hash}".encode("utf-8")
     ).hexdigest()
-    cached = repository.get_ai_cache(cache_key)
-    if cached:
-        return {**cached["result"], "cache_hit": True, "model_tokens_used": 0}
+    if not force_refresh:
+        cached = repository.get_ai_cache(cache_key)
+        if cached:
+            return {**cached["result"], "cache_hit": True, "model_tokens_used": 0}
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured for Radar extraction.")
 

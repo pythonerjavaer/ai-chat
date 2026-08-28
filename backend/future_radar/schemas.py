@@ -19,6 +19,7 @@ SourceType = Literal[
     "official_html", "official_api", "ats", "wechat_public",
     "openai_web_search", "manual", "other_public_source", "public_feed",
 ]
+ManualScanType = Literal["quick", "deep"]
 
 
 class RadarProgramInput(BaseModel):
@@ -162,6 +163,7 @@ class RadarRunRequest(BaseModel):
     source_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
         default_factory=list, max_length=50
     )
+    scan_type: ManualScanType = "quick"
     force: bool = False
 
 

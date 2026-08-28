@@ -226,6 +226,37 @@ export function formatRadarCooldown(seconds) {
   return `${minutes} 分 ${String(trailingSeconds).padStart(2, "0")} 秒`;
 }
 
+function normalizeRadarRunType(value) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === "quick" || /(^|[_-])quick([_-]|$)/.test(raw)) return "quick";
+  if (raw === "deep" || /(^|[_-])deep([_-]|$)/.test(raw)) return "deep";
+  if (raw === "scheduled" || /(^|[_-])scheduled([_-]|$)/.test(raw)) return "scheduled";
+  return null;
+}
+
+export function futureRadarActiveRunTypes(dashboard = {}) {
+  const direct = dashboard.active_run_types ?? dashboard.active_scan_types;
+  const activeRuns = Array.isArray(dashboard.active_runs) ? dashboard.active_runs : [];
+  const values = [
+    ...(Array.isArray(direct) ? direct : direct ? [direct] : []),
+    ...activeRuns.map((run) => run?.scan_type ?? run?.run_type ?? run?.trigger_type ?? run),
+  ];
+  const types = [...new Set(values.map(normalizeRadarRunType).filter(Boolean))];
+  if (types.length) return types;
+
+  const lastRun = dashboard.last_scan || dashboard.last_run || dashboard.latest_run || {};
+  const lastStatus = String(lastRun.status || dashboard.status || "").toLowerCase();
+  const explicitlyRunning = dashboard.run_in_progress === true
+    || dashboard.is_running === true
+    || /running|in_progress/.test(lastStatus);
+  if (!explicitlyRunning) return [];
+  const inferred = normalizeRadarRunType(lastRun.scan_type || lastRun.run_type || lastRun.trigger_type);
+  // Older servers exposed only a global boolean. Disable both manual entries in
+  // that ambiguous legacy state; current servers always expose active_run_types.
+  return inferred ? [inferred] : ["quick", "deep"];
+}
+
 function radarDiagnosticText(value, depth = 0, seen = new WeakSet()) {
   if (depth > 4 || value == null) return "";
   if (typeof value === "string" || typeof value === "number") return String(value);
@@ -251,18 +282,16 @@ export function futureRadarSourceErrorCopy(source = {}) {
     || "最近一次信源检查未完成；已核验岗位池仍保留，底层错误详情仅记录在服务端。";
 }
 
-export function futureRadarRunErrorCopy(error = {}) {
+export function futureRadarRunErrorCopy(error = {}, scanType = "quick") {
   const status = Number(error.status || 0);
-  const retryAfter = parseRadarRetryAfter(error.retryAfter);
-  if (status === 429 && retryAfter) {
-    return retryAfter
-      ? `扫描冷却中，请在 ${formatRadarCooldown(retryAfter)}后再试；岗位池仍保留上次成功结果。`
-      : "扫描冷却中，请稍后再试；岗位池仍保留上次成功结果。";
+  if (status === 429) {
+    if (scanType === "deep") {
+      return "深度发现信源暂时触发外部服务速率限制，请稍后再试；Quick Scan 不受影响。";
+    }
+    return "外部信源请求受限，请稍后再试；已有岗位池不会被清空。";
   }
   if (status === 409) {
-    return retryAfter
-      ? `已有一轮扫描正在运行，请在 ${formatRadarCooldown(retryAfter)}后查看结果。`
-      : "已有一轮扫描正在运行，请稍后查看结果。";
+    return `${scanType === "deep" ? "Deep Scan" : "Quick Scan"} 已在扫描中，不会创建重复任务；完成后即可再次启动。`;
   }
   if (status === 401) return "登录状态已失效，请重新登录后再扫描。";
   if (status === 428) return "隐私政策已更新，请先重新同意当前版本后再启动扫描。";
@@ -282,6 +311,7 @@ export function futureRadarRunSuccessCopy(run = {}, totalJobs = 0) {
   const checked = Number(run.sources_checked || 0);
   const succeeded = Number(run.sources_succeeded || 0);
   const failed = Number(run.sources_failed || 0);
+  const skipped = Number(run.sources_skipped || 0);
   const added = Number(run.new_jobs || 0);
   const updated = Number(run.updated_jobs || 0);
   const closed = Number(run.closed_jobs || 0);
@@ -289,7 +319,9 @@ export function futureRadarRunSuccessCopy(run = {}, totalJobs = 0) {
   const aiNotice = futureRadarAiSearchNotice(run);
   if (!checked) return `扫描完成：当前没有到期信源，未重复抓取；实时岗位池仍为 ${pool} 条。${aiNotice ? ` ${aiNotice}` : ""}`;
   if (status === "failed") return `扫描完成但 ${failed || checked} 个信源均未成功；岗位池保留已有 ${pool} 条。${aiNotice ? ` ${aiNotice}` : ""}`;
-  const sourceCopy = failed ? `${succeeded}/${checked} 个信源成功` : `${checked} 个信源已核对`;
+  const sourceCopy = failed || skipped
+    ? `${succeeded}/${checked} 个信源完成${skipped ? `，${skipped} 个运行中信源已跳过` : ""}`
+    : `${checked} 个信源已核对`;
   return `扫描完成：${sourceCopy}，新增 ${added}、更新 ${updated}、关闭 ${closed}；实时岗位池 ${pool} 条。${aiNotice ? ` ${aiNotice}` : ""}`;
 }
 

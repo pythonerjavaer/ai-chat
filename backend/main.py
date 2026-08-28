@@ -108,8 +108,6 @@ _watch_lock_registry_guard = threading.Lock()
 _watch_lock_registry: dict[str, threading.Lock] = {}
 _watch_refresh_cooldown_guard = threading.Lock()
 _watch_refresh_last_request: dict[int, float] = {}
-_future_radar_run_cooldown_guard = threading.Lock()
-_future_radar_user_last_run: dict[int, float] = {}
 _watch_create_rate_guard = threading.Lock()
 _watch_create_requests: dict[int, deque[float]] = {}
 _model_rate_guard = threading.Lock()
@@ -122,7 +120,6 @@ _recruitment_source_refresh_state_guard = threading.Lock()
 _recruitment_source_last_refresh = 0.0
 _recruitment_source_last_count = 0
 WATCH_REFRESH_COOLDOWN_SECONDS = 15
-FUTURE_RADAR_MANUAL_RUN_COOLDOWN_SECONDS = 5 * 60
 WATCH_CREATE_WINDOW_SECONDS = 300
 WATCH_CREATE_LIMIT = 12
 WATCH_FETCH_SLOT_TIMEOUT_SECONDS = 10.0
@@ -134,7 +131,9 @@ MODEL_GLOBAL_UNIT_LIMIT = 240
 REGISTRATION_WINDOW_SECONDS = 3_600
 REGISTRATION_LIMIT = 60
 RECRUITMENT_SOURCE_COOLDOWN_SECONDS = 60
-RECRUITMENT_DEEP_SEARCH_COOLDOWN_SECONDS = 15 * 60
+# Personal deployments run discovery on demand. Duplicate concurrent work is
+# prevented by server-side refresh/run locks; there is no post-run cooldown.
+RECRUITMENT_DEEP_SEARCH_COOLDOWN_SECONDS = 0
 
 EXPECTED_CHATGPT_RADAR_SOURCES = [
     {
@@ -188,27 +187,6 @@ def enforce_watch_create_rate(user_id: int) -> None:
                 headers={"Retry-After": str(retry_after)},
             )
         requests.append(now)
-
-
-def enforce_future_radar_run_rate(user_id: int) -> None:
-    """Let every signed-in user scan while bounding shared crawler/AI cost."""
-    now = time.monotonic()
-    with _future_radar_run_cooldown_guard:
-        last_request = _future_radar_user_last_run.get(user_id, 0.0)
-        retry_after = FUTURE_RADAR_MANUAL_RUN_COOLDOWN_SECONDS - (now - last_request)
-        if retry_after > 0:
-            raise HTTPException(
-                status_code=429,
-                detail="未来雷达刚刚扫描过，请稍后再试。",
-                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
-            )
-        _future_radar_user_last_run[user_id] = now
-
-
-def release_future_radar_run_rate(user_id: int) -> None:
-    """Do not consume a user's cooldown when another global run was already active."""
-    with _future_radar_run_cooldown_guard:
-        _future_radar_user_last_run.pop(user_id, None)
 
 
 def enforce_model_request_rate(user_id: int, units: int) -> None:
@@ -288,6 +266,8 @@ def _web_search_attempted_at(state: dict | None) -> datetime | None:
 
 
 def _deep_search_next_due_at(state: dict | None) -> str | None:
+    if RECRUITMENT_DEEP_SEARCH_COOLDOWN_SECONDS <= 0:
+        return None
     attempted = _web_search_attempted_at(state)
     if attempted is None:
         return None
@@ -297,6 +277,8 @@ def _deep_search_next_due_at(state: dict | None) -> str | None:
 
 
 def _deep_search_is_available(state: dict | None) -> bool:
+    if RECRUITMENT_DEEP_SEARCH_COOLDOWN_SECONDS <= 0:
+        return True
     attempted = _web_search_attempted_at(state)
     return (
         attempted is None
@@ -870,6 +852,7 @@ _PUBLIC_RADAR_ERROR_MESSAGES = {
     "AI_PROVIDER_UNAVAILABLE": "AI 补漏暂时不可用；确定性官网信源仍会继续扫描。",
     "SOURCE_UNAVAILABLE": "公开信源暂时无法访问，稍后会自动重试。",
     "SOURCE_FAILED": "该信源本轮扫描未完成，稍后会自动重试。",
+    "SOURCE_BUSY": "该信源正在由另一轮扫描处理，本轮已安全跳过。",
     "PROGRAM_REJECTED": "候选项目未通过结构或安全校验。",
     "JOB_REJECTED": "候选岗位未通过结构或安全校验。",
     "ARTICLE_REJECTED": "候选文章未通过结构或安全校验。",
@@ -1140,13 +1123,29 @@ def future_radar_sources(user: User, enabled: bool | None = None) -> dict:
 async def run_future_radar(
     user: ConsentedUser,
     request: RadarRunRequest | None = None,
+    admin_token: Annotated[str | None, Header(alias="X-Admin-Token")] = None,
 ) -> dict:
     payload = request or RadarRunRequest()
+    scan_type = payload.scan_type
+    if payload.force:
+        configured_token = settings.admin_dashboard_token
+        if not configured_token:
+            raise HTTPException(
+                status_code=503,
+                detail="Administrator Force Scan is not configured.",
+            )
+        if not admin_token or not secrets.compare_digest(admin_token, configured_token):
+            raise HTTPException(
+                status_code=401,
+                detail="Force Scan requires administrator authorization.",
+            )
     for source_id in payload.source_ids:
         if not future_radar_service.repository.get_source(source_id):
             raise HTTPException(status_code=404, detail=f"Radar source not found: {source_id}")
-    scannable_sources = future_radar_service.repository.user_scannable_sources(
-        source_ids=list(payload.source_ids) or None
+    scannable_sources = future_radar_service.repository.manual_scan_sources(
+        scan_type,
+        source_ids=list(payload.source_ids) or None,
+        force=payload.force,
     )
     source_ids = [source["id"] for source in scannable_sources]
     if payload.source_ids:
@@ -1155,33 +1154,34 @@ async def run_future_radar(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "This source is not available for a user-triggered scan: "
+                    f"This source is not available for a {scan_type} scan: "
                     f"{unavailable[0]}"
                 ),
             )
     if not source_ids:
         raise HTTPException(
             status_code=503,
-            detail="No deterministic Future Radar sources are currently available.",
+            detail=(
+                "No deterministic Future Radar sources are currently available."
+                if scan_type == "quick"
+                else "No configured discovery sources are currently available."
+            ),
         )
-    enforce_future_radar_run_rate(user["id"])
+    del user
     try:
         result = await asyncio.to_thread(
             future_radar_service.run,
-            trigger_type="manual_user",
-            # An explicit selection intentionally bypasses source intervals.
+            trigger_type=f"manual_{scan_type}",
+            scan_type=scan_type,
             source_ids=source_ids,
-            # Selecting a source already bypasses its interval. Never let a
-            # regular account reactivate a disabled source through `force`.
-            force=False,
+            force=payload.force,
         )
         return _public_radar_run(result) or {}
     except RadarRunBusy as exc:
-        release_future_radar_run_rate(user["id"])
         raise HTTPException(
             status_code=409,
-            detail="A Future Radar run is already active.",
-            headers={"Retry-After": "20"},
+            detail=f"A {exc.scan_type} Future Radar run is already active.",
+            headers={"Retry-After": "3"},
         ) from exc
 
 
@@ -2427,8 +2427,6 @@ def delete_account(request: DeleteAccountRequest, user: User) -> Response:
         _space_lock_registry.pop(user["id"], None)
     with _watch_refresh_cooldown_guard:
         _watch_refresh_last_request.pop(user["id"], None)
-    with _future_radar_run_cooldown_guard:
-        _future_radar_user_last_run.pop(user["id"], None)
     with _watch_create_rate_guard:
         _watch_create_requests.pop(user["id"], None)
     with _model_rate_guard:

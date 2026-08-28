@@ -1490,7 +1490,7 @@ def test_recruitment_ingest_schema_canonicalization_and_cross_source_merge(monke
         assert too_many.status_code == 422
 
 
-def test_recruitment_deep_search_is_explicit_and_rate_limited(monkeypatch):
+def test_recruitment_deep_search_is_explicit_and_can_repeat_after_completion(monkeypatch):
     calls = []
     state = {"value": None}
 
@@ -1525,16 +1525,16 @@ def test_recruitment_deep_search_is_explicit_and_rate_limited(monkeypatch):
         assert deep.status_code == 200
         assert deep.json()["web_search_ran"] is True
         assert deep.json()["skip_reason"] is None
-        assert deep.json()["next_due_at"]
+        assert deep.json()["next_due_at"] is None
         assert calls[-1] == (True, True)
 
-        cooldown = client.post(
+        repeated = client.post(
             "/api/recruitment/refresh?deep_search=true", headers=auth(token)
         )
-        assert cooldown.status_code == 200
-        assert cooldown.json()["web_search_ran"] is False
-        assert cooldown.json()["skip_reason"] == "deep_search_cooldown"
-        assert calls[-1] == (False, False)
+        assert repeated.status_code == 200
+        assert repeated.json()["web_search_ran"] is True
+        assert repeated.json()["skip_reason"] is None
+        assert calls[-1] == (True, True)
 
 
 def test_recruitment_watch_fetch_is_offline_deterministic_and_safe(monkeypatch):

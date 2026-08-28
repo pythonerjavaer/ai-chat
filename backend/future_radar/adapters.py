@@ -445,6 +445,7 @@ class OfficialHtmlAdapter:
                     source_url=page.final_url,
                     model=self.ai_model,
                     api_key=self.api_key,
+                    force_refresh=bool(config.get("_force_refresh")),
                 )
                 programs.extend(extracted.get("programs", []))
                 jobs.extend(extracted.get("jobs", []))

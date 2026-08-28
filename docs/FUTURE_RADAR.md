@@ -11,7 +11,7 @@
                      Source Registry
                     monitor_sources
                               │
-                due source + adapter dispatch
+        scheduled due source / manual Quick or Deep dispatch
                               │
                               ▼
           normalize → stable identity → semantic hash
@@ -32,7 +32,7 @@
 - `seeds.py`：初始化 Source Registry；不保存私有会话 ID、Cookie 或密钥。
 - `adapters.py`：公开 HTML、公开 JSON API、公开 RSS/Atom、旧岗位池、OpenAI 网页补漏、受控同步、Mock 等来源适配器。
 - `normalization.py`：文本、日期、HTTPS URL、稳定外部 ID 和语义哈希规范化。
-- `service.py`：并发扫描、全局/来源锁、验证角色、合并、差异事件、关闭确认和幂等同步。
+- `service.py`：并发扫描、按扫描类型的运行锁、单来源锁、验证角色、合并、差异事件、关闭确认和幂等同步。
 - `repository.py`：SQLite 查询、分页、来源健康、运行记录、事件游标、来源快照和 AI 缓存。
 - `ai.py`：对公开网页文本使用 OpenAI Responses API 做有界结构化提取。
 - `worker.py`：一次性服务端 CLI；它不是常驻守护进程。
@@ -55,9 +55,9 @@
 | `job_sources` | 岗位与多个来源的关联、证据、活跃状态和缺失次数 |
 | `program_sources` | 招聘项目与多个来源的关联 |
 | `radar_events` | `NEW`、`UPDATED`、`VERIFIED`、`CLOSED`、`REOPENED` 及项目事件；整数 ID 可作增量游标 |
-| `radar_runs` | 每次 scheduled/manual/worker/sync 运行的结果、错误、AI 调用和 Token 计数 |
+| `radar_runs` | 每次 scheduled/Quick/Deep/worker/sync 运行的模式、Force 标记、成功/失败/跳过来源计数、错误、AI 调用和 Token 计数 |
 | `radar_sync_batches` | `FROSTFIRE_SYNC_V1` 幂等键、payload hash 和重放结果 |
-| `radar_locks` | 有过期时间的全局运行锁与单来源锁 |
+| `radar_locks` | 有过期时间的按类型运行锁与单来源锁 |
 | `radar_ai_cache` | 按内容哈希、模型和 schema 版本保存结构化提取结果 |
 | `radar_source_snapshots` | 每份最多 20,000 字符、每个来源只保留最近 10 份的规范化页面快照与扫描元数据 |
 
@@ -201,7 +201,7 @@ Content-Type: application/json
 | `GET` | `/api/future-radar/runs` | JWT | 运行历史分页 |
 | `GET` | `/api/future-radar/runs/{run_id}` | JWT | 单次运行结果与错误 |
 | `GET` | `/api/future-radar/sources` | JWT | 来源公开健康状态；支持 `enabled` 筛选 |
-| `POST` | `/api/future-radar/run` | JWT + 当前隐私同意 | 立即扫描当前启用的确定性官网来源，并重新索引现有已核验岗位池；手动请求绕过来源间隔，但不会调用公众号占位、Mock、推送源或付费 AI 补漏。`source_ids` 只能缩小到同一安全集合；每用户 5 分钟冷却，限流返回 429，并发冲突返回 409，`force` 不会激活禁用来源 |
+| `POST` | `/api/future-radar/run` | JWT + 当前隐私同意 | `scan_type=quick`（默认）核对确定性官网、ATS、公开 API、Feed 与旧岗位池，不调用 AI；`scan_type=deep` 运行已配置的 OpenAI Web Search、公众号及新入口发现来源。手动请求不修改也不受 Scheduler 的来源间隔影响；同类型运行冲突返回 409，完成后后端可立即重跑。`source_ids` 只能缩小到对应模式的安全来源集合。`force=true` 还需要 `X-Admin-Token`，可忽略 due time 与 AI 内容缓存，但不能激活禁用来源或绕过并发锁、来源锁、外站限速和安全校验 |
 | `POST` | `/api/future-radar/sync` | Ingest | 严格接收 `FROSTFIRE_SYNC_V1` 结构化批次 |
 | `POST` | `/api/future-radar/sources` | Admin | 创建来源 |
 | `PATCH` | `/api/future-radar/sources/{source_id}` | Admin | 更新来源运行配置 |
@@ -225,7 +225,17 @@ FastAPI lifespan 启动时会：
 5. 调度任务立即运行一次，此后每 `FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES` 分钟唤醒一次；
 6. 每次只选择满足各自 `monitor_sources.interval_minutes` 的到期来源；`discovery_limited` 占位不会参加例行运行，也不会被伪装成失败扫描。
 
-扫描使用最多 `FUTURE_RADAR_MAX_WORKERS` 个线程。SQLite 中的 30 分钟全局运行锁和 20 分钟单来源锁避免同一数据库上的重叠运行；手动运行冲突返回 HTTP 409。普通用户手动扫描按已认证 `user_id` 设置 5 分钟冷却，不能靠传入 `X-Admin-Token` 绕过登录或隐私同意，也不能用 `force` 重新启用禁用来源。扫描请求只记录用户 ID、路由、状态码和耗时等无正文审计元数据。这个设计面向单实例 SQLite，不等同于跨主机分布式调度。
+扫描使用最多 `FUTURE_RADAR_MAX_WORKERS` 个线程。SQLite 为 `quick`、`deep`、`scheduled` 分别建立 30 分钟租约式运行锁；任务存活期间后台心跳会持续续租，因此长任务超过初始租期也不会产生第二个同类 Run。同类型已有运行时，后端返回 HTTP 409。每个来源另有 20 分钟、同样自动续租的租约式锁：来源忙碌时本轮只跳过它，其他未锁来源继续扫描。不同类型可以同时启动，但若碰到同一来源仍由来源锁消除重复工作；刷新页面、换浏览器或直接调用 API 都不能绕过这些数据库锁。失去有效租约的遗留 `running` 记录会被标记为失败，而仍持有有效续租锁的长任务不会被误判。
+
+手动扫描没有固定的服务端完成后冷却。Run 完成并释放锁后即可再次调用；前端只保留 20 秒防误触 debounce，它不是安全边界。`monitor_sources.interval_minutes` 仅决定自动 Scheduler 何时选择到期来源，Quick/Deep 不读取也不改写该间隔。Force Scan 仍要求普通登录、当前隐私同意和有效 `X-Admin-Token`，不会重新启用禁用来源，也不会绕过运行锁、来源锁、外部站点限速或安全校验。扫描请求只记录用户 ID、路由、状态码和耗时等无正文审计元数据。这个设计面向单实例 SQLite，不等同于跨主机分布式调度。
+
+### 手动扫描模式
+
+`Quick Scan` 的流程是：选择已启用的确定性来源 → 获取公开官网/ATS/API/Feed 或读取旧岗位池 → 计算内容指纹并规范化 → 核验、合并和生成差异事件。即使某个官网来源配置了可选 AI 提取，Quick 也会在本轮强制关闭它。
+
+`Deep Scan` 的流程是：选择已启用的发现类来源 → 运行 OpenAI Web Search、已配置的公众号公开入口及新官方 URL discovery → 将结果作为待核验线索写入隔离区 → 只有获得官方 HTTPS 核验来源后才进入公开岗位池。Deep 完成后同样没有固定手动冷却；重复点击期间由数据库 Run Lock 防止重复调用 OpenAI。
+
+`Force Scan` 是 Quick/Deep 请求上的管理员选项。它忽略自动来源 due time 和 AI 内容缓存读取，但不允许制造相同并行任务，也不绕过域名/供应商的安全限速。
 
 ### 一次性 Worker CLI
 
@@ -253,7 +263,7 @@ Mock 来源默认禁用，只用于测试。CLI 的 `--mock-round` 会临时启�
 
 ## 7. OpenAI 结构化提取、缓存与降级
 
-`official_html` 来源只有显式设置 `adapter_config.ai_extract=true`，且页面指纹相对上次成功扫描发生变化时，才会调用 AI 提取。实现使用 OpenAI Responses API：
+`official_html` 来源只有显式设置 `adapter_config.ai_extract=true` 时才具备 AI 提取能力；Quick Scan 会临时强制关闭它。普通 scheduled/Deep 扫描按页面内容指纹复用结构化提取缓存，因此相同内容不会重复调用模型；管理员 Force Scan 会跳过缓存读取并重新提取。实现使用 OpenAI Responses API：
 
 - 页面正文被视为不可信数据，不执行页面中的指令；
 - 输入最多截取 32,000 字符；
@@ -278,7 +288,7 @@ AI 提取失败时会记录警告并降级：已经完成的确定性页面抓�
 | `OPENAI_API_KEY` | 无 | AI 提取和可选 OpenAI 网页补漏；必须只放服务端环境 |
 | `RECRUITMENT_WEB_SEARCH_ENABLED` | 见现有配置 | 是否启用 `openai-public-web-search` 来源 |
 | `RECRUITMENT_INGEST_TOKEN` | 无 | `/api/future-radar/sync` 的共享接收密钥 |
-| `ADMIN_DASHBOARD_TOKEN` | 无 | 汇总使用面板与 Source 配置 API 的管理员密钥；普通用户手动扫描不使用此 Token |
+| `ADMIN_DASHBOARD_TOKEN` | 无 | 汇总使用面板、Source 配置 API 与 Force Scan 的管理员密钥；普通 Quick/Deep 不使用此 Token |
 | `DATABASE_PATH` | 项目现有默认 | Future Radar 与主应用共用的 SQLite 文件 |
 
 所有密钥继续由本机 `.env`、Keychain 或 Render Secret 管理；不得写入 source config、Git、README 日志示例或同步 payload。
@@ -292,7 +302,7 @@ source backend/.venv/bin/activate
 python -m pytest -q backend/tests/test_future_radar.py
 ```
 
-该测试覆盖 1–5 轮生命周期、同轮幂等、连续缺失关闭、失败隔离、多来源合并/核验升级、OpenAI 失败降级、sync 幂等冲突、HTML/空白非语义变化、公众号 `discovery_limited` 诚实状态、正文不可访问时的公开文章 metadata 保留与文章事件，以及 API 分页/组合筛选/鉴权/严格 schema。
+该测试覆盖 1–5 轮生命周期、同轮幂等、连续缺失关闭、失败隔离、多来源合并/核验升级、OpenAI 失败降级、sync 幂等冲突、HTML/空白非语义变化、公众号 `discovery_limited` 诚实状态、正文不可访问时的公开文章 metadata 保留与文章事件，以及 Quick/Deep/Force、运行锁、来源锁、刷新不可绕过锁、API 分页/组合筛选/鉴权/严格 schema。
 
 使用独立临时数据库做 CLI 冒烟测试，避免污染开发数据：
 

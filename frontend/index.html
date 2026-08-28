@@ -386,9 +386,17 @@
           <section class="recruitment-results">
             <div class="recruitment-results-heading">
               <div><span class="overline">RECRUITMENT INTELLIGENCE SYSTEM</span><h3>未来招聘情报中枢</h3><small id="recruitment-source-status" class="recruitment-source-copy">正在接收公开信号…</small></div>
-              <div class="radar-heading-actions"><button id="recruitment-refresh" class="source-status" type="button">刷新信号 ↻</button><button id="future-radar-run" class="radar-scan-now" type="button"><span>立即扫描</span><b>◎</b></button></div>
+              <div class="radar-heading-actions">
+                <button id="recruitment-refresh" class="source-status" type="button">刷新信号 ↻</button>
+                <button id="future-radar-run" class="radar-scan-now" type="button" data-scan-type="quick" title="优先核对已知官网、ATS、API 与招聘页面，不主动运行 AI 发现。">
+                  <span class="radar-scan-label"><strong id="future-radar-run-label">立即扫描</strong><small>QUICK SCAN</small></span><b>◎</b>
+                </button>
+                <button id="future-radar-deep-run" class="radar-scan-now radar-scan-deep" type="button" data-scan-type="deep" title="运行智能发现，寻找新的招聘项目与官方入口；同类型运行由服务端锁防止重复并发。">
+                  <span class="radar-scan-label"><strong id="future-radar-deep-run-label">深度扫描</strong><small>DEEP SCAN</small></span><b>✦</b>
+                </button>
+              </div>
             </div>
-            <p id="future-radar-action-status" class="radar-action-status pending" role="status" aria-live="polite">“公开源 + AI 补漏”更新候选信号；“立即扫描”核对 Future Radar 到期信源。两者均保留上次成功岗位池。</p>
+            <p id="future-radar-action-status" class="radar-action-status pending" role="status" aria-live="polite">立即扫描默认执行 Quick Scan，优先核对已知官方信源；Deep Scan 独立执行智能发现。两类扫描均由服务端运行锁防止重复并发，并保留上次成功岗位池。</p>
             <section class="radar-operational-status" aria-live="polite">
               <article><small>LAST RADAR SCAN</small><strong id="future-radar-last-scan">等待首次扫描</strong></article>
               <article><small>LAST SUCCESS</small><strong id="future-radar-last-success">尚无成功记录</strong></article>

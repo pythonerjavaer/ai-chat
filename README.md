@@ -282,7 +282,7 @@ npm run ios:open
 | `GET` | `/api/future-radar/runs` | 扫描运行历史分页 |
 | `GET` | `/api/future-radar/runs/{run_id}` | 单次扫描的计数与错误 |
 | `GET` | `/api/future-radar/sources` | Source Registry 的公开健康字段 |
-| `POST` | `/api/future-radar/run` | 已登录且同意当前隐私条款的用户手动扫描到期或指定的已启用来源；每用户 5 分钟冷却，并发冲突返回 409 |
+| `POST` | `/api/future-radar/run` | 已登录且同意当前隐私条款的用户启动 `quick`（默认）或 `deep` 扫描；手动扫描不受 Scheduler 间隔影响，同类型运行并发冲突返回 409，完成后后端可立即再次运行；管理员可附带 `X-Admin-Token` 使用 `force` |
 | `POST` | `/api/future-radar/sync` | 使用 `X-Recruitment-Token` 幂等接收 `FROSTFIRE_SYNC_V1` |
 | `POST` | `/api/future-radar/sources` | 使用 `X-Admin-Token` 创建来源 |
 | `PATCH` | `/api/future-radar/sources/{source_id}` | 使用 `X-Admin-Token` 更新来源运行配置 |
