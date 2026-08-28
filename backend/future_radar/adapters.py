@@ -26,6 +26,7 @@ from .normalization import (
     PRIMARY_CATEGORY_CODES,
     canonicalize_url,
     clean_text,
+    normalize_date,
     normalize_taxonomy_value,
     stable_digest,
 )
@@ -241,7 +242,11 @@ class LegacyDatabaseAdapter:
         jobs: list[dict[str, Any]] = []
         for item in database.list_recruitment_jobs():
             tags = list(item.get("tags") or [])
-            pending = bool({"待官方核验", "待打开核对"}.intersection(tags))
+            tag_values = {str(tag).strip() for tag in tags}
+            pending = bool(
+                {"待官方核验", "待打开核对"}.intersection(tag_values)
+                or not {"链接已验证", "标题已验证"}.issubset(tag_values)
+            )
             primary_category = _legacy_primary_category(item, tags)
             jobs.append({
                 "external_id": item["id"],
@@ -283,6 +288,19 @@ class OfficialHtmlAdapter:
         self.api_key = api_key
         self.ai_model = ai_model
 
+    @staticmethod
+    def _configured_markers(config: dict[str, Any], key: str) -> list[str]:
+        value = config.get(key)
+        if value in (None, []):
+            return []
+        if not isinstance(value, list):
+            raise ValueError(f"official_html {key} must be an array of strings.")
+        return [
+            marker
+            for item in value[:10]
+            if (marker := clean_text(item, limit=280))
+        ]
+
     def scan(self, source: dict[str, Any]) -> AdapterResult:
         if not source.get("url"):
             raise DiscoveryLimitedError("Source URL is not configured.")
@@ -312,43 +330,113 @@ class OfficialHtmlAdapter:
         company = clean_text(source.get("company"), limit=160)
         campus = bool(page.keyword_hits)
         year = int(config.get("recruitment_year", date.today().year + 1))
-        if campus and company:
+        required_markers = self._configured_markers(config, "required_markers")
+        folded_page = page.text.casefold()
+        required_markers_present = all(
+            marker.casefold() in folded_page for marker in required_markers
+        )
+        reference_url = canonicalize_url(source["url"], allow_empty=False)
+
+        opening_date = normalize_date(config.get("opening_date"))
+        closing_date = normalize_date(config.get("closing_date"))
+        closed_markers = self._configured_markers(config, "closed_markers")
+        today = date.today().isoformat()
+        if opening_date and opening_date > today:
+            listing_status = "unknown"
+        elif (
+            (closing_date and closing_date <= today)
+            or any(marker.casefold() in folded_page for marker in closed_markers)
+        ):
+            listing_status = "closed"
+        else:
+            listing_status = "open"
+
+        if campus and company and required_markers_present:
             programs.append({
                 "company": company,
                 "program_name": clean_text(config.get("program_name") or f"{year} 校园招聘"),
                 "recruitment_year": year,
                 "recruitment_type": config.get("recruitment_type", "campus"),
                 "region": config.get("region", "中国"),
-                "official_url": page.final_url,
-                "status": "open",
+                "opening_date": opening_date,
+                "closing_date": closing_date,
+                "official_url": reference_url,
+                "status": listing_status,
                 "verification_status": "verified",
                 "confidence_score": 0.9,
+                "evidence": [
+                    f"官方页面包含确定性标记：{required_markers[-1]}"
+                ] if required_markers else [],
             })
 
-        job_marker = clean_text(config.get("job_marker"), limit=280)
-        job_title = clean_text(config.get("job_title"), limit=280)
-        if company and job_title and job_marker and job_marker.casefold() in page.text.casefold():
+        configured_jobs = config.get("configured_jobs")
+        if configured_jobs not in (None, []) and not isinstance(configured_jobs, list):
+            raise ValueError("official_html configured_jobs must be an array of objects.")
+        if isinstance(configured_jobs, list):
+            job_definitions = [item for item in configured_jobs[:50] if isinstance(item, dict)]
+        elif config.get("job_title") or config.get("job_marker"):
+            job_definitions = [config]
+        else:
+            job_definitions = []
+        for definition in job_definitions:
+            job_config = {**config, **definition}
+            job_marker = clean_text(job_config.get("job_marker"), limit=280)
+            job_title = clean_text(job_config.get("job_title"), limit=280)
+            opening_date = normalize_date(job_config.get("opening_date"))
+            job_closing_date = normalize_date(job_config.get("closing_date"))
+            if not (
+                company
+                and required_markers_present
+                and job_title
+                and job_marker
+                and job_marker.casefold() in folded_page
+                and (not opening_date or opening_date <= today)
+            ):
+                continue
+            application_url = reference_url
+            if job_config.get("application_url"):
+                application_url = _public_reference_url(job_config["application_url"])
+                if not application_url:
+                    logger.warning(
+                        "Official source %s skipped a configured job with an unsafe application URL",
+                        source["id"],
+                    )
+                    continue
+            job_status = "closed" if (
+                (job_closing_date and job_closing_date <= today)
+                or any(marker.casefold() in folded_page for marker in self._configured_markers(
+                    job_config, "closed_markers"
+                ))
+            ) else listing_status
             jobs.append({
+                "external_id": clean_text(job_config.get("external_id"), limit=180) or None,
                 "company": company,
                 "title": job_title,
-                "city": clean_text(config.get("city"), limit=160),
-                "region": clean_text(config.get("region") or "中国", limit=160),
-                "employer_type": clean_text(config.get("employer_type"), limit=80),
-                "industry": clean_text(config.get("industry"), limit=120),
-                "official_url": page.final_url,
-                "application_url": page.final_url,
-                "opening_date": config.get("opening_date"),
-                "closing_date": config.get("closing_date"),
-                "status": "open",
+                "city": clean_text(job_config.get("city"), limit=160),
+                "region": clean_text(job_config.get("region") or "中国", limit=160),
+                "employer_type": clean_text(job_config.get("employer_type"), limit=80),
+                "industry": clean_text(job_config.get("industry"), limit=120),
+                "primary_category": clean_text(job_config.get("primary_category"), limit=80),
+                "organization_category": clean_text(
+                    job_config.get("organization_category"), limit=80
+                ),
+                "industry_tags": list(job_config.get("industry_tags") or [])[:30],
+                "role_tags": list(job_config.get("role_tags") or [])[:30],
+                "official_url": reference_url,
+                "application_url": application_url,
+                "opening_date": opening_date,
+                "closing_date": job_closing_date,
+                "status": job_status,
                 "verification_status": "verified",
                 "confidence_score": 0.95,
-                "requirements": clean_text(config.get("requirements"), limit=8_000),
+                "requirements": clean_text(job_config.get("requirements"), limit=8_000),
                 "tags": ["校园招聘", "官方网页", "确定性解析"],
+                "evidence": [f"官方页面逐字包含岗位名称：{job_marker}"],
             })
 
         ai_calls = 0
         model_tokens = 0
-        if bool(config.get("ai_extract")) and page.fingerprint != source.get("last_content_hash"):
+        if bool(config.get("ai_extract")):
             try:
                 extracted = extract_recruitment_content(
                     repository=self.repository,

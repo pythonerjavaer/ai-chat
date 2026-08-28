@@ -201,6 +201,98 @@ export function buildFutureRadarJobsQuery({ page = 1, pageSize = 50, filters = {
   return params.toString();
 }
 
+export function isDefaultFutureRadarJobsView(filters = {}) {
+  const defaults = { status: "open", sort: "changed" };
+  return Object.entries(filters).every(([key, value]) => {
+    if (key in defaults) return (value || defaults[key]) === defaults[key];
+    return value == null || value === "";
+  });
+}
+
+export function parseRadarRetryAfter(value, now = Date.now()) {
+  if (value == null || value === "") return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.ceil(seconds));
+  const retryAt = Date.parse(String(value));
+  return Number.isFinite(retryAt) ? Math.max(0, Math.ceil((retryAt - now) / 1000)) : 0;
+}
+
+export function formatRadarCooldown(seconds) {
+  const remaining = Math.max(0, Math.ceil(Number(seconds) || 0));
+  const minutes = Math.floor(remaining / 60);
+  const trailingSeconds = remaining % 60;
+  if (!minutes) return `${trailingSeconds} 秒`;
+  if (!trailingSeconds) return `${minutes} 分钟`;
+  return `${minutes} 分 ${String(trailingSeconds).padStart(2, "0")} 秒`;
+}
+
+function radarDiagnosticText(value, depth = 0, seen = new WeakSet()) {
+  if (depth > 4 || value == null) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (value instanceof Error) return value.message || "";
+  if (typeof value !== "object" || seen.has(value)) return "";
+  seen.add(value);
+  const entries = Array.isArray(value) ? value : Object.values(value);
+  return entries.map((item) => radarDiagnosticText(item, depth + 1, seen)).filter(Boolean).join(" ");
+}
+
+export function futureRadarAiSearchNotice(value = {}) {
+  const diagnostics = radarDiagnosticText(value).toLowerCase();
+  const isAiSearch = /openai-public-web-search|openai[_ -]?web[_ -]?search|openai.{0,20}(网页|web).{0,20}(搜索|search)|all recruitment web-search pools failed|ai (网页搜索|补漏)/i.test(diagnostics);
+  const isQuotaFailure = /insufficient_quota|quota.{0,30}(exceed|limit)|exceed.{0,30}quota|billing[_ -]?(hard[_ -]?limit|not[_ -]?active)|credit.{0,20}balance|account.{0,20}balance|额度不足|余额不足|账户余额/.test(diagnostics);
+  if (!isAiSearch && !isQuotaFailure) return "";
+  return isQuotaFailure
+    ? "OpenAI 搜索暂不可用（API 额度不足）；补充额度后可恢复 AI 补漏。已核验官网源仍会继续扫描。"
+    : "OpenAI 搜索暂不可用；已核验官网源仍会继续扫描。";
+}
+
+export function futureRadarSourceErrorCopy(source = {}) {
+  return futureRadarAiSearchNotice(source)
+    || "最近一次信源检查未完成；已核验岗位池仍保留，底层错误详情仅记录在服务端。";
+}
+
+export function futureRadarRunErrorCopy(error = {}) {
+  const status = Number(error.status || 0);
+  const retryAfter = parseRadarRetryAfter(error.retryAfter);
+  if (status === 429 && retryAfter) {
+    return retryAfter
+      ? `扫描冷却中，请在 ${formatRadarCooldown(retryAfter)}后再试；岗位池仍保留上次成功结果。`
+      : "扫描冷却中，请稍后再试；岗位池仍保留上次成功结果。";
+  }
+  if (status === 409) {
+    return retryAfter
+      ? `已有一轮扫描正在运行，请在 ${formatRadarCooldown(retryAfter)}后查看结果。`
+      : "已有一轮扫描正在运行，请稍后查看结果。";
+  }
+  if (status === 401) return "登录状态已失效，请重新登录后再扫描。";
+  if (status === 428) return "隐私政策已更新，请先重新同意当前版本后再启动扫描。";
+  const detail = String(error.message || "未知错误").trim();
+  const aiNotice = futureRadarAiSearchNotice(error);
+  if (aiNotice) return aiNotice;
+  if (/请求超时|timed?\s*out|timeout/i.test(detail)) {
+    return "扫描请求等待超时；服务端可能仍在继续，请稍后查看“扫描记录”。当前岗位池不会被清空。";
+  }
+  if (status === 403) return "当前账号暂时不能启动扫描；已核验岗位池仍可正常查看。";
+  if ([502, 503, 504].includes(status)) return "扫描服务暂时不可用，请稍后重试；当前岗位池不会被清空。";
+  return "扫描未能启动，请稍后重试；当前岗位池不会被清空。";
+}
+
+export function futureRadarRunSuccessCopy(run = {}, totalJobs = 0) {
+  const status = String(run.status || "success").toLowerCase();
+  const checked = Number(run.sources_checked || 0);
+  const succeeded = Number(run.sources_succeeded || 0);
+  const failed = Number(run.sources_failed || 0);
+  const added = Number(run.new_jobs || 0);
+  const updated = Number(run.updated_jobs || 0);
+  const closed = Number(run.closed_jobs || 0);
+  const pool = Math.max(0, Number(totalJobs) || 0);
+  const aiNotice = futureRadarAiSearchNotice(run);
+  if (!checked) return `扫描完成：当前没有到期信源，未重复抓取；实时岗位池仍为 ${pool} 条。${aiNotice ? ` ${aiNotice}` : ""}`;
+  if (status === "failed") return `扫描完成但 ${failed || checked} 个信源均未成功；岗位池保留已有 ${pool} 条。${aiNotice ? ` ${aiNotice}` : ""}`;
+  const sourceCopy = failed ? `${succeeded}/${checked} 个信源成功` : `${checked} 个信源已核对`;
+  return `扫描完成：${sourceCopy}，新增 ${added}、更新 ${updated}、关闭 ${closed}；实时岗位池 ${pool} 条。${aiNotice ? ` ${aiNotice}` : ""}`;
+}
+
 export const RADAR_ENRICHMENT_KEYS = Object.freeze([
   "match_score", "job_score", "tier_code", "score_breakdown",
   "employer_score", "role_score", "career_value_score", "job_condition_score",
@@ -232,8 +324,10 @@ function jobIdentityKeys(job = {}) {
 export function mergeFutureRadarJobs(radarJobs = [], legacyJobs = []) {
   const legacyIndex = new Map();
   legacyJobs.forEach((job) => jobIdentityKeys(job).forEach((key) => legacyIndex.set(key, job)));
-  return radarJobs.map((job) => {
+  const seen = new Set();
+  const mergedJobs = radarJobs.map((job) => {
     const legacy = jobIdentityKeys(job).map((key) => legacyIndex.get(key)).find(Boolean);
+    jobIdentityKeys(job).forEach((key) => seen.add(key));
     if (!legacy) return job;
     const merged = { ...job };
     const explicitlyUnranked = Object.hasOwn(job, "tier_code") && job.tier_code === null;
@@ -245,4 +339,11 @@ export function mergeFutureRadarJobs(radarJobs = [], legacyJobs = []) {
     });
     return merged;
   });
+  legacyJobs.forEach((job) => {
+    const keys = jobIdentityKeys(job);
+    if (keys.some((key) => seen.has(key))) return;
+    keys.forEach((key) => seen.add(key));
+    mergedJobs.push(job);
+  });
+  return mergedJobs;
 }

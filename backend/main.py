@@ -383,7 +383,9 @@ def refresh_recruitment_sources(
         _recruitment_source_refresh_lock.release()
 
 
-async def recruitment_refresh_loop() -> None:
+async def recruitment_refresh_loop(
+    first_refresh_complete: asyncio.Event | None = None,
+) -> None:
     while True:
         try:
             restore_counts = await restore_verified_radar_snapshot()
@@ -398,6 +400,12 @@ async def recruitment_refresh_loop() -> None:
             logger.info("Scheduled recruitment source refresh completed: %s jobs", count)
         except Exception:
             logger.exception("Scheduled recruitment source refresh failed")
+        finally:
+            # A fresh/ephemeral database must not let Future Radar snapshot an
+            # empty legacy table before the upstream refresh has had its first
+            # chance to populate verified jobs.
+            if first_refresh_complete is not None:
+                first_refresh_complete.set()
         try:
             watch_counts = await refresh_all_recruitment_watches()
             logger.info(
@@ -409,8 +417,12 @@ async def recruitment_refresh_loop() -> None:
         await asyncio.sleep(settings.recruitment_refresh_minutes * 60)
 
 
-async def future_radar_refresh_loop() -> None:
+async def future_radar_refresh_loop(
+    first_refresh_complete: asyncio.Event | None = None,
+) -> None:
     """Run due Radar sources server-side; the browser only polls stored events."""
+    if first_refresh_complete is not None:
+        await first_refresh_complete.wait()
     while True:
         try:
             run = await asyncio.to_thread(
@@ -454,10 +466,17 @@ async def lifespan(_: FastAPI):
     database.ensure_recruitment_ingest_sources(EXPECTED_CHATGPT_RADAR_SOURCES)
     database.purge_legacy_recruitment_samples()
     tasks: list[asyncio.Task] = []
+    first_refresh_complete = asyncio.Event()
     if settings.recruitment_refresh_minutes > 0:
-        tasks.append(asyncio.create_task(recruitment_refresh_loop()))
+        tasks.append(asyncio.create_task(
+            recruitment_refresh_loop(first_refresh_complete)
+        ))
+    else:
+        first_refresh_complete.set()
     if settings.future_radar_enabled:
-        tasks.append(asyncio.create_task(future_radar_refresh_loop()))
+        tasks.append(asyncio.create_task(
+            future_radar_refresh_loop(first_refresh_complete)
+        ))
     try:
         yield
     finally:
@@ -844,16 +863,74 @@ def admin_usage(
     return database.aggregate_admin_usage(hours, bucket_minutes)
 
 
+_PUBLIC_RADAR_ERROR_MESSAGES = {
+    "DISCOVERY_LIMITED": "该信源尚未配置可合法访问的公开入口。",
+    "AI_CREDITS_EXHAUSTED": "AI 补漏额度暂不可用；确定性官网信源仍会继续扫描。",
+    "AI_RATE_LIMITED": "AI 补漏当前受到频率限制；确定性官网信源仍会继续扫描。",
+    "AI_PROVIDER_UNAVAILABLE": "AI 补漏暂时不可用；确定性官网信源仍会继续扫描。",
+    "SOURCE_UNAVAILABLE": "公开信源暂时无法访问，稍后会自动重试。",
+    "SOURCE_FAILED": "该信源本轮扫描未完成，稍后会自动重试。",
+    "PROGRAM_REJECTED": "候选项目未通过结构或安全校验。",
+    "JOB_REJECTED": "候选岗位未通过结构或安全校验。",
+    "ARTICLE_REJECTED": "候选文章未通过结构或安全校验。",
+}
+
+
+def _public_radar_error(error: object) -> dict:
+    item = error if isinstance(error, dict) else {}
+    raw_code = str(item.get("code") or "SOURCE_FAILED").upper()
+    code = raw_code if raw_code in _PUBLIC_RADAR_ERROR_MESSAGES else "SOURCE_FAILED"
+    return {
+        "source_id": str(item.get("source_id") or "")[:80],
+        "code": code,
+        "message": _PUBLIC_RADAR_ERROR_MESSAGES[code],
+    }
+
+
+def _public_radar_run(run: dict | None) -> dict | None:
+    if not run:
+        return None
+    item = dict(run)
+    item["errors"] = [
+        _public_radar_error(error) for error in list(item.get("errors") or [])[:100]
+    ]
+    return item
+
+
+def _public_radar_dashboard(dashboard: dict) -> dict:
+    item = dict(dashboard)
+    item["last_scan"] = _public_radar_run(item.get("last_scan"))
+    return item
+
+
 def _public_radar_source(source: dict) -> dict:
     """Expose operational source health without leaking adapter internals."""
     allowed = (
         "id", "name", "platform", "company", "source_type", "url", "domain",
         "account_name", "enabled", "priority", "trust_level", "interval_minutes",
         "status", "verification_status", "last_checked_at", "last_success_at",
-        "last_error_at", "last_error", "consecutive_failures", "created_at", "updated_at",
-        "latest_article_title", "latest_article_at",
+        "last_error_at", "consecutive_failures", "created_at", "updated_at",
     )
-    return {key: source.get(key) for key in allowed}
+    item = {key: source.get(key) for key in allowed}
+    if source.get("last_error_at"):
+        if source.get("status") == "discovery_limited":
+            item["last_error"] = _PUBLIC_RADAR_ERROR_MESSAGES["DISCOVERY_LIMITED"]
+        elif str(source.get("platform") or "").casefold() == "openai":
+            safe_provider_messages = {
+                _PUBLIC_RADAR_ERROR_MESSAGES[code]
+                for code in (
+                    "AI_CREDITS_EXHAUSTED", "AI_RATE_LIMITED",
+                    "AI_PROVIDER_UNAVAILABLE",
+                )
+            }
+            item["last_error"] = (
+                source.get("last_error")
+                if source.get("last_error") in safe_provider_messages
+                else _PUBLIC_RADAR_ERROR_MESSAGES["AI_PROVIDER_UNAVAILABLE"]
+            )
+        else:
+            item["last_error"] = _PUBLIC_RADAR_ERROR_MESSAGES["SOURCE_FAILED"]
+    return item
 
 
 def _reject_secret_like_config(value: object, *, path: str = "config") -> None:
@@ -874,7 +951,7 @@ def _reject_secret_like_config(value: object, *, path: str = "config") -> None:
 @app.get("/api/future-radar/dashboard")
 def future_radar_dashboard(user: User) -> dict:
     del user
-    return future_radar_service.repository.dashboard()
+    return _public_radar_dashboard(future_radar_service.repository.dashboard())
 
 
 @app.get("/api/future-radar/jobs")
@@ -900,6 +977,11 @@ def future_radar_jobs(
     sort: Literal["changed", "closing", "opening", "first_seen", "company"] = "changed",
     category: list[str] = Query(default=[]),
 ) -> dict:
+    if verification_status not in (None, "verified"):
+        raise HTTPException(
+            status_code=422,
+            detail="Only officially verified Future Radar jobs are public.",
+        )
     allowed_categories = set(PRIMARY_CATEGORY_CODES)
     selected_categories = {
         str(value).strip() for value in category if str(value).strip()
@@ -912,7 +994,7 @@ def future_radar_jobs(
         )
     filters = {
         "status": status_filter,
-        "verification_status": verification_status,
+        "verification_status": "verified",
         "company": company,
         "city": city,
         "region": region,
@@ -953,7 +1035,7 @@ def future_radar_jobs(
 @app.get("/api/future-radar/jobs/{job_id}")
 def future_radar_job(job_id: str, user: User) -> dict:
     job = future_radar_service.repository.get_job(job_id)
-    if not job:
+    if not job or job.get("verification_status") != "verified":
         raise HTTPException(status_code=404, detail="Radar job not found.")
     scored = score_job(job, database.get_recruitment_profile(user["id"]))
     scored["employer_categories"] = sorted(semantic_employer_categories(scored))
@@ -970,7 +1052,8 @@ def future_radar_programs(
 ) -> dict:
     del user
     result = future_radar_service.repository.list_programs(
-        page=page, page_size=page_size, status=status_filter, q=q
+        page=page, page_size=page_size, status=status_filter, q=q,
+        verification_status="verified",
     )
     result["programs"] = result["items"]
     return result
@@ -980,8 +1063,12 @@ def future_radar_programs(
 def future_radar_program(program_id: str, user: User) -> dict:
     del user
     program = future_radar_service.repository.get_program(program_id)
-    if not program:
+    if not program or program.get("verification_status") != "verified":
         raise HTTPException(status_code=404, detail="Recruitment program not found.")
+    program["jobs"] = [
+        job for job in program.get("jobs", [])
+        if job.get("verification_status") == "verified"
+    ]
     return program
 
 
@@ -996,10 +1083,13 @@ def future_radar_events(
     result = future_radar_service.repository.list_events(
         after_event_id=after_event_id, limit=limit,
         event_type=event_type.upper() if event_type else None,
+        public_verified_only=True,
     )
     result["events"] = result["items"]
     if after_event_id is not None and result["items"]:
-        result["dashboard"] = future_radar_service.repository.dashboard()
+        result["dashboard"] = _public_radar_dashboard(
+            future_radar_service.repository.dashboard()
+        )
     return result
 
 
@@ -1020,6 +1110,9 @@ def future_radar_runs(
 ) -> dict:
     del user
     result = future_radar_service.repository.list_runs(page=page, page_size=page_size)
+    result["items"] = [
+        _public_radar_run(run) for run in result["items"]
+    ]
     result["runs"] = result["items"]
     return result
 
@@ -1030,7 +1123,7 @@ def future_radar_run_detail(run_id: str, user: User) -> dict:
     run = future_radar_service.repository.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Radar run not found.")
-    return run
+    return _public_radar_run(run) or {}
 
 
 @app.get("/api/future-radar/sources")
@@ -1052,16 +1145,37 @@ async def run_future_radar(
     for source_id in payload.source_ids:
         if not future_radar_service.repository.get_source(source_id):
             raise HTTPException(status_code=404, detail=f"Radar source not found: {source_id}")
+    scannable_sources = future_radar_service.repository.user_scannable_sources(
+        source_ids=list(payload.source_ids) or None
+    )
+    source_ids = [source["id"] for source in scannable_sources]
+    if payload.source_ids:
+        unavailable = sorted(set(payload.source_ids) - set(source_ids))
+        if unavailable:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "This source is not available for a user-triggered scan: "
+                    f"{unavailable[0]}"
+                ),
+            )
+    if not source_ids:
+        raise HTTPException(
+            status_code=503,
+            detail="No deterministic Future Radar sources are currently available.",
+        )
     enforce_future_radar_run_rate(user["id"])
     try:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             future_radar_service.run,
             trigger_type="manual_user",
-            source_ids=payload.source_ids or None,
+            # An explicit selection intentionally bypasses source intervals.
+            source_ids=source_ids,
             # Selecting a source already bypasses its interval. Never let a
             # regular account reactivate a disabled source through `force`.
             force=False,
         )
+        return _public_radar_run(result) or {}
     except RadarRunBusy as exc:
         release_future_radar_run_rate(user["id"])
         raise HTTPException(

@@ -38,6 +38,53 @@ from .seeds import initial_sources
 logger = logging.getLogger(__name__)
 
 
+def _safe_source_failure(
+    source: dict[str, Any], exc: Exception
+) -> tuple[str, str]:
+    """Map provider/network failures to stable public diagnostics.
+
+    Radar run records and source health are visible to every signed-in user.
+    Provider responses can contain request identifiers or other operational
+    detail, so the original exception is used only for classification and is
+    never persisted or returned by the API.
+    """
+    adapter = str(
+        source.get("adapter_config", {}).get("adapter")
+        or source.get("source_type")
+        or ""
+    ).casefold()
+    source_type = str(source.get("source_type") or "").casefold()
+    platform = str(source.get("platform") or "").casefold()
+    fingerprint = f"{type(exc).__name__} {exc}".casefold()
+    if (
+        adapter == "openai_web_search"
+        or source_type == "openai_web_search"
+        or platform == "openai"
+    ):
+        if any(marker in fingerprint for marker in (
+            "credit_balance_exhausted", "insufficient_quota", "billing",
+            "credit balance", "quota exceeded",
+        )):
+            return (
+                "AI_CREDITS_EXHAUSTED",
+                "AI 补漏额度暂不可用；确定性官网信源仍会继续扫描。",
+            )
+        if any(marker in fingerprint for marker in (
+            "rate limit", "ratelimit", "too many requests", "429",
+        )):
+            return (
+                "AI_RATE_LIMITED",
+                "AI 补漏当前受到频率限制；确定性官网信源仍会继续扫描。",
+            )
+        return (
+            "AI_PROVIDER_UNAVAILABLE",
+            "AI 补漏暂时不可用；确定性官网信源仍会继续扫描。",
+        )
+    if adapter in {"official_html", "rss", "atom"}:
+        return "SOURCE_UNAVAILABLE", "公开信源暂时无法访问，稍后会自动重试。"
+    return "SOURCE_FAILED", "该信源本轮扫描未完成，稍后会自动重试。"
+
+
 class RadarRunBusy(RuntimeError):
     pass
 
@@ -133,28 +180,33 @@ class FutureRadarService:
                     summary["sources_checked"] += 1
                     try:
                         result = future.result()
-                    except DiscoveryLimitedError as exc:
-                        self.repository.update_source_limited(source["id"], str(exc))
+                    except DiscoveryLimitedError:
+                        message = "该信源尚未配置可合法访问的公开入口。"
+                        self.repository.update_source_limited(source["id"], message)
                         summary["sources_failed"] += 1
                         summary["errors"].append({
                             "source_id": source["id"],
                             "code": "DISCOVERY_LIMITED",
-                            "message": str(exc),
+                            "message": message,
                         })
                         continue
                     except Exception as exc:
-                        logger.exception(
-                            "Future Radar source failed run_id=%s source_id=%s adapter=%s",
+                        code, message = _safe_source_failure(source, exc)
+                        logger.warning(
+                            "Future Radar source failed run_id=%s source_id=%s "
+                            "adapter=%s failure_code=%s error_type=%s",
                             run["id"],
                             source["id"],
                             source.get("adapter_config", {}).get("adapter") or source.get("source_type"),
+                            code,
+                            type(exc).__name__,
                         )
-                        self.repository.update_source_error(source["id"], str(exc))
+                        self.repository.update_source_error(source["id"], message)
                         summary["sources_failed"] += 1
                         summary["errors"].append({
                             "source_id": source["id"],
-                            "code": "SOURCE_FAILED",
-                            "message": clean_text(str(exc), limit=300),
+                            "code": code,
+                            "message": message,
                         })
                         continue
                     summary["sources_succeeded"] += 1
@@ -222,34 +274,14 @@ class FutureRadarService:
         counts["model_tokens_used"] = result.model_tokens_used
         now = utc_now()
 
-        # An unchanged semantic page is a successful observation, not a new
-        # snapshot.  Touch linked entities so no absence counter is advanced.
-        if result.content_hash and result.content_hash == source.get("last_content_hash"):
-            with self.repository.transaction() as connection:
-                job_rows = connection.execute(
-                    "SELECT job_id FROM job_sources WHERE source_id=? AND active=1",
-                    (source["id"],),
-                ).fetchall()
-                for row in job_rows:
-                    self.repository.touch_job(connection, str(row["job_id"]), now)
-                    connection.execute(
-                        "UPDATE job_sources SET last_seen_at=?, missing_successes=0 WHERE job_id=? AND source_id=?",
-                        (now, row["job_id"], source["id"]),
-                    )
-                program_rows = connection.execute(
-                    "SELECT program_id FROM program_sources WHERE source_id=? AND active=1",
-                    (source["id"],),
-                ).fetchall()
-                for row in program_rows:
-                    self.repository.touch_program(connection, str(row["program_id"]), now)
-                    connection.execute(
-                        "UPDATE program_sources SET last_seen_at=?, missing_successes=0 WHERE program_id=? AND source_id=?",
-                        (now, row["program_id"], source["id"]),
-                    )
-            counts["unchanged_jobs"] = len(job_rows)
-            return counts
-
         verification_role = self._verification_role(source)
+        # The legacy bridge contains a mixture of freshly official-verified
+        # rows and discovery rows explicitly tagged for manual review.  Trust
+        # the per-item result there; treating the whole mixed table as one
+        # official page would incorrectly promote pending candidates.
+        mixed_verification_source = (
+            source.get("adapter_config", {}).get("adapter") == "legacy_database"
+        )
         program_ids_by_external: dict[str, str] = {}
         seen_program_ids: set[str] = set()
         seen_job_ids: set[str] = set()
@@ -257,7 +289,14 @@ class FutureRadarService:
             for raw in result.programs:
                 try:
                     item = normalize_program(raw)
-                    if verification_role == "verification" and item.get("official_url"):
+                    if (
+                        verification_role == "verification"
+                        and item.get("official_url")
+                        and (
+                            not mixed_verification_source
+                            or item.get("verification_status") == "verified"
+                        )
+                    ):
                         item["verification_status"] = "verified"
                         item["confidence_score"] = max(item["confidence_score"], 0.9)
                         item["content_hash"] = semantic_hash(item, SEMANTIC_PROGRAM_FIELDS)
@@ -274,15 +313,26 @@ class FutureRadarService:
                     if event == "PROGRAM_DISCOVERED":
                         counts["programs_discovered"] += 1
                 except Exception as exc:
+                    logger.info(
+                        "Future Radar rejected a program source_id=%s error_type=%s",
+                        source["id"], type(exc).__name__,
+                    )
                     counts["errors"].append({
                         "source_id": source["id"], "code": "PROGRAM_REJECTED",
-                        "message": clean_text(str(exc), limit=240),
+                        "message": "候选项目未通过结构或安全校验。",
                     })
 
             for raw in result.jobs:
                 try:
                     item = normalize_job(raw)
-                    if verification_role == "verification" and item.get("official_url"):
+                    if (
+                        verification_role == "verification"
+                        and item.get("official_url")
+                        and (
+                            not mixed_verification_source
+                            or item.get("verification_status") == "verified"
+                        )
+                    ):
                         item["verification_status"] = "verified"
                         item["confidence_score"] = max(item["confidence_score"], 0.9)
                         item["content_hash"] = semantic_hash(item, SEMANTIC_JOB_FIELDS)
@@ -314,9 +364,13 @@ class FutureRadarService:
                     else:
                         counts["unchanged_jobs"] += 1
                 except Exception as exc:
+                    logger.info(
+                        "Future Radar rejected a job source_id=%s error_type=%s",
+                        source["id"], type(exc).__name__,
+                    )
                     counts["errors"].append({
                         "source_id": source["id"], "code": "JOB_REJECTED",
-                        "message": clean_text(str(exc), limit=240),
+                        "message": "候选岗位未通过结构或安全校验。",
                     })
 
             for raw in result.articles:
@@ -345,9 +399,13 @@ class FutureRadarService:
                             now=now,
                         )
                 except Exception as exc:
+                    logger.info(
+                        "Future Radar rejected an article source_id=%s error_type=%s",
+                        source["id"], type(exc).__name__,
+                    )
                     counts["errors"].append({
                         "source_id": source["id"], "code": "ARTICLE_REJECTED",
-                        "message": clean_text(str(exc), limit=240),
+                        "message": "候选文章未通过结构或安全校验。",
                     })
 
             if result.snapshot_complete:

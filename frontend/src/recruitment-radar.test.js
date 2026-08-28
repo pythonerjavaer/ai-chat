@@ -6,9 +6,16 @@ import {
   buildFutureRadarJobsQuery,
   createCoalescedRadarReload,
   filterJobsByStarfields,
+  formatRadarCooldown,
   formatScoringFactors,
+  futureRadarAiSearchNotice,
+  futureRadarRunErrorCopy,
+  futureRadarRunSuccessCopy,
+  futureRadarSourceErrorCopy,
+  isDefaultFutureRadarJobsView,
   jobTierBucket,
   mergeFutureRadarJobs,
+  parseRadarRetryAfter,
   partitionJobsByPriority,
 } from "./recruitment-radar.js";
 
@@ -155,6 +162,78 @@ test("Radar null scoring is not overwritten by stale legacy enrichment", () => {
   assert.equal(merged.tier_code, null);
   assert.equal(merged.match_score, null);
   assert.equal(merged.role_score, undefined);
+});
+
+test("Radar keeps non-duplicate verified carryover jobs in the default pool", () => {
+  const merged = mergeFutureRadarJobs(
+    [{ external_id: "radar-1", company: "实时企业", title: "分析岗", tier_code: null }],
+    [
+      { external_id: "radar-1", company: "实时企业", title: "分析岗", tier_code: "T1" },
+      { external_id: "verified-2", company: "已核验企业", title: "管培岗", tier_code: "T2" },
+    ],
+  );
+  assert.deepEqual(merged.map((job) => job.external_id), ["radar-1", "verified-2"]);
+  assert.equal(merged[0].tier_code, null);
+});
+
+test("verified carryover is only eligible in the unfiltered open-jobs view", () => {
+  assert.equal(isDefaultFutureRadarJobsView({ status: "open", sort: "changed", q: "" }), true);
+  assert.equal(isDefaultFutureRadarJobsView({ status: "all", sort: "changed", q: "" }), false);
+  assert.equal(isDefaultFutureRadarJobsView({ status: "open", sort: "changed", company: "某公司" }), false);
+});
+
+test("manual scan feedback explains cooldowns and completed scan deltas", () => {
+  assert.equal(parseRadarRetryAfter("61"), 61);
+  assert.equal(formatRadarCooldown(61), "1 分 01 秒");
+  assert.match(
+    futureRadarRunErrorCopy({ status: 429, retryAfter: "61", message: "rate limited" }),
+    /扫描冷却中.*1 分 01 秒.*保留上次成功结果/,
+  );
+  assert.match(futureRadarRunErrorCopy({ message: "请求超时，请稍后重试。" }), /服务端可能仍在继续.*岗位池不会被清空/);
+  assert.equal(
+    futureRadarRunErrorCopy({ status: 428, message: "provider detail must not render" }),
+    "隐私政策已更新，请先重新同意当前版本后再启动扫描。",
+  );
+  assert.equal(
+    futureRadarRunSuccessCopy({ status: "success", sources_checked: 0 }, 7),
+    "扫描完成：当前没有到期信源，未重复抓取；实时岗位池仍为 7 条。",
+  );
+  assert.match(
+    futureRadarRunSuccessCopy({ status: "partial_success", sources_checked: 3, sources_succeeded: 2, sources_failed: 1, new_jobs: 4, updated_jobs: 2 }, 16),
+    /2\/3 个信源成功.*新增 4、更新 2、关闭 0.*16 条/,
+  );
+});
+
+test("OpenAI quota failures produce a safe actionable notice without leaking diagnostics", () => {
+  const failure = {
+    status: "partial_success",
+    sources_checked: 2,
+    sources_succeeded: 1,
+    sources_failed: 1,
+    errors: [{
+      source_id: "openai-public-web-search",
+      message: "Error 429 insufficient_quota account balance; secret-sentinel-must-not-render",
+    }],
+  };
+  const notice = futureRadarAiSearchNotice(failure);
+  const runCopy = futureRadarRunSuccessCopy(failure, 9);
+  const sourceCopy = futureRadarSourceErrorCopy({
+    id: "openai-public-web-search",
+    last_error: failure.errors[0].message,
+  });
+  assert.match(notice, /OpenAI 搜索暂不可用（API 额度不足）.*已核验官网源仍会继续扫描/);
+  assert.match(runCopy, /API 额度不足.*官网源仍会继续扫描/);
+  assert.match(sourceCopy, /API 额度不足.*官网源仍会继续扫描/);
+  assert.doesNotMatch(`${notice} ${runCopy} ${sourceCopy}`, /secret-sentinel-must-not-render|insufficient_quota/);
+});
+
+test("unknown scan failures never echo raw server diagnostics", () => {
+  const copy = futureRadarRunErrorCopy({
+    status: 500,
+    message: "Traceback with private-service-token=secret-value",
+  });
+  assert.equal(copy, "扫描未能启动，请稍后重试；当前岗位池不会被清空。");
+  assert.doesNotMatch(copy, /Traceback|secret-value/);
 });
 
 test("structured four-part scoring factors render concise explanations instead of object text", () => {

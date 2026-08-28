@@ -86,10 +86,17 @@ Source Registry 目前包含以下公开入口。聚合频道仅作为 discovery
 - `public-sasac-xiaoxin-existing`：现有国资小新公开入口；
 - `public-bank-recruitment`：银行招聘网公开入口；
 - `official-dji-digital-2027`：大疆招聘官网的 2027 数字管理构建者计划；这是核验角色的真实官方 HTML 来源，使用页面标记做确定性项目/岗位解析，不调用 AI；
+- `official-pdd-campus-2027`、`official-china-telecom-campus-2027`、`official-haier-campus-2027`、`official-xiaomi-campus-2027`：官网正文明确存在 2027 校招标记的项目级来源；它们只建立招聘项目，不把“2027 校园招聘”这类项目总称伪装成具体岗位；
+- `official-honor-campus-2027`：荣耀官网的 2027 校招项目和官网首页逐字列出的三个“重点校招职位”；只有页面仍同时包含活动标记和具体岗位名称时才生成已核验岗位。由于具体 ATS 详情页是无法由确定性抓取器核验岗位正文的 JavaScript 壳，卡片安全回退到已经核验的荣耀官方概览页；
+- `official-xiaomi-top-talent-2027`：小米官网逐字包含“顶尖应届生项目”和“2024年-2027年”时，生成同名的已核验项目入口；页面不再包含这些标记时不会继续生成；
 - `legacy-recruitment-pipeline`：现有已核验岗位池；
 - `openai-public-web-search`：仅在 `RECRUITMENT_WEB_SEARCH_ENABLED=true` 时启用的公共网页补漏。
 
 公开入口可访问不等于其中每条内容已经成为已核验岗位。系统仍按来源角色、岗位字段和官方 HTTPS 证据分别处理。
+
+2026-08-28 使用项目自身抓取器复核生产种子时：大疆、国聘、现有国资小新入口和银行招聘网均能建立 HTTPS 连接；国聘页面只返回 SPA 壳，另外两个聚合页虽然有正文但混有社招、旧届和导航条目。旧配置把这三个 discovery 入口交给 `official_html`，同时关闭 AI 且没有公司和岗位标记，因此扫描“成功但 0 岗位”是确定结果，并非刷新按钮失效。它们继续作为 discovery 线索，而不是被提升为 verification。新增的确定性官网来源不依赖这些聚合页，也不绕过 JavaScript、登录、验证码或反爬限制。
+
+`official_html` 的确定性配置支持 `required_markers` 和 `configured_jobs`。项目必须命中全部活动标记；岗位还必须逐字命中各自 `job_marker`。只有管理员明确标为 `trust_level=verification` 的官方来源才能把这些条目升级为 `verified`。配置的截止日期已经过去、或命中显式 `closed_markers` 时，适配器产生关闭观察；页面暂时丢失标记时采用现有连续两次完整快照缺失规则，不会一次失败就下线。OpenAI 网页搜索、RSS、公众号文章和聚合页始终是 discovery：即使模型声称“已验证”，服务也会降为 `pending`，直到同一岗位获得官方 verification 来源。
 
 ### 五个公众号来源的真实状态
 
@@ -194,12 +201,14 @@ Content-Type: application/json
 | `GET` | `/api/future-radar/runs` | JWT | 运行历史分页 |
 | `GET` | `/api/future-radar/runs/{run_id}` | JWT | 单次运行结果与错误 |
 | `GET` | `/api/future-radar/sources` | JWT | 来源公开健康状态；支持 `enabled` 筛选 |
-| `POST` | `/api/future-radar/run` | JWT + 当前隐私同意 | 扫描到期来源，或按 `source_ids` 扫描指定的已启用来源；每用户 5 分钟冷却，限流返回 429，并发冲突返回 409；请求中的 `force` 不会激活禁用来源 |
+| `POST` | `/api/future-radar/run` | JWT + 当前隐私同意 | 立即扫描当前启用的确定性官网来源，并重新索引现有已核验岗位池；手动请求绕过来源间隔，但不会调用公众号占位、Mock、推送源或付费 AI 补漏。`source_ids` 只能缩小到同一安全集合；每用户 5 分钟冷却，限流返回 429，并发冲突返回 409，`force` 不会激活禁用来源 |
 | `POST` | `/api/future-radar/sync` | Ingest | 严格接收 `FROSTFIRE_SYNC_V1` 结构化批次 |
 | `POST` | `/api/future-radar/sources` | Admin | 创建来源 |
 | `PATCH` | `/api/future-radar/sources/{source_id}` | Admin | 更新来源运行配置 |
 
-`GET /jobs` 支持 `page`、`page_size`、`status`、`verification_status`、`company`、`city`、`region`、`employer_type`、`industry`、`program_id`、`source_id`、`q`、`event_type`、`opening_before`、`opening_after`、`closing_before`、`closing_after` 和 `sort=changed|closing|opening|first_seen|company`。前端岗位页已经提供搜索、公司、城市、行业、雇主类型、招聘项目、状态、核验、信源、事件、开放/截止日期范围和排序控件；原有雇主星域与 T0–T3（含 0.5 档）筛选继续保留。筛选与分页结果以 Radar API 为准，旧岗位池只为同一岗位补充既有个性化评分，不会再把无关岗位拼回结果集。
+`GET /jobs` 支持 `page`、`page_size`、`status`、`verification_status`、`company`、`city`、`region`、`employer_type`、`industry`、`program_id`、`source_id`、`q`、`event_type`、`opening_before`、`opening_after`、`closing_before`、`closing_after` 和 `sort=changed|closing|opening|first_seen|company`。公开岗位、项目、详情和相关事件只返回 `verification_status=verified` 的实体；待核验候选仅保留在服务端隔离区和汇总计数中。前端岗位页已经提供搜索、公司、城市、行业、雇主类型、招聘项目、状态、核验、信源、事件、开放/截止日期范围和排序控件；原有雇主星域与 T0–T3（含 0.5 档）筛选继续保留。筛选与分页结果以 Radar API 为准，旧岗位池只为同一岗位补充既有个性化评分，不会再把无关岗位拼回结果集。
+
+来源与运行 API 只返回归一化错误代码和固定安全文案。OpenAI 的原始 429、额度、请求标识及其他 provider 诊断不会写入公开运行记录，也不会从来源健康接口回显；`AI_CREDITS_EXHAUSTED` 只表示 AI 补漏不可用，不影响确定性官网扫描。
 
 `POST /sync` 的 `version` 必须是 `FROSTFIRE_SYNC_V1`。`programs`、`jobs`、`articles` 各最多 10 条，三者合计最多 20 条；现有五源自动桥接可以采用更严格的每批最多 10 条策略。请求可以带 `Idempotency-Key`；未提供时依次使用 `batch_id` 或 payload hash。同一幂等键重放同一 payload 返回原结果，复用到不同 payload 返回 409。未知字段、非 HTTPS URL、包含邮箱/电话号码的 evidence 会被 schema 拒绝。
 
@@ -211,9 +220,10 @@ FastAPI lifespan 启动时会：
 
 1. 初始化数据库与 `future_radar_v1` 迁移；
 2. 幂等写入初始 Source Registry；
-3. 当 `FUTURE_RADAR_ENABLED=true` 时创建进程内调度任务；
-4. 调度任务立即运行一次，此后每 `FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES` 分钟唤醒一次；
-5. 每次只选择满足各自 `monitor_sources.interval_minutes` 的到期来源。
+3. 先执行现有公开来源刷新与最后已核验快照的官网复核；首轮尝试结束后再放行 Radar，避免临时数据库上先把空旧池做成成功快照；
+4. 当 `FUTURE_RADAR_ENABLED=true` 时创建进程内调度任务；
+5. 调度任务立即运行一次，此后每 `FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES` 分钟唤醒一次；
+6. 每次只选择满足各自 `monitor_sources.interval_minutes` 的到期来源；`discovery_limited` 占位不会参加例行运行，也不会被伪装成失败扫描。
 
 扫描使用最多 `FUTURE_RADAR_MAX_WORKERS` 个线程。SQLite 中的 30 分钟全局运行锁和 20 分钟单来源锁避免同一数据库上的重叠运行；手动运行冲突返回 HTTP 409。普通用户手动扫描按已认证 `user_id` 设置 5 分钟冷却，不能靠传入 `X-Admin-Token` 绕过登录或隐私同意，也不能用 `force` 重新启用禁用来源。扫描请求只记录用户 ID、路由、状态码和耗时等无正文审计元数据。这个设计面向单实例 SQLite，不等同于跨主机分布式调度。
 

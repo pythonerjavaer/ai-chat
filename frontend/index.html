@@ -388,6 +388,7 @@
               <div><span class="overline">RECRUITMENT INTELLIGENCE SYSTEM</span><h3>未来招聘情报中枢</h3><small id="recruitment-source-status" class="recruitment-source-copy">正在接收公开信号…</small></div>
               <div class="radar-heading-actions"><button id="recruitment-refresh" class="source-status" type="button">刷新信号 ↻</button><button id="future-radar-run" class="radar-scan-now" type="button"><span>立即扫描</span><b>◎</b></button></div>
             </div>
+            <p id="future-radar-action-status" class="radar-action-status pending" role="status" aria-live="polite">“公开源 + AI 补漏”更新候选信号；“立即扫描”核对 Future Radar 到期信源。两者均保留上次成功岗位池。</p>
             <section class="radar-operational-status" aria-live="polite">
               <article><small>LAST RADAR SCAN</small><strong id="future-radar-last-scan">等待首次扫描</strong></article>
               <article><small>LAST SUCCESS</small><strong id="future-radar-last-success">尚无成功记录</strong></article>
@@ -414,7 +415,7 @@
                 <label><span>雇主类型</span><input id="future-radar-filter-employer-type" maxlength="80" placeholder="例如：大型科技企业" /></label>
                 <label><span>招聘项目</span><select id="future-radar-filter-program"><option value="">全部项目</option></select></label>
                 <label><span>状态</span><select id="future-radar-filter-status"><option value="open">开放</option><option value="all">全部</option><option value="closed">已关闭</option><option value="unknown">未知</option></select></label>
-                <label><span>核验</span><select id="future-radar-filter-verification"><option value="">全部</option><option value="verified">已核验</option><option value="pending">待核验</option><option value="conflicted">有冲突</option><option value="rejected">已拒绝</option></select></label>
+                <label><span>核验</span><select id="future-radar-filter-verification"><option value="">仅官网已核验</option><option value="verified">已核验</option></select></label>
                 <label><span>信源</span><select id="future-radar-filter-source"><option value="">全部信源</option></select></label>
                 <label><span>变化</span><select id="future-radar-filter-event"><option value="">全部变化</option><option value="NEW">NEW</option><option value="UPDATED">UPDATED</option><option value="VERIFIED">VERIFIED</option><option value="CLOSED">CLOSED</option><option value="REOPENED">REOPENED</option></select></label>
                 <label><span>排序</span><select id="future-radar-filter-sort"><option value="changed">最近变化</option><option value="closing">即将截止</option><option value="opening">开放日期</option><option value="first_seen">最新发现</option><option value="company">公司名称</option></select></label>

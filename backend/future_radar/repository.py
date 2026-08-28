@@ -14,6 +14,16 @@ JSON_SOURCE_FIELDS = ("adapter_config", "query_config", "region_config")
 JSON_RUN_FIELDS = ("errors", "source_ids")
 JSON_JOB_FIELDS = ("tags", "industry_tags", "role_tags")
 
+PUBLIC_JOB_EVENT_FIELDS = (
+    "company", "title", "city", "region", "status",
+    "opening_date", "closing_date", "verification_status",
+)
+PUBLIC_PROGRAM_EVENT_FIELDS = (
+    "company", "program_name", "recruitment_year", "recruitment_type",
+    "region", "status", "opening_date", "closing_date",
+    "verification_status",
+)
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -68,10 +78,25 @@ class RadarRepository:
                     ON CONFLICT(id) DO UPDATE SET
                         name=excluded.name,
                         platform=excluded.platform,
-                        company=COALESCE(monitor_sources.company, excluded.company),
+                        company=excluded.company,
                         source_type=excluded.source_type,
-                        domain=COALESCE(monitor_sources.domain, excluded.domain),
-                        account_name=COALESCE(monitor_sources.account_name, excluded.account_name),
+                        url=excluded.url,
+                        domain=excluded.domain,
+                        account_name=excluded.account_name,
+                        account_id=excluded.account_id,
+                        enabled=excluded.enabled,
+                        priority=excluded.priority,
+                        trust_level=excluded.trust_level,
+                        interval_minutes=excluded.interval_minutes,
+                        adapter_config=excluded.adapter_config,
+                        query_config=excluded.query_config,
+                        region_config=excluded.region_config,
+                        verification_status=excluded.verification_status,
+                        status=CASE
+                            WHEN excluded.enabled=0 THEN 'disabled'
+                            WHEN monitor_sources.status='disabled' THEN 'pending'
+                            ELSE monitor_sources.status
+                        END,
                         updated_at=excluded.updated_at
                     """,
                     (
@@ -137,6 +162,16 @@ class RadarRepository:
         for source in sources:
             if selected and source["id"] not in selected:
                 continue
+            # Registry placeholders without a lawful public discovery entry
+            # are status signals, not runnable crawlers.  Explicit operator
+            # runs can still inspect them, but normal scheduled/manual scans
+            # must not turn five known limitations into five fake failures.
+            if (
+                not selected
+                and source.get("adapter_config", {}).get("adapter")
+                == "discovery_limited"
+            ):
+                continue
             last_checked = source.get("last_checked_at")
             if selected or not last_checked:
                 due.append(source)
@@ -151,6 +186,35 @@ class RadarRepository:
             if now - checked >= timedelta(minutes=max(1, int(source["interval_minutes"]))):
                 due.append(source)
         return due
+
+    def user_scannable_sources(
+        self, *, source_ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Return deterministic sources that a signed-in user may refresh now.
+
+        A manual click intentionally bypasses the schedule interval, but it
+        must not trigger placeholder, mock, push-only, or billable AI sources.
+        The internal legacy bridge is the sole exception to the ``manual``
+        source type because it only re-indexes rows that already carry both
+        server-side verification markers.
+        """
+        selected = set(source_ids or [])
+        scannable: list[dict[str, Any]] = []
+        for source in self.list_sources(enabled=True):
+            if selected and source["id"] not in selected:
+                continue
+            adapter = str(
+                source.get("adapter_config", {}).get("adapter") or ""
+            ).casefold()
+            if source["id"] == "legacy-recruitment-pipeline" and adapter == "legacy_database":
+                scannable.append(source)
+                continue
+            if source.get("source_type") == "manual":
+                continue
+            if adapter != "official_html":
+                continue
+            scannable.append(source)
+        return scannable
 
     def create_source(self, source: dict[str, Any]) -> dict[str, Any]:
         now = utc_now()
@@ -962,12 +1026,16 @@ class RadarRepository:
         return item
 
     def list_programs(self, *, page: int = 1, page_size: int = 50,
-                      status: str = "open", q: str | None = None) -> dict[str, Any]:
+                      status: str = "open", q: str | None = None,
+                      verification_status: str | None = None) -> dict[str, Any]:
         where = ["1=1"]
         params: list[Any] = []
         if status != "all":
             where.append("p.status=?")
             params.append(status)
+        if verification_status:
+            where.append("p.verification_status=?")
+            params.append(verification_status)
         if q:
             where.append("(p.company LIKE ? OR p.program_name LIKE ?)")
             params.extend([f"%{q}%", f"%{q}%"])
@@ -1048,8 +1116,34 @@ class RadarRepository:
         item["changed_fields"] = _decode_json(item.get("changed_fields"), [])
         return item
 
+    @staticmethod
+    def public_event(event: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+        """Return a current verified entity signal, never a historical snapshot.
+
+        ``before_data`` may contain discovery-only claims from before an entity was
+        verified, while ``after_data`` is an immutable historical snapshot rather
+        than the current public record.  The public feed therefore exposes only a
+        small whitelist copied from the entity's current verified row.
+        """
+        entity_type = str(event.get("entity_type") or "")
+        fields = (
+            PUBLIC_JOB_EVENT_FIELDS
+            if entity_type == "job"
+            else PUBLIC_PROGRAM_EVENT_FIELDS
+        )
+        item = {
+            key: event.get(key)
+            for key in (
+                "id", "entity_type", "entity_id", "external_id", "event_type",
+                "detected_at", "source_id", "source_name",
+            )
+        }
+        item.update({field: current.get(field) for field in fields})
+        return item
+
     def list_events(self, *, after_event_id: int | None = None, limit: int = 50,
-                    event_type: str | None = None) -> dict[str, Any]:
+                    event_type: str | None = None,
+                    public_verified_only: bool = False) -> dict[str, Any]:
         where = ["1=1"]
         params: list[Any] = []
         direction = "DESC"
@@ -1060,6 +1154,17 @@ class RadarRepository:
         if event_type:
             where.append("e.event_type=?")
             params.append(event_type)
+        if public_verified_only:
+            where.append(
+                "((e.entity_type='job' AND EXISTS ("
+                "SELECT 1 FROM radar_jobs j WHERE j.id=e.entity_id "
+                "AND j.verification_status='verified') "
+                "AND json_extract(e.after_data, '$.verification_status')='verified') "
+                "OR (e.entity_type='program' AND EXISTS ("
+                "SELECT 1 FROM recruitment_programs p WHERE p.id=e.entity_id "
+                "AND p.verification_status='verified') "
+                "AND json_extract(e.after_data, '$.verification_status')='verified'))"
+            )
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
@@ -1070,7 +1175,23 @@ class RadarRepository:
                 [*params, limit],
             ).fetchall()
             latest = int(connection.execute("SELECT COALESCE(MAX(id),0) FROM radar_events").fetchone()[0])
-        items = [self.decode_event(row) for row in rows]
+            items = []
+            for row in rows:
+                event = self.decode_event(row)
+                if not public_verified_only:
+                    items.append(event)
+                    continue
+                table = (
+                    "radar_jobs"
+                    if event["entity_type"] == "job"
+                    else "recruitment_programs"
+                )
+                current = connection.execute(
+                    f"SELECT * FROM {table} WHERE id=? AND verification_status='verified'",
+                    (event["entity_id"],),
+                ).fetchone()
+                if current:
+                    items.append(self.public_event(event, dict(current)))
         return {"items": items, "last_event_id": latest}
 
     def dashboard(self) -> dict[str, Any]:

@@ -18,8 +18,15 @@ import {
   createCoalescedRadarReload,
   filterJobsByStarfields,
   formatScoringFactors,
+  formatRadarCooldown,
+  futureRadarAiSearchNotice,
+  futureRadarRunErrorCopy,
+  futureRadarRunSuccessCopy,
+  futureRadarSourceErrorCopy,
+  isDefaultFutureRadarJobsView,
   jobTierBucket,
   mergeFutureRadarJobs,
+  parseRadarRetryAfter,
   partitionJobsByPriority,
   starfieldLabel,
 } from "./recruitment-radar.js";
@@ -43,6 +50,7 @@ const WORKSPACE_ORDER = ["legal", "general", "finance"];
 const CHATGPT_MONITOR_SOURCE_COUNT = 5;
 const RECRUITMENT_REFRESH_LABEL = "公开源 + AI 补漏 ↻";
 const FUTURE_RADAR_POLL_INTERVAL_MS = 30_000;
+const FUTURE_RADAR_MANUAL_COOLDOWN_SECONDS = 5 * 60;
 const WORKSPACE_META = {
   legal: { symbol: "§", eyebrow: "FROST", themeName: "寒冰域", label: "寒冰域", hero: "有些东西决定世界如何运行，也决定什么不能被越过。", description: "当前从合同、合规、义务、期限与风险开始。", lens: "来源" },
   general: { symbol: "✦", eyebrow: "AURORA", themeName: "极光域", label: "极光域", hero: "让散落的信息逐渐形成属于你的知识世界。", description: "当前从资料、文档、对话与可追溯问答开始。", lens: "来源" },
@@ -122,6 +130,8 @@ const state = {
     polling: false,
     loading: false,
     runStarting: false,
+    runCooldownUntil: 0,
+    runCooldownTimer: null,
     filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: "open", verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" },
   },
   pendingLaunch: null,
@@ -205,7 +215,7 @@ const elements = {
   recruitmentDeadlineAlerts: $("recruitment-deadline-alerts"),
   recruitmentWatchForm: $("recruitment-watch-form"), recruitmentWatchCompany: $("recruitment-watch-company"),
   recruitmentWatchAdd: $("recruitment-watch-add"), recruitmentWatchList: $("recruitment-watch-list"),
-  futureRadarRun: $("future-radar-run"), futureRadarDashboard: $("future-radar-dashboard"),
+  futureRadarRun: $("future-radar-run"), futureRadarActionStatus: $("future-radar-action-status"), futureRadarDashboard: $("future-radar-dashboard"),
   futureRadarLastScan: $("future-radar-last-scan"), futureRadarLastSuccess: $("future-radar-last-success"),
   futureRadarSourceHealth: $("future-radar-source-health"), futureRadarLiveState: $("future-radar-live-state"),
   futureRadarLoading: $("future-radar-loading"), futureRadarError: $("future-radar-error"),
@@ -543,7 +553,10 @@ async function api(path, options = {}) {
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
       try { detail = (await response.json()).detail || detail; } catch (_) {}
-      throw new Error(detail);
+      const requestError = new Error(detail);
+      requestError.status = response.status;
+      requestError.retryAfter = response.headers.get("Retry-After");
+      throw requestError;
     }
     return response.status === 204 ? null : response.json();
   } catch (error) {
@@ -2451,6 +2464,11 @@ function formatDeepSearchOutcome(sourceResult) {
   const ranThisTime = sourceResult?.web_search_ran === true
     || sourceResult?.web_search_triggered === true
     || webSearch?.triggered_this_run === true;
+  const aiUnavailable = futureRadarAiSearchNotice({
+    source_id: "openai-public-web-search",
+    ...webSearch,
+  });
+  if (webSearch?.status === "error" && aiUnavailable) return aiUnavailable;
   if (ranThisTime) return formatHistoricalAiSearch(webSearch, true);
   const nextDueCopy = sourceResult?.next_due_at
     ? `，${formatSyncTime(sourceResult.next_due_at, "稍后")} 后可再次运行`
@@ -2505,6 +2523,48 @@ function radarStatusClass(value) {
   return "pending";
 }
 
+function setFutureRadarActionStatus(message, tone = "pending") {
+  if (!elements.futureRadarActionStatus) return;
+  elements.futureRadarActionStatus.textContent = message;
+  elements.futureRadarActionStatus.className = `radar-action-status ${tone}`;
+}
+
+function futureRadarCooldownRemaining() {
+  return Math.max(0, Math.ceil((state.futureRadar.runCooldownUntil - Date.now()) / 1000));
+}
+
+function renderFutureRadarRunAvailability(running = false) {
+  if (!elements.futureRadarRun || state.futureRadar.runStarting) return;
+  const cooldown = futureRadarCooldownRemaining();
+  elements.futureRadarRun.disabled = running || cooldown > 0;
+  elements.futureRadarRun.querySelector("span").textContent = running
+    ? "扫描进行中"
+    : cooldown > 0
+      ? `${formatRadarCooldown(cooldown)}后可扫描`
+      : "立即扫描";
+}
+
+function startFutureRadarRunCooldown(seconds, message, tone = "warning") {
+  window.clearInterval(state.futureRadar.runCooldownTimer);
+  const duration = Math.max(0, Math.ceil(Number(seconds) || 0));
+  state.futureRadar.runCooldownUntil = Date.now() + duration * 1000;
+  const tick = () => {
+    const remaining = futureRadarCooldownRemaining();
+    if (remaining <= 0) {
+      window.clearInterval(state.futureRadar.runCooldownTimer);
+      state.futureRadar.runCooldownTimer = null;
+      state.futureRadar.runCooldownUntil = 0;
+      renderFutureRadarRunAvailability(false);
+      setFutureRadarActionStatus("扫描入口已恢复，可以再次核对到期信源。", "healthy");
+      return;
+    }
+    renderFutureRadarRunAvailability(false);
+    setFutureRadarActionStatus(`${message} · ${formatRadarCooldown(remaining)}后可再次扫描。`, tone);
+  };
+  tick();
+  state.futureRadar.runCooldownTimer = window.setInterval(tick, 1000);
+}
+
 function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   if (!dashboard || !elements.futureRadarDashboard) return;
   state.futureRadar.dashboard = dashboard;
@@ -2539,10 +2599,7 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   elements.futureRadarSourceHealth.textContent = `${healthy.toLocaleString("zh-CN")} / ${total.toLocaleString("zh-CN")} 健康`;
   const running = Boolean(valueAtPaths(dashboard, ["run_in_progress", "is_running"]))
     || /running|in_progress/.test(String(valueAtPaths(dashboard, ["status", "last_scan.status", "latest_run.status"]) || "").toLowerCase());
-  if (elements.futureRadarRun && !state.futureRadar.runStarting) {
-    elements.futureRadarRun.disabled = running;
-    elements.futureRadarRun.querySelector("span").textContent = running ? "扫描进行中" : "立即扫描";
-  }
+  renderFutureRadarRunAvailability(running);
   const liveClass = running ? "running" : errors > 0 ? "warning" : total > 0 ? "healthy" : "pending";
   elements.futureRadarLiveState.className = `radar-live-state ${liveClass}`;
   elements.futureRadarLiveState.replaceChildren(
@@ -2683,7 +2740,7 @@ function renderFutureRadarSources(sources = state.futureRadar.sources) {
     } else if (String(source.source_type || "") === "wechat_public") {
       card.appendChild(makeElement("p", "radar-source-article muted", "最近文章：尚无可验证的公开文章信号"));
     }
-    if (source.last_error) card.appendChild(makeElement("p", "radar-source-error", source.last_error));
+    if (source.last_error) card.appendChild(makeElement("p", "radar-source-error", futureRadarSourceErrorCopy(source)));
     elements.futureRadarSources.appendChild(card);
   });
 }
@@ -2828,6 +2885,7 @@ function readFutureRadarFilters() {
 function resetFutureRadarFilters() {
   elements.futureRadarFilterForm.reset();
   state.futureRadar.filters = { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: "open", verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" };
+  state.recruitmentTierFilter = "ALL";
   state.futureRadar.page = 1;
   loadFutureRadarJobPage(1, true);
 }
@@ -2962,20 +3020,45 @@ function startFutureRadarPolling() {
 
 async function runFutureRadarNow() {
   if (state.futureRadar.runStarting) return;
+  const existingCooldown = futureRadarCooldownRemaining();
+  if (existingCooldown > 0) {
+    setFutureRadarActionStatus(`扫描冷却中，${formatRadarCooldown(existingCooldown)}后可再次扫描；当前岗位池不会被清空。`, "warning");
+    return;
+  }
   state.futureRadar.runStarting = true;
   elements.futureRadarRun.disabled = true;
   elements.futureRadarRun.setAttribute("aria-busy", "true");
   elements.futureRadarRun.querySelector("span").textContent = "正在启动扫描…";
-  setFutureRadarLoading(false, "");
+  setFutureRadarLoading(true, "");
+  setFutureRadarActionStatus("正在核对到期信源；完成后会重新读取岗位池与扫描记录…", "running");
   try {
     const run = await api("/future-radar/run", {
       method: "POST",
-      timeoutMs: 30_000,
+      timeoutMs: 120_000,
     });
-    showToast(run?.status === "running" ? "Radar Run 已启动，扫描将在后台继续。" : "Radar Run 已提交。", 4500);
-    await loadFutureRadarSnapshot();
+    setFutureRadarActionStatus("扫描已返回，正在刷新岗位池、信源健康与变化记录…", "running");
+    const snapshotReadable = await loadFutureRadarSnapshot();
+    const resultCopy = snapshotReadable
+      ? futureRadarRunSuccessCopy(run, state.futureRadar.totalJobs)
+      : "扫描已完成，但最新岗位池暂时无法重新读取；页面保留现有结果。";
+    const status = String(run?.status || "success").toLowerCase();
+    const tone = status === "failed" ? "error" : status === "partial_success" ? "warning" : "healthy";
+    showToast(resultCopy, 7000);
+    startFutureRadarRunCooldown(FUTURE_RADAR_MANUAL_COOLDOWN_SECONDS, resultCopy, tone);
   } catch (error) {
-    setFutureRadarLoading(false, translateError(error.message));
+    const copy = futureRadarRunErrorCopy(error);
+    const retryAfter = parseRadarRetryAfter(error.retryAfter);
+    const tone = [409, 429].includes(Number(error.status)) ? "warning" : "error";
+    setFutureRadarLoading(false, copy);
+    showToast(copy, 6500);
+    if (retryAfter > 0) {
+      const cooldownCopy = Number(error.status) === 409
+        ? "已有一轮扫描正在运行"
+        : "扫描冷却中；岗位池仍保留上次成功结果";
+      startFutureRadarRunCooldown(retryAfter, cooldownCopy, tone);
+    } else {
+      setFutureRadarActionStatus(copy, tone);
+    }
   } finally {
     state.futureRadar.runStarting = false;
     elements.futureRadarRun.removeAttribute("aria-busy");
@@ -3188,9 +3271,11 @@ function sourceDisplayValue(value, fallback) {
 }
 
 function futureRadarDisplayJobs(fallbackJobs = state.recruitmentJobs) {
-  return state.futureRadar.jobsLoaded
-    ? mergeFutureRadarJobs(state.futureRadar.jobs, fallbackJobs || [])
-    : (fallbackJobs || []);
+  if (!state.futureRadar.jobsLoaded) return fallbackJobs || [];
+  const verifiedCarryover = isDefaultFutureRadarJobsView(state.futureRadar.filters)
+    ? (fallbackJobs || [])
+    : [];
+  return mergeFutureRadarJobs(state.futureRadar.jobs, verifiedCarryover);
 }
 
 function finiteRadarScore(value) {
@@ -3273,11 +3358,20 @@ function renderRecruitmentJobs(jobs) {
       : availableJobs.filter((job) => jobTierBucket(job) === state.recruitmentTierFilter);
   const showBelowPriority = state.recruitmentTierFilter === "ALL" && belowPriorityJobs.length > 0;
   const visibleCount = displayedJobs.length + (showBelowPriority ? belowPriorityJobs.length : 0);
+  const radarJobsInView = state.futureRadar.jobsLoaded
+    ? filterRecruitmentByStarfield(state.futureRadar.jobs).length
+    : 0;
+  const verifiedCarryoverCount = state.futureRadar.jobsLoaded
+    ? Math.max(0, starfieldJobs.length - radarJobsInView)
+    : 0;
+  const coverageCopy = state.futureRadar.jobsLoaded
+    ? ` · 本页实时雷达 ${radarJobsInView} 条${verifiedCarryoverCount ? ` + 已核验存量 ${verifiedCarryoverCount} 条` : ""}`
+    : "";
   elements.recruitmentJobs.appendChild(
     makeElement(
       "p",
       "job-tier-filter-result",
-      `当前显示 ${visibleCount} / ${availableJobs.length + belowPriorityJobs.length} 个机会${state.recruitmentTierFilter === "ALL" ? "" : ` · ${state.recruitmentTierFilter}`}`,
+      `当前显示 ${visibleCount} / ${availableJobs.length + belowPriorityJobs.length} 个机会${state.recruitmentTierFilter === "ALL" ? "" : ` · ${state.recruitmentTierFilter}`}${coverageCopy}`,
     ),
   );
   if (!displayedJobs.length && !showBelowPriority) {
@@ -3529,6 +3623,7 @@ async function refreshRecruitmentSource() {
   elements.recruitmentRefresh.textContent = "公开源 + AI 补漏同步中…";
   elements.recruitmentError.textContent = "";
   setRecruitmentStatus("正在同步公开来源、官网哨站与低频 AI 补漏；AI 有 15 分钟冷却并会产生少量 Token 消耗…");
+  setFutureRadarActionStatus("正在刷新公开来源和官网哨站；AI 补漏仅在 15 分钟冷却允许时运行…", "running");
   try {
     const results = await Promise.allSettled([
       api("/recruitment/refresh?deep_search=true", { method: "POST", timeoutMs: 90000 }),
@@ -3555,13 +3650,15 @@ async function refreshRecruitmentSource() {
     const bridgeCopy = refreshedData
       ? "已读取受控桥当前状态，未将历史 AI 结果计作本轮"
       : "受控桥状态本次未能重新读取，未将历史 AI 结果计作本轮";
-    showToast(
-      `${sourceCopy}；${watchCopy}；${webSearchCopy}。${bridgeCopy}。`,
-      7000,
-    );
+    const refreshCopy = `${sourceCopy}；${watchCopy}；${webSearchCopy}。${bridgeCopy}。`;
+    const partial = results.some((result) => result.status === "rejected") || !refreshedData;
+    setFutureRadarActionStatus(refreshCopy, partial ? "warning" : "healthy");
+    showToast(refreshCopy, 7000);
   } catch (error) {
-    elements.recruitmentError.textContent = translateError(error.message);
+    const copy = `公开源或官网哨站同步未完成：${translateError(error.message)}`;
+    elements.recruitmentError.textContent = copy;
     setRecruitmentStatus("公开来源同步未完成；当前列表保持不变");
+    setFutureRadarActionStatus(`${copy} 当前岗位池没有被清空。`, "error");
     showToast("公开源或官网哨站同步未完成；当前岗位列表没有被清空，请稍后重试。", 5500);
   } finally {
     elements.recruitmentRefresh.disabled = false;
@@ -3987,6 +4084,7 @@ elements.futureRadarPageNext.addEventListener("click", () => loadFutureRadarJobP
 elements.futureRadarFilterForm.addEventListener("submit", (event) => {
   event.preventDefault();
   readFutureRadarFilters();
+  state.recruitmentTierFilter = "ALL";
   state.futureRadar.page = 1;
   loadFutureRadarJobPage(1, true);
 });

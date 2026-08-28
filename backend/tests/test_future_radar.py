@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 from copy import deepcopy
@@ -21,6 +22,7 @@ from backend.future_radar.adapters import (
     AdapterResult,
     DiscoveryLimitedError,
     LegacyDatabaseAdapter,
+    OfficialHtmlAdapter,
     PublicFeedAdapter,
     WechatSourceAdapter,
     adapter_for_source,
@@ -678,7 +680,9 @@ def test_same_program_merges_and_official_source_upgrades_verified(radar_service
     assert "PROGRAM_VERIFIED" in event_types(radar_service)
 
 
-def test_openai_adapter_failure_degrades_without_stopping_deterministic_source(radar_service):
+def test_openai_adapter_failure_degrades_and_never_persists_provider_detail(
+    radar_service,
+):
     ai_source = create_source(
         radar_service,
         "openai-test-source",
@@ -687,7 +691,9 @@ def test_openai_adapter_failure_degrades_without_stopping_deterministic_source(r
     )
     deterministic = create_source(radar_service, "deterministic-test-source")
     adapters = {
-        ai_source["id"]: FailingAdapter("OpenAI is unavailable"),
+        ai_source["id"]: FailingAdapter(
+            "credit_balance_exhausted request_id=req-private sk-private-secret"
+        ),
         deterministic["id"]: StaticAdapter(AdapterResult(
             jobs=[sample_job("deterministic-job")], content_hash="deterministic-v1"
         )),
@@ -701,6 +707,15 @@ def test_openai_adapter_failure_degrades_without_stopping_deterministic_source(r
     assert run["sources_failed"] == 1
     assert run["sources_succeeded"] == 1
     assert radar_service.repository.get_job("deterministic-job") is not None
+    assert run["errors"] == [{
+        "source_id": ai_source["id"],
+        "code": "AI_CREDITS_EXHAUSTED",
+        "message": "AI 补漏额度暂不可用；确定性官网信源仍会继续扫描。",
+    }]
+    stored = radar_service.repository.get_source(ai_source["id"])
+    assert stored["last_error"] == run["errors"][0]["message"]
+    assert "req-private" not in stored["last_error"]
+    assert "sk-private" not in stored["last_error"]
 
 
 def test_frostfire_sync_v1_is_idempotent_and_rejects_key_reuse(radar_service):
@@ -766,6 +781,242 @@ def test_wechat_discovery_limited_is_reported_without_fabricated_success(radar_s
     assert table_count(radar_service, "radar_jobs") == 0
     assert table_count(radar_service, "source_articles") == 0
     assert table_count(radar_service, "radar_events") == 0
+
+
+def test_official_registry_uses_exact_public_markers_and_never_generic_jobs(
+    radar_service,
+):
+    source_ids = {
+        source["id"] for source in radar_service.repository.list_sources(enabled=True)
+    }
+    assert {
+        "official-dji-digital-2027",
+        "official-pdd-campus-2027",
+        "official-honor-campus-2027",
+        "official-china-telecom-campus-2027",
+        "official-haier-campus-2027",
+        "official-xiaomi-campus-2027",
+        "official-xiaomi-top-talent-2027",
+    }.issubset(source_ids)
+    for source_id in source_ids:
+        if not source_id.startswith("official-"):
+            continue
+        source = radar_service.repository.get_source(source_id)
+        assert source["trust_level"] == "verification"
+        assert source["adapter_config"]["adapter"] == "official_html"
+        assert source["adapter_config"]["required_markers"]
+
+    # Program overview pages without an exact position do not manufacture a
+    # generic "2027 campus recruitment" job.
+    for source_id in (
+        "official-pdd-campus-2027",
+        "official-china-telecom-campus-2027",
+        "official-haier-campus-2027",
+        "official-xiaomi-campus-2027",
+    ):
+        assert "job_title" not in radar_service.repository.get_source(source_id)[
+            "adapter_config"
+        ]
+
+
+def test_seed_registry_upgrades_controlled_config_on_existing_database(
+    radar_service,
+):
+    source_id = "official-dji-digital-2027"
+    with radar_service.repository.transaction() as connection:
+        connection.execute(
+            """
+            UPDATE monitor_sources SET
+                url='https://example.com/obsolete', domain='example.com',
+                enabled=0, priority=1, trust_level='discovery',
+                interval_minutes=999, adapter_config='{"adapter":"official_html"}',
+                query_config='{}', region_config='{}',
+                verification_status='unverified', status='error',
+                last_error='safe prior operational error'
+            WHERE id=?
+            """,
+            (source_id,),
+        )
+
+    radar_service.seed_registry()
+    upgraded = radar_service.repository.get_source(source_id)
+    assert upgraded["url"] == "https://careers.dji.com/zh-CN/campus/digital-recruitment"
+    assert upgraded["domain"] == "careers.dji.com"
+    assert upgraded["enabled"] is True
+    assert upgraded["priority"] == 95
+    assert upgraded["trust_level"] == "verification"
+    assert upgraded["interval_minutes"] == 60
+    assert upgraded["adapter_config"]["required_markers"] == [
+        "2027", "数字管理构建者计划"
+    ]
+    assert upgraded["query_config"] == {
+        "recruitment_year": 2027, "scope": "campus"
+    }
+    assert upgraded["region_config"]["timezone"] == "Asia/Shanghai"
+    assert upgraded["verification_status"] == "verified"
+    # Runtime health belongs to the scanner, not seed configuration.
+    assert upgraded["status"] == "error"
+    assert upgraded["last_error"] == "safe prior operational error"
+
+
+def test_official_html_emits_only_positions_present_on_verified_overview(
+    monkeypatch, radar_service
+):
+    source = radar_service.repository.get_source("official-honor-campus-2027")
+    page = SimpleNamespace(
+        final_url="https://www.honor.com/cn/career/?volatile=ignored",
+        fingerprint="honor-public-page-v1",
+        keyword_hits=["校园招聘"],
+        text=(
+            "荣耀 荣耀2027届校园招聘全球启动 "
+            "机器人感知算法工程师 大模型算法工程师 "
+            "AIGC 图像视频生成算法工程师"
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.fetch_watch_page",
+        lambda *_args, **_kwargs: page,
+    )
+    result = OfficialHtmlAdapter(
+        repository=radar_service.repository,
+        api_key="test-key",
+        ai_model="test-model",
+    ).scan(source)
+    assert len(result.programs) == 1
+    assert {job["title"] for job in result.jobs} == {
+        "机器人感知算法工程师",
+        "大模型算法工程师",
+        "AIGC 图像视频生成算法工程师",
+    }
+    assert all(job["verification_status"] == "verified" for job in result.jobs)
+    assert all(job["primary_category"] == "internet_tech" for job in result.jobs)
+    assert all(job["official_url"] == source["url"].rstrip("/") for job in result.jobs)
+    # The direct ATS pages are JavaScript shells whose job text cannot be
+    # verified by our deterministic fetcher.  Cards therefore open the
+    # verified official overview instead of advertising an unverified link.
+    assert all(job["application_url"] == source["url"].rstrip("/") for job in result.jobs)
+    assert not any(job["title"] == "2027 届校园招聘" for job in result.jobs)
+
+    # A generic campus shell without the exact campaign markers is a complete
+    # empty observation, not a fabricated vacancy.
+    page.text = "荣耀 校园招聘"
+    missing = OfficialHtmlAdapter(
+        repository=radar_service.repository,
+        api_key="test-key",
+        ai_model="test-model",
+    ).scan(source)
+    assert missing.programs == []
+    assert missing.jobs == []
+
+
+def test_xiaomi_top_talent_emits_only_the_named_official_project(
+    monkeypatch, radar_service
+):
+    source = radar_service.repository.get_source("official-xiaomi-top-talent-2027")
+    page = SimpleNamespace(
+        final_url=source["url"],
+        fingerprint="xiaomi-top-talent-v1",
+        keyword_hits=["顶尖应届生项目"],
+        text=(
+            "小米 全球 顶尖人才 顶尖应届生项目 2024年-2027年 "
+            "面向全球顶尖高校应届生"
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.fetch_watch_page",
+        lambda *_args, **_kwargs: page,
+    )
+    result = OfficialHtmlAdapter(
+        repository=radar_service.repository,
+        api_key="test-key",
+        ai_model="test-model",
+    ).scan(source)
+    assert len(result.programs) == 1
+    assert [job["title"] for job in result.jobs] == ["顶尖应届生项目"]
+    assert result.jobs[0]["application_url"] == source["url"]
+    assert result.jobs[0]["verification_status"] == "verified"
+
+
+def test_official_html_marks_configured_expired_position_closed(
+    monkeypatch, radar_service
+):
+    source = deepcopy(radar_service.repository.get_source("official-honor-campus-2027"))
+    source["adapter_config"]["configured_jobs"] = [{
+        **source["adapter_config"]["configured_jobs"][0],
+        "closing_date": "2020-01-01",
+    }]
+    page = SimpleNamespace(
+        final_url=source["url"],
+        fingerprint="honor-expired-page",
+        keyword_hits=["校园招聘"],
+        text="荣耀 荣耀2027届校园招聘全球启动 机器人感知算法工程师",
+    )
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.fetch_watch_page",
+        lambda *_args, **_kwargs: page,
+    )
+    result = OfficialHtmlAdapter(
+        repository=radar_service.repository,
+        api_key="test-key",
+        ai_model="test-model",
+    ).scan(source)
+    assert len(result.jobs) == 1
+    assert result.jobs[0]["status"] == "closed"
+
+
+def test_same_content_hash_still_applies_time_driven_status_transition(
+    radar_service,
+):
+    source = create_source(radar_service, "same-page-date-transition")
+    adapter = SequenceAdapter([
+        AdapterResult(
+            jobs=[sample_job(
+                "same-page-date-job", closing_date="2099-12-31", status="open"
+            )],
+            content_hash="unchanged-official-page",
+        ),
+        AdapterResult(
+            jobs=[sample_job(
+                "same-page-date-job", closing_date="2020-01-01", status="closed"
+            )],
+            content_hash="unchanged-official-page",
+        ),
+    ])
+    radar_service.adapter_factory = lambda _source: adapter
+
+    first = radar_service.run(source_ids=[source["id"]], force=True)
+    assert first["new_jobs"] == 1
+    assert radar_service.repository.get_job("same-page-date-job")["status"] == "open"
+
+    second = radar_service.run(source_ids=[source["id"]], force=True)
+    assert second["closed_jobs"] == 1
+    transitioned = radar_service.repository.get_job("same-page-date-job")
+    assert transitioned["status"] == "closed"
+    assert transitioned["closing_date"] == "2020-01-01"
+
+
+def test_official_html_rejects_ambiguous_marker_configuration(
+    monkeypatch, radar_service
+):
+    source = deepcopy(radar_service.repository.get_source("official-honor-campus-2027"))
+    page = SimpleNamespace(
+        final_url=source["url"],
+        fingerprint="honor-invalid-config",
+        keyword_hits=["校园招聘"],
+        text="荣耀 荣耀2027届校园招聘全球启动 机器人感知算法工程师",
+    )
+    monkeypatch.setattr(
+        "backend.future_radar.adapters.fetch_watch_page",
+        lambda *_args, **_kwargs: page,
+    )
+    adapter = OfficialHtmlAdapter(
+        repository=radar_service.repository,
+        api_key="test-key",
+        ai_model="test-model",
+    )
+    source["adapter_config"]["required_markers"] = "荣耀2027届校园招聘全球启动"
+    with pytest.raises(ValueError, match="required_markers"):
+        adapter.scan(source)
 
 
 def test_wechat_public_metadata_is_preserved_when_article_body_is_unavailable(
@@ -923,6 +1174,15 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
         "mock-future-radar",
         {"enabled": True, "adapter_config": {"adapter": "mock", "round": 2}},
     )
+    # Seed deterministic pagination data directly. The public scan endpoint is
+    # intentionally not allowed to invoke mock/manual sources.
+    seeded = radar_service.run(
+        trigger_type="test_seed", source_ids=["mock-future-radar"], force=True
+    )
+    assert seeded["new_jobs"] == 12
+    radar_service.adapter_factory = lambda _source: StaticAdapter(
+        AdapterResult(content_hash="user-deterministic-refresh", snapshot_complete=False)
+    )
 
     with TestClient(main.app) as client:
         unauthorized = client.post(
@@ -968,16 +1228,14 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
         manual = client.post(
             "/api/future-radar/run",
             headers=bearer,
-            json={"source_ids": ["mock-future-radar"], "force": True},
         )
         assert manual.status_code == 200
-        assert manual.json()["new_jobs"] == 12
+        assert manual.json()["sources_checked"] > 0
         assert manual.json()["trigger_type"] == "manual_user"
 
         limited = client.post(
             "/api/future-radar/run",
             headers=bearer,
-            json={"source_ids": ["mock-future-radar"]},
         )
         assert limited.status_code == 429
         assert int(limited.headers["Retry-After"]) > 0
@@ -1007,8 +1265,7 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
             headers={"Authorization": f"Bearer {force_user['access_token']}"},
             json={"source_ids": ["mock-future-radar"], "force": True},
         )
-        assert forced_disabled.status_code == 200
-        assert forced_disabled.json()["sources_checked"] == 0
+        assert forced_disabled.status_code == 422
         assert radar_service.repository.get_source("mock-future-radar")["enabled"] is False
 
         busy_user = client.post(
@@ -1027,7 +1284,6 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
             busy = client.post(
                 "/api/future-radar/run",
                 headers=busy_headers,
-                json={"source_ids": ["mock-future-radar"]},
             )
             assert busy.status_code == 409
         finally:
@@ -1037,7 +1293,6 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
         retry_after_busy = client.post(
             "/api/future-radar/run",
             headers=busy_headers,
-            json={"source_ids": ["mock-future-radar"]},
         )
         assert retry_after_busy.status_code == 200
 
@@ -1085,6 +1340,268 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
             json={"version": "FROSTFIRE_SYNC_V2", "source_id": "strict-schema-source"},
         )
         assert wrong_version.status_code == 422
+
+
+def test_future_radar_public_api_never_exposes_unverified_legacy_candidates(
+    radar_service, monkeypatch
+):
+    verified = {
+        **sample_job("legacy-official-verified"),
+        "id": "legacy-official-verified",
+        "url": "https://example.com/campus/jobs/legacy-official-verified",
+        "tags": ["校园招聘", "链接已验证", "标题已验证"],
+    }
+    pending = {
+        **sample_job("legacy-discovery-pending", title="待官网确认岗位"),
+        "id": "legacy-discovery-pending",
+        "url": "https://example.com/campus/jobs/legacy-discovery-pending",
+        "requirements": "PRIVATE-PENDING-CONTENT-MUST-NOT-BE-PUBLIC",
+        "tags": ["校园招聘", "待官方核验"],
+    }
+    monkeypatch.setattr(
+        database, "list_recruitment_jobs", lambda: deepcopy([verified, pending])
+    )
+    source = radar_service.repository.get_source("legacy-recruitment-pipeline")
+    assert source is not None
+    radar_service.adapter_factory = lambda _source: LegacyDatabaseAdapter()
+    assert radar_service.run(source_ids=[source["id"]], force=True)["new_jobs"] == 2
+    assert radar_service.repository.get_job("legacy-official-verified")[
+        "verification_status"
+    ] == "verified"
+    assert radar_service.repository.get_job("legacy-discovery-pending")[
+        "verification_status"
+    ] == "pending"
+    discovery = create_source(
+        radar_service, "public-event-discovery", trust_level="discovery"
+    )
+    radar_service.adapter_factory = lambda _source: StaticAdapter(AdapterResult(
+        programs=[{
+            **sample_program(),
+            "program_name": "PRIVATE-PENDING-PROGRAM-MUST-NOT-BE-PUBLIC",
+        }],
+    ))
+    assert radar_service.run(
+        source_ids=[discovery["id"]], force=True
+    )["programs_discovered"] == 1
+
+    settings_values = vars(main.settings).copy()
+    settings_values.update({
+        "database_path": database.settings.database_path,
+        "future_radar_enabled": False,
+        "recruitment_refresh_minutes": 0,
+    })
+    monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
+    monkeypatch.setattr(main, "future_radar_service", radar_service)
+    monkeypatch.setattr(main, "_future_radar_user_last_run", {})
+
+    with TestClient(main.app) as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "future-radar-public-safety",
+                "password": "correct-horse-123",
+                "privacy_accepted": True,
+            },
+        ).json()
+        bearer = {"Authorization": f"Bearer {registered['access_token']}"}
+        jobs = client.get(
+            "/api/future-radar/jobs?status=all", headers=bearer
+        )
+        assert jobs.status_code == 200
+        assert jobs.json()["total"] == 1
+        assert [item["external_id"] for item in jobs.json()["items"]] == [
+            "legacy-official-verified"
+        ]
+        assert client.get(
+            "/api/future-radar/jobs?status=all&verification_status=pending",
+            headers=bearer,
+        ).status_code == 422
+        assert client.get(
+            "/api/future-radar/jobs/legacy-discovery-pending", headers=bearer
+        ).status_code == 404
+
+        # A later official verification must not make the earlier discovery
+        # snapshot public.  Only the verification event and the entity's current
+        # safe fields may leave the repository.
+        verifier = create_source(
+            radar_service, "public-event-verifier", trust_level="verification"
+        )
+        radar_service.adapter_factory = lambda _source: StaticAdapter(AdapterResult(
+            programs=[{
+                **sample_program(verification_status="verified"),
+                "program_name": "官网已核验项目",
+            }],
+            jobs=[{
+                **sample_job(
+                    "legacy-discovery-pending",
+                    title="官网已核验岗位",
+                ),
+                "verification_status": "verified",
+                "requirements": "Current verified public requirement.",
+            }],
+        ))
+        verified_run = radar_service.run(source_ids=[verifier["id"]], force=True)
+        assert verified_run["updated_jobs"] == 1
+
+        # Article metadata remains useful internally for discovery health, but it
+        # is neither a public event nor public source-registry copy.
+        with radar_service.repository.transaction() as connection:
+            now = "2027-07-02T00:00:00+00:00"
+            article_id, _, _ = radar_service.repository.upsert_article(
+                connection,
+                {
+                    "article_external_id": "private-article-event",
+                    "publisher": "Internal discovery feed",
+                    "article_title": "PRIVATE ARTICLE TITLE",
+                    "article_url": "https://example.com/private-article",
+                    "publish_time": now,
+                    "content_hash": "private-article-hash",
+                    "raw_excerpt": "PRIVATE ARTICLE EXCERPT",
+                    "is_recruitment": True,
+                    "recruitment_year": 2027,
+                    "classification": "recruitment",
+                },
+                source_id=verifier["id"],
+                now=now,
+            )
+            radar_service.repository.insert_event(
+                connection,
+                run_id=verified_run["id"],
+                entity_type="article",
+                entity_id=article_id,
+                external_id="private-article-event",
+                event_type="ARTICLE_DISCOVERED",
+                before=None,
+                after={"article_title": "PRIVATE ARTICLE TITLE"},
+                fields=["article_title"],
+                source_id=verifier["id"],
+                now=now,
+            )
+
+        events = client.get("/api/future-radar/events", headers=bearer).json()["items"]
+        upgraded_events = [
+            event for event in events
+            if event.get("external_id") == "legacy-discovery-pending"
+        ]
+        assert [event["event_type"] for event in upgraded_events] == ["VERIFIED"]
+        assert all(event["entity_type"] in {"job", "program"} for event in events)
+        assert all("before_data" not in event for event in events)
+        assert all("after_data" not in event for event in events)
+        assert "PRIVATE-PENDING-CONTENT-MUST-NOT-BE-PUBLIC" not in str(events)
+        assert "PRIVATE-PENDING-PROGRAM-MUST-NOT-BE-PUBLIC" not in str(events)
+        assert "PRIVATE ARTICLE" not in str(events)
+        assert upgraded_events[0]["verification_status"] == "verified"
+        assert upgraded_events[0]["title"] == "官网已核验岗位"
+        upgraded_program_events = [
+            event for event in events
+            if event.get("external_id") == "program-shared-2027"
+        ]
+        assert [event["event_type"] for event in upgraded_program_events] == [
+            "PROGRAM_VERIFIED"
+        ]
+        assert upgraded_program_events[0]["program_name"] == "官网已核验项目"
+
+        sources = client.get("/api/future-radar/sources", headers=bearer).json()["items"]
+        assert "PRIVATE ARTICLE TITLE" not in str(sources)
+        assert all("latest_article_title" not in item for item in sources)
+        assert all("latest_article_at" not in item for item in sources)
+        dashboard = client.get(
+            "/api/future-radar/dashboard", headers=bearer
+        ).json()
+        assert dashboard["counts"]["verified"] == 2
+        assert dashboard["counts"]["pending"] == 0
+
+
+def test_user_manual_scan_always_bridges_current_verified_legacy_pool(
+    radar_service, monkeypatch
+):
+    settings_values = vars(main.settings).copy()
+    settings_values.update({
+        "database_path": database.settings.database_path,
+        "future_radar_enabled": False,
+        "recruitment_refresh_minutes": 0,
+    })
+    monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
+    monkeypatch.setattr(main, "future_radar_service", radar_service)
+    monkeypatch.setattr(main, "_future_radar_user_last_run", {})
+    monkeypatch.setattr(radar_service.repository, "due_sources", lambda: [])
+    captured: dict = {}
+
+    def capture_run(**kwargs):
+        captured.update(kwargs)
+        return {"id": "manual-bridge", "status": "success", "trigger_type": kwargs["trigger_type"]}
+
+    monkeypatch.setattr(radar_service, "run", capture_run)
+    with TestClient(main.app) as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "future-radar-legacy-bridge-user",
+                "password": "correct-horse-123",
+                "privacy_accepted": True,
+            },
+        ).json()
+        response = client.post(
+            "/api/future-radar/run",
+            headers={"Authorization": f"Bearer {registered['access_token']}"},
+        )
+        assert response.status_code == 200
+    assert "legacy-recruitment-pipeline" in captured["source_ids"]
+    assert len(captured["source_ids"]) > 1
+    assert all(
+        source.get("adapter_config", {}).get("adapter")
+        in {"official_html", "legacy_database"}
+        for source in radar_service.repository.user_scannable_sources()
+    )
+    assert captured["force"] is False
+
+
+def test_due_sources_skip_unconfigured_discovery_placeholders(radar_service):
+    due = radar_service.repository.due_sources()
+    assert due
+    assert all(
+        source.get("adapter_config", {}).get("adapter") != "discovery_limited"
+        for source in due
+    )
+    explicit = radar_service.repository.due_sources(
+        source_ids=["wechat-guoyang-campus"]
+    )
+    assert [source["id"] for source in explicit] == ["wechat-guoyang-campus"]
+
+
+def test_future_radar_startup_waits_for_first_upstream_refresh(
+    radar_service, monkeypatch
+):
+    called: list[str] = []
+
+    def capture_run(**_kwargs):
+        called.append("radar")
+        return {
+            "id": "startup-order",
+            "status": "success",
+            "sources_succeeded": 0,
+            "sources_checked": 0,
+        }
+
+    monkeypatch.setattr(main, "future_radar_service", radar_service)
+    monkeypatch.setattr(radar_service, "run", capture_run)
+
+    async def scenario():
+        ready = asyncio.Event()
+        task = asyncio.create_task(main.future_radar_refresh_loop(ready))
+        await asyncio.sleep(0)
+        assert called == []
+        ready.set()
+        for _ in range(20):
+            if called:
+                break
+            await asyncio.sleep(0.01)
+        assert called == ["radar"]
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
 
 
 def test_future_radar_filters_by_one_primary_starfield_and_accepts_all_profile_categories(
