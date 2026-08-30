@@ -2,13 +2,13 @@
 
 一个面向合同合规与金融文档研究的证据驱动 AI 工作台，也是一个可创建 AI Space“成果胶囊”的轻量平台底座。法律工作台采用寒冰蓝视觉和“条款地图”，金融工作台采用烈焰橙红视觉和“信号面板”；两者共享同一套账号、私人资料库、来源引用和流式对话能力。
 
-当前仓库同时包含 Web、iOS 和 Android 工程。后端使用 FastAPI、SQLite 与 OpenAI API；前端使用 Vite、原生 HTML/CSS/JavaScript 和 Capacitor。
+当前仓库同时包含 Web、iOS 和 Android 工程。后端使用 FastAPI、SQLite（本地）或 PostgreSQL / Supabase（持久部署）与 OpenAI API；前端使用 Vite、原生 HTML/CSS/JavaScript 和 Capacitor。
 
 ## 已实现
 
 - 用户注册、登录、JWT 鉴权、隐私同意记录与应用内永久删号；用户数据相互隔离。
 - 管理员汇总使用面板：访问 `/?admin=usage` 后以 `ADMIN_DASHBOARD_TOKEN` 解锁，约每 10 秒刷新注册量、活跃量、会话/消息/文档、API 请求、已记录的普通聊天与 AI Space 模型调用及 Token；不查询或展示用户名、消息正文、文档内容、密码、Prompt 或模型回复。内容无关的 API 使用事件最多保存 30 天。
-- SQLite 保存会话、消息、文档文本和向量；本地或 Docker volume 可以持久化，但当前 Render Free 线上实例使用临时文件系统，休眠、重启或重新部署后账号及业务数据可能丢失。工作区之间不会交叉检索资料。
+- 会话、消息、文档文本和向量统一保存到所配置的数据库。开发环境保留 SQLite；`DATABASE_BACKEND=postgres` 使用私有 PostgreSQL schema 与小连接池，可接入 Supabase。缺失 PostgreSQL 配置时不静默回退到 SQLite，Render 启动强制要求持久数据库。工作区之间不会交叉检索资料。代码支持并不代表现有线上数据已迁移，切换必须先完成原库备份与校验。
 - 合同与合规、金融研究、通用文档三个工作区。
 - “冰焰交叉审查”独立工作台：把合同机制与财务后果连接成跨域因果碰撞卡，而不是分别生成两份摘要。
 - 八度空间（Music Dimension）：提供四种可继续改写的创作模板、8 类可自由组合的乐器编制、6 种原创合成声线，以及作品/风格/情绪/BPM/声音材质和叙事蓝图；浏览器使用 Web Audio API 在本机生成程序化编曲与合成哼唱，不依赖音乐 App、不调用 OpenAI，消耗 0 Token。创作蓝图与音量保存在当前设备；只有用户主动最小化时才出现迷你播放器，停止或关闭后不再悬浮。
@@ -75,7 +75,7 @@
 - 官网变化提醒是用户打开应用后看到的站内首页提醒，不是 iOS/Android 系统推送，也没有声称具备后台通知。服务清醒时，官网雷达会按 `RECRUITMENT_REFRESH_MINUTES` 周期检查，也可以由用户手动刷新；Render Free 休眠期间，应用进程和进程内定时刷新均不会持续运行；
 - 不是多人组织协作或企业审计系统；
 - Pro 计划目前是权益数据模型，不是已上线的 Apple 内购。必须完成 App Store Connect 商品、StoreKit 客户端交易、服务端签名交易验证和 Sandbox 测试，才可以向用户收费；
-- 当前线上部署使用 Render Free 临时文件系统中的单实例 SQLite，不具备账户数据持久化保证；实例休眠后重新启动、重新部署或重启都会丢失本地账号、成果历史、画像和岗位状态。正式上线前必须迁移到外部持久数据库（例如托管 PostgreSQL），不能继续把当前线上 SQLite 当作生产数据库。
+- 旧 Render Free SQLite 实例没有账户数据持久化保证；新配置不会自动从旧实例取出数据库。必须先取得完整 SQLite 备份、验证迁移，再把现有服务切到 PostgreSQL。公开岗位 JSON 快照不是账号、会话、文档和全部扫描数据的备份。完整迁移步骤见 [`docs/PERSISTENT_DATABASE.md`](docs/PERSISTENT_DATABASE.md)。
 
 默认聊天模型为 `gpt-4o-mini`，Embedding 模型为 `text-embedding-3-small`，均可通过环境变量修改；替换的聊天模型必须兼容 OpenAI Chat Completions 与 `max_completion_tokens`。OpenAI API Key 始终只存在于服务端。
 
@@ -89,6 +89,8 @@ ai-chat/
 │   ├── ai_service.py
 │   ├── config.py
 │   ├── database.py
+│   ├── storage.py
+│   ├── certs/
 │   ├── main.py
 │   ├── radar_bootstrap_jobs.json
 │   ├── recruitment_search.py
@@ -113,12 +115,14 @@ ai-chat/
 ├── docs/
 │   ├── CHATGPT_RADAR_BRIDGE.md
 │   ├── FUTURE_RADAR.md
+│   ├── PERSISTENT_DATABASE.md
 │   ├── RECRUITMENT_INGEST_OPENAPI.yaml
 │   ├── STORE_LISTING_ZH.md
 │   └── STORE_RELEASE_CHECKLIST.md
 ├── scripts/
 │   ├── frostfire_chatgpt_bridge.py
 │   ├── frostfire_ingest.py
+│   ├── frostfire_database_migrate.py
 │   └── frostfire_source_import.py
 ├── tests/
 │   └── scripts/
@@ -198,13 +202,17 @@ docker compose up --build
 
 Docker 镜像会在构建阶段执行 Vite 生产构建。运行后，`/` 提供 Web 应用，`/privacy.html`、`/terms.html` 和 `/support.html` 提供公开政策页面，`/api/*` 提供后端接口，因此可以只维护一个 HTTPS 域名。
 
-### Render 免费演示部署
+### Render + Supabase 持久部署
 
-根目录 `render.yaml` 当前使用 Render Free Web Service，且没有持久化磁盘。它只适合公开演示和小规模测试：空闲后会休眠，实例重新启动、重新部署或重启会清空 SQLite 中的账号、会话、文档、成果胶囊历史和未来雷达岗位数据；休眠期间进程内招聘刷新也不会继续执行。Blueprint 只在同一个 Web Service 内启用 Future Radar scheduler，没有增加一个无法共享临时 SQLite 的独立 Worker。正式上线前必须接入外部持久数据库，或升级常开服务并使用受支持的持久存储。
+根目录 `render.yaml` 保留 Render Free Web Service，不增加付费磁盘；数据库改为外部 PostgreSQL。Supabase 的 IPv4 Session Pooler 可用于常驻后端，连接串通过 Render Secret `DATABASE_URL` 配置。使用 `sslmode=verify-full`，并将 `sslrootcert` 指向镜像内 `/app/backend/certs/supabase-prod-ca-2021.crt`。证书是官方公开 CA，不是密钥。不要将数据库密码放进前端环境变量或 Git。
 
-部署时必须在 Render 的环境变量页面填写 `OPENAI_API_KEY`、`CORS_ORIGINS` 和一个自行保存的强随机 `ADMIN_DASHBOARD_TOKEN`；`JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 由 Blueprint 自动生成。管理员面板入口是 `/?admin=usage`，Token 只保存在当前页面内存。`FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES=30` 只表示清醒进程的调度唤醒间隔；各来源仍按自己的间隔判断是否到期，其中 OpenAI 公共网页补漏默认为 360 分钟。如需零额外模型费用，可将 `RECRUITMENT_WEB_SEARCH_ENABLED` 改为 `false`。真实密钥不得写入仓库。Future Radar 的长期运行边界和最小持久方案见 [`docs/FUTURE_RADAR.md`](docs/FUTURE_RADAR.md)。
+**现有服务不能直接无备份重部署。** 先用 `scripts/frostfire_database_migrate.py --source <完整SQLite备份> --dry-run` 检查，再按迁移文档导入、核对全部表的数据、保留原 `JWT_SECRET`，最后配置 Render 并部署。迁移失败不会覆盖目标已有数据，也不会改用临时库。Supabase 项目创建成功不等于这一步已完成。
 
-需要同步 ChatGPT 监控结果时，由本机 Codex 自动任务在用户已登录的浏览器中只读可见助手消息，将脱敏后的结构化行传给 `scripts/frostfire_chatgpt_bridge.py`。脚本先 dry-run，再从 macOS Keychain 读取接收凭证并提交；游标文件只保存逻辑来源和消息摘要，不保存会话地址、消息正文或官方链接。也可继续使用用户主动导出的结构化 JSON 或公开分享快照，但二者都是显式导入，不等于云端账号直连。本机自动同步依赖 Mac、Codex、网络和浏览器登录会话持续可用；Render 不会替它读取私有页面，因此这不是 24/7 云直连。完整边界见 [`docs/CHATGPT_RADAR_BRIDGE.md`](docs/CHATGPT_RADAR_BRIDGE.md)。Render Free 会休眠且 SQLite 不持久，定时导入不能消除冷启动、漏跑或数据丢失风险。
+外部数据库让已经写入的数据不依赖 Render 容器生命周期，但不会消除 Free Web Service 的休眠。休眠期间进程内招聘刷新仍不会执行；Supabase Free 自身也存在资源与暂停限制。这里只启用同一 Web Service 内的 Future Radar scheduler，不声称免费组合是 24/7 扫描服务。
+
+部署时必须在 Render 的环境变量页面填写 `DATABASE_URL`、`OPENAI_API_KEY`、`CORS_ORIGINS` 和一个自行保存的强随机 `ADMIN_DASHBOARD_TOKEN`；全新部署的 `JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 可由 Blueprint 生成，迁移已有服务时保持原值。管理员面板入口是 `/?admin=usage`，Token 只保存在当前页面内存。`FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES=30` 只表示清醒进程的调度唤醒间隔；各来源仍按自己的间隔判断是否到期，其中 OpenAI 公共网页补漏默认为 360 分钟。如需零额外模型费用，可将 `RECRUITMENT_WEB_SEARCH_ENABLED` 改为 `false`。Future Radar 的长期运行边界见 [`docs/FUTURE_RADAR.md`](docs/FUTURE_RADAR.md)。
+
+需要同步 ChatGPT 监控结果时，由本机 Codex 自动任务在用户已登录的浏览器中只读可见助手消息，将脱敏后的结构化行传给 `scripts/frostfire_chatgpt_bridge.py`。脚本先 dry-run，再从 macOS Keychain 读取接收凭证并提交；游标文件只保存逻辑来源和消息摘要，不保存会话地址、消息正文或官方链接。也可继续使用用户主动导出的结构化 JSON 或公开分享快照，但二者都是显式导入，不等于云端账号直连。本机自动同步依赖 Mac、Codex、网络和浏览器登录会话持续可用；Render 不会替它读取私有页面，因此这不是 24/7 云直连。完整边界见 [`docs/CHATGPT_RADAR_BRIDGE.md`](docs/CHATGPT_RADAR_BRIDGE.md)。外部持久数据库与定时同步分别解决保存和导入问题，不消除免费实例的冷启动和漏跑。
 
 ## 移动端
 

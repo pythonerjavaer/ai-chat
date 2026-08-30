@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,6 +32,10 @@ class Settings:
     future_radar_close_confirmations: int
     future_radar_max_workers: int
     future_radar_ai_model: str
+    database_backend: str = "sqlite"
+    database_url: str = field(default="", repr=False)
+    database_schema: str = "frostfire"
+    database_pool_size: int = 4
 
 
 def load_settings() -> Settings:
@@ -49,6 +53,34 @@ def load_settings() -> Settings:
         if database_value
         else BASE_DIR / "data" / "ai_chat.db"
     )
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    database_backend = os.getenv("DATABASE_BACKEND", "").strip().lower()
+    database_backend = database_backend or ("postgres" if database_url else "sqlite")
+    if database_backend == "postgresql":
+        database_backend = "postgres"
+    if database_backend not in {"sqlite", "postgres"}:
+        raise RuntimeError("DATABASE_BACKEND must be sqlite or postgres.")
+    if database_backend == "postgres" and not database_url.startswith(
+        ("postgresql://", "postgres://")
+    ):
+        raise RuntimeError("A PostgreSQL DATABASE_URL is required; SQLite fallback is disabled.")
+    if os.getenv("RENDER", "").strip().lower() == "true" and database_backend != "postgres":
+        raise RuntimeError(
+            "Render requires PostgreSQL persistence. Configure DATABASE_BACKEND and DATABASE_URL."
+        )
+    database_schema = os.getenv("DATABASE_SCHEMA", "frostfire").strip() or "frostfire"
+    if (
+        not database_schema.isascii()
+        or not database_schema.replace("_", "").isalnum()
+        or not database_schema[0].isalpha()
+        or len(database_schema) > 63
+        or database_schema.lower() in {
+            "public", "auth", "storage", "realtime", "extensions", "information_schema",
+            "graphql", "graphql_public", "supabase_functions", "supabase_migrations",
+        }
+        or database_schema.lower().startswith("pg_")
+    ):
+        raise RuntimeError("DATABASE_SCHEMA must name a private application schema.")
     cors_origins = [
         origin.strip()
         for origin in os.getenv(
@@ -70,6 +102,10 @@ def load_settings() -> Settings:
             os.getenv("EMBEDDING_MODEL", "").strip() or "text-embedding-3-small"
         ),
         database_path=database_path,
+        database_backend=database_backend,
+        database_url=database_url,
+        database_schema=database_schema,
+        database_pool_size=max(1, min(12, int(os.getenv("DATABASE_POOL_SIZE", "4") or "4"))),
         cors_origins=cors_origins,
         adzuna_app_id=os.getenv("ADZUNA_APP_ID", "").strip(),
         adzuna_app_key=os.getenv("ADZUNA_APP_KEY", "").strip(),

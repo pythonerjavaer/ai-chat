@@ -482,6 +482,7 @@ async def lifespan(_: FastAPI):
                 await task
             except asyncio.CancelledError:
                 pass
+        database.close_database_pools()
 
 
 PRIVACY_VERSION = "2026-08-22.2"
@@ -842,7 +843,17 @@ def prepare_chat(
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "version": app.version}
+    try:
+        with database.connect(timeout=2.0) as connection:
+            connection.execute("SELECT 1").fetchone()
+    except Exception:
+        # Never return a healthy deployment just because the HTTP process is
+        # alive, and never include credentials/driver diagnostics in health.
+        raise HTTPException(status_code=503, detail="Database is unavailable.") from None
+    return {
+        "status": "ok", "version": app.version,
+        "database": getattr(settings, "database_backend", "sqlite"),
+    }
 
 
 def require_admin_dashboard_token(

@@ -11,4 +11,12 @@ backend/data
 frontend/android
 frontend/ios
 *.db
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.sqlite*
+**/*.dump
+**/*.dump.gz
+**/*.backup
+database-backups
 *.log

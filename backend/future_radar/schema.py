@@ -1,7 +1,7 @@
-"""SQLite schema and migrations for Future Radar.
+"""Shared application schema and additive migrations for Future Radar.
 
-The project intentionally keeps its existing SQLite stack.  These migrations
-are additive and idempotent so an existing ``recruitment_jobs`` deployment can
+SQLite uses these statements directly; the PostgreSQL storage bridge translates
+their dialect. Migrations stay idempotent so an existing ``recruitment_jobs`` deployment can
 continue serving the legacy API while the richer radar tables are populated.
 """
 

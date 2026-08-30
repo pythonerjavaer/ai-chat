@@ -454,7 +454,7 @@ def build_messages(
             + excerpts
         )
 
-    # Keep the full history in SQLite while sending only the most recent turns
+    # Keep the full history in the database while sending only the most recent turns
     # back to the model. This gives the regular chat a predictable input-cost
     # ceiling without pretending it has infinite conversational memory.
     stored_messages = database.list_messages(session_id, user_id, limit=16)

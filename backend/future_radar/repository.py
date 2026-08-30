@@ -1,4 +1,4 @@
-"""Persistence primitives for Future Radar's SQLite data model."""
+"""Persistence primitives for Future Radar's SQLite/PostgreSQL data model."""
 
 from __future__ import annotations
 
@@ -349,26 +349,33 @@ class RadarRepository:
         return self.get_source(source_id)
 
     def acquire_lock(self, name: str, owner: str, ttl_seconds: int) -> bool:
-        now = datetime.now(timezone.utc)
-        expires = (now + timedelta(seconds=max(1, ttl_seconds))).isoformat()
-        now_iso = now.isoformat()
+        """Atomically create, renew or take over a single named lease.
+
+        The conflict predicate is evaluated by the database against the row
+        being updated.  A separate SELECT followed by an unconditional UPSERT
+        would let two PostgreSQL workers both report success.  This also works
+        on SQLite without relying on its BEGIN IMMEDIATE serialization.  Run
+        types and source IDs remain independent keys, and this short write
+        transaction is committed before any adapter/network work starts.
+        """
         with self.transaction() as connection:
+            # Start the TTL after any short transaction-lock wait, not before.
+            now = datetime.now(timezone.utc)
+            expires = (now + timedelta(seconds=max(1, ttl_seconds))).isoformat()
             row = connection.execute(
-                "SELECT owner, expires_at FROM radar_locks WHERE lock_name = ?", (name,)
-            ).fetchone()
-            if row and row["owner"] != owner and row["expires_at"] > now_iso:
-                return False
-            connection.execute(
                 """
                 INSERT INTO radar_locks (lock_name, owner, expires_at, updated_at)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(lock_name) DO UPDATE SET
                     owner=excluded.owner, expires_at=excluded.expires_at,
                     updated_at=excluded.updated_at
+                WHERE radar_locks.owner=excluded.owner
+                   OR radar_locks.expires_at<=excluded.updated_at
+                RETURNING owner
                 """,
-                (name, owner, expires, now_iso),
-            )
-        return True
+                (name, owner, expires, now.isoformat()),
+            ).fetchone()
+        return row is not None
 
     def renew_lock(self, name: str, owner: str, ttl_seconds: int) -> bool:
         """Extend a lease only while the caller still owns it.
@@ -376,17 +383,18 @@ class RadarRepository:
         The owner predicate prevents a delayed heartbeat from reclaiming a
         lease that another worker acquired after expiry.
         """
-        now = datetime.now(timezone.utc)
-        expires = (now + timedelta(seconds=max(1, ttl_seconds))).isoformat()
         with self.transaction() as connection:
-            cursor = connection.execute(
+            now = datetime.now(timezone.utc)
+            expires = (now + timedelta(seconds=max(1, ttl_seconds))).isoformat()
+            row = connection.execute(
                 """
                 UPDATE radar_locks SET expires_at=?, updated_at=?
                 WHERE lock_name=? AND owner=?
+                RETURNING owner
                 """,
                 (expires, now.isoformat(), name, owner),
-            )
-        return cursor.rowcount == 1
+            ).fetchone()
+        return row is not None
 
     def release_lock(self, name: str, owner: str) -> None:
         with self.transaction() as connection:

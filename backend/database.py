@@ -3,7 +3,7 @@ import math
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from .config import settings
 from .workspaces import DEFAULT_WORKSPACE, validate_workspace
@@ -19,17 +19,33 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def connect() -> sqlite3.Connection:
+def connect(*, timeout: float = 30.0) -> Any:
+    if getattr(settings, "database_backend", "sqlite") == "postgres":
+        from .storage import connect_postgres
+
+        return connect_postgres(
+            settings.database_url,
+            schema=settings.database_schema,
+            timeout=timeout,
+            max_size=settings.database_pool_size,
+        )
     settings.database_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(settings.database_path, timeout=30)
+    connection = sqlite3.connect(settings.database_path, timeout=timeout)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA journal_mode = WAL")
     return connection
 
 
-def init_db() -> None:
-    with connect() as connection:
+def close_database_pools() -> None:
+    if getattr(settings, "database_backend", "sqlite") == "postgres":
+        from .storage import close_postgres_pools
+
+        close_postgres_pools()
+
+
+def init_db(*, connection_factory: Callable[[], Any] | None = None) -> None:
+    with (connection_factory or connect)() as connection:
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -677,11 +693,18 @@ def record_api_usage_event(
     # The application initializes its WAL database at startup. Do not repeat
     # journal-mode changes here or inherit connect()'s 30-second busy timeout:
     # losing one metric during a scan is preferable to queuing a slow writer.
-    connection = sqlite3.connect(
-        settings.database_path, timeout=API_USAGE_SQLITE_TIMEOUT_SECONDS
+    is_postgres = getattr(settings, "database_backend", "sqlite") == "postgres"
+    connection = (
+        connect(timeout=0.25)
+        if is_postgres
+        else sqlite3.connect(settings.database_path, timeout=API_USAGE_SQLITE_TIMEOUT_SECONDS)
     )
     try:
-        connection.execute("PRAGMA foreign_keys = ON")
+        if is_postgres:
+            connection.execute("SET LOCAL lock_timeout = '50ms'")
+            connection.execute("SET LOCAL statement_timeout = '500ms'")
+        else:
+            connection.execute("PRAGMA foreign_keys = ON")
         with connection:
             tracked_user_id = user_id
             if user_id is not None:
@@ -860,7 +883,7 @@ def aggregate_admin_usage(
                 UNION
                 SELECT user_id FROM api_usage_events
                 WHERE user_id IS NOT NULL AND created_at >= ?
-            )
+            ) AS active_user_sources
             """,
             (cutoff_24h, cutoff_24h, cutoff_24h, cutoff_24h),
         ).fetchone()
@@ -1761,6 +1784,10 @@ def upsert_recruitment_ingest_candidate(candidate: dict[str, Any]) -> dict[str, 
             (candidate["dedupe_key"],),
         ).fetchone()
         if existing is None:
+            # PostgreSQL marks the transaction failed after a constraint error.
+            # Keep the existing concurrent-insert recovery isolated so its
+            # follow-up SELECT can run on both supported databases.
+            connection.execute("SAVEPOINT ingest_candidate_insert")
             try:
                 connection.execute(
                     """
@@ -1792,6 +1819,8 @@ def upsert_recruitment_ingest_candidate(candidate: dict[str, Any]) -> dict[str, 
                 )
                 disposition = "new"
             except sqlite3.IntegrityError:
+                connection.execute("ROLLBACK TO SAVEPOINT ingest_candidate_insert")
+                connection.execute("RELEASE SAVEPOINT ingest_candidate_insert")
                 existing = connection.execute(
                     "SELECT * FROM recruitment_ingest_candidates WHERE dedupe_key = ?",
                     (candidate["dedupe_key"],),
@@ -1801,6 +1830,8 @@ def upsert_recruitment_ingest_candidate(candidate: dict[str, Any]) -> dict[str, 
                 disposition = _update_existing_recruitment_ingest_candidate(
                     connection, existing, candidate, now
                 )
+            else:
+                connection.execute("RELEASE SAVEPOINT ingest_candidate_insert")
         else:
             disposition = _update_existing_recruitment_ingest_candidate(
                 connection, existing, candidate, now
@@ -2367,7 +2398,7 @@ def list_messages(session_id: str, user_id: int, limit: int = 50) -> list[dict[s
                 WHERE session_id = ?
                 ORDER BY id DESC
                 LIMIT ?
-            )
+            ) AS recent_messages
             ORDER BY id ASC
             """,
             (session_id, limit),

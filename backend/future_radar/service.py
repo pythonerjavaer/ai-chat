@@ -115,7 +115,7 @@ class RadarLeaseLost(RuntimeError):
 
 
 class _LeaseHeartbeat:
-    """Keep one SQLite lease alive for the complete protected operation."""
+    """Keep one database lease alive for the complete protected operation."""
 
     def __init__(
         self,
@@ -152,7 +152,7 @@ class _LeaseHeartbeat:
                     self.ttl_seconds,
                 )
             except Exception as exc:
-                # SQLite contention is normally transient and the heartbeat
+                # Database contention is normally transient and the heartbeat
                 # has several attempts before the lease expires.
                 logger.warning(
                     "Future Radar lease heartbeat retry lock_type=%s error_type=%s",

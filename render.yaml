@@ -8,8 +8,16 @@ services:
     dockerContext: .
     healthCheckPath: /api/health
     envVars:
-      - key: DATABASE_PATH
-        value: /app/backend/data/ai_chat.db
+      # Configure only after the existing live database has been exported and
+      # the migration has passed validation; never deploy an empty replacement.
+      - key: DATABASE_BACKEND
+        value: postgres
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SCHEMA
+        value: frostfire
+      - key: DATABASE_POOL_SIZE
+        value: 4
       - key: OPENAI_API_KEY
         sync: false
       - key: JWT_SECRET

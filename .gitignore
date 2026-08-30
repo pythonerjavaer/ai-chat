@@ -23,6 +23,16 @@ backend/data/
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.dump
+*.dump.gz
+*.backup
+database-backups/
 
 # Frontend dependencies and build output
 node_modules/
