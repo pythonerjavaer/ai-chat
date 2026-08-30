@@ -81,6 +81,7 @@ function pollingContext({ race = false, unchanged = false } = {}) {
   const payload = { items: [lead], total: 1, stats: { total_opportunities: 1, tier_counts: { T1: 1 } } };
   const state = { futureRadar: {
     polling: false, jobsLoading: false, jobsRequestId: 1,
+    jobsLoaded: unchanged, jobsError: "",
     lastEventId: null, activeRunTypes: new Set(), events: [],
     jobs: unchanged ? payload.items : [], opportunityStats: unchanged ? payload.stats : {},
   } };

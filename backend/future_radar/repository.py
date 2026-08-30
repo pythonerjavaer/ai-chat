@@ -1413,15 +1413,21 @@ class RadarRepository:
                     source["source_id"] == filters["source_id"] for source in winner["sources"]
                 ):
                     continue
-                status = filters.get("status", "open")
-                if status and status != "all" and winner.get("status") != status:
+                # An unconfirmed opening state is still a usable discovery.
+                # Keep that distinction in the record, but include it in the
+                # default pool unless it is closed/expired or retired by all
+                # its sources. Explicit open/unknown/archive filters remain.
+                status = filters.get("status", "active")
+                if status == "active" and winner.get("status") not in {"open", "unknown"}:
+                    continue
+                if status and status not in {"active", "all"} and winner.get("status") != status:
                     continue
                 closing_date = str(winner.get("closing_date") or "")
-                if filters.get("active_only", status == "open") and (
+                if filters.get("active_only", status in {"active", "open"}) and (
                     closing_date and closing_date <= date.today().isoformat()
                 ):
                     continue
-                if status == "open" and not any(source["active"] for source in winner["sources"]):
+                if status in {"active", "open"} and not any(source["active"] for source in winner["sources"]):
                     continue
                 deduped.append(winner)
         return sorted(deduped, key=lambda item: item["_sort_position"])

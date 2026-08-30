@@ -214,10 +214,11 @@ test("Radar keeps non-duplicate verified carryover jobs in the default pool", ()
   assert.equal(merged[0].tier_code, null);
 });
 
-test("verified carryover is only eligible in the unfiltered open-jobs view", () => {
-  assert.equal(isDefaultFutureRadarJobsView({ status: "open", sort: "changed", q: "" }), true);
+test("the default opportunity view includes open and unknown active records", () => {
+  assert.equal(isDefaultFutureRadarJobsView({ status: "active", sort: "changed", q: "" }), true);
+  assert.equal(isDefaultFutureRadarJobsView({ status: "open", sort: "changed", q: "" }), false);
   assert.equal(isDefaultFutureRadarJobsView({ status: "all", sort: "changed", q: "" }), false);
-  assert.equal(isDefaultFutureRadarJobsView({ status: "open", sort: "changed", company: "某公司" }), false);
+  assert.equal(isDefaultFutureRadarJobsView({ status: "active", sort: "changed", company: "某公司" }), false);
 });
 
 test("manual scan feedback distinguishes active runs from provider rate limits", () => {

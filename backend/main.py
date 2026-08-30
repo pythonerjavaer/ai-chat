@@ -1091,9 +1091,15 @@ def _radar_search_metadata() -> dict:
                 "failed_batch_count", "coverage_percent",
             )
         }
+        failed_employers = coverage.get("failed_employers")
+        # Coverage is auxiliary discovery metadata. A provider's null/malformed
+        # list must not turn an otherwise readable opportunity pool into 500.
+        if not isinstance(failed_employers, list):
+            failed_employers = []
         result["coverage"]["failed_employers"] = [
             _redact_public_text(str(name), limit=160)
-            for name in coverage.get("failed_employers", [])
+            for name in failed_employers
+            if isinstance(name, str)
         ]
         result["coverage"]["completed_at"] = snapshot["fetched_at"]
     search_source = future_radar_service.repository.get_source("openai-public-web-search")
@@ -1186,7 +1192,7 @@ def future_radar_opportunities(
     user: User,
     page: int = Query(default=1, ge=1, le=100_000),
     page_size: int = Query(default=50, ge=1, le=100),
-    status_filter: Literal["open", "closed", "unknown", "all"] = Query(default="open", alias="status"),
+    status_filter: Literal["active", "open", "closed", "unknown", "all"] = Query(default="active", alias="status"),
     verification_status: Literal["pending", "verified", "conflicted", "rejected"] | None = None,
     company: str | None = Query(default=None, max_length=160),
     city: str | None = Query(default=None, max_length=160),
@@ -1218,7 +1224,7 @@ def future_radar_opportunities(
         "opening_after": opening_after.isoformat() if opening_after else None,
         "closing_before": closing_before.isoformat() if closing_before else None,
         "closing_after": closing_after.isoformat() if closing_after else None,
-        "sort": sort, "active_only": status_filter == "open",
+        "sort": sort, "active_only": status_filter in {"active", "open"},
         "primary_categories": _validated_future_radar_categories(category),
         "tier_code": tier_code,
     }

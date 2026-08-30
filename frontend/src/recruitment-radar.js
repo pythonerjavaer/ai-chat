@@ -12,6 +12,7 @@ export const STARFIELD_DEFINITIONS = Object.freeze([
 ]);
 
 export const TIER_CODES = Object.freeze(["T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3"]);
+export const DEFAULT_FUTURE_RADAR_STATUS = "active";
 
 export function futureRadarCoverageCopy(scope = {}, coverage = null, status = "pending") {
   const count = (value) => Math.max(0, Math.floor(Number(value) || 0));
@@ -297,11 +298,19 @@ export function futureRadarOpportunityDateCopy(job = {}) {
 }
 
 export function isDefaultFutureRadarJobsView(filters = {}) {
-  const defaults = { status: "open", sort: "changed" };
+  const defaults = { status: DEFAULT_FUTURE_RADAR_STATUS, sort: "changed" };
   return Object.entries(filters).every(([key, value]) => {
     if (key in defaults) return (value || defaults[key]) === defaults[key];
     return value == null || value === "";
   });
+}
+
+export function futureRadarOpportunityErrorCopy(error, hasSnapshot = false) {
+  const status = Number(error?.status);
+  const http = Number.isInteger(status) && status >= 400 && status <= 599 ? `（HTTP ${status}）` : "";
+  return hasSnapshot
+    ? `主机会池刷新失败${http}。当前保留上次成功的主池数据，请点击“刷新机会”重试。`
+    : `主机会池加载失败${http}。请点击“刷新机会”重试。`;
 }
 
 export function parseRadarRetryAfter(value, now = Date.now()) {

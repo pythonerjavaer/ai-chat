@@ -200,10 +200,10 @@ def test_closed_expired_rejected_non_campus_and_private_links_are_not_in_main_po
     ).status_code == (200 if archived else 404)
 
 
-@pytest.mark.parametrize("status", ["closed", "unknown"])
-def test_explicit_archive_filter_results_have_working_details(harness, status):
+@pytest.mark.parametrize("status,default_count", [("closed", 0), ("unknown", 1)])
+def test_explicit_status_filter_results_have_working_details(harness, status, default_count):
     saved = harness.insert(f"archive-{status}", status=status)
-    assert get_pool(harness)["total"] == 0
+    assert get_pool(harness)["total"] == default_count
     archived = get_pool(harness, status=status)
     assert archived["total"] == 1
     detail = harness.client.get(
@@ -213,6 +213,47 @@ def test_explicit_archive_filter_results_have_working_details(harness, status):
     assert detail.json()["id"] == archived["items"][0]["id"]
     assert detail.json()["status"] == status
     assert detail.json()["verification_status"] == "pending"
+
+
+def test_default_active_pool_includes_unknown_pending_without_claiming_open(harness):
+    harness.insert("known-open", source_id=OFFICIAL, verification_status="verified")
+    pending = harness.insert("unknown-pending", status="unknown")
+    harness.insert("unknown-conflicted", status="unknown", verification_status="conflicted")
+    harness.insert("closed-lead", status="closed")
+    harness.insert("expired-unknown", status="unknown", closing_date=date.today().isoformat())
+    retired = harness.insert("retired-unknown", status="unknown")
+    with harness.service.repository.transaction() as connection:
+        connection.execute("UPDATE job_sources SET active=0 WHERE job_id=?", (retired["id"],))
+
+    result = get_pool(harness)
+    assert result["total"] == 3
+    assert result["stats"]["verified_count"] == 1
+    assert result["stats"]["discovered_count"] == 2
+    assert result["stats"]["job_status"] == {"open": 1, "unknown": 2, "closed": 0}
+    candidate = next(item for item in result["items"] if item["id"] == pending["id"])
+    assert candidate["status"] == "unknown"
+    assert candidate["verification_status"] == "pending"
+    assert candidate["available_in_main_pool"] is True
+    assert candidate["officially_verified"] is False
+    assert get_pool(harness, status="active")["total"] == 3
+    assert get_pool(harness, status="open")["total"] == 1
+    assert get_pool(harness, verification_status="pending")["total"] == 1
+    assert get_pool(harness, status="all")["total"] == 6
+
+
+def test_unknown_leads_participate_in_full_pool_pagination_categories_and_tiers(harness, monkeypatch):
+    for index in range(55):
+        harness.insert(f"unknown-role-{index:03d}", status="unknown")
+    harness.insert("other-unknown", status="unknown", primary_category="insurance_integrated_finance")
+    monkeypatch.setattr(main, "score_job", lambda job, _profile: {**job, "tier_code": "T1.5"})
+    first = get_pool(harness, category="internet_tech", tier_code="T1.5", page_size=50)
+    second = get_pool(harness, category="internet_tech", tier_code="T1.5", page_size=50, page=2)
+    assert first["total"] == second["total"] == 55
+    assert len(first["items"]) == 50
+    assert len(second["items"]) == 5
+    assert first["stats"]["tier_counts"]["T1.5"] == 55
+    assert first["stats"]["category_counts"] == {"internet_tech": 55}
+    assert not {item["id"] for item in first["items"]}.intersection(item["id"] for item in second["items"])
 
 
 def test_closed_verified_record_cannot_be_resurrected_by_stale_open_copy(harness):
@@ -419,6 +460,21 @@ def test_provenance_and_coverage_never_expose_private_transport_fields(harness):
         assert secret not in text
         assert secret not in detail.text
     assert "evidence" not in result["items"][0]["sources"][0]
+
+
+@pytest.mark.parametrize("failed_employers", [None, "unavailable", {"error": "unavailable"}, [None]])
+def test_optional_coverage_metadata_cannot_break_the_opportunity_pool(harness, failed_employers):
+    harness.insert("pending-with-incomplete-coverage")
+    harness.service.repository.save_snapshot("openai-public-web-search", "nullable-coverage", "", {
+        "coverage": {
+            "target_count": 205, "searched_count": 205, "failed_count": 0,
+            "failed_employers": failed_employers,
+        },
+    })
+    result = get_pool(harness)
+    assert result["total"] == result["stats"]["discovered_count"] == 1
+    assert result["items"][0]["verification_status"] == "pending"
+    assert result["coverage"]["failed_employers"] == []
 
 
 def test_all_standard_query_filters_are_applied(harness):

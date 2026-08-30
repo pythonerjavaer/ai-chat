@@ -12,6 +12,7 @@ import {
   resolveStartupProduct,
 } from "./product-navigation.js";
 import {
+  DEFAULT_FUTURE_RADAR_STATUS,
   TIER_CODES,
   buildFutureRadarJobsQuery,
   canonicalStarfieldCode,
@@ -22,6 +23,7 @@ import {
   futureRadarAiSearchNotice,
   futureRadarCoverageCopy,
   futureRadarOpportunityDateCopy,
+  futureRadarOpportunityErrorCopy,
   futureRadarOpportunitySource,
   futureRadarPublicOpportunityUrl,
   futureRadarRunErrorCopy,
@@ -120,6 +122,7 @@ const state = {
     dashboard: null,
     jobs: [],
     jobsLoaded: false,
+    jobsError: "",
     totalJobs: 0,
     page: 1,
     pageSize: 50,
@@ -144,7 +147,7 @@ const state = {
     runStatusPollTimer: { quick: null, deep: null },
     runStatusPollPending: { quick: false, deep: false },
     activeRunTypes: new Set(),
-    filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: "open", verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" },
+    filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" },
   },
   pendingLaunch: null,
   activeProduct: null,
@@ -2630,10 +2633,12 @@ async function pollFutureRadarRunUntilTerminal(scanType) {
     setFutureRadarActionStatus(`${scanLabel} 已结束，正在刷新岗位池与扫描记录…`, "running");
     const snapshotReadable = await loadFutureRadarSnapshot();
     const terminalRun = latestFutureRadarRunForType(scanType);
-    const resultCopy = snapshotReadable && terminalRun
-      ? `${scanLabel}：${futureRadarRunSuccessCopy(terminalRun, state.futureRadar.totalJobs)}`
-      : `${scanLabel} 已在服务端结束；最新岗位池已重新读取。`;
-    const tone = futureRadarRunTone(terminalRun || {});
+    const resultCopy = !snapshotReadable
+      ? `${scanLabel} 已在服务端结束；主机会池读取失败，请点击“刷新机会”重试。`
+      : terminalRun
+        ? `${scanLabel}：${futureRadarRunSuccessCopy(terminalRun, state.futureRadar.totalJobs)}`
+        : `${scanLabel} 已在服务端结束；最新岗位池已重新读取。`;
+    const tone = snapshotReadable ? futureRadarRunTone(terminalRun || {}) : "warning";
     showToast(resultCopy, 7000);
     startFutureRadarRunDelay(scanType, FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS, resultCopy, tone);
   } catch (_) {
@@ -2731,8 +2736,13 @@ function renderFutureRadarOpportunityOverview() {
     makeElement("article", "pending", `聊天 / 搜索发现 ${count(counts.pending)}`),
     makeElement("article", "conflicted", `信息有差异 ${count(counts.conflicted)}`),
   );
+  if (!state.futureRadar.jobsLoaded) {
+    elements.futureRadarOpportunitySummary?.replaceChildren(
+      makeElement("article", "pending", state.futureRadar.jobsError ? "主机会池尚未加载，请重试" : "正在读取主机会池…"),
+    );
+  }
   if (elements.futureRadarOpportunityCount) {
-    elements.futureRadarOpportunityCount.textContent = count(state.futureRadar.totalJobs);
+    elements.futureRadarOpportunityCount.textContent = state.futureRadar.jobsLoaded ? count(state.futureRadar.totalJobs) : "—";
   }
   document.querySelectorAll(".recruitment-checks input").forEach((input) => {
     const label = input.closest("label");
@@ -3028,9 +3038,24 @@ function renderFutureRadarPagination() {
   }
 }
 
+function recordFutureRadarOpportunityFailure(error) {
+  state.futureRadar.jobsError = futureRadarOpportunityErrorCopy(error, state.futureRadar.jobsLoaded);
+  return state.futureRadar.jobsError;
+}
+
 function applyFutureRadarJobsPayload(payload) {
+  const previousError = state.futureRadar.jobsError;
   state.futureRadar.jobs = radarCollection(payload, ["opportunities", "jobs"]);
   state.futureRadar.jobsLoaded = true;
+  state.futureRadar.jobsError = "";
+  if (previousError && elements.futureRadarError?.textContent === previousError) {
+    elements.futureRadarError.textContent = "";
+    elements.futureRadarError.classList.add("hidden");
+  }
+  if (previousError && elements.futureRadarLiveState) {
+    elements.futureRadarLiveState.className = "radar-live-state healthy";
+    elements.futureRadarLiveState.replaceChildren(makeElement("i"), document.createTextNode("主机会池已恢复"));
+  }
   state.futureRadar.totalJobs = radarNumber(payload, ["total"], state.futureRadar.jobs.length);
   state.futureRadar.page = radarNumber(payload, ["page"], state.futureRadar.page);
   state.futureRadar.pageSize = radarNumber(payload, ["page_size"], state.futureRadar.pageSize);
@@ -3094,7 +3119,7 @@ function readFutureRadarFilters() {
 
 function resetFutureRadarFilters() {
   elements.futureRadarFilterForm.reset();
-  state.futureRadar.filters = { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: "open", verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" };
+  state.futureRadar.filters = { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" };
   state.recruitmentTierFilter = "ALL";
   state.futureRadar.page = 1;
   loadFutureRadarJobPage(1, true);
@@ -3119,7 +3144,11 @@ async function loadFutureRadarJobPage(page, force = false, { scroll = true } = {
     renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(displayJobs));
     if (scroll) elements.recruitmentJobs.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
-    if (requestId === state.futureRadar.jobsRequestId) setFutureRadarLoading(false, translateError(error.message));
+    if (requestId === state.futureRadar.jobsRequestId) {
+      setFutureRadarLoading(false, recordFutureRadarOpportunityFailure(error));
+      renderFutureRadarOpportunityOverview();
+      renderRecruitmentJobs(state.futureRadar.jobs);
+    }
   } finally {
     if (requestId === state.futureRadar.jobsRequestId) {
       state.futureRadar.jobsLoading = false;
@@ -3165,6 +3194,9 @@ async function loadFutureRadarSnapshot() {
     const key = requests[index][0];
     if (result.status === "rejected") {
       failures.push(key);
+      if (key === "jobs" && jobsRequestId === state.futureRadar.jobsRequestId) {
+        recordFutureRadarOpportunityFailure(result.reason);
+      }
       return;
     }
     const payload = result.value;
@@ -3196,13 +3228,14 @@ async function loadFutureRadarSnapshot() {
     renderFutureRadarDashboard(state.futureRadar.dashboard);
   }
   const displayJobs = futureRadarDisplayJobs(state.recruitmentJobs);
+  renderFutureRadarOpportunityOverview();
   renderRecruitmentJobs(displayJobs);
   renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(displayJobs));
   if (jobsRequestId === state.futureRadar.jobsRequestId) {
     state.futureRadar.jobsLoading = false;
-    setFutureRadarLoading(false, failures.length ? `部分情报暂时不可用：${failures.join("、")}。现有数据已保留。` : "");
+    setFutureRadarLoading(false, state.futureRadar.jobsError || (failures.length ? `部分情报暂时不可用：${failures.join("、")}。现有数据已保留。` : ""));
   }
-  return failures.length < requests.length;
+  return !failures.includes("jobs");
 }
 
 async function pollFutureRadarEvents() {
@@ -3213,6 +3246,7 @@ async function pollFutureRadarEvents() {
     const query = cursor == null ? "?limit=50" : `?limit=50&after_event_id=${encodeURIComponent(cursor)}`;
     const opportunityQuery = futureRadarJobsQuery();
     const jobsRequestId = state.futureRadar.jobsRequestId;
+    let opportunityError = null;
     const [payload, dashboard, opportunityPayload] = await Promise.all([
       api(`/future-radar/events${query}`).catch(() => null),
       state.futureRadar.activeRunTypes.size
@@ -3222,7 +3256,7 @@ async function pollFutureRadarEvents() {
       // public change event. The unified API owns filtering, ranking and totals.
       state.futureRadar.jobsLoading
         ? Promise.resolve(null)
-        : api(`/future-radar/opportunities?${opportunityQuery}`).catch(() => null),
+        : api(`/future-radar/opportunities?${opportunityQuery}`).catch((error) => { opportunityError = error; return null; }),
     ]);
     if (dashboard) renderFutureRadarDashboard(dashboard);
     // Navigation or filter changes made during polling always win over it.
@@ -3230,13 +3264,23 @@ async function pollFutureRadarEvents() {
       && state.futureRadar.jobsRequestId === jobsRequestId
       && futureRadarJobsQuery() === opportunityQuery) {
       const incomingJobs = radarCollection(opportunityPayload, ["opportunities", "jobs"]);
-      const listChanged = JSON.stringify(incomingJobs) !== JSON.stringify(state.futureRadar.jobs)
+      const listChanged = !state.futureRadar.jobsLoaded || Boolean(state.futureRadar.jobsError)
+        || JSON.stringify(incomingJobs) !== JSON.stringify(state.futureRadar.jobs)
         || JSON.stringify(opportunityPayload.stats || {}) !== JSON.stringify(state.futureRadar.opportunityStats);
       applyFutureRadarJobsPayload(opportunityPayload);
       if (listChanged) {
         renderRecruitmentJobs(state.futureRadar.jobs);
         renderRecruitmentDeadlineAlerts(state.futureRadar.jobs);
       }
+    }
+    if (opportunityError && !state.futureRadar.jobsLoading
+      && state.futureRadar.jobsRequestId === jobsRequestId
+      && futureRadarJobsQuery() === opportunityQuery) {
+      const previousError = state.futureRadar.jobsError;
+      const message = recordFutureRadarOpportunityFailure(opportunityError);
+      setFutureRadarLoading(false, message);
+      renderFutureRadarOpportunityOverview();
+      if (message !== previousError) renderRecruitmentJobs(state.futureRadar.jobs);
     }
     if (!payload && !opportunityPayload && !state.futureRadar.jobsLoading) throw new Error("Radar poll unavailable");
     const incoming = radarCollection(payload, ["events", "changes"]);
@@ -3247,8 +3291,14 @@ async function pollFutureRadarEvents() {
       renderFutureRadarEvents();
       if (payload?.dashboard) renderFutureRadarDashboard(payload.dashboard);
       else applyIncrementalRadarMetrics(novel);
-      elements.futureRadarLiveState.className = "radar-live-state healthy";
-      elements.futureRadarLiveState.replaceChildren(makeElement("i"), document.createTextNode(`刚接收 ${novel.length} 条新情报`));
+      if (!state.futureRadar.jobsError) {
+        elements.futureRadarLiveState.className = "radar-live-state healthy";
+        elements.futureRadarLiveState.replaceChildren(makeElement("i"), document.createTextNode(`刚接收 ${novel.length} 条新情报`));
+      }
+    }
+    if (state.futureRadar.jobsError) {
+      elements.futureRadarLiveState.className = "radar-live-state warning";
+      elements.futureRadarLiveState.replaceChildren(makeElement("i"), document.createTextNode("主机会池暂时无法刷新"));
     }
   } catch (error) {
     elements.futureRadarLiveState.className = "radar-live-state warning";
@@ -3297,7 +3347,7 @@ async function runFutureRadarNow(scanType = "quick") {
       ? futureRadarRunSuccessCopy(run, state.futureRadar.totalJobs)
       : "扫描已完成，但最新岗位池暂时无法重新读取；页面保留现有结果。";
     const resultCopy = `${scanLabel}：${runResultCopy}`;
-    const tone = futureRadarRunTone(run);
+    const tone = snapshotReadable ? futureRadarRunTone(run) : "warning";
     showToast(resultCopy, 7000);
     startFutureRadarRunDelay(scanType, FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS, resultCopy, tone);
   } catch (error) {
@@ -3530,8 +3580,8 @@ function sourceDisplayValue(value, fallback) {
   return value || fallback;
 }
 
-function futureRadarDisplayJobs(fallbackJobs = state.recruitmentJobs) {
-  if (!state.futureRadar.jobsLoaded) return fallbackJobs || [];
+function futureRadarDisplayJobs() {
+  if (!state.futureRadar.jobsLoaded) return [];
   // The unified API already deduplicates legacy, ChatGPT and search records.
   // Appending legacy rows here would corrupt pagination and filtered totals.
   return state.futureRadar.jobs;
@@ -3555,8 +3605,27 @@ function selectRecruitmentTier(tier) {
 
 function renderRecruitmentJobs(jobs) {
   elements.recruitmentJobs.replaceChildren();
+  if (!state.futureRadar.jobsLoaded) {
+    const notice = makeElement("div", "empty-list");
+    notice.append(
+      makeElement("strong", "", state.futureRadar.jobsError ? "主机会池加载失败" : "正在读取主机会池…"),
+      makeElement("p", "", state.futureRadar.jobsError || "正在读取聊天线索、搜索发现与官网确认的机会。"),
+    );
+    if (state.futureRadar.jobsError) {
+      const retry = makeElement("button", "", "重试加载主机会池");
+      retry.type = "button";
+      retry.addEventListener("click", () => loadFutureRadarJobPage(1, true, { scroll: false }));
+      notice.appendChild(retry);
+    }
+    elements.recruitmentJobs.appendChild(notice);
+    return;
+  }
+  const showingSavedSnapshot = Boolean(state.futureRadar.jobsError);
+  if (showingSavedSnapshot) {
+    elements.recruitmentJobs.appendChild(makeElement("p", "radar-load-error", state.futureRadar.jobsError));
+  }
   const sourceJobs = futureRadarDisplayJobs(jobs);
-  const starfieldJobs = filterRecruitmentByStarfield(sourceJobs);
+  const starfieldJobs = showingSavedSnapshot ? sourceJobs : filterRecruitmentByStarfield(sourceJobs);
   const { priorityJobs, belowPriorityJobs, invalidJobs } = partitionJobsByPriority(starfieldJobs);
   const availableJobs = [...priorityJobs, ...invalidJobs.map((job) => ({ ...job, tier_code: null }))];
   const globalTierCounts = state.futureRadar.opportunityStats?.tier_counts;
@@ -3616,19 +3685,19 @@ function renderRecruitmentJobs(jobs) {
   elements.recruitmentJobs.appendChild(
     makeElement("p", "job-tier-legend", `沿用岗位评价规则：T0 ≥90 · T0.5 85–89 · T1 80–84 · T1.5 75–79 · T2 70–74 · T2.5 65–69 · T3 60–64；信息不足列为“未评分”。上方数量统计全部符合当前检索条件的机会，选择 T 级会筛选整个池子，不限当前页${belowPriorityJobs.length ? `；本页 ${belowPriorityJobs.length} 个低于 60 分的机会保留在下方次级区` : ""}。`),
   );
-  const displayedJobs = state.recruitmentTierFilter === "ALL"
+  const displayedJobs = showingSavedSnapshot || state.recruitmentTierFilter === "ALL"
     ? availableJobs
     : state.recruitmentTierFilter === "UNRANKED"
       ? availableJobs.filter((job) => jobTierBucket(job) === "UNRANKED")
       : availableJobs.filter((job) => jobTierBucket(job) === state.recruitmentTierFilter);
-  const showBelowPriority = state.recruitmentTierFilter === "ALL" && belowPriorityJobs.length > 0;
+  const showBelowPriority = (showingSavedSnapshot || state.recruitmentTierFilter === "ALL") && belowPriorityJobs.length > 0;
   const visibleCount = displayedJobs.length + (showBelowPriority ? belowPriorityJobs.length : 0);
   const matchingTotal = state.futureRadar.jobsLoaded ? state.futureRadar.totalJobs : starfieldJobs.length;
   elements.recruitmentJobs.appendChild(
     makeElement(
       "p",
       "job-tier-filter-result",
-      `本页显示 ${visibleCount} 条 · 当前筛选共 ${matchingTotal} 个机会${state.recruitmentTierFilter === "ALL" ? "" : ` · ${state.recruitmentTierFilter}`}`,
+      `本页显示 ${visibleCount} 条 · ${showingSavedSnapshot ? "上次成功快照" : "当前筛选"}共 ${matchingTotal} 个机会${showingSavedSnapshot || state.recruitmentTierFilter === "ALL" ? "" : ` · ${state.recruitmentTierFilter}`}`,
     ),
   );
   if (!displayedJobs.length && !showBelowPriority) {
@@ -3851,12 +3920,14 @@ async function addRecruitmentWatchFromJob(job, button) {
 }
 
 async function refreshRecruitment() {
+  let legacyData = null;
   try {
     const [profile, data, watchData] = await Promise.all([
       api("/recruitment/profile"),
       api("/recruitment/jobs"),
       api("/recruitment/watches").catch(() => ({ watches: [] })),
     ]);
+    legacyData = data;
     state.recruitmentProfile = profile;
     state.recruitmentJobs = data.jobs || [];
     state.recruitmentWatches = watchData.watches || watchData || [];
@@ -3868,14 +3939,15 @@ async function refreshRecruitment() {
     renderRecruitmentMonitors(data.monitor_pools || []);
     renderRecruitmentSyncStatus(chatgptSyncFromJobs(data));
     setRecruitmentStatus(data.data_status?.message || "已接收公开信号源");
-    await loadFutureRadarSnapshot();
-    return data;
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
     setRecruitmentStatus("公开信号源加载失败");
     renderRecruitmentSyncStatus(state.recruitmentSyncStatus);
-    return null;
   }
+  // Profile/watch compatibility requests must not prevent the main pool from
+  // loading, and their success does not mean the main pool loaded correctly.
+  const opportunitiesReadable = await loadFutureRadarSnapshot();
+  return opportunitiesReadable ? legacyData : null;
 }
 
 async function refreshRecruitmentSource() {
