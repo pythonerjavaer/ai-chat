@@ -385,7 +385,7 @@
           </section>
           <section class="recruitment-results">
             <div class="recruitment-results-heading">
-              <div><span class="overline">RECRUITMENT INTELLIGENCE SYSTEM</span><h3>未来招聘情报中枢</h3><small id="recruitment-source-status" class="recruitment-source-copy">正在接收公开信号…</small></div>
+              <div><span class="overline">RECRUITMENT INTELLIGENCE SYSTEM</span><h3>未来招聘情报中枢</h3><small id="recruitment-source-status" class="recruitment-source-copy" role="status" aria-live="polite">主机会池尚未读取；待核验线索与官网确认机会在同一池展示。</small></div>
               <div class="radar-heading-actions">
                 <button id="recruitment-refresh" class="source-status" type="button">刷新信号 ↻</button>
                 <button id="future-radar-run" class="radar-scan-now" type="button" data-scan-type="quick" title="优先核对已知官网、ATS、API 与招聘页面，不主动运行 AI 发现。">
@@ -404,10 +404,11 @@
               <span id="future-radar-live-state" class="radar-live-state pending"><i></i>等待雷达状态</span>
             </section>
             <div id="future-radar-dashboard" class="radar-dashboard" aria-label="未来雷达指标"></div>
+            <p class="radar-metric-note">新增指标是近7天来源记录；待核验指标是来源记录数。机会池会合并重复并按条件筛选，与指标数量可能不同。</p>
             <p id="future-radar-loading" class="radar-loading hidden" role="status">正在建立招聘情报星图…</p>
             <p id="future-radar-error" class="radar-load-error hidden" role="alert"></p>
             <nav class="radar-tabs" aria-label="未来雷达视图">
-              <button class="active" type="button" data-radar-tab="jobs" aria-selected="true">全部机会 <span id="future-radar-opportunity-count">0</span></button>
+              <button class="active" type="button" data-radar-tab="jobs" aria-selected="true">全部机会 <span id="future-radar-opportunity-count">—</span></button>
               <button type="button" data-radar-tab="programs" aria-selected="false">招聘项目</button>
               <button type="button" data-radar-tab="events" aria-selected="false">情报流</button>
               <button type="button" data-radar-tab="sources" aria-selected="false">信源健康</button>

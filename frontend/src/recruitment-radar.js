@@ -13,6 +13,7 @@ export const STARFIELD_DEFINITIONS = Object.freeze([
 
 export const TIER_CODES = Object.freeze(["T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3"]);
 export const DEFAULT_FUTURE_RADAR_STATUS = "active";
+export const FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS = 45_000;
 
 export function futureRadarCoverageCopy(scope = {}, coverage = null, status = "pending") {
   const count = (value) => Math.max(0, Math.floor(Number(value) || 0));
@@ -307,10 +308,14 @@ export function isDefaultFutureRadarJobsView(filters = {}) {
 
 export function futureRadarOpportunityErrorCopy(error, hasSnapshot = false) {
   const status = Number(error?.status);
+  if (status === 401) return "主机会池登录状态已失效（HTTP 401）。请重新登录后查看机会。";
   const http = Number.isInteger(status) && status >= 400 && status <= 599 ? `（HTTP ${status}）` : "";
+  const timedOut = error?.code === "REQUEST_TIMEOUT" || error?.name === "AbortError"
+    || /^请求超时/.test(String(error?.message || ""));
+  const reason = http || (timedOut ? "（读取超时，服务暂未返回）" : "");
   return hasSnapshot
-    ? `主机会池刷新失败${http}。当前保留上次成功的主池数据，请点击“刷新机会”重试。`
-    : `主机会池加载失败${http}。请点击“刷新机会”重试。`;
+    ? `主机会池刷新失败${reason}。当前保留上次成功的主池数据，请点击“刷新机会”重试。`
+    : `主机会池加载失败${reason}。请点击“刷新机会”重试。`;
 }
 
 export function parseRadarRetryAfter(value, now = Date.now()) {

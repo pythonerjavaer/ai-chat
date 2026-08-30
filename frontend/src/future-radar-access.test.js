@@ -87,7 +87,7 @@ test("chat and search discoveries appear in the default unified opportunity pool
   assert.match(indexSource, /data-radar-tab="jobs"[^>]*>全部机会/);
   assert.doesNotMatch(indexSource, /data-radar-tab="candidates"/);
   assert.match(indexSource, /id="future-radar-opportunity-coverage"/);
-  assert.match(appSource, /api\(`\/future-radar\/opportunities\?\$\{query\}`\)/);
+  assert.match(appSource, /api\(`\/future-radar\/opportunities\?\$\{query\}`,\s*\{\s*timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS/);
   assert.doesNotMatch(appSource, /api\(`\/future-radar\/jobs\?/);
   const start = appSource.indexOf("function renderRecruitmentJobs(");
   const end = appSource.indexOf("\nasync function addRecruitmentWatchFromJob", start);
@@ -103,7 +103,7 @@ test("unified opportunities refresh without needing a verified public event", ()
   const start = appSource.indexOf("async function pollFutureRadarEvents(");
   const end = appSource.indexOf("\nfunction stopFutureRadarPolling", start);
   const pollingSource = appSource.slice(start, end);
-  assert.match(pollingSource, /api\(`\/future-radar\/opportunities\?\$\{opportunityQuery\}`\)/);
+  assert.match(pollingSource, /api\(`\/future-radar\/opportunities\?\$\{opportunityQuery\}`,\s*\{\s*timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS/);
   assert.match(pollingSource, /state\.futureRadar\.jobsRequestId === jobsRequestId/);
   assert.match(pollingSource, /futureRadarJobsQuery\(\) === opportunityQuery/);
   assert.match(pollingSource, /applyFutureRadarJobsPayload\(opportunityPayload\)/);
@@ -112,6 +112,6 @@ test("unified opportunities refresh without needing a verified public event", ()
 
 test("T-tier filters go to the unified backend and detail uses the same pool", () => {
   assert.match(appSource, /tier_code: state\.recruitmentTierFilter === "ALL" \? "" : state\.recruitmentTierFilter/);
-  assert.match(appSource, /api\(`\/future-radar\/opportunities\/\$\{encodeURIComponent\(job\.id\)\}`\)/);
+  assert.match(appSource, /api\(`\/future-radar\/opportunities\/\$\{encodeURIComponent\(job\.id\)\}`,\s*\{\s*timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS/);
   assert.match(indexSource, /id="future-radar-filter-verification"[^>]*><option value="">全部机会/);
 });

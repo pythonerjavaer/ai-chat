@@ -413,7 +413,10 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .radar-live-state.running i { animation: signalBeacon 1.2s ease-in-out infinite; }
 .radar-live-state.warning { color: #ffd08a; border-color: rgba(255,188,91,.22); }
 .radar-dashboard { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; margin-bottom: 11px; }
+.radar-metric-note { margin: -4px 0 10px; color: #79919c; font-size: 10px; line-height: 1.5; }
 .radar-metric { position: relative; min-width: 0; display: grid; gap: 2px; padding: 9px 8px; overflow: hidden; border: 1px solid rgba(130,218,228,.11); border-radius: 10px; background: rgba(6,23,32,.34); }
+.radar-metric[type="button"] { text-align: left; cursor: pointer; }
+.radar-metric[type="button"]:hover { border-color: rgba(130,218,228,.4); }
 .radar-metric::after { content: ""; position: absolute; width: 34px; height: 34px; right: -17px; top: -17px; border: 1px solid rgba(100,229,222,.12); border-radius: 50%; }
 .radar-metric small { overflow: hidden; color: #648d99; font-size: 6px; font-weight: 900; letter-spacing: .08em; text-overflow: ellipsis; white-space: nowrap; }
 .radar-metric strong { color: #ecfeff; font-size: 17px; line-height: 1.1; }

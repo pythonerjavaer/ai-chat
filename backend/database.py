@@ -12,6 +12,7 @@ from .future_radar.schema import migrate as migrate_future_radar
 
 SPACE_RUN_HISTORY_LIMIT = 100
 API_USAGE_RETENTION_DAYS = 30
+API_USAGE_SQLITE_TIMEOUT_SECONDS = 0.05
 
 
 def utc_now() -> str:
@@ -671,39 +672,49 @@ def record_api_usage_event(
     status_code: int,
     duration_ms: int,
 ) -> None:
-    """Persist content-free request metadata for aggregate operations metrics."""
+    """Best-effort metrics use a short write budget, not business DB timeouts."""
     safe_route = route[:160] if route.startswith("/api/") else "/api/unknown"
-    with connect() as connection:
-        tracked_user_id = user_id
-        if user_id is not None:
-            exists = connection.execute(
-                "SELECT 1 FROM users WHERE id = ?",
-                (user_id,),
-            ).fetchone()
-            if not exists:
-                tracked_user_id = None
-        connection.execute(
-            """
-            INSERT INTO api_usage_events
-                (user_id, method, route, status_code, duration_ms, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                tracked_user_id,
-                method.upper()[:12],
-                safe_route,
-                max(100, min(int(status_code), 599)),
-                max(0, min(int(duration_ms), 3_600_000)),
-                utc_now(),
-            ),
-        )
-        retention_cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=API_USAGE_RETENTION_DAYS)
-        ).isoformat()
-        connection.execute(
-            "DELETE FROM api_usage_events WHERE created_at < ?",
-            (retention_cutoff,),
-        )
+    # The application initializes its WAL database at startup. Do not repeat
+    # journal-mode changes here or inherit connect()'s 30-second busy timeout:
+    # losing one metric during a scan is preferable to queuing a slow writer.
+    connection = sqlite3.connect(
+        settings.database_path, timeout=API_USAGE_SQLITE_TIMEOUT_SECONDS
+    )
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            tracked_user_id = user_id
+            if user_id is not None:
+                exists = connection.execute(
+                    "SELECT 1 FROM users WHERE id = ?",
+                    (user_id,),
+                ).fetchone()
+                if not exists:
+                    tracked_user_id = None
+            connection.execute(
+                """
+                INSERT INTO api_usage_events
+                    (user_id, method, route, status_code, duration_ms, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tracked_user_id,
+                    method.upper()[:12],
+                    safe_route,
+                    max(100, min(int(status_code), 599)),
+                    max(0, min(int(duration_ms), 3_600_000)),
+                    utc_now(),
+                ),
+            )
+            retention_cutoff = (
+                datetime.now(timezone.utc) - timedelta(days=API_USAGE_RETENTION_DAYS)
+            ).isoformat()
+            connection.execute(
+                "DELETE FROM api_usage_events WHERE created_at < ?",
+                (retention_cutoff,),
+            )
+    finally:
+        connection.close()
 
 
 def _parse_timestamp(value: str) -> datetime | None:

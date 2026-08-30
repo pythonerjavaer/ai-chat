@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from functools import lru_cache
 from typing import Any
 
 
@@ -369,38 +370,64 @@ def _role_source_text(job: dict[str, Any]) -> str:
     return _joined_fields(job, ("title", "description", "responsibilities", "requirements"))
 
 
-def _marker_matches(text: str, marker: str) -> bool:
+@lru_cache(maxsize=1024)
+def _marker_rule(marker: str) -> tuple[str, re.Pattern[str] | None]:
+    """Compile the static matching vocabulary once, without caching job text."""
     marker = marker.casefold().strip()
-    if not marker:
-        return False
-    if re.fullmatch(r"[a-z0-9_+.# -]+", marker):
+    if marker and re.fullmatch(r"[a-z0-9_+.# -]+", marker):
         escaped = re.escape(marker).replace(r"\ ", r"\s+")
-        return re.search(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", text) is not None
-    return marker in text
+        return marker, re.compile(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])")
+    return marker, None
+
+
+def _marker_matches(text: str, marker: str) -> bool:
+    normalized, pattern = _marker_rule(marker)
+    if not normalized:
+        return False
+    return pattern.search(text) is not None if pattern else normalized in text
 
 
 def _contains_any(text: str, markers: tuple[str, ...] | set[str]) -> bool:
     return any(_marker_matches(text, marker) for marker in markers)
 
 
+@lru_cache(maxsize=2048)
+def _category_codes_for_text(text: str) -> frozenset[str]:
+    """Memoize one normalized taxonomy value, never a job/profile or score.
+
+    Category rules are module constants. Changed record fields use new content
+    keys; a deployment loads fresh rules and caches. Immutable entries cannot
+    be changed by a caller that combines or edits its returned categories.
+    """
+    if text in CATEGORY_ORDER:
+        return frozenset((text,))
+    codes: set[str] = set()
+    private_context = _contains_any(
+        text, {"私募", "私募基金", "对冲基金", "private fund", "private_fund", "hedge fund", "hedge_fund"}
+    )
+    for code, aliases in CATEGORY_ALIASES.items():
+        for alias in aliases:
+            alias_text = alias.casefold()
+            if alias_text == "基金" and private_context:
+                continue
+            if text == alias_text or _marker_matches(text, alias_text):
+                codes.add(code)
+                break
+    return frozenset(codes)
+
+
 def _category_codes_for_value(value: Any) -> set[str]:
     codes: set[str] = set()
     for raw in _as_values(value):
         text = raw.casefold().strip()
-        if text in CATEGORY_ORDER:
-            codes.add(text)
-            continue
-        private_context = _contains_any(
-            text, {"私募", "私募基金", "对冲基金", "private fund", "private_fund", "hedge fund", "hedge_fund"}
+        # Bound retained input size as well as the LRU entry count. Unusually
+        # long metadata still gets the same classification, without retention.
+        lookup = (
+            _category_codes_for_text
+            if len(text) <= 512
+            else _category_codes_for_text.__wrapped__
         )
-        for code, aliases in CATEGORY_ALIASES.items():
-            for alias in aliases:
-                alias_text = alias.casefold()
-                if alias_text == "基金" and private_context:
-                    continue
-                if text == alias_text or _marker_matches(text, alias_text):
-                    codes.add(code)
-                    break
+        codes.update(lookup(text))
     return codes
 
 

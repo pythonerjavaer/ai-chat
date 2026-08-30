@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     File,
@@ -502,7 +503,16 @@ async def security_headers(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception:
-        _record_api_usage(request, 500, started_at)
+        event = _api_usage_event_metadata(request, 500, started_at)
+        if event is not None:
+            # There is no response to attach a background task to. Preserve
+            # the original exception while a best-effort worker records 500.
+            try:
+                asyncio.get_running_loop().run_in_executor(
+                    None, _record_api_usage, *event
+                )
+            except RuntimeError:
+                logger.info("API usage telemetry skipped: executor unavailable")
         raise
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -510,30 +520,51 @@ async def security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
-    _record_api_usage(request, response.status_code, started_at)
+    event = _api_usage_event_metadata(request, response.status_code, started_at)
+    if event is not None:
+        background = BackgroundTasks()
+        if response.background is not None:
+            background.add_task(response.background)
+        # Starlette sends the body before running background tasks. The sync
+        # recorder runs in its thread pool, never in the async event loop.
+        background.add_task(_record_api_usage, *event)
+        response.background = background
     return response
 
 
-def _record_api_usage(request: Request, status_code: int, started_at: float) -> None:
-    """Best-effort telemetry: endpoint metadata only, never bodies or headers."""
+def _api_usage_event_metadata(
+    request: Request, status_code: int, started_at: float
+) -> tuple[int | None, str, str, int, int] | None:
+    """Freeze business timing and only safe scalars before deferred work."""
     if not request.url.path.startswith("/api/") or request.url.path in {
         "/api/health",
         "/api/admin/usage",
     }:
-        return
+        return None
     route = request.scope.get("route")
     route_path = getattr(route, "path", None) or "/api/unknown"
-    duration_ms = round((time.perf_counter() - started_at) * 1_000)
+    duration_ms = max(0, round((time.perf_counter() - started_at) * 1_000))
+    return (
+        getattr(request.state, "user_id", None),
+        request.method,
+        route_path,
+        status_code,
+        duration_ms,
+    )
+
+
+def _record_api_usage(
+    user_id: int | None, method: str, route: str, status_code: int, duration_ms: int
+) -> None:
+    """Best-effort telemetry: no Request, bodies, queries or credentials."""
     try:
         database.record_api_usage_event(
-            getattr(request.state, "user_id", None),
-            request.method,
-            route_path,
-            status_code,
-            duration_ms,
+            user_id, method, route, status_code, duration_ms,
         )
-    except Exception:
-        logger.exception("API usage metadata could not be recorded")
+    except Exception as exc:
+        logger.info(
+            "API usage telemetry skipped error_type=%s", type(exc).__name__
+        )
 
 
 class AuthRequest(BaseModel):

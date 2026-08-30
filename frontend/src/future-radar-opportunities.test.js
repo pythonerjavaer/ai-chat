@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import {
+  FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
   buildFutureRadarJobsQuery,
   futureRadarOpportunityDateCopy,
   futureRadarOpportunitySource,
@@ -79,7 +80,7 @@ function pollingContext({ race = false, unchanged = false } = {}) {
   const calls = [];
   const lead = { id: "new-chat-lead", verification_status: "pending", tier_code: "T1" };
   const payload = { items: [lead], total: 1, stats: { total_opportunities: 1, tier_counts: { T1: 1 } } };
-  const state = { futureRadar: {
+  const state = { token: Symbol("pure-state-session"), futureRadar: {
     polling: false, jobsLoading: false, jobsRequestId: 1,
     jobsLoaded: unchanged, jobsError: "",
     lastEventId: null, activeRunTypes: new Set(), events: [],
@@ -87,6 +88,7 @@ function pollingContext({ race = false, unchanged = false } = {}) {
   } };
   const result = { applied: 0, rendered: 0 };
   const context = {
+    FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
     state, document: { hidden: false },
     elements: { recruitmentDialog: { open: true }, futureRadarLiveState: { replaceChildren() {} } },
     futureRadarJobsQuery: () => "page=1&status=open",
