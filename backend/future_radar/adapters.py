@@ -89,9 +89,28 @@ def _public_reference_url(value: Any) -> str | None:
     """Return a canonical public reference, excluding chats and credential URLs."""
     candidate = clean_text(value, limit=2_000)
     decoded = urllib.parse.unquote(candidate)
+    try:
+        decoded_parts = urllib.parse.urlsplit(decoded)
+    except ValueError:
+        return None
+    phone_check_path = decoded_parts.path
+    reference_host = (decoded_parts.hostname or "").casefold()
+    # Public ATS identifiers can happen to contain a phone-shaped digit run.
+    # Exempt only the identifier in known public recruitment routes, never a
+    # contact query, another host, or a number elsewhere in the job title.
+    if reference_host == "xiaoyuan.zhaopin.com":
+        phone_check_path = re.sub(
+            r"^/company/KA\d{6,16}D\d{6,16}/?$", "/company/public-ats-id", phone_check_path,
+        )
+    elif reference_host.endswith(".myworkdayjobs.com") and "/job/" in phone_check_path:
+        phone_check_path = re.sub(
+            r"_(?:JR|REQ|R)[-_]?\d{4,16}/?$", "_public-ats-id", phone_check_path,
+            flags=re.IGNORECASE,
+        )
+    phone_check_url = decoded_parts._replace(path=phone_check_path).geturl()
     if (
         _PUBLIC_EMAIL.search(decoded)
-        or any(pattern.search(decoded) for pattern in _PUBLIC_PHONES)
+        or any(pattern.search(phone_check_url) for pattern in _PUBLIC_PHONES)
         or any(pattern.search(decoded) for pattern in _PUBLIC_SECRETS)
     ):
         return None

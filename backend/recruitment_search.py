@@ -604,6 +604,11 @@ _CLOSED_PAGE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_UNRESOLVED_ATS_FIELD_PATTERN = re.compile(
+    r"\{\{[^{}\r\n]{0,100}(?:job|position|requisition|error)[^{}\r\n]{0,100}\}\}",
+    re.IGNORECASE,
+)
+
 _OPEN_PAGE_PATTERN = re.compile(
     r"(?:立即(?:申请|投递|报名)|现在申请|申请职位|投递简历|我要申请|"
     r"申请入口|投递入口|网申入口|报名入口|开放(?:申请|投递|报名)|"
@@ -786,6 +791,19 @@ def _evaluate_official_candidate_page(
     )
     title_key = _evidence_key(str(job.get("title", "")))
     exact_title_confirmed = bool(title_key and title_key in page_key)
+    if not exact_title_confirmed and _UNRESOLVED_ATS_FIELD_PATTERN.search(page_text):
+        # Angular/ATS shells contain both the job view and an unrendered error
+        # branch (for example {{jobsHeading}} / {{ErrorMessageJobTitle}} plus
+        # "posting expired"). Without a resolved candidate title, that branch
+        # is not evidence that this job is closed, open, or even loaded.
+        return CandidatePageEvidence(
+            readable=False,
+            title_confirmed=False,
+            page_text=page_text,
+            employer_confirmed=employer_confirmed,
+            domain_confirmed=domain_confirmed,
+            final_url=final_url,
+        )
     campaign_confirmed = bool(
         _is_campaign_title(str(job.get("title", "")), company)
         and _CAMPUS_PAGE_PATTERN.search(page_text)

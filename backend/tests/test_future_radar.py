@@ -1501,6 +1501,29 @@ def test_public_reference_url_rejects_phone_numbers():
     ) == "https://public.example.com/articles/campus-2027"
 
 
+@pytest.mark.parametrize("url", [
+    "https://xiaoyuan.zhaopin.com/company/KA0403315311D90000008000",
+    "https://barclays.wd3.myworkdayjobs.com/en-US/External_Career_Site_Barclays/job/"
+    "Sales--Trading-and-Structuring-Graduate-Programme-2027-Hong-Kong_JR-0000128133",
+])
+def test_public_ats_identifiers_are_not_mistaken_for_phone_contacts(url):
+    assert _public_reference_url(url) == url
+    assert _public_reference_url(url + "?contact=13800138000") is None
+    assert _public_reference_url(url + "?token=private-token") is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://xiaoyuan.zhaopin.com.example.com/company/KA0403315311D90000008000",
+    "https://barclays.wd3.myworkdayjobs.com.example.com/job/Role_JR-0000128133",
+    "https://barclays.wd3.myworkdayjobs.com/contact/13800138000",
+    "https://barclays.wd3.myworkdayjobs.com/job/Call-13800138000_JR-0000128133",
+    "https://barclays.wd3.myworkdayjobs.com/job/Role_JR-helpdesk-13800138000",
+    "https://xiaoyuan.zhaopin.com/company/KAhelpdesk13800138000",
+])
+def test_ats_identifier_exception_does_not_allow_other_hosts_or_contacts(url):
+    assert _public_reference_url(url) is None
+
+
 def test_public_feed_adapter_rejects_dtd(monkeypatch):
     page = SimpleNamespace(
         raw_text="<!DOCTYPE rss [<!ENTITY x SYSTEM 'file:///etc/passwd'>]><rss/>",

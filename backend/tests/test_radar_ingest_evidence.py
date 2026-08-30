@@ -11,7 +11,7 @@ os.environ.setdefault("FUTURE_RADAR_ENABLED", "false")
 os.environ.setdefault("RECRUITMENT_WEB_SEARCH_ENABLED", "false")
 os.environ.setdefault("RECRUITMENT_REFRESH_MINUTES", "0")
 
-from backend import main
+from backend import main, recruitment_search
 
 
 def candidate(**changes):
@@ -87,3 +87,38 @@ def test_unknown_location_and_mixed_navigation_do_not_override_explicit_closed_s
     mock_page(monkeypatch, "校园招聘 社会招聘 该职位已下线", closed=True)
     status, reason, _ = main._verify_ingest_candidate(candidate(city="待具体岗位确认"))
     assert (status, reason) == ("closed", "official_page_closed")
+
+
+@pytest.mark.parametrize("placeholder", [
+    "{{jobsHeading}}", "{{ErrorMessageJobTitle}}", "{{vm.positionTitle}}",
+])
+def test_unrendered_ats_error_branch_is_not_a_closed_job(monkeypatch, placeholder):
+    page_text = (
+        f"示例科技 Careers {placeholder} Campus Graduate opportunities 2027 "
+        "The job posting has expired or has already been filled. Apply now."
+    )
+    monkeypatch.setattr(main, "fetch_watch_page", lambda *_args, **_kwargs: SimpleNamespace(
+        text=page_text, final_url="https://careers.example.com/job/123",
+    ))
+    job = candidate()
+    evidence = recruitment_search._evaluate_official_candidate_page(
+        {**job, "url": job["canonical_url"]}, page_text, job["canonical_url"],
+    )
+    assert evidence.readable is False
+    assert evidence.closed is False
+    assert evidence.open_confirmed is False
+    assert evidence.title_confirmed is False
+    status, reason, _ = main._verify_ingest_candidate(job)
+    assert (status, reason) == ("pending", "official_page_unreadable")
+
+
+@pytest.mark.parametrize("page_text", [
+    "This job posting has expired and is no longer accepting applications.",
+    "示例科技 2027 校园招聘数据分析岗 职位已关闭",
+    "{{jobsHeading}} 示例科技 2027 校园招聘数据分析岗 职位已关闭",
+])
+def test_rendered_closed_notice_is_not_ignored_as_a_template(monkeypatch, page_text):
+    monkeypatch.setattr(main, "fetch_watch_page", lambda *_args, **_kwargs: SimpleNamespace(
+        text=page_text, final_url="https://careers.example.com/job/123",
+    ))
+    assert main._verify_ingest_candidate(candidate())[:2] == ("closed", "official_page_closed")

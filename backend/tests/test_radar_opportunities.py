@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections import deque
 from datetime import date, timedelta
 from types import SimpleNamespace
 
@@ -31,6 +32,9 @@ OFFICIAL = "legacy-recruitment-pipeline"
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
+    # Each temporary app/database is an independent test deployment. Do not
+    # carry registration attempts from other API tests into this fixture.
+    monkeypatch.setattr(main, "_registration_requests", deque())
     monkeypatch.setattr(database, "settings", SimpleNamespace(
         database_path=tmp_path / "opportunities.db"
     ))
@@ -117,6 +121,18 @@ def test_pending_and_conflicted_campus_discoveries_are_immediately_visible(harne
     assert detail.status_code == 200
     assert detail.json()["verification_status"] == "pending"
     assert "tier_bucket" in detail.json()
+
+
+@pytest.mark.parametrize("url", [
+    "https://xiaoyuan.zhaopin.com/company/KA0403315311D90000008000",
+    "https://barclays.wd3.myworkdayjobs.com/en-US/External_Career_Site_Barclays/job/"
+    "Sales--Trading-and-Structuring-Graduate-Programme-2027-Hong-Kong_JR-0000128133",
+])
+def test_public_ats_job_ids_do_not_hide_an_imported_opportunity(harness, url):
+    harness.insert("public-ats-reference", official_url=url)
+    result = get_pool(harness)
+    assert result["total"] == 1
+    assert result["items"][0]["official_url"] == url
 
 
 def test_official_and_discovery_duplicates_merge_without_changing_verification(harness):
