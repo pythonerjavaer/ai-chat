@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   STARFIELD_DEFINITIONS,
+  buildFutureRadarCandidatesQuery,
   buildFutureRadarJobsQuery,
   createCoalescedRadarReload,
   filterJobsByStarfields,
@@ -10,6 +11,8 @@ import {
   formatScoringFactors,
   futureRadarActiveRunTypes,
   futureRadarAiSearchNotice,
+  futureRadarCandidateVerification,
+  futureRadarCoverageCopy,
   futureRadarRunErrorCopy,
   futureRadarRunSuccessCopy,
   futureRadarSourceErrorCopy,
@@ -19,6 +22,24 @@ import {
   parseRadarRetryAfter,
   partitionJobsByPriority,
 } from "./recruitment-radar.js";
+
+test("company coverage distinguishes configured scope from completed search", () => {
+  const scope = { category_count: 10, list_entry_count: 218, target_count: 205 };
+  const neverRun = futureRadarCoverageCopy(scope);
+  assert.match(neverRun.scopeText, /全部 10 类.*218.*205/);
+  assert.match(neverRun.resultText, /尚无/);
+  assert.equal(neverRun.incomplete, true);
+  const partial = futureRadarCoverageCopy(scope, {
+    target_count: 205, searched_count: 200, failed_count: 5, employers_with_candidates_count: 60,
+  });
+  assert.match(partial.resultText, /200\/205.*5 家未完成.*60 家发现候选/);
+  assert.equal(partial.incomplete, true);
+  const complete = futureRadarCoverageCopy(scope, {
+    target_count: 205, searched_count: 205, failed_count: 0, employers_with_candidates_count: 60,
+  }, "healthy");
+  assert.equal(complete.incomplete, false);
+  assert.equal(futureRadarCoverageCopy(scope, { target_count: 205, searched_count: 205 }, "error").incomplete, true);
+});
 
 test("all ten machine-coded starfields filter structured API categories", () => {
   assert.equal(STARFIELD_DEFINITIONS.length, 10);
@@ -153,6 +174,22 @@ test("Future Radar query repeats category and resets to requested page", () => {
   assert.equal(params.get("q"), "AI");
   assert.equal(params.has("company"), false);
   assert.deepEqual(params.getAll("category"), ["quant_private_hedge", "big_four_professional_services"]);
+});
+
+test("candidate pool query stays independent from official-job and T-tier filters", () => {
+  const params = new URLSearchParams(buildFutureRadarCandidatesQuery({ page: 2, pageSize: 25 }));
+  assert.equal(params.get("page"), "2");
+  assert.equal(params.get("page_size"), "25");
+  assert.deepEqual([...params.keys()].sort(), ["page", "page_size"]);
+});
+
+test("candidate verification normalizes review aliases without treating unknown discoveries as verified", () => {
+  assert.equal(futureRadarCandidateVerification({ verification_status: "verified" }), "verified");
+  assert.equal(futureRadarCandidateVerification({ review_status: "accepted" }), "verified");
+  assert.equal(futureRadarCandidateVerification({ candidate_status: "expired" }), "closed");
+  assert.equal(futureRadarCandidateVerification({ verification: "invalid" }), "rejected");
+  assert.equal(futureRadarCandidateVerification({}), "pending");
+  assert.equal(futureRadarCandidateVerification({ verification_status: "unknown-value" }), "pending");
 });
 
 test("Radar null scoring is not overwritten by stale legacy enrichment", () => {

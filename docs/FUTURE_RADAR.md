@@ -37,7 +37,7 @@
 - `repository.py`：SQLite 查询、分页、来源健康、运行记录、事件游标、来源快照和 AI 缓存。
 - `ai.py`：对公开网页文本使用 OpenAI Responses API 做有界结构化提取。
 - `worker.py`：一次性服务端 CLI；它不是常驻守护进程。
-- `frontend/src/app.js`：读取 dashboard、岗位、项目、事件、来源与运行记录；浏览器只轮询已经落库的事件，不负责发起定时抓取。
+- `frontend/src/app.js`：读取 dashboard、岗位、项目、事件、来源、搜索更新池与运行记录；浏览器只轮询已落库结果，不负责发起定时抓取。
 
 每个来源失败相互隔离。一次运行可能是 `success`、`partial_success` 或 `failed`；一个来源失败不会阻断其他来源，也不会把该来源的旧岗位误判为已关闭。只有完整且成功的来源快照才推进缺失计数，默认连续缺失两次后才解除该来源关联；当一个岗位已没有任何活跃来源时才关闭。
 
@@ -64,13 +64,23 @@
 
 同一岗位可以由多个来源发现。发现源只提供线索；只有 `trust_level=verification` 的真实官方来源，或数据库中已经可靠标为 `verification_status=verified` 的 `official_html` / `official_api` / `ats` 来源，才具有核验角色。Source API 新建官方来源时，管理员应通过 `trust_level=verification` 明确承担这项信任判断。低信任来源不能用一个 `closed` 字段直接关闭此前仍开放的岗位。
 
+### 全名录搜索与搜索更新池
+
+Deep Scan 使用与左侧分类一致的 `PERSONAL_MONITOR_POOLS`。当前十类共 218 个名录条目，别名归并后 205 家雇主，各自拥有独立搜索请求，并发上限为 8。每家请求必须存在完成的 `web_search_call`，响应必须完整且能解析；多家企业的自报清单不能代替逐家搜索。工具调用次数仍有配置上限，单响应有输出长度上限；达到上限而未完整返回时计为失败，不宣称已经穷尽该公司的所有岗位。
+
+`GET /api/future-radar/search-updates` 和 `/{job_id}` 对登录用户开放，展示具有 discovery 来源的候选，与 `GET /api/future-radar/jobs` 的已核验主池分开。支持分页、分类、公司、关键词、来源、核验状态及开放/关闭状态筛选；默认仅显示尚未截止的开放记录，`status=all` 可回看历史。响应的 `scope` 是应搜索范围，`coverage` 是最近实际完成的扫描记录，`search_status` 是当前来源健康状态；没有扫描记录时不填造 100%。部分企业失败仍保存已获得的候选，Run 标为 `partial_success`。
+
+`legacy-search-discovery` 通过 Quick Scan 安全投影旧 `recruitment_jobs` 的搜索发现和 `recruitment_ingest_candidates` 的候选，只取允许的公开字段；不复制会话标识、私有证据或原始对话。它使用稳定岗位 ID 与完整本地快照哈希，不会把待核验状态升级为已核验，也不会重复创建已经由官网确认的岗位。候选列表在雷达页面打开时单独每 30 秒读取最新结果，不依赖只含已核验岗位的公开事件流。
+
+非空 `/api/recruitment/ingest` 提交完成后立即尝试仅运行这个本地桥接来源，不触发外部请求或 AI。该步骤仍遵守 Quick Run Lock 与 Source Lock；遇到锁或投影失败时返回 `search_updates_refresh.status=deferred`，已接收候选不会回滚，下一轮 Quick Scan 可补齐投影。空心跳不会启动桥接。
+
 ## 3. Source Registry 与适配器
 
 当前支持的适配路径：
 
 | `adapter_config.adapter` | 行为 |
 | --- | --- |
-| `legacy_database` | 把旧 `recruitment_jobs` 岗位池兼容导入新情报层 |
+| `legacy_database` | 把旧 `recruitment_jobs` 岗位池兼容导入新情报层；`discovery_only` 模式单独桥接搜索与同步候选 |
 | `official_html` | 抓取允许访问的公开 HTTPS 页面，做校招标记和内容指纹；可选 AI 结构化提取 |
 | `official_api` | 按 `items_path` 和 `field_map` 映射公开 JSON API |
 | `public_feed` | 读取公开 RSS/Atom，最多保存受限的文章 discovery 元数据；不直接生成已核验岗位 |
@@ -93,6 +103,7 @@ Source Registry 目前包含以下公开入口。聚合频道仅作为 discovery
 - `official-honor-campus-2027`：荣耀官网的 2027 校招项目和官网首页逐字列出的三个“重点校招职位”；只有页面仍同时包含活动标记和具体岗位名称时才生成已核验岗位。由于具体 ATS 详情页是无法由确定性抓取器核验岗位正文的 JavaScript 壳，卡片安全回退到已经核验的荣耀官方概览页；
 - `official-xiaomi-top-talent-2027`：小米官网逐字包含“顶尖应届生项目”和“2024年-2027年”时，生成同名的已核验项目入口；页面不再包含这些标记时不会继续生成；
 - `legacy-recruitment-pipeline`：现有已核验岗位池；
+- `legacy-search-discovery`：旧搜索发现与受控同步候选，始终按 discovery 桥接；
 - `openai-public-web-search`：仅在 `RECRUITMENT_WEB_SEARCH_ENABLED=true` 时启用的公共网页补漏。
 
 公开入口可访问不等于其中每条内容已经成为已核验岗位。系统仍按来源角色、岗位字段和官方 HTTPS 证据分别处理。
@@ -203,6 +214,8 @@ Content-Type: application/json
 | `GET` | `/api/future-radar/dashboard` | JWT | 汇总近 7 天事件、岗位、项目、来源健康、最近运行和事件游标 |
 | `GET` | `/api/future-radar/jobs` | JWT | 岗位分页、个人画像评分与筛选 |
 | `GET` | `/api/future-radar/jobs/{job_id}` | JWT | 单岗位、来源链与个人画像评分 |
+| `GET` | `/api/future-radar/search-updates` | JWT | 搜索候选分页、核验状态统计、完整企业范围和最近实际覆盖记录 |
+| `GET` | `/api/future-radar/search-updates/{job_id}` | JWT | 单条搜索发现及公开来源链，不混作正式岗位 |
 | `GET` | `/api/future-radar/programs` | JWT | 招聘项目分页 |
 | `GET` | `/api/future-radar/programs/{program_id}` | JWT | 单招聘项目与来源链 |
 | `GET` | `/api/future-radar/events` | JWT | 事件列表；支持 `after_event_id` 增量游标 |
@@ -220,9 +233,9 @@ Content-Type: application/json
 
 来源与运行 API 只返回归一化错误代码和固定安全文案。OpenAI 的原始 429、额度、请求标识及其他 provider 诊断不会写入公开运行记录，也不会从来源健康接口回显；`AI_CREDITS_EXHAUSTED` 只表示 AI 补漏不可用，不影响确定性官网扫描。
 
-`POST /sync` 的 `version` 必须是 `FROSTFIRE_SYNC_V1`。`programs`、`jobs`、`articles` 各最多 10 条，三者合计最多 20 条；现有五源自动桥接可以采用更严格的每批最多 10 条策略。请求可以带 `Idempotency-Key`；未提供时依次使用 `batch_id` 或 payload hash。同一幂等键重放同一 payload 返回原结果，复用到不同 payload 返回 409。未知字段、非 HTTPS URL、包含邮箱/电话号码的 evidence 会被 schema 拒绝。
+`POST /sync` 的 `version` 必须是 `FROSTFIRE_SYNC_V1`。`programs`、`jobs`、`articles` 各最多 10 条，三者合计最多 20 条；现有六源自动桥接可以采用更严格的每批最多 10 条策略。请求可以带 `Idempotency-Key`；未提供时依次使用 `batch_id` 或 payload hash。同一幂等键重放同一 payload 返回原结果，复用到不同 payload 返回 409。未知字段、非 HTTPS URL、包含邮箱/电话号码的 evidence 会被 schema 拒绝。
 
-前端一次并行读取 dashboard、jobs、programs、events、sources 和 runs；某一个接口失败时保留其他已成功区域。只有 Future Radar 对话框可见时才每 30 秒读取增量事件。这个轮询不会触发抓取，也不是后台 scheduler。
+前端一次并行读取 dashboard、jobs、programs、events、sources、runs 和 search-updates；某一个接口失败时保留其他已成功区域。只有 Future Radar 对话框可见时才每 30 秒读取增量事件与当前页搜索候选。这个轮询不会触发抓取，也不是后台 scheduler。
 
 ## 5. 调度与并发
 

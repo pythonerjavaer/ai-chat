@@ -22,8 +22,14 @@ from .recruitment_watch import (
 logger = logging.getLogger(__name__)
 WEB_SEARCH_SOURCE = "OpenAI 网页搜索"
 WEB_SEARCH_STATE_KEY = "recruitment_web_search"
-MAX_SEARCH_JOBS = 100
-MAX_JOBS_PER_CATEGORY = 10
+# One broad category prompt could never cover the 8–40 employers displayed in
+# that category: its structured output was capped at ten rows.  Deep discovery
+# now gives every normalized employer its own required hosted-search request.
+# A model's multi-employer checklist is not evidence that it searched them all.
+# Keep the batch type for compatibility, but a batch always has exactly one
+# employer; the outer executor is responsible for bounded parallelism.
+EMPLOYERS_PER_SEARCH_BATCH = 1
+SEARCH_MAX_OUTPUT_TOKENS = 16_000
 BLOCKED_DISCOVERY_HOSTS = {
     "baidu.com",
     "bing.com",
@@ -121,42 +127,49 @@ MANAGEMENT_TRAINEE_REVIEW_EMPLOYERS = {
     "农发行",
 }
 
-SEARCH_RESULT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "jobs": {
-            "type": "array",
-            "maxItems": MAX_JOBS_PER_CATEGORY,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "company": {"type": "string"},
-                    "title": {"type": "string"},
-                    "city": {"type": "string"},
-                    "industry": {"type": "string"},
-                    "official_url": {"type": "string"},
-                    "opening_date": {"type": ["string", "null"]},
-                    "closing_date": {"type": ["string", "null"]},
-                    "requirements": {"type": "string"},
-                    "category": {"type": "string"},
-                },
-                "required": [
-                    "company",
-                    "title",
-                    "city",
-                    "industry",
-                    "official_url",
-                    "opening_date",
-                    "closing_date",
-                    "requirements",
-                    "category",
-                ],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["jobs"],
-    "additionalProperties": False,
+# Explicit aliases only.  Substring heuristics are unsafe here: for example,
+# ``中国电子`` and ``中国电子科技集团`` are different employers even though one
+# name contains the other.  These groups collapse only obvious bilingual,
+# brand, or legal-name duplicates already present in the left-hand scope.
+EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
+    "国家烟草专卖局": ("中国烟草总公司", "中国烟草", "中烟工业"),
+    "中国电子科技集团": ("中国电科",),
+    "大疆": ("DJI", "大疆创新", "深圳市大疆创新科技"),
+    "中芯国际": ("SMIC",),
+    "B站": ("哔哩哔哩", "Bilibili"),
+    "罗兰贝格": ("Roland Berger",),
+    "亚马逊 / AWS": (
+        "Amazon/AWS", "Amazon", "AWS", "Amazon Web Services", "亚马逊",
+    ),
+    "科尔尼": ("Kearney 科尔尼", "Kearney"),
+    # The sidebar uses familiar short names; official notices commonly use
+    # these legal/brand names.  Alias matching selects a discovery target only,
+    # and never bypasses the separate official-page evidence gate.
+    "工商银行": ("中国工商银行", "ICBC"),
+    "农业银行": ("中国农业银行",),
+    "建设银行": ("中国建设银行", "CCB"),
+    "中国银行": ("Bank of China", "BOC"),
+    "交通银行": ("Bank of Communications", "BOCOM"),
+    "邮储银行": ("中国邮政储蓄银行", "邮政储蓄银行", "PSBC"),
+    "中国移动": ("中国移动通信集团", "China Mobile"),
+    "中国电信": ("中国电信集团", "China Telecom"),
+    "中国联通": ("中国联合网络通信集团", "中国联合网络通信", "China Unicom"),
+    "腾讯": ("腾讯科技", "腾讯计算机系统", "Tencent"),
+    "Microsoft": ("微软",),
+    "Google": ("谷歌",),
+    "Apple": ("苹果",),
+    "NVIDIA": ("英伟达",),
+    "J.P. Morgan": ("JPMorgan", "摩根大通"),
+    "Goldman Sachs": ("高盛",),
+    "Morgan Stanley": ("摩根士丹利",),
+    "UBS": ("瑞银",),
+    "Citi": ("Citibank", "花旗",),
+    "HSBC": ("汇丰",),
+    "BlackRock": ("贝莱德",),
+    "德勤": ("Deloitte",),
+    "普华永道": ("PwC",),
+    "安永": ("EY",),
+    "毕马威": ("KPMG",),
 }
 
 
@@ -169,6 +182,59 @@ class WebRecruitmentSearchResult:
     tool_calls: int
     model: str
     failed_pools: tuple[str, ...] = ()
+    target_employers: tuple[str, ...] = ()
+    searched_employers: tuple[str, ...] = ()
+    employers_with_candidates: tuple[str, ...] = ()
+    failed_employers: tuple[str, ...] = ()
+    search_batches: int = 0
+    failed_batches: tuple[str, ...] = ()
+
+    @property
+    def target_count(self) -> int:
+        return len(set(self.target_employers))
+
+    @property
+    def searched_count(self) -> int:
+        return len(set(self.searched_employers))
+
+    @property
+    def failed_count(self) -> int:
+        return len(set(self.failed_employers))
+
+    @property
+    def batch_count(self) -> int:
+        return self.search_batches
+
+    @property
+    def coverage_percent(self) -> float:
+        if not self.target_count:
+            return 100.0
+        return round(
+            self.searched_count / self.target_count * 100,
+            2,
+        )
+
+
+@dataclass(frozen=True)
+class EmployerSearchTarget:
+    """One logical employer after conservative alias normalization."""
+
+    id: str
+    canonical_name: str
+    aliases: tuple[str, ...]
+    pool_id: str
+    primary_category: str
+    pool_name: str
+    focus: str
+
+
+@dataclass(frozen=True)
+class EmployerSearchBatch:
+    """A bounded hosted-search request whose targets are all explicit."""
+
+    id: str
+    pool: dict[str, Any]
+    targets: tuple[EmployerSearchTarget, ...]
 
 
 @dataclass(frozen=True)
@@ -190,24 +256,184 @@ class CandidatePageEvidence:
     final_url: str = ""
 
 
-def _search_prompt(pool: dict[str, Any]) -> str:
-    today = date.today().isoformat()
-    employers = "、".join(pool["employers"])
-    category = EMPLOYER_TYPE_BY_POOL[pool["id"]]
-    return f"""
-今天是 {today}。搜索“{pool['name']}”这类重点雇主当前仍可申请的校园招聘、应届生、Graduate、管培生、提前批或留学生招聘岗位。
+def _employer_alias_key(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value).casefold())
 
-目标雇主：{employers}
+
+def build_employer_search_targets(
+    pools: list[dict[str, Any]] | None = None,
+) -> tuple[EmployerSearchTarget, ...]:
+    """Expand every configured list entry into one normalized search target.
+
+    Every raw entry is assigned to exactly one target.  Only explicit aliases
+    are merged, so similarly named but legally distinct employers are not
+    accidentally collapsed.
+    """
+    alias_lookup: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for canonical_name, configured_aliases in EMPLOYER_ALIAS_GROUPS.items():
+        aliases = tuple(dict.fromkeys((canonical_name, *configured_aliases)))
+        for alias in aliases:
+            alias_lookup[_employer_alias_key(alias)] = (canonical_name, aliases)
+
+    targets: list[EmployerSearchTarget] = []
+    for pool in pools if pools is not None else PERSONAL_MONITOR_POOLS:
+        grouped_aliases: dict[str, list[str]] = {}
+        canonical_names: dict[str, str] = {}
+        for raw_value in pool.get("employers", []):
+            raw_name = re.sub(r"\s+", " ", str(raw_value)).strip()
+            if not raw_name:
+                continue
+            configured = alias_lookup.get(_employer_alias_key(raw_name))
+            canonical_name, known_aliases = configured or (raw_name, (raw_name,))
+            canonical_key = _employer_alias_key(canonical_name)
+            canonical_names.setdefault(canonical_key, canonical_name)
+            bucket = grouped_aliases.setdefault(canonical_key, [])
+            for alias in (*known_aliases, raw_name):
+                if alias and alias not in bucket:
+                    bucket.append(alias)
+
+        for canonical_key, aliases in grouped_aliases.items():
+            canonical_name = canonical_names[canonical_key]
+            stable_suffix = hashlib.sha256(
+                f"{pool['id']}\0{canonical_key}".encode("utf-8")
+            ).hexdigest()[:12]
+            targets.append(EmployerSearchTarget(
+                id=f"{pool['id']}:{stable_suffix}",
+                canonical_name=canonical_name,
+                aliases=tuple(aliases),
+                pool_id=str(pool["id"]),
+                primary_category=str(pool.get("primary_category") or pool["id"]),
+                pool_name=str(pool.get("name") or pool["id"]),
+                focus=str(pool.get("focus") or ""),
+            ))
+    return tuple(targets)
+
+
+def build_employer_search_batches(
+    pools: list[dict[str, Any]] | None = None,
+    *,
+    batch_size: int | None = None,
+) -> tuple[EmployerSearchBatch, ...]:
+    """Give every target its own request, regardless of the legacy batch size."""
+    del batch_size
+    selected_pools = list(pools if pools is not None else PERSONAL_MONITOR_POOLS)
+    targets = build_employer_search_targets(selected_pools)
+    targets_by_pool: dict[str, list[EmployerSearchTarget]] = {}
+    for target in targets:
+        targets_by_pool.setdefault(target.pool_id, []).append(target)
+    effective_batch_size = EMPLOYERS_PER_SEARCH_BATCH
+    batches: list[EmployerSearchBatch] = []
+    for pool in selected_pools:
+        pool_targets = targets_by_pool.get(str(pool["id"]), [])
+        for offset in range(0, len(pool_targets), effective_batch_size):
+            chunk = tuple(pool_targets[offset: offset + effective_batch_size])
+            batches.append(EmployerSearchBatch(
+                id=f"{pool['id']}:{offset // effective_batch_size + 1}",
+                pool=dict(pool),
+                targets=chunk,
+            ))
+    assigned_ids = [target.id for batch in batches for target in batch.targets]
+    expected_ids = [target.id for target in targets]
+    if len(assigned_ids) != len(set(assigned_ids)) or set(assigned_ids) != set(expected_ids):
+        raise RuntimeError("Employer search batching did not assign every target exactly once.")
+    return tuple(batches)
+
+
+def _search_result_schema(batch: EmployerSearchBatch) -> dict[str, Any]:
+    target_ids = [target.id for target in batch.targets]
+    return {
+        "type": "object",
+        "properties": {
+            "checked_employers": {
+                "type": "array",
+                "minItems": len(target_ids),
+                "maxItems": len(target_ids),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string", "enum": target_ids},
+                        "status": {
+                            "type": "string",
+                            "enum": [
+                                "open_jobs_found",
+                                "no_current_opening",
+                                "official_page_not_found",
+                            ],
+                        },
+                    },
+                    "required": ["target_id", "status"],
+                    "additionalProperties": False,
+                },
+            },
+            "jobs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string", "enum": target_ids},
+                        "company": {"type": "string"},
+                        "title": {"type": "string"},
+                        "city": {"type": "string"},
+                        "industry": {"type": "string"},
+                        "official_url": {"type": "string"},
+                        "opening_date": {"type": ["string", "null"]},
+                        "closing_date": {"type": ["string", "null"]},
+                        "requirements": {"type": "string"},
+                        "category": {"type": "string"},
+                    },
+                    "required": [
+                        "target_id",
+                        "company",
+                        "title",
+                        "city",
+                        "industry",
+                        "official_url",
+                        "opening_date",
+                        "closing_date",
+                        "requirements",
+                        "category",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["checked_employers", "jobs"],
+        "additionalProperties": False,
+    }
+
+
+def _search_prompt(batch: EmployerSearchBatch) -> str:
+    today = date.today().isoformat()
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    pool = batch.pool
+    category = EMPLOYER_TYPE_BY_POOL[pool["id"]]
+    target_lines = []
+    for target in batch.targets:
+        aliases = " / ".join(target.aliases)
+        target_lines.append(
+            f"- target_id={target.id}; 雇主={target.canonical_name}; 别名={aliases}"
+        )
+    targets = "\n".join(target_lines)
+    return f"""
+今天是 {today}。这是“{pool['name']}”公司级覆盖批次 {batch.id}。
+必须将下列每一个 target_id 作为独立搜索目标，分别搜索它当前仍可申请的校园招聘、应届生、Graduate、管培生、提前批或留学生招聘岗位。
+目标毕业届别是 {target_year} 届。搜索词应包含 {target_year}、校园招聘或 graduate；不要只检索当前日历年份的旧届招聘。混合届别项目只有明确接收 {target_year} 届时才能返回。
+
+本批次目标：
+{targets}
+
 category 固定填写：{category}
 
 要求：
-1. 覆盖尽可能多的目标雇主，不要只返回一家单位或一个汇总页面。
+1. 逐个搜索全部 {len(batch.targets)} 个 target_id，不得遗漏。每个 target_id 在 checked_employers 中恰好返回一次；没有开放岗位也要返回 no_current_opening，不得用其他雇主补位。
 2. 只返回当前开放且能直接投递或查看原公告的岗位，排除社招、实习、城市招聘导航页、转载汇总页和已过期岗位。
 3. official_url 必须是企业招聘官网或企业授权 ATS 的直接 HTTPS 链接，不得填搜索结果页、公众号转载、社交媒体或臆造链接。
 4. opening_date / closing_date 只有原文明确写明时才填写 YYYY-MM-DD，否则为 null；不得把发布日期当截止日期。
 5. city 未公告时写“地点待公告确认”。requirements 简洁记录毕业年份、学历、专业、语言或笔试门槛；无法确认时明确写“待官方原文核对”。
 6. 中国人民银行和中国农业发展银行只能使用官方原文中的实际岗位名称；不得自行把笼统校园招聘或所属单位招聘改写成“管培生”。如果原文确实使用该称谓，保留原称并标记“待官方核验”。
-7. 最多返回 {MAX_JOBS_PER_CATEGORY} 条，优先最新和截止日期较近的岗位。
+7. jobs 中的 target_id 必须对应该岗位的目标雇主。返回本次实际搜索发现的全部符合条件的岗位，不要只摘选四条；不同岗位可以共用同一个官方招聘项目链接。保留官方公司名称及分支机构名称，不要为了匹配简称改写雇主。
+8. 搜索完成不等于该企业所有岗位已被穷尽。不得声称已覆盖企业所有岗位；没有找到有效结果时如实返回空 jobs，不要猜测或补齐。
+9. title 保留原公告中的具体岗位名称，不自行拼接年份或“校园招聘”；requirements 中保留原文证实的适用毕业届别，不能依据今天的年份推断。
 """.strip()
 
 
@@ -228,6 +454,115 @@ def _priority_employer(company: str, employers: set[str] | None = None) -> str |
         if employer in normalized or normalized in employer
     ]
     return max(matches, key=len) if matches else None
+
+
+_CHINESE_LEGAL_SUFFIXES = (
+    "集团股份有限公司", "股份有限公司", "集团有限公司",
+    "有限责任公司", "有限公司", "集团", "总公司", "公司",
+)
+_BRANCH_LOCATIONS = (
+    "北京", "上海", "天津", "重庆", "广东", "广州", "深圳", "浙江", "杭州",
+    "江苏", "南京", "苏州", "无锡", "福建", "福州", "厦门", "山东", "济南",
+    "青岛", "四川", "成都", "湖北", "武汉", "湖南", "长沙", "河南", "郑州",
+    "河北", "石家庄", "山西", "太原", "陕西", "西安", "安徽", "合肥",
+    "江西", "南昌", "辽宁", "沈阳", "大连", "吉林", "长春", "黑龙江", "哈尔滨",
+    "云南", "昆明", "贵州", "贵阳", "海南", "海口", "广西", "南宁",
+    "甘肃", "兰州", "青海", "西宁", "宁夏", "银川", "新疆", "乌鲁木齐",
+    "西藏", "拉萨", "内蒙古", "呼和浩特", "香港", "澳门", "台湾", "新加坡",
+)
+_BRANCH_LOCATION_PATTERN = (
+    r"(?:(?:" + "|".join(sorted(_BRANCH_LOCATIONS, key=len, reverse=True))
+    + r")(?:省|市|(?:壮族|回族|维吾尔)?自治区|特别行政区)?){1,2}"
+)
+_BRANCH_UNIT_PATTERN = (
+    r"(?:总行|总部|分行|支行|分公司|营业部|办事处|代表处|研究院|研究所|设计院|分院|分所|"
+    r"研发中心|开发中心|技术中心|数据中心|研究中心|分局|分厂|供电局|供电公司|发电厂|电厂)"
+)
+
+
+def _without_legal_suffix(value: str) -> str:
+    for suffix in _CHINESE_LEGAL_SUFFIXES:
+        if value.endswith(suffix):
+            return value[: -len(suffix)]
+    return value
+
+
+def _matches_chinese_company_or_branch(company_key: str, alias_key: str) -> bool:
+    company_base = _without_legal_suffix(company_key)
+    alias_base = _without_legal_suffix(alias_key)
+    if not alias_base:
+        return False
+    # Notices may put the registered city before a known brand/legal name,
+    # e.g. 深圳市腾讯计算机系统有限公司. Do not strip arbitrary leading text.
+    company_forms = {company_base}
+    location_prefix = re.match(_BRANCH_LOCATION_PATTERN, company_base)
+    if location_prefix:
+        company_forms.add(company_base[location_prefix.end():])
+    for form in company_forms:
+        if form == alias_base:
+            return True
+        if not form.startswith(alias_base):
+            continue
+        remainder = form[len(alias_base):]
+        # 中国银行股份有限公司上海市分行 retains the parent legal suffix
+        # in the middle, unlike a standalone 中国银行股份有限公司 notice.
+        for suffix in _CHINESE_LEGAL_SUFFIXES:
+            if remainder.startswith(suffix):
+                remainder = remainder[len(suffix):]
+                break
+        if re.fullmatch(
+            rf"{_BRANCH_LOCATION_PATTERN}(?:{_BRANCH_UNIT_PATTERN})?", remainder
+        ):
+            return True
+        # For unlisted cities, require an explicit organizational-unit suffix
+        # and a sufficiently specific parent name. Never use broad contains()
+        # matching (中国电子 is not 中国电子科技集团; EY is not Kearney).
+        if len(alias_base) >= 3 and re.fullmatch(
+            rf"[\u4e00-\u9fff0-9]{{0,24}}{_BRANCH_UNIT_PATTERN}", remainder
+        ):
+            return True
+    return False
+
+
+def _company_matches_target(company: str, target: EmployerSearchTarget) -> bool:
+    company_raw = re.sub(r"\s+", " ", str(company)).strip().casefold()
+    company_key = _employer_alias_key(company_raw)
+    if not company_key:
+        return False
+    for alias in target.aliases:
+        alias_raw = re.sub(r"\s+", " ", alias).strip().casefold()
+        alias_key = _employer_alias_key(alias_raw)
+        if not alias_key:
+            continue
+        if company_key == alias_key:
+            return True
+        if re.search(r"[\u4e00-\u9fff]", alias_raw):
+            if _matches_chinese_company_or_branch(company_key, alias_key):
+                return True
+            continue
+        # Short Latin aliases such as EY must be complete tokens; naive
+        # substring matching would classify Kearney as EY.
+        escaped = re.escape(alias_raw).replace(r"\ ", r"\s+")
+        if re.search(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", company_raw):
+            return True
+    return False
+
+
+def _target_for_company(
+    company: str,
+    targets: tuple[EmployerSearchTarget, ...],
+) -> EmployerSearchTarget | None:
+    matches = [target for target in targets if _company_matches_target(company, target)]
+    if not matches:
+        return None
+    # Prefer the most specific configured alias if two legal names overlap.
+    return max(
+        matches,
+        key=lambda target: max(
+            (len(_employer_alias_key(alias)) for alias in target.aliases),
+            default=0,
+        ),
+    )
 
 
 def _needs_management_trainee_review(company: str, title: str) -> bool:
@@ -383,17 +718,24 @@ def _company_evidence_aliases(company: str) -> set[str]:
     return aliases
 
 
-def _official_domain_confirmed(company: str, url: str) -> bool:
+def _official_domain_confirmed(
+    company: str,
+    url: str,
+    aliases: tuple[str, ...] = (),
+) -> bool:
     hostname = (urllib.parse.urlsplit(url).hostname or "").casefold()
     if not hostname:
         return False
     if any(_hostname_matches(hostname, domain) for domain in KNOWN_AUTHORIZED_ATS_DOMAINS):
         return True
-    company_key = _evidence_key(company)
+    company_keys = {
+        key for key in (_evidence_key(value) for value in (company, *aliases)) if key
+    }
     for employer, domains in OFFICIAL_RECRUITMENT_DOMAINS_BY_EMPLOYER.items():
         employer_key = _evidence_key(employer)
-        if not employer_key or not (
+        if not employer_key or not any(
             employer_key in company_key or company_key in employer_key
+            for company_key in company_keys
         ):
             continue
         if any(_hostname_matches(hostname, domain) for domain in domains):
@@ -424,11 +766,18 @@ def _evaluate_official_candidate_page(
     page_key = _evidence_key(page_text)
     final_url = str(final_url or job.get("url", ""))
     company = str(job.get("company", ""))
+    configured_aliases = tuple(
+        str(value) for value in job.get("_employer_aliases", []) if value
+    )
     company_aliases = _company_evidence_aliases(company)
+    for alias in configured_aliases:
+        company_aliases.update(_company_evidence_aliases(alias))
     employer_confirmed = bool(
         page_key and any(alias in page_key for alias in company_aliases)
     )
-    domain_confirmed = _official_domain_confirmed(company, final_url)
+    domain_confirmed = _official_domain_confirmed(
+        company, final_url, configured_aliases
+    )
     cohort_confirmed = bool(
         _CAMPUS_PAGE_PATTERN.search(page_text)
         and _targets_current_graduate_cohort(page_text)
@@ -499,9 +848,13 @@ def _inspect_official_candidate_page(job: dict[str, Any]) -> CandidatePageEviden
 
 
 def _normalize_job(
-    item: dict[str, Any], pool: dict[str, Any] | None = None
+    item: dict[str, Any],
+    pool: dict[str, Any] | None = None,
+    target: EmployerSearchTarget | None = None,
 ) -> dict[str, Any] | None:
     company = str(item.get("company", "")).strip()[:120]
+    if target is not None and not _company_matches_target(company, target):
+        return None
     if pool is None:
         pool = next(
             (
@@ -516,10 +869,11 @@ def _normalize_job(
         )
     if pool is None:
         return None
-    pool_employers = {str(value).casefold() for value in pool.get("employers", [])}
-    employer_key = _priority_employer(company, pool_employers)
-    if not employer_key:
-        return None
+    if target is None:
+        pool_employers = {str(value).casefold() for value in pool.get("employers", [])}
+        employer_key = _priority_employer(company, pool_employers)
+        if not employer_key:
+            return None
     title = re.sub(r"\s+", " ", str(item.get("title", ""))).strip()[:240]
     needs_management_review = _needs_management_trainee_review(company, title)
     campus_text = f"{title} {item.get('requirements', '')}".lower()
@@ -547,7 +901,8 @@ def _normalize_job(
     # every role on such a page into one record, making a successful scan look
     # almost empty.  Include the stable role identity while keeping retries
     # idempotent.
-    identity = "\0".join((company.casefold(), title.casefold(),
+    identity_company = target.canonical_name if target is not None else company
+    identity = "\0".join((identity_company.casefold(), title.casefold(),
                            str(item.get("city", "")).strip().casefold(), official_url))
     job_id = f"web-{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
     requirements = re.sub(r"\s+", " ", str(item.get("requirements", ""))).strip()[:1200]
@@ -638,13 +993,20 @@ def _candidate_was_cited(candidate_url: str, source_urls: set[str]) -> bool:
     return False
 
 
-def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSearchResult:
+def _search_batch(
+    api_client: OpenAI,
+    batch: EmployerSearchBatch,
+) -> WebRecruitmentSearchResult:
+    if len(batch.targets) != 1:
+        raise RuntimeError(
+            "Employer search requires exactly one target per request."
+        )
     response = api_client.responses.create(
         model=settings.recruitment_web_search_model,
         tools=[
             {
                 "type": "web_search",
-                "search_context_size": "low",
+                "search_context_size": "medium",
                 "user_location": {
                     "type": "approximate",
                     "country": "CN",
@@ -652,29 +1014,64 @@ def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSear
                 },
             }
         ],
-        input=_search_prompt(pool),
+        input=_search_prompt(batch),
         text={
             "format": {
                 "type": "json_schema",
                 "name": "future_radar_jobs",
                 "strict": True,
-                "schema": SEARCH_RESULT_SCHEMA,
+                "schema": _search_result_schema(batch),
             }
         },
         include=["web_search_call.action.sources"],
         tool_choice="required",
-        max_tool_calls=1,
-        max_output_tokens=1_600,
+        parallel_tool_calls=True,
+        # This is a ceiling for the one employer's search/page visits, not a
+        # promise that the model made this many calls. Actual completed tool
+        # calls below are mandatory before the employer counts as searched.
+        max_tool_calls=max(1, settings.recruitment_web_search_max_tool_calls),
+        max_output_tokens=SEARCH_MAX_OUTPUT_TOKENS,
         store=False,
     )
+    response_status = str(_response_value(response, "status", "completed"))
+    if response_status != "completed" or _response_value(response, "incomplete_details"):
+        raise RuntimeError(
+            f"Employer search batch {batch.id} returned an incomplete response."
+        )
     cited_source_urls, tool_calls = _completed_web_search_sources(response)
     payload = json.loads(response.output_text)
+    if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+        raise RuntimeError(
+            f"Employer search batch {batch.id} returned an invalid result."
+        )
+    expected_target_ids = {target.id for target in batch.targets}
+    checked_target_ids = [
+        str(item.get("target_id", ""))
+        for item in payload.get("checked_employers", [])
+        if isinstance(item, dict)
+    ]
+    if (
+        len(checked_target_ids) != len(expected_target_ids)
+        or len(checked_target_ids) != len(set(checked_target_ids))
+        or set(checked_target_ids) != expected_target_ids
+    ):
+        raise RuntimeError(
+            f"Employer search batch {batch.id} returned incomplete coverage."
+        )
+
+    targets_by_id = {target.id: target for target in batch.targets}
     normalized: list[dict[str, Any]] = []
     seen_jobs: set[tuple[str, str, str, str]] = set()
-    for item in payload.get("jobs", [])[:MAX_JOBS_PER_CATEGORY]:
+    employers_with_candidates: set[str] = set()
+    for item in payload["jobs"]:
         if not isinstance(item, dict):
             continue
-        job = _normalize_job(item, pool)
+        target = targets_by_id.get(str(item.get("target_id", "")))
+        if target is None:
+            target = _target_for_company(str(item.get("company", "")), batch.targets)
+        if target is None:
+            continue
+        job = _normalize_job(item, batch.pool, target)
         if not job:
             continue
         if not _candidate_was_cited(job["url"], cited_source_urls):
@@ -685,7 +1082,9 @@ def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSear
         )
         if job_key in seen_jobs:
             continue
+        job["_employer_aliases"] = list(target.aliases)
         evidence = _inspect_official_candidate_page(job)
+        job.pop("_employer_aliases", None)
         if evidence.closed:
             continue
         job["opening_date"] = (
@@ -717,6 +1116,8 @@ def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSear
                 job["tags"].append("待官方核验")
         seen_jobs.add(job_key)
         normalized.append(job)
+        employers_with_candidates.add(target.canonical_name)
+    target_names = tuple(target.canonical_name for target in batch.targets)
     return WebRecruitmentSearchResult(
         jobs=normalized,
         input_tokens=_usage_value(response, "input_tokens"),
@@ -724,27 +1125,76 @@ def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSear
         total_tokens=_usage_value(response, "total_tokens"),
         tool_calls=tool_calls,
         model=str(getattr(response, "model", settings.recruitment_web_search_model)),
+        target_employers=target_names,
+        searched_employers=target_names,
+        employers_with_candidates=tuple(sorted(employers_with_candidates)),
+        search_batches=1,
+    )
+
+
+def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSearchResult:
+    """Compatibility wrapper that fully covers one pool through small batches."""
+    batches = build_employer_search_batches([pool])
+    results = [_search_batch(api_client, batch) for batch in batches]
+    jobs: list[dict[str, Any]] = []
+    seen_job_ids: set[str] = set()
+    for result in results:
+        for job in result.jobs:
+            if job["id"] in seen_job_ids:
+                continue
+            seen_job_ids.add(job["id"])
+            jobs.append(job)
+    return WebRecruitmentSearchResult(
+        jobs=jobs,
+        input_tokens=sum(result.input_tokens for result in results),
+        output_tokens=sum(result.output_tokens for result in results),
+        total_tokens=sum(result.total_tokens for result in results),
+        tool_calls=sum(result.tool_calls for result in results),
+        model=results[0].model if results else settings.recruitment_web_search_model,
+        target_employers=tuple(
+            name for result in results for name in result.target_employers
+        ),
+        searched_employers=tuple(
+            name for result in results for name in result.searched_employers
+        ),
+        employers_with_candidates=tuple(sorted({
+            name for result in results for name in result.employers_with_candidates
+        })),
+        search_batches=len(results),
     )
 
 
 def search_current_recruitment_jobs(client: OpenAI | None = None) -> WebRecruitmentSearchResult:
     api_client = client or OpenAI(api_key=settings.openai_api_key)
-    pools = PERSONAL_MONITOR_POOLS[: settings.recruitment_web_search_max_tool_calls]
+    pools = list(PERSONAL_MONITOR_POOLS)
+    targets = build_employer_search_targets(pools)
+    batches = build_employer_search_batches(pools)
     results: list[WebRecruitmentSearchResult] = []
-    failed_pools: list[str] = []
-    max_workers = min(4, len(pools))
+    failed_pools: set[str] = set()
+    failed_batches: list[str] = []
+    failed_employer_names: set[str] = set()
+    if not batches:
+        return WebRecruitmentSearchResult(
+            jobs=[], input_tokens=0, output_tokens=0, total_tokens=0,
+            tool_calls=0, model=settings.recruitment_web_search_model,
+        )
+    max_workers = min(8, len(batches))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_search_pool, api_client, pool): pool["id"]
-            for pool in pools
+            executor.submit(_search_batch, api_client, batch): batch
+            for batch in batches
         }
         for future in as_completed(futures):
-            pool_id = futures[future]
+            batch = futures[future]
             try:
                 results.append(future.result())
             except Exception:
-                failed_pools.append(pool_id)
-                logger.exception("Recruitment web search pool failed: %s", pool_id)
+                failed_pools.add(str(batch.pool["id"]))
+                failed_batches.append(batch.id)
+                failed_employer_names.update(
+                    target.canonical_name for target in batch.targets
+                )
+                logger.exception("Recruitment web search batch failed: %s", batch.id)
 
     if not results:
         raise RuntimeError("All recruitment web-search pools failed.")
@@ -765,12 +1215,46 @@ def search_current_recruitment_jobs(client: OpenAI | None = None) -> WebRecruitm
                 continue
             jobs_by_identity[key] = job
             jobs.append(job)
-    return WebRecruitmentSearchResult(
-        jobs=jobs[:MAX_SEARCH_JOBS],
+    searched_names = {
+        name for result in results for name in result.searched_employers
+    }
+    searched_employers = tuple(
+        target.canonical_name
+        for target in targets
+        if target.canonical_name in searched_names
+    )
+    employers_with_candidates = tuple(sorted({
+        name for result in results for name in result.employers_with_candidates
+    }))
+    final_result = WebRecruitmentSearchResult(
+        # Do not reintroduce a global result cap: every accepted update from
+        # every company-level batch must reach the Future Radar candidate pool.
+        jobs=jobs,
         input_tokens=sum(result.input_tokens for result in results),
         output_tokens=sum(result.output_tokens for result in results),
         total_tokens=sum(result.total_tokens for result in results),
         tool_calls=sum(result.tool_calls for result in results),
         model=results[0].model if results else settings.recruitment_web_search_model,
         failed_pools=tuple(sorted(failed_pools)),
+        target_employers=tuple(target.canonical_name for target in targets),
+        searched_employers=searched_employers,
+        employers_with_candidates=employers_with_candidates,
+        failed_employers=tuple(
+            target.canonical_name
+            for target in targets
+            if target.canonical_name in failed_employer_names
+        ),
+        search_batches=len(batches),
+        failed_batches=tuple(sorted(failed_batches)),
     )
+    logger.info(
+        "Recruitment company coverage targets=%d searched=%d candidates=%d "
+        "batches=%d failed_batches=%d coverage=%.2f%%",
+        len(final_result.target_employers),
+        len(final_result.searched_employers),
+        len(final_result.employers_with_candidates),
+        final_result.search_batches,
+        len(final_result.failed_batches),
+        final_result.coverage_percent,
+    )
+    return final_result

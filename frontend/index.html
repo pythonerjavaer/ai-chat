@@ -408,6 +408,7 @@
             <p id="future-radar-error" class="radar-load-error hidden" role="alert"></p>
             <nav class="radar-tabs" aria-label="未来雷达视图">
               <button class="active" type="button" data-radar-tab="jobs" aria-selected="true">岗位雷达</button>
+              <button type="button" data-radar-tab="candidates" aria-selected="false">搜索更新池 <span id="future-radar-candidate-tab-count">0</span></button>
               <button type="button" data-radar-tab="programs" aria-selected="false">招聘项目</button>
               <button type="button" data-radar-tab="events" aria-selected="false">情报流</button>
               <button type="button" data-radar-tab="sources" aria-selected="false">信源健康</button>
@@ -436,6 +437,16 @@
               <section id="recruitment-deadline-alerts" class="recruitment-deadline-alerts" aria-live="polite"></section>
               <div id="recruitment-jobs" class="recruitment-jobs"></div>
               <div id="future-radar-pagination" class="radar-pagination"><button id="future-radar-page-prev" type="button">← 上一页</button><span id="future-radar-page-status">第 1 页</span><button id="future-radar-page-next" type="button">下一页 →</button></div>
+            </section>
+            <section class="radar-tab-panel hidden" data-radar-panel="candidates">
+              <header class="radar-candidate-heading">
+                <div><span class="overline">DISCOVERY INBOX</span><h3>搜索更新池</h3><p>这里完整保留扫描新发现，与正式岗位池分开。标记“待官网核验”的信号尚未确认公司、岗位或时间窗，不参与 T 级排名和截止预警。</p></div>
+                <button id="future-radar-candidate-refresh" type="button">刷新更新池 ↻</button>
+              </header>
+              <div id="future-radar-candidate-coverage" class="radar-candidate-coverage" aria-live="polite"></div>
+              <div id="future-radar-candidate-summary" class="radar-candidate-summary" aria-live="polite"></div>
+              <div id="future-radar-candidates" class="radar-candidate-list"></div>
+              <div id="future-radar-candidate-pagination" class="radar-pagination"><button id="future-radar-candidate-page-prev" type="button">← 上一页</button><span id="future-radar-candidate-page-status">第 1 页</span><button id="future-radar-candidate-page-next" type="button">下一页 →</button></div>
             </section>
             <section class="radar-tab-panel hidden" data-radar-panel="programs"><div id="future-radar-programs" class="radar-entity-list"></div></section>
             <section class="radar-tab-panel hidden" data-radar-panel="events"><div id="future-radar-events" class="radar-event-feed" aria-live="polite"></div></section>

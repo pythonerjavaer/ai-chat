@@ -13,6 +13,26 @@ export const STARFIELD_DEFINITIONS = Object.freeze([
 
 export const TIER_CODES = Object.freeze(["T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3"]);
 
+export function futureRadarCoverageCopy(scope = {}, coverage = null, status = "pending") {
+  const count = (value) => Math.max(0, Math.floor(Number(value) || 0));
+  const targets = count(scope.target_count);
+  const scopeText = targets
+    ? `搜索范围：左侧全部 ${count(scope.category_count)} 类 · ${count(scope.list_entry_count)} 个名录条目 · 别名合并后 ${targets} 家企业`
+    : "正在读取完整企业搜索范围";
+  if (!coverage || !Number.isFinite(Number(coverage.target_count))) {
+    return { scopeText, resultText: "尚无逐企业扫描完成记录。深度扫描将依次搜索全部名录，结果进入此池。", incomplete: true };
+  }
+  const total = count(coverage.target_count);
+  const searched = Math.min(total, count(coverage.searched_count));
+  const failed = count(coverage.failed_count);
+  const prefix = status === "error" ? "最新尝试失败；保留上次完成记录：" : "上次完成记录：";
+  return {
+    scopeText,
+    resultText: `${prefix}${searched}/${total} 家完成搜索与解析 · ${failed} 家未完成 · ${count(coverage.employers_with_candidates_count)} 家发现候选。企业搜索覆盖不等于每家都有在招岗位。`,
+    incomplete: failed > 0 || searched < total || status === "error",
+  };
+}
+
 const STARFIELD_CODES = new Set(STARFIELD_DEFINITIONS.map(({ code }) => code));
 const STARFIELD_LABELS = new Map(STARFIELD_DEFINITIONS.map(({ code, label }) => [code, label]));
 
@@ -199,6 +219,28 @@ export function buildFutureRadarJobsQuery({ page = 1, pageSize = 50, filters = {
     params.append("category", category);
   });
   return params.toString();
+}
+
+export function buildFutureRadarCandidatesQuery({ page = 1, pageSize = 50 } = {}) {
+  return new URLSearchParams({
+    page: String(Math.max(1, Number(page) || 1)),
+    page_size: String(Math.max(1, Number(pageSize) || 50)),
+  }).toString();
+}
+
+export function futureRadarCandidateVerification(candidate = {}) {
+  const raw = String(
+    candidate.verification_status
+      ?? candidate.verification
+      ?? candidate.review_status
+      ?? candidate.candidate_status
+      ?? "pending",
+  ).trim().toLowerCase();
+  if (["verified", "accepted", "approved"].includes(raw)) return "verified";
+  if (["rejected", "invalid", "failed"].includes(raw)) return "rejected";
+  if (["closed", "expired"].includes(raw)) return "closed";
+  if (["conflicted", "conflict"].includes(raw)) return "conflicted";
+  return "pending";
 }
 
 export function isDefaultFutureRadarJobsView(filters = {}) {

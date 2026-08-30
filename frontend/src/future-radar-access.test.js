@@ -82,3 +82,27 @@ test("skipped sources downgrade completion feedback to warning", () => {
   assert.match(toneSource, /Number\(run\.sources_skipped \|\| 0\) > 0/);
   assert.match(toneSource, /return "warning"/);
 });
+
+test("search discoveries have a separate candidate pool that is not swallowed by T-tier filtering", () => {
+  assert.match(indexSource, /data-radar-tab="candidates"[^>]*>搜索更新池/);
+  assert.match(indexSource, /id="future-radar-candidates"/);
+  assert.match(appSource, /api\(`\/future-radar\/search-updates\?\$\{query\}`\)/);
+
+  const start = appSource.indexOf("function renderFutureRadarCandidates(");
+  const end = appSource.indexOf("\nfunction applyFutureRadarCandidatesPayload", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const candidateRenderer = appSource.slice(start, end);
+  assert.match(candidateRenderer, /futureRadarCandidateVerification/);
+  assert.doesNotMatch(candidateRenderer, /partitionJobsByPriority|filterRecruitmentByStarfield|recruitmentTierFilter/);
+});
+
+test("candidate discoveries refresh without needing a verified public event", () => {
+  const start = appSource.indexOf("async function pollFutureRadarEvents(");
+  const end = appSource.indexOf("\nfunction stopFutureRadarPolling", start);
+  const pollingSource = appSource.slice(start, end);
+  assert.match(pollingSource, /api\(`\/future-radar\/search-updates\?\$\{candidateQuery\}`\)/);
+  assert.match(pollingSource, /state\.futureRadar\.candidatePage === candidatePage/);
+  assert.match(pollingSource, /applyFutureRadarCandidatesPayload\(candidatePayload\)/);
+  assert.ok(pollingSource.indexOf("applyFutureRadarCandidatesPayload") < pollingSource.indexOf("if (novel.length)"));
+});

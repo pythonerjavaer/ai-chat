@@ -2194,6 +2194,168 @@ def test_future_radar_startup_waits_for_first_upstream_refresh(
     asyncio.run(scenario())
 
 
+def test_search_updates_pool_exposes_candidates_with_status_and_filters(
+    radar_service, monkeypatch
+):
+    discovery = create_source(
+        radar_service, "search-update-discovery", trust_level="discovery"
+    )
+    pending = {
+        **sample_job("search-pending", title="搜索候选数据分析岗"),
+        "company": "搜索候选银行",
+        "primary_category": "internet_tech",
+        "verification_status": "pending",
+    }
+    verified = {
+        **sample_job("search-verified", title="官网已核验搜索岗位"),
+        "company": "搜索核验科技",
+        "primary_category": "internet_tech",
+        "verification_status": "verified",
+    }
+    conflicted = {
+        **sample_job("search-conflicted", title="日期冲突候选"),
+        "company": "搜索冲突证券",
+        "primary_category": "securities_public_funds_asset_management",
+        "verification_status": "conflicted",
+    }
+    rejected = {
+        **sample_job(
+            "search-rejected", title="已关闭搜索候选", status="closed",
+            verification_status="rejected",
+        ),
+        "company": "搜索关闭企业",
+        "primary_category": "consumer_foreign_consulting",
+    }
+    radar_service.adapter_factory = lambda _source: StaticAdapter(AdapterResult(
+        jobs=[pending, verified, conflicted, rejected],
+        content_hash="search-update-candidates-v1",
+        snapshot_complete=False,
+        verified_job_external_ids={"search-verified"},
+    ))
+    assert radar_service.run(
+        source_ids=[discovery["id"]], force=True
+    )["new_jobs"] == 4
+
+    official = create_source(
+        radar_service, "official-only-source", trust_level="verification"
+    )
+    radar_service.adapter_factory = lambda _source: StaticAdapter(AdapterResult(
+        jobs=[{
+            **sample_job("official-only-job", verification_status="verified"),
+            "company": "只在正式池企业",
+            "primary_category": "internet_tech",
+        }],
+        content_hash="official-only-v1",
+    ))
+    assert radar_service.run(source_ids=[official["id"]], force=True)["new_jobs"] == 1
+
+    settings_values = vars(main.settings).copy()
+    settings_values.update({
+        "database_path": database.settings.database_path,
+        "future_radar_enabled": False,
+        "recruitment_refresh_minutes": 0,
+    })
+    monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
+    monkeypatch.setattr(main, "future_radar_service", radar_service)
+
+    with TestClient(main.app) as client:
+        assert client.get("/api/future-radar/search-updates").status_code == 401
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "future-radar-search-updates-user",
+                "password": "correct-horse-123",
+                "privacy_accepted": True,
+            },
+        )
+        assert registered.status_code == 201
+        bearer = {
+            "Authorization": f"Bearer {registered.json()['access_token']}"
+        }
+
+        current_candidates = client.get(
+            "/api/future-radar/search-updates", headers=bearer
+        )
+        assert current_candidates.status_code == 200
+        assert current_candidates.json()["total"] == 3
+        assert "search-rejected" not in {
+            item["external_id"] for item in current_candidates.json()["items"]
+        }
+
+        candidates = client.get(
+            "/api/future-radar/search-updates?status=all&page=1&page_size=10",
+            headers=bearer,
+        )
+        assert candidates.status_code == 200
+        body = candidates.json()
+        assert body["pool"] == "search_updates"
+        assert body["total"] == 4
+        assert len(body["items"]) == len(body["candidates"]) == 4
+        assert "只在正式池企业" not in {
+            item["company"] for item in body["items"]
+        }
+        assert body["stats"]["verification_status"] == {
+            "pending": 1,
+            "verified": 1,
+            "conflicted": 1,
+            "rejected": 1,
+        }
+        assert body["stats"]["job_status"] == {
+            "open": 3,
+            "closed": 1,
+            "unknown": 0,
+        }
+        assert body["stats"]["source_count"] == 1
+        by_id = {item["external_id"]: item for item in body["items"]}
+        assert by_id["search-pending"]["review_label"] == "待官网核验"
+        assert by_id["search-pending"]["is_candidate"] is True
+        assert by_id["search-pending"]["published_as_active_job"] is False
+        assert all(
+            "evidence" not in source
+            for item in body["items"]
+            for source in item["sources"]
+        )
+        assert by_id["search-verified"]["officially_verified"] is True
+        assert by_id["search-verified"]["published_as_active_job"] is True
+
+        filtered = client.get(
+            "/api/future-radar/search-updates?status=open"
+            "&verification_status=pending"
+            "&category=internet_tech"
+            "&source_id=search-update-discovery"
+            "&q=%E6%90%9C%E7%B4%A2%E5%80%99%E9%80%89",
+            headers=bearer,
+        )
+        assert filtered.status_code == 200
+        assert filtered.json()["total"] == 1
+        assert filtered.json()["items"][0]["external_id"] == "search-pending"
+        assert filtered.json()["stats"]["total_candidates"] == 1
+
+        detail = client.get(
+            "/api/future-radar/search-updates/search-pending", headers=bearer
+        )
+        assert detail.status_code == 200
+        assert detail.json()["review_state"] == "pending"
+        assert client.get(
+            "/api/future-radar/search-updates/official-only-job", headers=bearer
+        ).status_code == 404
+        assert client.get(
+            "/api/future-radar/jobs/search-pending", headers=bearer
+        ).status_code == 404
+
+        official_jobs = client.get(
+            "/api/future-radar/jobs?status=all", headers=bearer
+        )
+        assert official_jobs.status_code == 200
+        assert {
+            item["external_id"] for item in official_jobs.json()["items"]
+        } == {"search-verified", "official-only-job"}
+        assert client.get(
+            "/api/future-radar/search-updates?category=unknown-sector",
+            headers=bearer,
+        ).status_code == 422
+
+
 def test_future_radar_filters_by_one_primary_starfield_and_accepts_all_profile_categories(
     radar_service, monkeypatch
 ):

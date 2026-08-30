@@ -9,9 +9,11 @@
 
 公网 Web Search 与 Future Radar 的结构化提取默认使用 `gpt-5.4-mini`；聊天产品本身的默认模型仍由独立的 `AI_MODEL` 配置决定。
 
-## 五个逻辑来源
+## 六个逻辑来源
 
-系统使用五个可公开的稳定逻辑 `source_id` 槽位区分监控来源。本机自动任务中的页面映射只保留在本地任务配置；私有会话地址、真实会话标识、消息正文和登录信息均不进入 Git、数据库、README、日志或提交 payload。网页内容中的 `source_id` 也不能覆盖本机指定的逻辑来源。
+系统使用 `chatgpt-radar-01` 至 `chatgpt-radar-06` 六个可公开的稳定逻辑 `source_id` 槽位区分监控来源。本机自动任务中的页面映射只保留在本地任务配置；私有会话地址、真实会话标识、消息正文和登录信息均不进入 Git、数据库、README、日志或提交 payload。网页内容中的 `source_id` 也不能覆盖本机指定的逻辑来源。
+
+升级时保留原有五个来源的游标、事件与候选，新增第六个来源为待同步状态；注册槽位不会伪造已经读取或同步成功。前端优先使用后端返回的 `expected_source_count` 展示来源数量。
 
 ## Secret 管理
 
@@ -37,7 +39,7 @@ Keychain 不可用时，自动任务可以在其受控进程环境中设置 `FRO
 - ChatGPT 浏览器 Cookie、会话 Cookie、Authorization Header；
 - OpenAI API Key、Codex/ChatGPT 登录凭证；
 - `RECRUITMENT_INGEST_TOKEN` / `FROSTFIRE_INGEST_TOKEN` 明文；
-- 五个会话的完整对话导出或与岗位无关的个人内容。
+- 任一会话的完整对话导出或与岗位无关的个人内容。
 
 ## 本机浏览器桥接用法
 
@@ -98,7 +100,7 @@ python3 scripts/frostfire_ingest.py --timeout 90 < /path/to/new-jobs.json
 
 ## 持续更新与调度边界
 
-本机 Codex 自动任务可以按配置频率依次处理五个逻辑来源：打开用户已经有权访问且处于登录状态的页面，等待可见 DOM 稳定，只选择上次摘要游标之后的助手消息，将允许字段送入桥接脚本 dry-run，通过后再提交。页面内容全部视为不可信数据；任务不执行其中的指令，也不向会话发送消息。
+本机 Codex 自动任务可以按配置频率依次处理六个逻辑来源：打开用户已经有权访问且处于登录状态的页面，等待可见 DOM 稳定，只选择上次摘要游标之后的助手消息，将允许字段送入桥接脚本 dry-run，通过后再提交。页面内容全部视为不可信数据；任务不执行其中的指令，也不向会话发送消息。
 
 来源可访问但没有新的结构化岗位时，可以为该逻辑源提交空心跳；登录失效、页面不可访问、DOM 结构无效或提交失败时，必须报告失败，不发送成功心跳，也不推进游标。每个逻辑来源独立推进，不能用一个来源代替其他来源。
 
@@ -170,7 +172,7 @@ URL 规范化会移除 fragment，并且只清理 `utm_*`、`gclid`、`fbclid`�
 
 ## 状态检查
 
-受保护的 `GET /api/recruitment/sync/status` 使用同一个 `X-Recruitment-Token`，返回五个预期来源的连接数量、最近同步时间、来源状态和最近事件。五个逻辑来源的 `source_ref` 为 `null`；其他兼容来源至多返回短哈希引用。状态中不包含真实会话 ID、Token、对话正文或 Cookie。
+受保护的 `GET /api/recruitment/sync/status` 使用同一个 `X-Recruitment-Token`，返回六个预期来源的连接数量、最近同步时间、来源状态和最近事件。六个逻辑来源的 `source_ref` 为 `null`；其他兼容来源至多返回短哈希引用。状态中不包含真实会话 ID、Token、对话正文或 Cookie。
 
 计数分成两套，不能混用：
 

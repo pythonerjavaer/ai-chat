@@ -13,6 +13,7 @@ import {
 } from "./product-navigation.js";
 import {
   TIER_CODES,
+  buildFutureRadarCandidatesQuery,
   buildFutureRadarJobsQuery,
   canonicalStarfieldCode,
   createCoalescedRadarReload,
@@ -20,6 +21,8 @@ import {
   formatScoringFactors,
   futureRadarActiveRunTypes,
   futureRadarAiSearchNotice,
+  futureRadarCandidateVerification,
+  futureRadarCoverageCopy,
   futureRadarRunErrorCopy,
   futureRadarRunSuccessCopy,
   futureRadarSourceErrorCopy,
@@ -46,7 +49,7 @@ const STORAGE_KEYS = {
   photonCreations: "bingyan_photon_creations",
 };
 const WORKSPACE_ORDER = ["legal", "general", "finance"];
-const CHATGPT_MONITOR_SOURCE_COUNT = 5;
+const CHATGPT_MONITOR_SOURCE_COUNT = 6;
 const RECRUITMENT_REFRESH_LABEL = "同步候选源 ↻";
 const FUTURE_RADAR_POLL_INTERVAL_MS = 30_000;
 const FUTURE_RADAR_RUN_STATUS_POLL_MS = 2_500;
@@ -121,6 +124,16 @@ const state = {
     totalJobs: 0,
     page: 1,
     pageSize: 50,
+    candidates: [],
+    candidatesLoaded: false,
+    candidateLoading: false,
+    totalCandidates: 0,
+    candidatePage: 1,
+    candidatePageSize: 50,
+    candidateCounts: {},
+    searchScope: {},
+    searchCoverage: null,
+    searchStatus: "pending",
     programs: [],
     events: [],
     sources: [],
@@ -229,6 +242,15 @@ const elements = {
   futureRadarSources: $("future-radar-sources"), futureRadarRuns: $("future-radar-runs"),
   futureRadarPagination: $("future-radar-pagination"), futureRadarPagePrev: $("future-radar-page-prev"),
   futureRadarPageNext: $("future-radar-page-next"), futureRadarPageStatus: $("future-radar-page-status"),
+  futureRadarCandidateTabCount: $("future-radar-candidate-tab-count"),
+  futureRadarCandidateRefresh: $("future-radar-candidate-refresh"),
+  futureRadarCandidateSummary: $("future-radar-candidate-summary"),
+  futureRadarCandidateCoverage: $("future-radar-candidate-coverage"),
+  futureRadarCandidates: $("future-radar-candidates"),
+  futureRadarCandidatePagination: $("future-radar-candidate-pagination"),
+  futureRadarCandidatePagePrev: $("future-radar-candidate-page-prev"),
+  futureRadarCandidatePageNext: $("future-radar-candidate-page-next"),
+  futureRadarCandidatePageStatus: $("future-radar-candidate-page-status"),
   futureRadarFilterForm: $("future-radar-filter-form"), futureRadarFilterQuery: $("future-radar-filter-query"),
   futureRadarFilterCompany: $("future-radar-filter-company"), futureRadarFilterCity: $("future-radar-filter-city"),
   futureRadarFilterIndustry: $("future-radar-filter-industry"), futureRadarFilterEmployerType: $("future-radar-filter-employer-type"),
@@ -2474,7 +2496,7 @@ function radarStatusCopy(value) {
     open: "开放中", closed: "已关闭", reopened: "重新开放", running: "扫描中",
     success: "正常", succeeded: "正常", completed: "已完成", partial_success: "部分完成",
     partial: "部分完成", pending: "待核验", verified: "已核验", conflicted: "存在冲突",
-    failed: "失败", error: "异常", skipped: "已跳过", disabled: "已停用", healthy: "健康",
+    rejected: "未通过核验", invalid: "无效信号", failed: "失败", error: "异常", skipped: "已跳过", disabled: "已停用", healthy: "健康",
     discovery_limited: "发现受限", access_restricted: "访问受限", unknown: "未知",
   }[raw] || String(value || "未知");
 }
@@ -2483,7 +2505,7 @@ function radarStatusClass(value) {
   const raw = String(value || "unknown").toLowerCase();
   if (/verified|success|succeeded|completed|healthy|open|synced|new|discovered|reopened|official_source_found/.test(raw)) return "healthy";
   if (/running|progress|syncing|updated/.test(raw)) return "running";
-  if (/error|fail|conflict|restricted/.test(raw)) return "error";
+  if (/error|fail|conflict|restricted|reject|invalid/.test(raw)) return "error";
   if (/partial|pending|warning|limited|skipped/.test(raw)) return "warning";
   if (/closed|disabled|paused/.test(raw)) return "muted";
   return "pending";
@@ -2696,6 +2718,197 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   );
 }
 
+function candidateResultUrl(candidate = {}) {
+  const provenance = [
+    ...(Array.isArray(candidate.discovered_by) ? candidate.discovered_by : []),
+    ...(Array.isArray(candidate.sources) ? candidate.sources : []),
+  ];
+  return candidate.application_url
+    || candidate.official_url
+    || candidate.source_url
+    || candidate.candidate_url
+    || candidate.url
+    || provenance.map((source) => source?.source_url).find((url) => /^https:\/\//i.test(String(url || "")))
+    || "";
+}
+
+function candidateCount(counts, keys, fallback = 0) {
+  for (const key of keys) {
+    const raw = counts?.[key];
+    const value = Number(raw);
+    if (raw != null && Number.isFinite(value)) return value;
+  }
+  return fallback;
+}
+
+function renderFutureRadarCandidatePagination() {
+  if (!elements.futureRadarCandidatePagination) return;
+  const totalPages = Math.max(1, Math.ceil(state.futureRadar.totalCandidates / Math.max(1, state.futureRadar.candidatePageSize)));
+  elements.futureRadarCandidatePageStatus.textContent = `第 ${state.futureRadar.candidatePage} / ${totalPages} 页 · ${state.futureRadar.totalCandidates.toLocaleString("zh-CN")} 条搜索发现`;
+  elements.futureRadarCandidatePagePrev.disabled = state.futureRadar.candidateLoading || state.futureRadar.candidatePage <= 1;
+  elements.futureRadarCandidatePageNext.disabled = state.futureRadar.candidateLoading || state.futureRadar.candidatePage >= totalPages;
+  elements.futureRadarCandidatePagination.classList.toggle("hidden", state.futureRadar.totalCandidates <= state.futureRadar.candidatePageSize);
+}
+
+function renderFutureRadarCandidates(candidates = state.futureRadar.candidates) {
+  if (!elements.futureRadarCandidates || !elements.futureRadarCandidateSummary) return;
+  elements.futureRadarCandidates.replaceChildren();
+  if (elements.futureRadarCandidateCoverage) {
+    const coverageCopy = futureRadarCoverageCopy(
+      state.futureRadar.searchScope, state.futureRadar.searchCoverage, state.futureRadar.searchStatus,
+    );
+    elements.futureRadarCandidateCoverage.classList.toggle("incomplete", coverageCopy.incomplete);
+    elements.futureRadarCandidateCoverage.replaceChildren(
+      makeElement("strong", "", coverageCopy.scopeText),
+      makeElement("p", "", coverageCopy.resultText),
+    );
+    const failed = state.futureRadar.searchCoverage?.failed_employers || [];
+    if (failed.length) {
+      const details = makeElement("details");
+      details.append(makeElement("summary", "", "查看未完成的企业"), makeElement("p", "", failed.join(" · ")));
+      elements.futureRadarCandidateCoverage.appendChild(details);
+    }
+  }
+  const localCounts = candidates.reduce((counts, candidate) => {
+    const status = futureRadarCandidateVerification(candidate);
+    counts[status] = (counts[status] || 0) + 1;
+    return counts;
+  }, {});
+  const counts = state.futureRadar.candidateCounts || {};
+  const pending = candidateCount(counts, ["pending", "pending_count"], localCounts.pending || 0);
+  const verified = candidateCount(counts, ["verified", "verified_count", "accepted"], localCounts.verified || 0);
+  const conflicted = candidateCount(counts, ["conflicted", "conflicted_count"], localCounts.conflicted || 0);
+  const rejected = candidateCount(counts, ["rejected", "rejected_count"], localCounts.rejected || 0);
+  const closed = candidateCount(counts, ["closed", "closed_count"], localCounts.closed || 0);
+  elements.futureRadarCandidateSummary.replaceChildren(
+    makeElement("article", "pending", `待官网核验 ${pending.toLocaleString("zh-CN")}`),
+    makeElement("article", "verified", `已核验 ${verified.toLocaleString("zh-CN")}`),
+    makeElement("article", "conflicted", `信息冲突 ${conflicted.toLocaleString("zh-CN")}`),
+    makeElement("article", "rejected", `未通过 ${rejected.toLocaleString("zh-CN")}`),
+    makeElement("article", "closed", `已关闭 ${closed.toLocaleString("zh-CN")}`),
+  );
+  if (elements.futureRadarCandidateTabCount) {
+    elements.futureRadarCandidateTabCount.textContent = state.futureRadar.totalCandidates.toLocaleString("zh-CN");
+  }
+  if (!candidates.length) {
+    elements.futureRadarCandidates.appendChild(makeElement(
+      "div",
+      "empty-list",
+      state.futureRadar.candidatesLoaded
+        ? "搜索更新池暂时没有发现记录。启动 Deep Scan 后，新候选会先进入这里等待官网核验。"
+        : "正在等待搜索更新池返回候选记录。",
+    ));
+    renderFutureRadarCandidatePagination();
+    return;
+  }
+
+  candidates.forEach((candidate) => {
+    const verification = futureRadarCandidateVerification(candidate);
+    const card = makeElement("article", `radar-candidate-card candidate-${verification}`);
+    const heading = makeElement("div", "radar-candidate-card-heading");
+    const identity = makeElement("div");
+    identity.append(
+      makeElement("span", "radar-entity-company", candidate.company || candidate.company_name || candidate.employer || "待识别企业"),
+      makeElement("span", `radar-status-badge ${radarStatusClass(verification)}`, radarStatusCopy(verification)),
+    );
+    const discoveryTime = candidate.discovered_at || candidate.first_seen_at || candidate.created_at || candidate.updated_at;
+    heading.append(identity, makeElement("time", "", formatRadarTime(discoveryTime, "发现时间待记录")));
+
+    const openingDate = candidate.opening_date || candidate.start_date;
+    const closingDate = candidate.closing_date || candidate.deadline || candidate.end_date;
+    const dates = [openingDate ? `开放 ${openingDate}` : "开放日期待核验", closingDate ? `截止 ${closingDate}` : "截止日期待核验"].join(" · ");
+    const jobState = String(candidate.status || candidate.job_status || "unknown").toLowerCase();
+    const source = sourceDisplayValue(
+      candidate.discovered_by || candidate.discovery_sources || candidate.source_name || candidate.source || candidate.source_id,
+      "公开搜索信号",
+    );
+    const sourceRow = makeElement("div", "radar-candidate-source");
+    sourceRow.append(
+      makeElement("span", "", `DISCOVERED BY · ${source}`),
+      makeElement("span", "", `岗位状态 · ${radarStatusCopy(jobState)}`),
+    );
+    const verificationNote = makeElement(
+      "p",
+      `radar-candidate-verification-note ${verification}`,
+      verification === "verified"
+        ? "已通过官网核验；符合开放条件时也会进入正式岗位池参与匹配。"
+        : verification === "rejected"
+          ? "该发现未通过官网核验，仅保留审查结果，不会进入正式岗位池。"
+          : verification === "conflicted"
+            ? "不同来源的关键信息存在冲突，等待人工或官方页面进一步确认。"
+          : verification === "closed"
+            ? "该机会已确认关闭，仅保留历史发现记录。"
+            : "待官网核验：尚未确认公司、岗位、校招届别或时间窗，不参与 T 级排名与截止预警。",
+    );
+    card.append(
+      heading,
+      makeElement("h4", "", candidate.title || candidate.job_title || candidate.position || "招聘机会信号"),
+      makeElement("p", "radar-entity-meta", `${candidate.city || candidate.region || candidate.location || "地点待核验"} · ${dates}`),
+      sourceRow,
+      verificationNote,
+    );
+    const url = candidateResultUrl(candidate);
+    if (/^https:\/\//i.test(url)) {
+      const link = makeElement("a", "radar-official-link", verification === "verified" ? "打开已核验官网 ↗" : "打开候选来源核验 ↗");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      card.appendChild(link);
+    } else {
+      card.appendChild(makeElement("span", "job-link-pending", "尚无可安全打开的 HTTPS 来源"));
+    }
+    elements.futureRadarCandidates.appendChild(card);
+  });
+  renderFutureRadarCandidatePagination();
+}
+
+function applyFutureRadarCandidatesPayload(payload = {}) {
+  state.futureRadar.searchScope = payload.scope || {};
+  state.futureRadar.searchCoverage = payload.coverage || null;
+  state.futureRadar.searchStatus = payload.search_status || "pending";
+  state.futureRadar.candidates = radarCollection(payload, ["candidates", "jobs"]);
+  state.futureRadar.candidatesLoaded = true;
+  state.futureRadar.totalCandidates = radarNumber(payload, ["total"], state.futureRadar.candidates.length);
+  state.futureRadar.candidatePage = radarNumber(payload, ["page"], state.futureRadar.candidatePage);
+  state.futureRadar.candidatePageSize = radarNumber(payload, ["page_size"], state.futureRadar.candidatePageSize);
+  const verificationCounts = payload.stats?.verification_status
+    || payload.counts?.verification_status
+    || payload.counts
+    || {};
+  state.futureRadar.candidateCounts = {
+    ...verificationCounts,
+    closed: payload.stats?.job_status?.closed ?? verificationCounts.closed,
+  };
+  renderFutureRadarCandidates();
+}
+
+async function loadFutureRadarCandidatePage(page = state.futureRadar.candidatePage, force = false) {
+  const totalPages = Math.max(1, Math.ceil(state.futureRadar.totalCandidates / Math.max(1, state.futureRadar.candidatePageSize)));
+  const requested = Math.max(1, Number(page) || 1);
+  const nextPage = force ? requested : Math.min(totalPages, requested);
+  if (state.futureRadar.candidateLoading || (!force && state.futureRadar.candidatesLoaded && nextPage === state.futureRadar.candidatePage)) return;
+  state.futureRadar.candidateLoading = true;
+  renderFutureRadarCandidatePagination();
+  if (elements.futureRadarCandidateRefresh) {
+    elements.futureRadarCandidateRefresh.disabled = true;
+    elements.futureRadarCandidateRefresh.textContent = "读取搜索发现中…";
+  }
+  try {
+    const query = buildFutureRadarCandidatesQuery({ page: nextPage, pageSize: state.futureRadar.candidatePageSize });
+    const payload = await api(`/future-radar/search-updates?${query}`);
+    applyFutureRadarCandidatesPayload(payload);
+  } catch (error) {
+    elements.futureRadarCandidates.replaceChildren(makeElement("div", "empty-list", `搜索更新池暂时无法读取：${translateError(error.message)}`));
+  } finally {
+    state.futureRadar.candidateLoading = false;
+    if (elements.futureRadarCandidateRefresh) {
+      elements.futureRadarCandidateRefresh.disabled = false;
+      elements.futureRadarCandidateRefresh.textContent = "刷新更新池 ↻";
+    }
+    renderFutureRadarCandidatePagination();
+  }
+}
+
 function renderFutureRadarPrograms(programs = state.futureRadar.programs) {
   if (!elements.futureRadarPrograms) return;
   elements.futureRadarPrograms.replaceChildren();
@@ -2862,7 +3075,7 @@ function renderFutureRadarRuns(runs = state.futureRadar.runs) {
 }
 
 function activateFutureRadarTab(tab) {
-  const next = ["jobs", "programs", "events", "sources", "runs"].includes(tab) ? tab : "jobs";
+  const next = ["jobs", "candidates", "programs", "events", "sources", "runs"].includes(tab) ? tab : "jobs";
   state.futureRadar.activeTab = next;
   document.querySelectorAll("[data-radar-tab]").forEach((button) => {
     const active = button.dataset.radarTab === next;
@@ -2872,6 +3085,9 @@ function activateFutureRadarTab(tab) {
   document.querySelectorAll("[data-radar-panel]").forEach((panel) => {
     panel.classList.toggle("hidden", panel.dataset.radarPanel !== next);
   });
+  if (next === "candidates" && !state.futureRadar.candidatesLoaded) {
+    loadFutureRadarCandidatePage(1, true);
+  }
 }
 
 function setFutureRadarLoading(loading, errorMessage = "") {
@@ -3018,9 +3234,14 @@ function applyIncrementalRadarMetrics(events) {
 
 async function loadFutureRadarSnapshot() {
   setFutureRadarLoading(true);
+  const candidateQuery = buildFutureRadarCandidatesQuery({
+    page: state.futureRadar.candidatePage,
+    pageSize: state.futureRadar.candidatePageSize,
+  });
   const requests = [
     ["dashboard", api("/future-radar/dashboard")],
     ["jobs", api(`/future-radar/jobs?${futureRadarJobsQuery()}`)],
+    ["candidates", api(`/future-radar/search-updates?${candidateQuery}`)],
     ["programs", api("/future-radar/programs")],
     ["events", api("/future-radar/events?limit=50")],
     ["sources", api("/future-radar/sources")],
@@ -3040,6 +3261,8 @@ async function loadFutureRadarSnapshot() {
       renderFutureRadarDashboard(payload);
     } else if (key === "jobs") {
       applyFutureRadarJobsPayload(payload);
+    } else if (key === "candidates") {
+      applyFutureRadarCandidatesPayload(payload);
     } else if (key === "programs") {
       state.futureRadar.programs = radarCollection(payload, ["programs"]);
       syncFutureRadarProgramFilter();
@@ -3075,13 +3298,28 @@ async function pollFutureRadarEvents() {
   try {
     const cursor = state.futureRadar.lastEventId;
     const query = cursor == null ? "?limit=50" : `?limit=50&after_event_id=${encodeURIComponent(cursor)}`;
-    const [payload, dashboard] = await Promise.all([
+    const candidatePage = state.futureRadar.candidatePage;
+    const candidateQuery = buildFutureRadarCandidatesQuery({
+      page: candidatePage,
+      pageSize: state.futureRadar.candidatePageSize,
+    });
+    const [payload, dashboard, candidatePayload] = await Promise.all([
       api(`/future-radar/events${query}`),
       state.futureRadar.activeRunTypes.size
         ? api("/future-radar/dashboard").catch(() => null)
         : Promise.resolve(null),
+      // Public change events contain verified jobs only. Discovery candidates
+      // need their own lightweight refresh, including external bridge imports.
+      state.futureRadar.candidateLoading
+        ? Promise.resolve(null)
+        : api(`/future-radar/search-updates?${candidateQuery}`).catch(() => null),
     ]);
     if (dashboard) renderFutureRadarDashboard(dashboard);
+    // A page-navigation request made during the poll wins over this snapshot.
+    if (candidatePayload && !state.futureRadar.candidateLoading
+      && state.futureRadar.candidatePage === candidatePage) {
+      applyFutureRadarCandidatesPayload(candidatePayload);
+    }
     const incoming = radarCollection(payload, ["events", "changes"]);
     const knownIds = new Set(state.futureRadar.events.map(eventIdentity));
     const novel = incoming.filter((event) => !knownIds.has(eventIdentity(event)));
@@ -4183,6 +4421,9 @@ elements.futureRadarRun.addEventListener("click", () => runFutureRadarNow("quick
 elements.futureRadarDeepRun.addEventListener("click", () => runFutureRadarNow("deep"));
 elements.futureRadarPagePrev.addEventListener("click", () => loadFutureRadarJobPage(state.futureRadar.page - 1));
 elements.futureRadarPageNext.addEventListener("click", () => loadFutureRadarJobPage(state.futureRadar.page + 1));
+elements.futureRadarCandidatePagePrev.addEventListener("click", () => loadFutureRadarCandidatePage(state.futureRadar.candidatePage - 1));
+elements.futureRadarCandidatePageNext.addEventListener("click", () => loadFutureRadarCandidatePage(state.futureRadar.candidatePage + 1));
+elements.futureRadarCandidateRefresh.addEventListener("click", () => loadFutureRadarCandidatePage(state.futureRadar.candidatePage, true));
 elements.futureRadarFilterForm.addEventListener("submit", (event) => {
   event.preventDefault();
   readFutureRadarFilters();
@@ -4221,11 +4462,13 @@ document.querySelectorAll(".recruitment-checks input").forEach((input) => {
 });
 elements.recruitmentWatchForm.addEventListener("submit", addRecruitmentWatch);
 renderFutureRadarDashboard({});
+renderFutureRadarCandidates([]);
 renderFutureRadarPrograms([]);
 renderFutureRadarEvents([]);
 renderFutureRadarSources([]);
 renderFutureRadarRuns([]);
 renderFutureRadarPagination();
+renderFutureRadarCandidatePagination();
 activateFutureRadarTab(state.futureRadar.activeTab);
 $("studio-open-secondary").addEventListener("click", openStudio);
 $("mobile-studio-open").addEventListener("click", openStudio);

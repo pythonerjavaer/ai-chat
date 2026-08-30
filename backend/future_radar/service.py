@@ -266,6 +266,7 @@ class FutureRadarService:
         run_lease.start()
         run: dict[str, Any] | None = None
         summary = self._empty_summary()
+        partially_completed_sources = 0
         try:
             if normalized_scan_type == "scheduled":
                 sources = (
@@ -347,6 +348,8 @@ class FutureRadarService:
                         })
                         continue
                     summary["sources_succeeded"] += 1
+                    if result.get("status") == "partial_success":
+                        partially_completed_sources += 1
                     for key in (
                         "programs_discovered", "new_jobs", "updated_jobs", "closed_jobs",
                         "reopened_jobs", "unchanged_jobs", "articles_discovered", "ai_calls",
@@ -358,6 +361,7 @@ class FutureRadarService:
             run_lease.ensure_owned()
             if summary["sources_succeeded"] and (
                 summary["sources_failed"] or summary["sources_skipped"]
+                or partially_completed_sources
             ):
                 summary["status"] = "partial_success"
             elif summary["sources_failed"]:
@@ -441,16 +445,50 @@ class FutureRadarService:
                 }
             result = self._adapter(scan_source).scan(scan_source)
             source_lease.ensure_owned()
+            try:
+                failed_companies = max(0, int(result.coverage.get("failed_count", 0)))
+            except (TypeError, ValueError, OverflowError):
+                failed_companies = 0
+            partially_completed = (
+                result.status in {"partial", "partial_success"}
+                or failed_companies > 0
+            )
+            source_status = "partial" if partially_completed else result.status
+            if partially_completed:
+                # Unsearched employer batches are not evidence that their
+                # previous jobs disappeared, even if an adapter forgot to
+                # clear the complete-snapshot default.
+                result.snapshot_complete = False
             processed = self.process_result(source=source, result=result, run_id=run_id)
             source_lease.ensure_owned()
-            if result.normalized_content and result.content_hash:
+            if partially_completed:
+                # Good observations have already been committed. A failed
+                # employer batch must not either discard them or make this
+                # source/run appear fully successful. Never echo a provider's
+                # diagnostics, prompts or credentials in the public run.
+                processed["status"] = "partial_success"
+                processed["errors"].append({
+                    "source_id": source["id"],
+                    "code": "COMPANY_SEARCH_INCOMPLETE",
+                    "message": (
+                        f"本轮有 {failed_companies} 家企业的搜索未完成；已取得的候选已保留。"
+                        if failed_companies
+                        else "该信源本轮仅部分完成；已取得的候选已保留。"
+                    ),
+                })
+            if result.content_hash and (result.normalized_content or result.coverage):
                 self.repository.save_snapshot(
                     source["id"], result.content_hash, result.normalized_content,
-                    {"status": result.status, "jobs": len(result.jobs), "programs": len(result.programs)},
+                    {
+                        "status": source_status,
+                        "jobs": len(result.jobs),
+                        "programs": len(result.programs),
+                        "coverage": result.coverage,
+                    },
                 )
             self.repository.update_source_success(
                 source["id"], content_hash=result.content_hash,
-                status="healthy" if result.status in {"healthy", "idle"} else result.status,
+                status="healthy" if source_status in {"healthy", "idle"} else source_status,
             )
             logger.info(
                 "Future Radar source completed run_id=%s source_id=%s adapter=%s "
@@ -462,7 +500,7 @@ class FutureRadarService:
                 len(result.programs),
                 len(result.jobs),
                 len(result.articles),
-                result.status,
+                source_status,
             )
             return processed
         finally:

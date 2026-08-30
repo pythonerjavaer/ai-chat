@@ -59,6 +59,8 @@ from .recruitment_search import (
     WEB_SEARCH_STATE_KEY,
     _evaluate_official_candidate_page,
     _semantic_date_appears_in_page,
+    build_employer_search_batches,
+    build_employer_search_targets,
     search_current_recruitment_jobs,
 )
 from .recruitment_watch import (
@@ -87,6 +89,7 @@ from .future_radar.schemas import (
     SourcePatchRequest,
 )
 from .future_radar.service import FutureRadarService, RadarRunBusy, SyncConflict
+from .future_radar.adapters import _public_reference_url, _redact_public_text
 from .security import (
     create_access_token,
     decode_access_token,
@@ -143,7 +146,7 @@ EXPECTED_CHATGPT_RADAR_SOURCES = [
         "source_thread_id": None,
         "title": f"ChatGPT 监控 {index}",
     }
-    for index in range(1, 6)
+    for index in range(1, 7)
 ]
 EXPECTED_CHATGPT_SOURCE_IDS = {
     source["source_id"] for source in EXPECTED_CHATGPT_RADAR_SOURCES
@@ -380,7 +383,12 @@ async def recruitment_refresh_loop(
         except Exception:
             logger.exception("Verified radar snapshot refresh failed")
         try:
-            count = await asyncio.to_thread(refresh_recruitment_sources)
+            # The Future Radar source owns paid discovery and its source lock.
+            # Running it here as well would repeat the entire employer search
+            # before the scheduler starts and bypass that shared source lock.
+            count = await asyncio.to_thread(
+                refresh_recruitment_sources, include_web_search=False
+            )
             logger.info("Scheduled recruitment source refresh completed: %s jobs", count)
         except Exception:
             logger.exception("Scheduled recruitment source refresh failed")
@@ -848,6 +856,7 @@ def admin_usage(
 
 
 _PUBLIC_RADAR_ERROR_MESSAGES = {
+    "COMPANY_SEARCH_INCOMPLETE": "部分企业搜索未完成；已取得的发现保留在搜索更新池，详情见覆盖统计。",
     "DISCOVERY_LIMITED": "该信源尚未配置可合法访问的公开入口。",
     "AI_CREDITS_EXHAUSTED": "AI 补漏额度暂不可用；确定性官网信源仍会继续扫描。",
     "AI_RATE_LIMITED": "AI 补漏当前受到频率限制；确定性官网信源仍会继续扫描。",
@@ -918,6 +927,94 @@ def _public_radar_source(source: dict) -> dict:
     return item
 
 
+_SEARCH_UPDATE_LABELS = {
+    "pending": "待官网核验",
+    "verified": "已官网核验",
+    "conflicted": "核验信息冲突",
+    "rejected": "未通过核验",
+}
+
+
+def _public_search_update(job: dict) -> dict:
+    """Expose a normalized discovery candidate without presenting it as fact."""
+    allowed = (
+        "id", "external_id", "program_id", "company", "title", "city", "region",
+        "employer_type", "industry", "primary_category", "organization_category",
+        "industry_tags", "role_tags", "official_url", "application_url",
+        "opening_date", "closing_date", "status", "verification_status",
+        "confidence_score", "description", "responsibilities", "requirements", "tags",
+        "program_name", "recruitment_year", "first_seen_at", "last_seen_at",
+        "last_changed_at", "latest_event_type", "latest_event_at",
+    )
+    item = {key: job.get(key) for key in allowed}
+    for field in ("official_url", "application_url"):
+        item[field] = _public_reference_url(item.get(field))
+    for field in (
+        "company", "title", "city", "region", "employer_type", "industry",
+        "description", "responsibilities", "requirements", "program_name",
+    ):
+        if item.get(field):
+            item[field] = _redact_public_text(str(item[field]), limit=2_000)
+    for field in ("tags", "industry_tags", "role_tags"):
+        item[field] = [
+            _redact_public_text(str(value), limit=100)
+            for value in list(item.get(field) or [])
+        ]
+
+    public_sources = []
+    for source in list(job.get("sources") or []):
+        public_sources.append({
+            "source_id": str(source.get("source_id") or "")[:64],
+            "name": _redact_public_text(str(source.get("name") or ""), limit=160),
+            "source_type": str(source.get("source_type") or "")[:40],
+            "trust_level": str(source.get("trust_level") or "")[:20],
+            "source_url": _public_reference_url(source.get("source_url")),
+            "verification_role": str(source.get("verification_role") or "")[:20],
+            "discovered_at": source.get("discovered_at"),
+            "last_seen_at": source.get("last_seen_at"),
+            "active": bool(source.get("active")),
+        })
+    item["sources"] = public_sources
+    item["discovered_by"] = [
+        source for source in public_sources
+        if source["trust_level"] == "discovery"
+    ]
+    item["verified_by"] = [
+        source for source in public_sources
+        if source["verification_role"] == "verification"
+    ]
+
+    verification_status = str(item.get("verification_status") or "pending")
+    item["review_state"] = verification_status
+    item["review_label"] = _SEARCH_UPDATE_LABELS.get(
+        verification_status, "核验状态未知"
+    )
+    item["officially_verified"] = verification_status == "verified"
+    closing_date = str(item.get("closing_date") or "")
+    still_open = item.get("status") == "open" and (
+        not closing_date or closing_date > date.today().isoformat()
+    )
+    item["published_as_active_job"] = bool(
+        item["officially_verified"] and still_open
+    )
+    item["is_candidate"] = not item["officially_verified"]
+    return item
+
+
+def _validated_future_radar_categories(values: list[str]) -> list[str]:
+    allowed_categories = set(PRIMARY_CATEGORY_CODES)
+    selected_categories = {
+        str(value).strip() for value in values if str(value).strip()
+    }
+    unknown_categories = selected_categories - allowed_categories
+    if unknown_categories:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown Future Radar category: {sorted(unknown_categories)[0]}",
+        )
+    return sorted(selected_categories)
+
+
 def _reject_secret_like_config(value: object, *, path: str = "config") -> None:
     """Source config is versioned operational data, never a secret store."""
     if isinstance(value, dict):
@@ -937,6 +1034,92 @@ def _reject_secret_like_config(value: object, *, path: str = "config") -> None:
 def future_radar_dashboard(user: User) -> dict:
     del user
     return _public_radar_dashboard(future_radar_service.repository.dashboard())
+
+
+@app.get("/api/future-radar/search-updates")
+def future_radar_search_updates(
+    user: User,
+    page: int = Query(default=1, ge=1, le=100_000),
+    page_size: int = Query(default=50, ge=1, le=100),
+    status_filter: Literal["open", "closed", "unknown", "all"] = Query(
+        default="open", alias="status"
+    ),
+    verification_status: Literal[
+        "pending", "verified", "conflicted", "rejected"
+    ] | None = None,
+    source_id: str | None = Query(default=None, max_length=64),
+    company: str | None = Query(default=None, max_length=160),
+    q: str | None = Query(default=None, max_length=160),
+    sort: Literal["changed", "closing", "opening", "first_seen", "company"] = "changed",
+    category: list[str] = Query(default=[]),
+) -> dict:
+    """List discovery candidates separately from officially verified jobs."""
+    del user
+    selected_categories = _validated_future_radar_categories(category)
+    filters = {
+        "status": status_filter,
+        "verification_status": verification_status,
+        "source_id": source_id,
+        "company": company,
+        "q": q,
+        "sort": sort,
+        "active_only": status_filter == "open",
+        "primary_categories": selected_categories,
+        "discovery_source_only": True,
+    }
+    result = future_radar_service.repository.list_jobs(
+        page=page, page_size=page_size, filters=filters
+    )
+    candidates = [_public_search_update(job) for job in result["items"]]
+    result["items"] = candidates
+    result["candidates"] = candidates
+    result["stats"] = future_radar_service.repository.job_stats(filters=filters)
+    targets = build_employer_search_targets()
+    result["scope"] = {
+        "category_count": len(PERSONAL_MONITOR_POOLS),
+        "list_entry_count": sum(len(pool["employers"]) for pool in PERSONAL_MONITOR_POOLS),
+        "target_count": len(targets),
+        "batch_count": len(build_employer_search_batches()),
+    }
+    snapshot = future_radar_service.repository.latest_snapshot_metadata(
+        "openai-public-web-search"
+    )
+    result["coverage"] = None
+    if snapshot and snapshot["metadata"].get("coverage"):
+        coverage = snapshot["metadata"]["coverage"]
+        result["coverage"] = {
+            key: coverage.get(key, 0)
+            for key in (
+                "target_count", "searched_count", "failed_count",
+                "employers_with_candidates_count", "batch_count",
+                "failed_batch_count", "coverage_percent",
+            )
+        }
+        result["coverage"]["failed_employers"] = [
+            _redact_public_text(str(name), limit=160)
+            for name in coverage.get("failed_employers", [])
+        ]
+        result["coverage"]["completed_at"] = snapshot["fetched_at"]
+    search_source = future_radar_service.repository.get_source("openai-public-web-search")
+    result["search_status"] = (search_source or {}).get("status", "pending")
+    result["pool"] = "search_updates"
+    result["notice"] = (
+        "待核验、冲突或未通过核验的记录只是搜索候选；"
+        "只有“已官网核验”记录才会进入正式岗位池。"
+    )
+    return result
+
+
+@app.get("/api/future-radar/search-updates/{job_id}")
+def future_radar_search_update(job_id: str, user: User) -> dict:
+    del user
+    job = future_radar_service.repository.get_job(job_id)
+    if not job or not any(
+        source.get("trust_level") == "discovery"
+        for source in list(job.get("sources") or [])
+    ):
+        raise HTTPException(status_code=404, detail="Search update not found.")
+    return _public_search_update(job)
 
 
 @app.get("/api/future-radar/jobs")
@@ -967,16 +1150,7 @@ def future_radar_jobs(
             status_code=422,
             detail="Only officially verified Future Radar jobs are public.",
         )
-    allowed_categories = set(PRIMARY_CATEGORY_CODES)
-    selected_categories = {
-        str(value).strip() for value in category if str(value).strip()
-    }
-    unknown_categories = selected_categories - allowed_categories
-    if unknown_categories:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown Future Radar category: {sorted(unknown_categories)[0]}",
-        )
+    selected_categories = _validated_future_radar_categories(category)
     filters = {
         "status": status_filter,
         "verification_status": "verified",
@@ -995,7 +1169,7 @@ def future_radar_jobs(
         "closing_after": closing_after.isoformat() if closing_after else None,
         "sort": sort,
         "active_only": status_filter == "open",
-        "primary_categories": sorted(selected_categories),
+        "primary_categories": selected_categories,
     }
     profile = database.get_recruitment_profile(user["id"])
 
@@ -2333,12 +2507,38 @@ def ingest_recruitment_jobs(
             last_item_id=group["last_item_id"],
             last_source_updated_at=group["last_source_updated_at"],
         ))
+    search_updates_refresh: dict | None = None
+    if request.jobs:
+        # Ingest has already committed its candidates and verification result.
+        # Refresh only the deterministic local bridge, never all Quick/Deep
+        # sources. Keep the normal run/source locks, and leave durable rows for
+        # the next Quick Scan if this best-effort projection is unavailable.
+        try:
+            bridge = future_radar_service.run(
+                trigger_type="ingest_bridge",
+                scan_type="quick",
+                source_ids=["legacy-search-discovery"],
+            )
+            search_updates_refresh = (
+                {"status": "success"}
+                if bridge.get("status") == "success" and bridge.get("sources_succeeded", 0) > 0
+                else {"status": "deferred", "code": "BRIDGE_NOT_COMPLETED"}
+            )
+        except RadarRunBusy:
+            search_updates_refresh = {"status": "deferred", "code": "RADAR_RUN_BUSY"}
+        except Exception as exc:
+            logger.warning(
+                "Future Radar ingest bridge deferred error_type=%s",
+                type(exc).__name__,
+            )
+            search_updates_refresh = {"status": "deferred", "code": "BRIDGE_UNAVAILABLE"}
     return {
         **totals,
         "event_id": event_ids[0] if len(event_ids) == 1 else None,
         "event_ids": event_ids,
         "skipped": skipped,
         "received_at": database.utc_now(),
+        **({"search_updates_refresh": search_updates_refresh} if search_updates_refresh else {}),
     }
 
 

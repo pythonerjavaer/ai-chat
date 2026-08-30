@@ -429,7 +429,43 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .radar-tabs button { flex: 1 0 auto; min-height: 31px; padding: 0 10px; color: #708a96; border: 1px solid transparent; border-radius: 8px; background: transparent; cursor: pointer; font-size: 8px; font-weight: 800; white-space: nowrap; }
 .radar-tabs button:hover { color: #b9eaf0; }
 .radar-tabs button.active { color: #e0fbff; border-color: rgba(99,218,226,.2); background: linear-gradient(120deg, rgba(39,143,178,.15), rgba(40,161,131,.09)); box-shadow: inset 0 0 18px rgba(80,210,219,.04); }
+.radar-tabs button span { display: inline-grid; place-items: center; min-width: 18px; height: 17px; margin-left: 4px; padding: 0 5px; color: #ffd49b; border: 1px solid rgba(255,188,98,.18); border-radius: 999px; background: rgba(221,129,48,.09); font-size: 7px; }
 .radar-tab-panel { min-height: 180px; }
+.radar-candidate-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 11px; padding: 14px 15px; border: 1px solid rgba(255,181,89,.18); border-radius: 13px; background: radial-gradient(circle at 92% 0, rgba(255,142,56,.09), transparent 38%), linear-gradient(135deg, rgba(32,118,145,.09), rgba(101,63,23,.055)); }
+.radar-candidate-heading > div { min-width: 0; }
+.radar-candidate-heading h3 { margin: 4px 0 5px; color: #f0fbff; font-size: 16px; }
+.radar-candidate-heading p { max-width: 720px; margin: 0; color: #8ca4af; font-size: 9px; line-height: 1.6; }
+.radar-candidate-heading button { flex: 0 0 auto; min-height: 34px; padding: 0 11px; color: #ffdda9; border: 1px solid rgba(255,184,85,.22); border-radius: 9px; background: rgba(170,95,32,.09); cursor: pointer; font-size: 8px; font-weight: 800; }
+.radar-candidate-heading button:hover { border-color: rgba(255,192,105,.42); background: rgba(181,102,35,.15); }
+.radar-candidate-heading button:disabled { cursor: wait; opacity: .55; }
+.radar-candidate-coverage { margin-bottom: 12px; padding: 12px 14px; border: 1px solid rgba(91,222,179,.18); border-radius: 10px; color: #a5ddc9; background: rgba(28,100,83,.08); font-size: 11px; line-height: 1.6; }
+.radar-candidate-coverage p { margin: 4px 0 0; color: #96aeb9; }
+.radar-candidate-coverage.incomplete { border-color: rgba(255,183,91,.2); color: #ffd298; }
+.radar-candidate-coverage summary { margin-top: 8px; cursor: pointer; }
+.radar-candidate-summary { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 7px; margin-bottom: 10px; }
+.radar-candidate-summary article { padding: 9px 10px; color: #94aab3; border: 1px solid rgba(134,198,211,.11); border-radius: 9px; background: rgba(8,26,35,.32); font-size: 8px; font-weight: 800; }
+.radar-candidate-summary article.pending { color: #ffd298; border-color: rgba(255,183,91,.2); }
+.radar-candidate-summary article.verified { color: #9ce9cd; border-color: rgba(91,222,179,.18); }
+.radar-candidate-summary article.conflicted { color: #e3c3ff; border-color: rgba(188,140,245,.18); }
+.radar-candidate-summary article.rejected { color: #f4a58f; border-color: rgba(255,122,96,.18); }
+.radar-candidate-summary article.closed { color: #8fa0a8; }
+.radar-candidate-list { display: grid; gap: 9px; }
+.radar-candidate-card { position: relative; display: grid; gap: 8px; padding: 14px 15px; overflow: hidden; border: 1px solid rgba(255,181,89,.15); border-radius: 13px; background: linear-gradient(135deg, rgba(87,61,31,.075), rgba(22,82,103,.055)); }
+.radar-candidate-card::before { content: ""; position: absolute; width: 2px; inset: 12px auto 12px 0; border-radius: 2px; background: #e8aa5e; box-shadow: 0 0 12px rgba(232,170,94,.5); }
+.radar-candidate-card.candidate-verified { border-color: rgba(91,222,179,.17); background: linear-gradient(135deg, rgba(41,132,105,.075), rgba(22,82,103,.055)); }
+.radar-candidate-card.candidate-verified::before { background: #6de2bd; box-shadow: 0 0 12px rgba(109,226,189,.48); }
+.radar-candidate-card.candidate-rejected { border-color: rgba(255,122,96,.13); opacity: .78; }
+.radar-candidate-card.candidate-closed { border-color: rgba(148,166,176,.12); opacity: .72; }
+.radar-candidate-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.radar-candidate-card-heading > div { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.radar-candidate-card-heading time { flex: 0 0 auto; color: #69838e; font-size: 7px; }
+.radar-candidate-card h4 { margin: 0; color: #e9fbff; font-size: 13px; }
+.radar-candidate-source { display: flex; flex-wrap: wrap; gap: 6px; }
+.radar-candidate-source span { padding: 4px 6px; color: #79b5bd; border: 1px solid rgba(105,194,199,.09); border-radius: 6px; background: rgba(48,139,143,.045); font-size: 7px; }
+.radar-candidate-verification-note { margin: 0; padding: 8px 9px; color: #dcbf96; border-radius: 8px; background: rgba(184,111,44,.07); font-size: 8px; line-height: 1.5; }
+.radar-candidate-verification-note.verified { color: #a5ddc9; background: rgba(50,146,112,.07); }
+.radar-candidate-verification-note.rejected { color: #d8a191; background: rgba(162,72,52,.07); }
+.radar-candidate-verification-note.closed { color: #879aa2; background: rgba(95,114,123,.06); }
 .radar-filter-bar { display: grid; grid-template-columns: minmax(150px, 1.5fr) repeat(5, minmax(88px, .8fr)); gap: 7px; margin: 9px 0 12px; padding: 10px; border: 1px solid rgba(111,203,218,.12); border-radius: 12px; background: rgba(3,14,22,.34); }
 .radar-filter-bar label { display: grid; gap: 4px; min-width: 0; color: #68818c; font-size: 7px; font-weight: 800; letter-spacing: .04em; }
 .radar-filter-bar input, .radar-filter-bar select { width: 100%; min-height: 31px; padding: 0 8px; color: #ccecf1; border: 1px solid rgba(118,201,215,.14); border-radius: 8px; outline: none; background: rgba(8,25,35,.8); font: inherit; letter-spacing: 0; }
@@ -494,11 +530,12 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .recruitment-sync-orbit { position: relative; flex: 0 0 42px; width: 42px; height: 42px; border: 1px solid rgba(111,225,238,.22); border-radius: 50%; background: radial-gradient(circle, rgba(100,230,221,.18) 0 8%, transparent 9% 43%, rgba(83,211,222,.06) 44% 47%, transparent 48%); box-shadow: inset 0 0 18px rgba(83,211,222,.07), 0 0 18px rgba(59,210,210,.05); animation: syncOrbitPulse 3.4s ease-in-out infinite; }
 .recruitment-sync-orbit::after { content: ""; position: absolute; width: 18px; height: 1px; left: 50%; top: 50%; background: linear-gradient(90deg, rgba(116,239,228,.8), transparent); transform-origin: left center; animation: syncOrbitSweep 4s linear infinite; }
 .recruitment-sync-orbit i { position: absolute; width: 5px; height: 5px; border-radius: 50%; background: #587783; box-shadow: 0 0 7px currentColor; }
-.recruitment-sync-orbit i:nth-child(1) { left: 5px; top: 9px; }
-.recruitment-sync-orbit i:nth-child(2) { left: 20px; top: 3px; }
-.recruitment-sync-orbit i:nth-child(3) { right: 4px; top: 16px; }
-.recruitment-sync-orbit i:nth-child(4) { right: 9px; bottom: 5px; }
-.recruitment-sync-orbit i:nth-child(5) { left: 7px; bottom: 7px; }
+.recruitment-sync-orbit i:nth-child(1) { left: 18px; top: 3px; }
+.recruitment-sync-orbit i:nth-child(2) { right: 5px; top: 11px; }
+.recruitment-sync-orbit i:nth-child(3) { right: 5px; bottom: 10px; }
+.recruitment-sync-orbit i:nth-child(4) { left: 18px; bottom: 3px; }
+.recruitment-sync-orbit i:nth-child(5) { left: 5px; bottom: 10px; }
+.recruitment-sync-orbit i:nth-child(6) { left: 5px; top: 11px; }
 .recruitment-sync-orbit i.active { color: #70f0cf; background: #70f0cf; }
 .recruitment-sync-orbit i.pending { color: #ffd18b; background: #ffd18b; }
 .recruitment-sync-orbit i.error { color: #ff8878; background: #ff8878; }
@@ -1760,6 +1797,15 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
   .radar-metric { min-height: 66px; }
   .radar-metric:last-child { grid-column: 1 / -1; }
   .radar-tabs button { min-height: 38px; font-size: 9px; }
+  .radar-candidate-heading { display: grid; gap: 12px; padding: 13px; }
+  .radar-candidate-heading p { font-size: 10px; }
+  .radar-candidate-heading button { width: 100%; min-height: 40px; }
+  .radar-candidate-summary { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .radar-candidate-summary article { min-height: 38px; display: flex; align-items: center; font-size: 9px; }
+  .radar-candidate-card { padding: 13px 13px 13px 15px; }
+  .radar-candidate-card-heading { align-items: flex-start; }
+  .radar-candidate-card-heading time { max-width: 90px; text-align: right; white-space: normal; }
+  .radar-candidate-verification-note { font-size: 9px; }
   .job-fact-grid { grid-template-columns: 1fr; }
   .radar-event-diff-list p { grid-template-columns: 1fr; gap: 3px; padding-bottom: 7px; }
   .radar-event-diff-list i { display: none; }

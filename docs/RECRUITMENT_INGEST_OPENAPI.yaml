@@ -79,7 +79,7 @@ paths:
         - recruitmentToken: []
       responses:
         '200':
-          description: Aggregate status for the five configured monitor sources.
+          description: Aggregate status for the six configured monitor sources.
           content:
             application/json:
               schema:
@@ -113,7 +113,7 @@ components:
           type: [string, 'null']
           maxLength: 100
           description: |
-            Optional compatibility field. For chatgpt-radar-01..05, omit the
+            Optional compatibility field. For chatgpt-radar-01..06, omit the
             real conversation ID: the server uses source_id and does not retain
             the supplied thread value. Other source types retain only a short
             SHA-256 reference, never the raw value.
@@ -259,6 +259,18 @@ components:
           type: array
           items:
             type: string
+        search_updates_refresh:
+          type: object
+          description: Best-effort local candidate projection after a non-empty ingest; does not invoke external sources or AI.
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [success, deferred]
+            code:
+              type: string
+              enum: [RADAR_RUN_BUSY, BRIDGE_NOT_COMPLETED, BRIDGE_UNAVAILABLE]
+          additionalProperties: false
       additionalProperties: true
     SourceStatus:
       type: object
@@ -267,7 +279,7 @@ components:
           type: string
         source_ref:
           type: [string, 'null']
-          description: Privacy-preserving hash reference for non-standard sources; null for the five logical ChatGPT sources.
+          description: Privacy-preserving hash reference for non-standard sources; null for the six logical ChatGPT sources.
         title:
           type: string
         status:
@@ -372,7 +384,7 @@ components:
           minimum: 0
         expected_source_count:
           type: integer
-          const: 5
+          const: 6
         connected_source_count:
           type: integer
           minimum: 0

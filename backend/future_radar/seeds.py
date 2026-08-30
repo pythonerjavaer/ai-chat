@@ -332,6 +332,23 @@ def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
             "verification_status": "verified",
         },
         {
+            "id": "legacy-search-discovery",
+            "name": "历史搜索与同步候选",
+            "platform": "internal",
+            "source_type": "manual",
+            "enabled": True,
+            "priority": 89,
+            "trust_level": "discovery",
+            "interval_minutes": 30,
+            "adapter_config": {
+                "adapter": "legacy_database",
+                "discovery_only": True,
+                "close_confirmations": 1,
+            },
+            "status": "pending",
+            "verification_status": "unverified",
+        },
+        {
             "id": "openai-public-web-search",
             "name": "OpenAI 公共网页补漏",
             "platform": "openai",

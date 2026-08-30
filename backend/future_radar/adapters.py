@@ -21,6 +21,7 @@ from openai import OpenAI
 from .. import database
 from ..recruitment import primary_employer_category
 from ..recruitment_search import (
+    WEB_SEARCH_SOURCE,
     _inspect_official_candidate_page,
     _normalize_job as normalize_web_search_job,
     _semantic_date_appears_in_page,
@@ -124,6 +125,8 @@ class AdapterResult:
     message: str = ""
     ai_calls: int = 0
     model_tokens_used: int = 0
+    # Deterministic orchestration counts, never model-declared search coverage.
+    coverage: dict[str, Any] = field(default_factory=dict)
     # Discovery adapters may deterministically open an official HTTPS page
     # after finding a candidate.  Keep that per-item attestation separate from
     # the source's broad trust level: a web-search source is still discovery,
@@ -585,6 +588,8 @@ class LegacyDatabaseAdapter:
     """Moves verified legacy jobs into Radar without deleting the old API."""
 
     def scan(self, source: dict[str, Any]) -> AdapterResult:
+        if source.get("adapter_config", {}).get("discovery_only"):
+            return LegacyDiscoveryDatabaseAdapter().scan(source)
         del source
         jobs: list[dict[str, Any]] = []
         for item in database.list_recruitment_jobs():
@@ -623,6 +628,175 @@ class LegacyDatabaseAdapter:
             jobs, ensure_ascii=False, sort_keys=True, default=str
         ).encode("utf-8")).hexdigest()
         return AdapterResult(jobs=jobs, content_hash=content_hash)
+
+
+class LegacyDiscoveryDatabaseAdapter:
+    """Expose old search/ingest observations without upgrading their trust.
+
+    This is a deterministic projection of two local tables, not another web
+    search.  It deliberately never selects conversation identifiers, evidence,
+    source labels, payloads or verification diagnostics from the ingest table.
+    Stable identities align with the official legacy bridge so a later
+    promotion adds provenance to one job instead of making a duplicate.
+    """
+
+    @staticmethod
+    def _tags(value: Any) -> list[str]:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                value = []
+        if not isinstance(value, list):
+            return []
+        return [
+            _redact_public_text(tag, limit=80)
+            for tag in value
+            if isinstance(tag, str)
+        ][:30]
+
+    @staticmethod
+    def _safe_external_id(value: Any) -> str:
+        value = str(value or "")
+        if re.fullmatch(r"(?:web|monitor|candidate)-[0-9a-f]{24,64}", value):
+            return value
+        if (
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,179}", value)
+            and not _PUBLIC_UUID.search(value)
+            and not any(pattern.search(value) for pattern in _PUBLIC_SECRETS)
+            and not any(pattern.search(value) for pattern in _PUBLIC_PHONES)
+        ):
+            return value
+        return stable_digest(value, prefix="legacy-discovery", length=32)
+
+    @classmethod
+    def _ingest_external_id(cls, item: dict[str, Any]) -> str:
+        if item.get("promoted_job_id"):
+            return cls._safe_external_id(item["promoted_job_id"])
+        # Match the legacy ingest endpoint's monitor identity before it is
+        # promoted.  Raw external identifiers are used only as hash material.
+        if item.get("controlled_chatgpt") and item.get("external_id"):
+            company_key = re.sub(
+                r"[^0-9a-z\u4e00-\u9fff]+", "", str(item["company"]).casefold()
+            )
+            identity = f"external:{company_key}:{str(item['external_id']).casefold()}"
+            digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        else:
+            digest = str(item.get("dedupe_key") or "")
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+                digest = hashlib.sha256(str(item.get("id") or "").encode("utf-8")).hexdigest()
+        return f"monitor-{digest[:24]}"
+
+    @classmethod
+    def _job(cls, item: dict[str, Any], *, external_id: str) -> dict[str, Any] | None:
+        company = _redact_public_text(item.get("company"), limit=160)
+        title = _redact_public_text(item.get("title"), limit=280)
+        if not company or not title:
+            return None
+        closing_date = normalize_date(item.get("closing_date"))
+        if (
+            item.get("status") == "closed"
+            or item.get("verification_status") == "closed"
+            or (closing_date and closing_date <= date.today().isoformat())
+        ):
+            return None
+        tags = cls._tags(item.get("tags"))
+        # Source-provided "verified" tags must not contradict the candidate's
+        # explicitly pending state in the new pool.
+        tags = [tag for tag in tags if tag not in {"链接已验证", "标题已验证"}]
+        verification = str(item.get("verification_status") or "pending")
+        if verification not in {"rejected", "conflicted"}:
+            verification = "pending"
+        url = _public_reference_url(item.get("canonical_url") or item.get("url"))
+        url = url or _public_reference_url(item.get("official_url"))
+        return {
+            "external_id": external_id,
+            "company": company,
+            "title": title,
+            "city": _redact_public_text(item.get("city"), limit=160),
+            "region": _redact_public_text(item.get("city"), limit=160),
+            "employer_type": _redact_public_text(item.get("employer_type"), limit=80),
+            "industry": _redact_public_text(item.get("industry"), limit=120),
+            "primary_category": _legacy_primary_category(item, tags),
+            "official_url": url,
+            "application_url": url,
+            "opening_date": normalize_date(item.get("opening_date")),
+            "closing_date": closing_date,
+            "status": "unknown" if item.get("status") == "unknown" else "open",
+            "verification_status": verification,
+            "confidence_score": 0.5,
+            "requirements": _redact_public_text(item.get("requirements"), limit=1_200),
+            "tags": list(dict.fromkeys([*tags, "历史搜索发现"])),
+        }
+
+    def scan(self, source: dict[str, Any]) -> AdapterResult:
+        del source
+        with database.connect() as connection:
+            legacy_rows = connection.execute(
+                """
+                SELECT id, company, employer_type, title, city, industry, url,
+                       opening_date, closing_date, requirements, tags, status,
+                       last_verified_at
+                FROM recruitment_jobs
+                WHERE source=? OR tags LIKE '%AI网页搜索%'
+                ORDER BY id
+                """,
+                (WEB_SEARCH_SOURCE,),
+            ).fetchall()
+            ingest_rows = connection.execute(
+                """
+                SELECT id, dedupe_key, external_id, promoted_job_id,
+                       CASE WHEN source_id IN (
+                           'chatgpt-radar-01', 'chatgpt-radar-02', 'chatgpt-radar-03',
+                           'chatgpt-radar-04', 'chatgpt-radar-05'
+                       ) THEN 1 ELSE 0 END AS controlled_chatgpt,
+                       company, employer_type, title, city, industry,
+                       official_url, canonical_url, opening_date, closing_date,
+                       requirements, tags, incoming_status AS status,
+                       verification_status, source_updated_at, last_seen_at
+                FROM recruitment_ingest_candidates ORDER BY id
+                """
+            ).fetchall()
+
+        jobs_by_id: dict[str, dict[str, Any]] = {}
+        cursors: list[str] = []
+        for rows, is_ingest in ((legacy_rows, False), (ingest_rows, True)):
+            for row in rows:
+                item = dict(row)
+                external_id = (
+                    self._ingest_external_id(item)
+                    if is_ingest else self._safe_external_id(item["id"])
+                )
+                job = self._job(item, external_id=external_id)
+                if job:
+                    jobs_by_id[external_id] = job
+                elif is_ingest:
+                    jobs_by_id.pop(external_id, None)
+                for field in ("source_updated_at", "last_seen_at", "last_verified_at"):
+                    try:
+                        timestamp = datetime.fromisoformat(str(item.get(field) or "").replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                    if timestamp.tzinfo is None:
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    cursors.append(timestamp.astimezone(timezone.utc).isoformat())
+        jobs = [jobs_by_id[key] for key in sorted(jobs_by_id)]
+        digest = hashlib.sha256(json.dumps(
+            jobs, ensure_ascii=False, sort_keys=True, default=str
+        ).encode("utf-8")).hexdigest()
+        return AdapterResult(
+            jobs=jobs,
+            content_hash=digest,
+            normalized_content=json.dumps({
+                "kind": "legacy_search_discovery",
+                "candidate_count": len(jobs),
+                "observed_cursor": max(cursors, default=None),
+            }, ensure_ascii=False, sort_keys=True),
+            # Unlike a rolling web response, this is a complete read of the
+            # persisted local pool.  Removed/closed rows can retire this source
+            # link; another active official source still protects its job.
+            snapshot_complete=True,
+        )
 
 
 class OfficialHtmlAdapter:
@@ -1059,9 +1233,23 @@ class OpenAIWebSearchAdapter:
         digest = hashlib.sha256(json.dumps(
             jobs, ensure_ascii=False, sort_keys=True, default=str
         ).encode("utf-8")).hexdigest()
+        coverage = {}
+        if getattr(result, "target_count", 0):
+            coverage = {
+                "target_count": result.target_count,
+                "searched_count": result.searched_count,
+                "failed_count": result.failed_count,
+                "employers_with_candidates_count": len(result.employers_with_candidates),
+                "batch_count": result.batch_count,
+                "failed_batch_count": len(result.failed_batches),
+                "coverage_percent": result.coverage_percent,
+                "failed_employers": list(result.failed_employers),
+            }
         return AdapterResult(
             jobs=jobs, content_hash=digest, snapshot_complete=False,
             ai_calls=result.tool_calls, model_tokens_used=result.total_tokens,
+            coverage=coverage,
+            status="partial" if coverage.get("failed_count") else "healthy",
             verified_job_external_ids=verified_job_external_ids,
         )
 

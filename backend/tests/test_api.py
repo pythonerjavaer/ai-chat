@@ -1,11 +1,15 @@
 import os
+import json
 import sqlite3
 import tempfile
 from datetime import date, datetime, timedelta, timezone
 from email.message import Message
 from io import BytesIO
 from pathlib import Path
+from threading import Event, Lock
 from types import SimpleNamespace
+
+import pytest
 
 
 TEST_DIRECTORY = Path(tempfile.mkdtemp(prefix="ai-chat-tests-"))
@@ -39,6 +43,23 @@ CURRENT_RECRUITMENT_COHORT_YEAR = (
 )
 CURRENT_RECRUITMENT_COHORT = f"{CURRENT_RECRUITMENT_COHORT_YEAR}届"
 TEST_AUTHORIZED_ATS = "https://app.mokahr.com"
+
+
+def employer_only_pool(pool: dict, employer: str) -> dict:
+    return {**pool, "employers": [employer]}
+
+
+def coverage_payload(pool: dict, jobs: list[dict]) -> dict:
+    targets = recruitment_search.build_employer_search_targets([pool])
+    assert len(targets) == 1
+    target_id = targets[0].id
+    return {
+        "checked_employers": [{
+            "target_id": target_id,
+            "status": "open_jobs_found" if jobs else "no_current_opening",
+        }],
+        "jobs": [{**job, "target_id": target_id} for job in jobs],
+    }
 
 
 def register(client: TestClient, username: str) -> tuple[str, dict]:
@@ -1132,7 +1153,7 @@ def test_recruitment_ingest_is_idempotent_allows_shared_pages_and_hides_thread_i
         )
         assert sync.status_code == 200
         sync_payload = sync.json()
-        assert sync_payload["expected_source_count"] == 5
+        assert sync_payload["expected_source_count"] == 6
         source = next(
             item for item in sync_payload["sources"]
             if item["source_id"] == "chatgpt-radar-01"
@@ -1927,9 +1948,355 @@ def test_recruitment_jobs_hide_today_deadline_and_keep_tomorrow(monkeypatch):
         assert [job["id"] for job in jobs] == ["tomorrow"]
 
 
+def test_company_search_batches_cover_every_left_list_entry_once():
+    targets = recruitment_search.build_employer_search_targets()
+    batches = recruitment_search.build_employer_search_batches()
+    raw_entries = [
+        (pool["id"], employer)
+        for pool in recruitment_search.PERSONAL_MONITOR_POOLS
+        for employer in pool["employers"]
+    ]
+
+    assigned_ids = [target.id for batch in batches for target in batch.targets]
+    assert len(assigned_ids) == len(set(assigned_ids)) == len(targets)
+    assert set(assigned_ids) == {target.id for target in targets}
+    assert len(batches) == len(targets)
+    assert all(len(batch.targets) == 1 for batch in batches)
+    assert all(
+        len(batch.targets) == 1
+        for batch in recruitment_search.build_employer_search_batches(batch_size=100)
+    )
+    for pool_id, employer in raw_entries:
+        assert sum(
+            target.pool_id == pool_id and employer in target.aliases
+            for target in targets
+        ) == 1
+
+    # Obvious aliases collapse, while similarly named legal entities do not.
+    assert len(targets) < len(raw_entries)
+    assert any(
+        {"大疆", "DJI"}.issubset(set(target.aliases)) for target in targets
+    )
+    assert {"中国电子", "中国电子科技集团"}.issubset(
+        {target.canonical_name for target in targets}
+    )
+
+
+def test_company_search_prompt_explicitly_targets_the_graduating_cohort(monkeypatch):
+    class AugustDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 30)
+
+    monkeypatch.setattr(recruitment_search, "date", AugustDate)
+    batch = recruitment_search.build_employer_search_batches()[0]
+    prompt = recruitment_search._search_prompt(batch)
+    assert "目标毕业届别是 2027 届" in prompt
+    assert "title 保留原公告中的具体岗位名称" in prompt
+    assert "requirements 中保留原文证实的适用毕业届别" in prompt
+
+
+def test_company_search_batch_rejects_incomplete_coverage_report():
+    pool = employer_only_pool(
+        next(
+            item for item in recruitment_search.PERSONAL_MONITOR_POOLS
+            if item["primary_category"] == "internet_tech"
+        ),
+        "百度",
+    )
+    batch = recruitment_search.build_employer_search_batches([pool])[0]
+    incomplete_payload = {
+        "checked_employers": [],
+        "jobs": [],
+    }
+
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                output_text=__import__("json").dumps(incomplete_payload),
+                output=[SimpleNamespace(
+                    type="web_search_call",
+                    status="completed",
+                    action=SimpleNamespace(sources=[]),
+                )],
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                model="test-model",
+            )
+
+    try:
+        recruitment_search._search_batch(
+            SimpleNamespace(responses=FakeResponses()), batch
+        )
+    except RuntimeError as exc:
+        assert "incomplete coverage" in str(exc)
+    else:
+        raise AssertionError("An incomplete employer coverage report was accepted")
+
+
+def test_company_search_rejects_multi_employer_self_report_before_request():
+    pool = next(
+        item for item in recruitment_search.PERSONAL_MONITOR_POOLS
+        if item["primary_category"] == "internet_tech"
+    )
+    multi_target_batch = recruitment_search.EmployerSearchBatch(
+        id="invalid-multi-employer",
+        pool=pool,
+        targets=recruitment_search.build_employer_search_targets([pool])[:8],
+    )
+
+    class NeverCalledResponses:
+        def create(self, **_kwargs):
+            raise AssertionError("A multi-employer request was sent")
+
+    with pytest.raises(RuntimeError, match="exactly one target"):
+        recruitment_search._search_batch(
+            SimpleNamespace(responses=NeverCalledResponses()), multi_target_batch
+        )
+
+
+def test_company_search_tracks_failed_employer_not_whole_category(monkeypatch):
+    pool = dict(next(
+        item for item in recruitment_search.PERSONAL_MONITOR_POOLS
+        if item["primary_category"] == "internet_tech"
+    ))
+    pool["employers"] = ["百度", "腾讯", "拼多多"]
+    targets = recruitment_search.build_employer_search_targets([pool])
+    failed_target = next(target for target in targets if target.canonical_name == "腾讯")
+    requested_target_ids = []
+    request_lock = Lock()
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            schema = kwargs["text"]["format"]["schema"]
+            target_ids = schema["properties"]["jobs"]["items"]["properties"]["target_id"]["enum"]
+            assert len(target_ids) == 1
+            target_id = target_ids[0]
+            with request_lock:
+                requested_target_ids.append(target_id)
+            assert kwargs["tool_choice"] == "required"
+            assert kwargs["tools"][0]["type"] == "web_search"
+            return SimpleNamespace(
+                status="completed",
+                output_text=json.dumps({
+                    "checked_employers": [{
+                        "target_id": target_id, "status": "no_current_opening",
+                    }],
+                    "jobs": [],
+                }),
+                # A self-reported no-result row cannot stand in for actually
+                # calling the search tool for this employer.
+                output=[] if target_id == failed_target.id else [SimpleNamespace(
+                    type="web_search_call", status="completed",
+                    action=SimpleNamespace(sources=[]),
+                )],
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                model="test-model",
+            )
+
+    monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", [pool])
+    result = recruitment_search.search_current_recruitment_jobs(
+        SimpleNamespace(responses=FakeResponses())
+    )
+    assert sorted(requested_target_ids) == sorted(target.id for target in targets)
+    assert result.search_batches == result.target_count == 3
+    assert set(result.searched_employers) == {"百度", "拼多多"}
+    assert result.failed_employers == ("腾讯",)
+    assert result.searched_count == result.tool_calls == 2
+    assert result.coverage_percent == 66.67
+    assert len(result.failed_batches) == 1
+
+
+def test_company_search_bounds_independent_requests_to_eight_workers(monkeypatch):
+    pool = dict(next(
+        item for item in recruitment_search.PERSONAL_MONITOR_POOLS
+        if item["primary_category"] == "internet_tech"
+    ))
+    pool["employers"] = pool["employers"][:12]
+    release_requests = Event()
+    request_lock = Lock()
+    concurrency = {"active": 0, "peak": 0, "calls": 0}
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            target_ids = kwargs["text"]["format"]["schema"]["properties"]["jobs"]["items"]["properties"]["target_id"]["enum"]
+            assert len(target_ids) == 1
+            with request_lock:
+                concurrency["calls"] += 1
+                concurrency["active"] += 1
+                concurrency["peak"] = max(concurrency["peak"], concurrency["active"])
+                if concurrency["active"] == 8:
+                    release_requests.set()
+            assert release_requests.wait(timeout=5)
+            with request_lock:
+                concurrency["active"] -= 1
+            return SimpleNamespace(
+                status="completed",
+                output_text=json.dumps({
+                    "checked_employers": [{
+                        "target_id": target_ids[0], "status": "no_current_opening",
+                    }],
+                    "jobs": [],
+                }),
+                output=[SimpleNamespace(
+                    type="web_search_call", status="completed",
+                    action=SimpleNamespace(sources=[]),
+                )],
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                model="test-model",
+            )
+
+    monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", [pool])
+    result = recruitment_search.search_current_recruitment_jobs(
+        SimpleNamespace(responses=FakeResponses())
+    )
+    assert concurrency["calls"] == result.target_count == 12
+    assert concurrency["peak"] == 8
+    assert result.searched_count == result.tool_calls == 12
+    assert result.coverage_percent == 100
+
+
+@pytest.mark.parametrize("status,incomplete_details", [
+    ("incomplete", SimpleNamespace(reason="max_output_tokens")),
+    ("completed", SimpleNamespace(reason="max_output_tokens")),
+    ("failed", None),
+])
+def test_company_search_rejects_truncated_response_even_if_json_is_valid(
+    status, incomplete_details,
+):
+    pool = employer_only_pool(next(
+        item for item in recruitment_search.PERSONAL_MONITOR_POOLS
+        if item["primary_category"] == "internet_tech"
+    ), "百度")
+    batch = recruitment_search.build_employer_search_batches([pool])[0]
+
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                status=status, incomplete_details=incomplete_details,
+                output_text=json.dumps(coverage_payload(pool, [])),
+                output=[SimpleNamespace(
+                    type="web_search_call", status="completed",
+                    action=SimpleNamespace(sources=[]),
+                )],
+            )
+
+    with pytest.raises(RuntimeError, match="incomplete response"):
+        recruitment_search._search_batch(
+            SimpleNamespace(responses=FakeResponses()), batch
+        )
+
+
+def test_company_search_keeps_all_discovered_rows_beyond_four(monkeypatch):
+    pool = employer_only_pool(next(
+        item for item in recruitment_search.PERSONAL_MONITOR_POOLS
+        if item["primary_category"] == "internet_tech"
+    ), "百度")
+    rows = [{
+        "company": "百度",
+        "title": f"{CURRENT_RECRUITMENT_COHORT}校园招聘工程岗位 {index}",
+        "city": "北京", "industry": "互联网",
+        "official_url": f"https://talent.baidu.com/campus/jobs/{index}",
+        "opening_date": None, "closing_date": None,
+        "requirements": f"面向{CURRENT_RECRUITMENT_COHORT}毕业生",
+        "category": "互联网企业",
+    } for index in range(40)]
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            assert "maxItems" not in kwargs["text"]["format"]["schema"]["properties"]["jobs"]
+            assert kwargs["max_output_tokens"] == recruitment_search.SEARCH_MAX_OUTPUT_TOKENS
+            return SimpleNamespace(
+                status="completed",
+                output_text=json.dumps(coverage_payload(pool, rows)),
+                output=[SimpleNamespace(
+                    type="web_search_call", status="completed",
+                    action=SimpleNamespace(sources=[SimpleNamespace(
+                        url="https://talent.baidu.com/campus"
+                    )]),
+                )],
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                model="test-model",
+            )
+
+    monkeypatch.setattr(
+        recruitment_search, "_inspect_official_candidate_page",
+        lambda _job: recruitment_search.CandidatePageEvidence(False, False),
+    )
+    result = recruitment_search._search_pool(
+        SimpleNamespace(responses=FakeResponses()), pool
+    )
+    assert len(result.jobs) == 40
+    assert len({job["id"] for job in result.jobs}) == 40
+    assert all("待官方核验" in job["tags"] for job in result.jobs)
+
+
+@pytest.mark.parametrize("target_name,company,expected", [
+    ("工商银行", "中国工商银行股份有限公司", True),
+    ("农业银行", "中国农业银行", True),
+    ("建设银行", "中国建设银行", True),
+    ("邮储银行", "中国邮政储蓄银行", True),
+    ("中国银行", "中国银行股份有限公司上海市分行", True),
+    ("中国银行", "中国银行佛山分行", True),
+    ("中国银行", "中国银行总行", True),
+    ("中国移动", "中国移动通信集团广东有限公司", True),
+    ("中国移动", "中国移动研究院", True),
+    ("腾讯", "腾讯科技（深圳）有限公司", True),
+    ("腾讯", "深圳市腾讯计算机系统有限公司", True),
+    ("中国银行", "中国农业银行", False),
+    ("中国移动", "中国联通广东分公司", False),
+    ("中国电子", "中国电子科技集团", False),
+    ("腾讯", "腾讯以外科技有限公司", False),
+    ("腾讯", "腾讯培训机构", False),
+    ("腾讯", "百度", False),
+    ("安永", "Kearney", False),
+    ("安永", "EYES technology", False),
+])
+def test_company_search_matches_known_legal_names_and_controlled_branches(
+    target_name, company, expected,
+):
+    target = next(
+        item for item in recruitment_search.build_employer_search_targets()
+        if item.canonical_name == target_name
+    )
+    assert recruitment_search._company_matches_target(company, target) is expected
+
+
+def test_company_search_does_not_truncate_accepted_updates_at_one_hundred(monkeypatch):
+    def fake_search_batch(_client, batch):
+        target_names = tuple(target.canonical_name for target in batch.targets)
+        jobs = [{
+            "id": f"{batch.id}-{index}",
+            "company": batch.targets[0].canonical_name,
+            "title": f"{CURRENT_RECRUITMENT_COHORT}校园招聘岗位 {batch.id}-{index}",
+            "city": "全国",
+            "url": f"https://example.com/{batch.id}/{index}",
+            "tags": ["待官方核验"],
+        } for index in range(4)]
+        return recruitment_search.WebRecruitmentSearchResult(
+            jobs=jobs,
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+            tool_calls=1,
+            model="test-model",
+            target_employers=target_names,
+            searched_employers=target_names,
+            employers_with_candidates=(batch.targets[0].canonical_name,),
+            search_batches=1,
+        )
+
+    monkeypatch.setattr(recruitment_search, "_search_batch", fake_search_batch)
+    result = recruitment_search.search_current_recruitment_jobs(SimpleNamespace())
+
+    assert result.search_batches > 20
+    assert len(result.jobs) == result.search_batches * 4
+    assert len(result.jobs) > 100
+    assert result.coverage_percent == 100.0
+    assert result.failed_batches == ()
+
+
 def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypatch):
-    payload = {
-        "jobs": [
+    raw_jobs = [
             {
                 "company": "拼多多",
                 "title": "2027届校园招聘产品策略岗",
@@ -1964,13 +2331,20 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
                 "category": "互联网企业",
             },
         ]
-    }
+
+    internet_pool = employer_only_pool(next(
+        pool
+        for pool in recruitment_search.PERSONAL_MONITOR_POOLS
+        if pool["primary_category"] == "internet_tech"
+    ), "拼多多")
+    payload = coverage_payload(internet_pool, raw_jobs)
 
     class FakeResponses:
         def create(self, **kwargs):
             assert kwargs["tools"][0]["type"] == "web_search"
             assert kwargs["tool_choice"] == "required"
-            assert kwargs["max_tool_calls"] <= 6
+            assert kwargs["max_tool_calls"] == recruitment_search.settings.recruitment_web_search_max_tool_calls
+            assert kwargs["parallel_tool_calls"] is True
             return SimpleNamespace(
                 output_text=__import__("json").dumps(payload),
                 output=[SimpleNamespace(
@@ -1984,11 +2358,6 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
                 model="gpt-4o-mini",
             )
 
-    internet_pool = next(
-        pool
-        for pool in recruitment_search.PERSONAL_MONITOR_POOLS
-        if pool["primary_category"] == "internet_tech"
-    )
     monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", [internet_pool])
     monkeypatch.setattr(
         recruitment_search,
@@ -2008,6 +2377,10 @@ def test_bounded_web_search_normalizes_priority_jobs_and_rejects_noise(monkeypat
     assert result.tool_calls == 1
     assert result.total_tokens == 960
     assert result.failed_pools == ()
+    assert result.target_employers == ("拼多多",)
+    assert result.searched_employers == ("拼多多",)
+    assert result.employers_with_candidates == ("拼多多",)
+    assert result.coverage_percent == 100.0
 
 
 def test_candidate_page_rejects_title_match_on_unrelated_https_host(monkeypatch):
@@ -2123,7 +2496,11 @@ def test_recruitment_dates_require_application_semantics():
 
 def test_web_search_keeps_incomplete_attestation_pending(monkeypatch):
     target_year = date.today().year + (1 if date.today().month >= 6 else 0)
-    payload = {"jobs": [{
+    internet_pool = employer_only_pool(next(
+        pool for pool in recruitment_search.PERSONAL_MONITOR_POOLS
+        if pool["primary_category"] == "internet_tech"
+    ), "百度")
+    payload = coverage_payload(internet_pool, [{
         "company": "百度",
         "title": f"{target_year}届校园招聘数据分析师",
         "city": "北京",
@@ -2133,7 +2510,7 @@ def test_web_search_keeps_incomplete_attestation_pending(monkeypatch):
         "closing_date": None,
         "requirements": f"面向{target_year}届毕业生",
         "category": "互联网企业",
-    }]}
+    }])
 
     class FakeResponses:
         def create(self, **_kwargs):
@@ -2150,10 +2527,6 @@ def test_web_search_keeps_incomplete_attestation_pending(monkeypatch):
                 model="test-model",
             )
 
-    internet_pool = next(
-        pool for pool in recruitment_search.PERSONAL_MONITOR_POOLS
-        if pool["primary_category"] == "internet_tech"
-    )
     monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", [internet_pool])
     monkeypatch.setattr(
         recruitment_search,
@@ -2190,10 +2563,10 @@ def test_web_search_rejects_pool_without_completed_tool_call():
                 model="test-model",
             )
 
-    pool = next(
+    pool = employer_only_pool(next(
         item for item in recruitment_search.PERSONAL_MONITOR_POOLS
         if item["primary_category"] == "internet_tech"
-    )
+    ), "百度")
     try:
         recruitment_search._search_pool(
             SimpleNamespace(responses=FakeResponses()), pool
@@ -2206,7 +2579,11 @@ def test_web_search_rejects_pool_without_completed_tool_call():
 
 def test_web_search_rejects_uncited_structured_job(monkeypatch):
     target_year = date.today().year + (1 if date.today().month >= 6 else 0)
-    payload = {"jobs": [{
+    pool = employer_only_pool(next(
+        item for item in recruitment_search.PERSONAL_MONITOR_POOLS
+        if item["primary_category"] == "internet_tech"
+    ), "百度")
+    payload = coverage_payload(pool, [{
         "company": "百度",
         "title": f"{target_year}届校园招聘数据分析师",
         "city": "北京",
@@ -2216,7 +2593,7 @@ def test_web_search_rejects_uncited_structured_job(monkeypatch):
         "closing_date": None,
         "requirements": f"面向{target_year}届毕业生",
         "category": "互联网企业",
-    }]}
+    }])
 
     class FakeResponses:
         def create(self, **_kwargs):
@@ -2233,10 +2610,6 @@ def test_web_search_rejects_uncited_structured_job(monkeypatch):
                 model="test-model",
             )
 
-    pool = next(
-        item for item in recruitment_search.PERSONAL_MONITOR_POOLS
-        if item["primary_category"] == "internet_tech"
-    )
     monkeypatch.setattr(
         recruitment_search,
         "_inspect_official_candidate_page",
@@ -2309,8 +2682,12 @@ def test_web_search_rejects_old_cohort_today_deadline_and_future_opening():
 
 
 def test_web_search_keeps_unreadable_official_candidate_pending(monkeypatch):
-    payload = {
-        "jobs": [{
+    internet_pool = employer_only_pool(next(
+        pool
+        for pool in recruitment_search.PERSONAL_MONITOR_POOLS
+        if pool["primary_category"] == "internet_tech"
+    ), "拼多多")
+    payload = coverage_payload(internet_pool, [{
             "company": "拼多多",
             "title": "2027届校园招聘产品策略岗",
             "city": "上海",
@@ -2320,8 +2697,7 @@ def test_web_search_keeps_unreadable_official_candidate_pending(monkeypatch):
             "closing_date": "2099-09-01",
             "requirements": "面向2027届毕业生",
             "category": "互联网企业",
-        }]
-    }
+        }])
 
     class FakeResponses:
         def create(self, **_kwargs):
@@ -2338,11 +2714,6 @@ def test_web_search_keeps_unreadable_official_candidate_pending(monkeypatch):
                 model="gpt-4o-mini",
             )
 
-    internet_pool = next(
-        pool
-        for pool in recruitment_search.PERSONAL_MONITOR_POOLS
-        if pool["primary_category"] == "internet_tech"
-    )
     monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", [internet_pool])
     monkeypatch.setattr(
         recruitment_search,
@@ -2361,12 +2732,17 @@ def test_web_search_keeps_unreadable_official_candidate_pending(monkeypatch):
 
 
 def test_web_search_keeps_successful_pools_when_one_pool_fails(monkeypatch):
-    pools = recruitment_search.PERSONAL_MONITOR_POOLS[:2]
+    original_pools = recruitment_search.PERSONAL_MONITOR_POOLS[:2]
+    pools = [
+        employer_only_pool(pool, pool["employers"][0])
+        for pool in original_pools
+    ]
     monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", pools)
 
-    def fake_search_pool(_client, pool):
-        if pool["id"] == pools[0]["id"]:
+    def fake_search_batch(_client, batch):
+        if batch.pool["id"] == pools[0]["id"]:
             raise RuntimeError("temporary search failure")
+        target_names = tuple(target.canonical_name for target in batch.targets)
         return recruitment_search.WebRecruitmentSearchResult(
             jobs=[],
             input_tokens=10,
@@ -2374,19 +2750,28 @@ def test_web_search_keeps_successful_pools_when_one_pool_fails(monkeypatch):
             total_tokens=15,
             tool_calls=1,
             model="gpt-4o-mini",
+            target_employers=target_names,
+            searched_employers=target_names,
+            search_batches=1,
         )
 
-    monkeypatch.setattr(recruitment_search, "_search_pool", fake_search_pool)
+    monkeypatch.setattr(recruitment_search, "_search_batch", fake_search_batch)
     result = recruitment_search.search_current_recruitment_jobs(SimpleNamespace())
     assert result.total_tokens == 15
     assert result.failed_pools == (pools[0]["id"],)
+    assert len(result.target_employers) == 2
+    assert len(result.searched_employers) == 1
+    assert result.failed_employers == (pools[0]["employers"][0],)
+    assert result.coverage_percent == 50.0
+    assert result.search_batches == 2
+    assert result.failed_batches == (f"{pools[0]['id']}:1",)
 
 
 def test_web_search_keeps_multiple_roles_from_one_official_campaign_page(monkeypatch):
-    pool = next(
+    pool = employer_only_pool(next(
         item for item in recruitment_search.PERSONAL_MONITOR_POOLS
         if item["primary_category"] == "internet_tech"
-    )
+    ), "拼多多")
     target_year = date.today().year + (1 if date.today().month >= 6 else 0)
     shared_url = "https://careers.pddglobalhr.com/campus/graduate"
     jobs = []
@@ -2411,14 +2796,22 @@ def test_web_search_keeps_multiple_roles_from_one_official_campaign_page(monkeyp
     monkeypatch.setattr(recruitment_search, "PERSONAL_MONITOR_POOLS", [pool])
     monkeypatch.setattr(
         recruitment_search,
-        "_search_pool",
-        lambda _client, _pool: recruitment_search.WebRecruitmentSearchResult(
+        "_search_batch",
+        lambda _client, batch: recruitment_search.WebRecruitmentSearchResult(
             jobs=jobs,
             input_tokens=1,
             output_tokens=1,
             total_tokens=2,
             tool_calls=1,
             model="test-model",
+            target_employers=tuple(
+                target.canonical_name for target in batch.targets
+            ),
+            searched_employers=tuple(
+                target.canonical_name for target in batch.targets
+            ),
+            employers_with_candidates=("拼多多",),
+            search_batches=1,
         ),
     )
 

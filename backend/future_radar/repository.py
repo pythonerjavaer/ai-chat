@@ -969,6 +969,23 @@ class RadarRepository:
                 (source_id, source_id),
             )
 
+    def latest_snapshot_metadata(self, source_id: str) -> dict[str, Any] | None:
+        """Return counts from the latest completed fetch, not its page content."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT fetched_at, metadata FROM radar_source_snapshots
+                WHERE source_id=? ORDER BY fetched_at DESC, id DESC LIMIT 1
+                """,
+                (source_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "fetched_at": row["fetched_at"],
+            "metadata": _decode_json(row["metadata"], {}),
+        }
+
     def sync_batch(self, key: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -1032,7 +1049,7 @@ class RadarRepository:
     def _job_sources(self, connection: sqlite3.Connection, job_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(
             """
-            SELECT js.source_id, ms.name, ms.source_type, js.source_url,
+            SELECT js.source_id, ms.name, ms.source_type, ms.trust_level, js.source_url,
                    js.verification_role, js.evidence, js.discovered_at, js.last_seen_at, js.active
             FROM job_sources js JOIN monitor_sources ms ON ms.id=js.source_id
             WHERE js.job_id=? ORDER BY js.verification_role DESC, js.discovered_at
@@ -1044,9 +1061,9 @@ class RadarRepository:
             for row in rows
         ]
 
-    def list_jobs(self, *, page: int = 1, page_size: int = 50,
-                  filters: dict[str, Any] | None = None) -> dict[str, Any]:
-        filters = filters or {}
+    @staticmethod
+    def _job_filter_clause(filters: dict[str, Any]) -> tuple[str, list[Any]]:
+        """Build the shared, parameterised job filter used by lists and stats."""
         where: list[str] = ["1=1"]
         params: list[Any] = []
         status = filters.get("status", "open")
@@ -1077,8 +1094,21 @@ class RadarRepository:
                 where.append(f"j.primary_category IN ({placeholders})")
                 params.extend(values)
         if filters.get("source_id"):
-            where.append("EXISTS (SELECT 1 FROM job_sources x WHERE x.job_id=j.id AND x.source_id=?)")
+            where.append(
+                "EXISTS (SELECT 1 FROM job_sources x "
+                "WHERE x.job_id=j.id AND x.source_id=?)"
+            )
             params.append(filters["source_id"])
+        if filters.get("discovery_source_only"):
+            # An attested web-search result may have a verification-role link
+            # even though it originated from a discovery source.  Source trust
+            # therefore identifies the search-update pool more accurately than
+            # job_sources.verification_role alone.
+            where.append(
+                "EXISTS (SELECT 1 FROM job_sources ds "
+                "JOIN monitor_sources dms ON dms.id=ds.source_id "
+                "WHERE ds.job_id=j.id AND dms.trust_level='discovery')"
+            )
         if filters.get("q"):
             needle = f"%{filters['q']}%"
             where.append(
@@ -1104,6 +1134,12 @@ class RadarRepository:
         if filters.get("closing_after"):
             where.append("j.closing_date IS NOT NULL AND j.closing_date>=?")
             params.append(filters["closing_after"])
+        return " AND ".join(where), params
+
+    def list_jobs(self, *, page: int = 1, page_size: int = 50,
+                  filters: dict[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        clause, params = self._job_filter_clause(filters)
         sort = filters.get("sort", "changed")
         order = {
             "closing": "j.closing_date IS NULL, j.closing_date, j.last_changed_at DESC, j.id",
@@ -1112,7 +1148,6 @@ class RadarRepository:
             "company": "j.company COLLATE NOCASE, j.title COLLATE NOCASE, j.id",
             "changed": "j.last_changed_at DESC, j.id",
         }.get(sort, "j.last_changed_at DESC, j.id")
-        clause = " AND ".join(where)
         offset = (page - 1) * page_size
         with self._connect() as connection:
             total = int(connection.execute(
@@ -1142,6 +1177,70 @@ class RadarRepository:
                 item["verified_by"] = [s for s in sources if s["verification_role"] == "verification"]
                 items.append(item)
         return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    def job_stats(self, *, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return unpaginated counts for the same safe filters as ``list_jobs``."""
+        filters = filters or {}
+        clause, params = self._job_filter_clause(filters)
+        with self._connect() as connection:
+            verification_rows = connection.execute(
+                f"""
+                SELECT j.verification_status, COUNT(*) AS count
+                FROM radar_jobs j WHERE {clause}
+                GROUP BY j.verification_status
+                """,
+                params,
+            ).fetchall()
+            status_rows = connection.execute(
+                f"""
+                SELECT j.status, COUNT(*) AS count
+                FROM radar_jobs j WHERE {clause}
+                GROUP BY j.status
+                """,
+                params,
+            ).fetchall()
+            category_rows = connection.execute(
+                f"""
+                SELECT COALESCE(NULLIF(j.primary_category, ''), 'uncategorized') AS category,
+                       COUNT(*) AS count
+                FROM radar_jobs j WHERE {clause}
+                GROUP BY COALESCE(NULLIF(j.primary_category, ''), 'uncategorized')
+                """,
+                params,
+            ).fetchall()
+            source_count = int(connection.execute(
+                f"""
+                SELECT COUNT(DISTINCT js.source_id)
+                FROM radar_jobs j
+                JOIN job_sources js ON js.job_id=j.id
+                JOIN monitor_sources ms ON ms.id=js.source_id
+                WHERE {clause} AND ms.trust_level='discovery'
+                """,
+                params,
+            ).fetchone()[0])
+
+        verification_counts = {
+            key: 0 for key in ("pending", "verified", "conflicted", "rejected")
+        }
+        verification_counts.update({
+            str(row["verification_status"]): int(row["count"])
+            for row in verification_rows
+        })
+        job_status_counts = {key: 0 for key in ("open", "closed", "unknown")}
+        job_status_counts.update({
+            str(row["status"]): int(row["count"])
+            for row in status_rows
+        })
+        return {
+            "total_candidates": sum(verification_counts.values()),
+            "verification_status": verification_counts,
+            "job_status": job_status_counts,
+            "primary_category": {
+                str(row["category"]): int(row["count"])
+                for row in category_rows
+            },
+            "source_count": source_count,
+        }
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
