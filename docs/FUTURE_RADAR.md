@@ -229,7 +229,7 @@ Content-Type: application/json
 | `POST` | `/api/future-radar/sources` | Admin | 创建来源 |
 | `PATCH` | `/api/future-radar/sources/{source_id}` | Admin | 更新来源运行配置 |
 
-`GET /jobs` 支持 `page`、`page_size`、`status`、`verification_status`、`company`、`city`、`region`、`employer_type`、`industry`、`program_id`、`source_id`、`q`、`event_type`、`opening_before`、`opening_after`、`closing_before`、`closing_after` 和 `sort=changed|closing|opening|first_seen|company`。公开岗位、项目、详情和相关事件只返回 `verification_status=verified` 的实体；待核验候选仅保留在服务端隔离区和汇总计数中。前端岗位页已经提供搜索、公司、城市、行业、雇主类型、招聘项目、状态、核验、信源、事件、开放/截止日期范围和排序控件；原有雇主星域与 T0–T3（含 0.5 档）筛选继续保留。筛选与分页结果以 Radar API 为准，旧岗位池只为同一岗位补充既有个性化评分，不会再把无关岗位拼回结果集。
+`GET /jobs` 支持 `page`、`page_size`、`status`、`verification_status`、`company`、`city`、`region`、`employer_type`、`industry`、`program_id`、`source_id`、`q`、`event_type`、`opening_before`、`opening_after`、`closing_before`、`closing_after` 和 `sort=changed|closing|opening|first_seen|company`。正式岗位、项目、详情和相关事件只返回 `verification_status=verified` 的实体；待核验候选不进入这些接口，登录用户可在独立的 `search-updates` 接口查看已脱敏字段与核验状态。前端岗位页已经提供搜索、公司、城市、行业、雇主类型、招聘项目、状态、核验、信源、事件、开放/截止日期范围和排序控件；原有雇主星域与 T0–T3（含 0.5 档）筛选继续保留。筛选与分页结果以 Radar API 为准，旧岗位池只为同一岗位补充既有个性化评分，不会再把无关岗位拼回结果集。
 
 来源与运行 API 只返回归一化错误代码和固定安全文案。OpenAI 的原始 429、额度、请求标识及其他 provider 诊断不会写入公开运行记录，也不会从来源健康接口回显；`AI_CREDITS_EXHAUSTED` 只表示 AI 补漏不可用，不影响确定性官网扫描。
 
