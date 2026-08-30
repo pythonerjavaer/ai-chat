@@ -431,6 +431,9 @@ function setupRotaryCompass(container) {
     startY: 0,
     dragging: false,
     moved: false,
+    pointerId: null,
+    pressedCard: null,
+    pointerActivation: null,
     suppressNextClick: false,
     selectedIndex: 0,
     wheelLocked: false,
@@ -439,27 +442,21 @@ function setupRotaryCompass(container) {
   const render = () => {
     const compact = window.innerWidth <= 520;
     const radiusX = compact ? Math.min(240, container.clientWidth * .78) : Math.min(id === "landing" ? 320 : 300, container.clientWidth * .39);
-    const radiusY = compact ? 118 : id === "landing" ? 104 : 94;
+    const baseRadiusY = compact ? 118 : id === "landing" ? 104 : 94;
     let selectedIndex = 0;
     let selectedDepth = -1;
-    compass.cards.forEach((card, index) => {
+    const layout = compass.cards.map((card, index) => {
       const angle = compass.rotation + index * step();
       const cosine = Math.cos(angle);
       const depth = (cosine + 1) / 2;
       const scale = .54 + depth * .46;
       const x = Math.sin(angle) * radiusX;
-      const y = cosine * radiusY;
-      card.style.setProperty("--compass-x", `${x}px`);
-      card.style.setProperty("--compass-y", `${y}px`);
-      card.style.setProperty("--compass-scale", scale.toFixed(3));
-      card.style.setProperty("--compass-opacity", (.12 + depth * .88).toFixed(3));
-      card.style.setProperty("--compass-blur", `${((1 - depth) * 2.6).toFixed(2)}px`);
-      card.style.zIndex = String(Math.round(10 + depth * 90));
       card.dataset.compassDepth = depth.toFixed(3);
       if (depth > selectedDepth) {
         selectedDepth = depth;
         selectedIndex = index;
       }
+      return { card, index, cosine, depth, scale, x };
     });
     compass.selectedIndex = selectedIndex;
     compass.cards.forEach((card, index) => {
@@ -469,6 +466,35 @@ function setupRotaryCompass(container) {
       card.setAttribute("data-compass-selected", String(selected));
       card.setAttribute("aria-current", selected ? "true" : "false");
       card.tabIndex = selected ? 0 : -1;
+    });
+    // Opposite sides of the ellipse can have the same x coordinate. Size the
+    // vertical orbit from actual cards so a foreground card cannot cover the
+    // centre of another visible button (notably EMBER over Future Radar on
+    // the initial map). Keep that radius stable throughout a drag.
+    const inDrag = compass.dragging && compass.moved;
+    let radiusY = inDrag ? compass.radiusY || baseRadiusY : baseRadiusY;
+    if (!inDrag) {
+      const measured = layout.map((item) => ({ ...item, width: item.card.offsetWidth, height: item.card.offsetHeight }));
+      for (const target of measured) {
+        if (target.depth < .08) continue;
+        for (const foreground of measured) {
+          if (foreground.depth <= target.depth || !foreground.width || !foreground.height) continue;
+          const horizontalGap = Math.abs(foreground.x - target.x);
+          const verticalFactor = Math.abs(foreground.cosine - target.cosine);
+          if (horizontalGap < foreground.width * foreground.scale / 2 + 8 && verticalFactor > .001) {
+            radiusY = Math.max(radiusY, (foreground.height * foreground.scale / 2 + 8) / verticalFactor);
+          }
+        }
+      }
+      compass.radiusY = radiusY;
+    }
+    layout.forEach(({ card, depth, scale, x, cosine }) => {
+      card.style.setProperty("--compass-x", `${x}px`);
+      card.style.setProperty("--compass-y", `${cosine * radiusY}px`);
+      card.style.setProperty("--compass-scale", scale.toFixed(3));
+      card.style.setProperty("--compass-opacity", (.12 + depth * .88).toFixed(3));
+      card.style.setProperty("--compass-blur", `${((1 - depth) * 2.6).toFixed(2)}px`);
+      card.style.zIndex = String(Math.round(10 + depth * 90));
     });
     container.dataset.selectedProduct = compass.cards[selectedIndex].dataset.launch || "";
   };
@@ -490,50 +516,74 @@ function setupRotaryCompass(container) {
     compass.rotation = baseRotation + Math.round((compass.rotation - baseRotation) / fullTurn) * fullTurn;
     snap();
   };
+  const visibleCard = (target) => {
+    const card = target?.closest?.('[data-launch][aria-hidden="false"]');
+    return card && cards.includes(card) ? card : null;
+  };
   container.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || event.isPrimary === false || compass.dragging) return;
     compass.dragging = true;
     compass.moved = false;
+    compass.pointerId = event.pointerId;
+    compass.pressedCard = visibleCard(event.target);
+    compass.pointerActivation = null;
+    compass.suppressNextClick = false;
     compass.startX = event.clientX;
     compass.startY = event.clientY;
     compass.startRotation = compass.rotation;
-    container.classList.add("is-dragging");
   });
   container.addEventListener("pointermove", (event) => {
-    if (!compass.dragging) return;
+    if (!compass.dragging || event.pointerId !== compass.pointerId) return;
     const deltaX = event.clientX - compass.startX;
     const deltaY = event.clientY - compass.startY;
-    if (Math.hypot(deltaX, deltaY) > 5 && !compass.moved) {
+    if (!compass.moved) {
+      // A click (including normal hand jitter) must not move its hit target
+      // between pointerdown and click. Only an actual drag changes the orbit.
+      if (Math.hypot(deltaX, deltaY) <= 5) return;
       compass.moved = true;
+      container.classList.add("is-dragging");
       if (!container.hasPointerCapture(event.pointerId)) container.setPointerCapture(event.pointerId);
     }
-    if (compass.moved && event.cancelable && Math.abs(deltaX) >= Math.abs(deltaY)) event.preventDefault();
+    if (event.cancelable && Math.abs(deltaX) >= Math.abs(deltaY)) event.preventDefault();
     compass.rotation = compass.startRotation + deltaX / Math.max(150, container.clientWidth) * Math.PI * 2;
     render();
   });
   const endDrag = (event) => {
-    if (!compass.dragging) return;
+    if (!compass.dragging || event.pointerId !== compass.pointerId) return;
     compass.dragging = false;
     container.classList.remove("is-dragging");
-    if (compass.moved) {
-      compass.suppressNextClick = true;
-      window.setTimeout(() => { compass.suppressNextClick = false; }, 0);
-    }
+    const cancelled = event.type === "pointercancel" || event.type === "lostpointercapture";
+    compass.suppressNextClick = compass.moved || cancelled;
+    compass.pointerActivation = { card: cancelled || compass.moved ? null : compass.pressedCard };
+    compass.pressedCard = null;
+    compass.pointerId = null;
     if (container.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
-    snap();
+    // Snapping a non-drag can change which overlapping card receives click.
+    if (compass.moved) snap();
   };
   container.addEventListener("pointerup", endDrag);
   container.addEventListener("pointercancel", endDrag);
-  container.addEventListener("click", (event) => {
-    if (compass.suppressNextClick) {
-      compass.suppressNextClick = false;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      return;
+  container.addEventListener("lostpointercapture", endDrag);
+  container.addEventListener("pointerleave", (event) => {
+    if (compass.dragging && !compass.moved && event.pointerId === compass.pointerId) {
+      endDrag({ ...event, pointerId: event.pointerId, type: "pointercancel" });
     }
-    const card = event.target.closest?.('[data-launch][aria-hidden="false"]');
-    if (!card || !container.contains(card)) return;
+  });
+  container.addEventListener("click", (event) => {
+    // Own compass activation here. The generic [data-launch] listener must
+    // not run again after rotation changes the card stacking order.
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const pointerClick = event.detail !== 0;
+    const suppressed = pointerClick && compass.suppressNextClick;
+    const card = pointerClick && compass.pointerActivation
+      ? compass.pointerActivation.card : visibleCard(event.target);
+    compass.pointerActivation = null;
+    compass.suppressNextClick = false;
+    if (suppressed || !card) return;
+    const product = card.dataset.launch;
     rotateCardToFront(card);
+    launchProduct(product);
   }, true);
   container.addEventListener("wheel", (event) => {
     if (compass.wheelLocked) return;
