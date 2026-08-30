@@ -88,6 +88,7 @@ function pollingContext({ race = false, unchanged = false } = {}) {
   } };
   const result = { applied: 0, rendered: 0 };
   const context = {
+    AbortController,
     FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
     state, document: { hidden: false },
     elements: { recruitmentDialog: { open: true }, futureRadarLiveState: { replaceChildren() {} } },

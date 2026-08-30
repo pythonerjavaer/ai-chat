@@ -106,7 +106,7 @@ test("unified opportunities refresh without needing a verified public event", ()
   assert.match(pollingSource, /api\(`\/future-radar\/opportunities\?\$\{opportunityQuery\}`,\s*\{\s*timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS/);
   assert.match(pollingSource, /state\.futureRadar\.jobsRequestId === jobsRequestId/);
   assert.match(pollingSource, /futureRadarJobsQuery\(\) === opportunityQuery/);
-  assert.match(pollingSource, /applyFutureRadarJobsPayload\(opportunityPayload\)/);
+  assert.match(pollingSource, /applyFutureRadarJobsPayload\(opportunityPayload, opportunityQuery\)/);
   assert.ok(pollingSource.indexOf("applyFutureRadarJobsPayload") < pollingSource.indexOf("if (novel.length)"));
 });
 

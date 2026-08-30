@@ -7,11 +7,17 @@ import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterator
 
 from ..live_sources import is_actionable_recruitment_listing, is_recruitment_program_listing
 from .normalization import clean_text, normalized_key
+from .opportunity_cache import (
+    BoundedScoringCache, CACHE_FORMAT_VERSION, RevisionChanged,
+    date_boundary, opaque_digest, read_opportunity_revision,
+)
 
 
 JSON_SOURCE_FIELDS = ("adapter_config", "query_config", "region_config")
@@ -65,9 +71,19 @@ def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+@dataclass(frozen=True)
+class _PreparedOpportunityPool:
+    # Only the caller's sanitized/scored public fields, not raw DB records.
+    items: tuple[dict[str, Any], ...]
+    tier_counts: dict[str, int]
+    category_counts: dict[str, int]
+    aliases: dict[str, int]
+
+
 class RadarRepository:
     def __init__(self, connect: Callable[[], sqlite3.Connection]):
         self._connect = connect
+        self._opportunity_cache = BoundedScoringCache()
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -998,6 +1014,24 @@ class RadarRepository:
             "metadata": _decode_json(row["metadata"], {}),
         }
 
+    def discovery_summary(self, source_id: str) -> dict[str, Any]:
+        """Fresh auxiliary coverage/status in one query, without source secrets."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT ms.status, ss.fetched_at, ss.metadata
+                FROM monitor_sources ms LEFT JOIN radar_source_snapshots ss ON ss.id=(
+                    SELECT s.id FROM radar_source_snapshots s WHERE s.source_id=ms.id
+                    ORDER BY s.fetched_at DESC, s.id DESC LIMIT 1
+                ) WHERE ms.id=?
+                """, (source_id,),
+            ).fetchone()
+        if row is None:
+            return {"status": "pending", "fetched_at": None, "metadata": {}}
+        metadata = _decode_json(row["metadata"], {})
+        return {"status": row["status"], "fetched_at": row["fetched_at"],
+                "metadata": metadata if isinstance(metadata, dict) else {}}
+
     def sync_batch(self, key: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -1440,18 +1474,34 @@ class RadarRepository:
                 deduped.append(winner)
         return sorted(deduped, key=lambda item: item["_sort_position"])
 
-    def list_opportunities(
-        self, *, page: int = 1, page_size: int = 50, filters: dict[str, Any] | None = None,
+    def _opportunity_revision(self) -> tuple[str, str, int] | None:
+        connection = self._connect()
+        try:
+            return read_opportunity_revision(connection)
+        finally:
+            connection.close()
+
+    def _opportunity_cache_prefix(
+        self, *, cache_scope: str, public_url: Callable[[Any], str | None],
+        company_aliases: dict[str, str],
+    ) -> tuple[Any, ...] | None:
+        revision = self._opportunity_revision()
+        if revision is None:
+            return None
+        return (CACHE_FORMAT_VERSION, revision, date_boundary(), cache_scope,
+                opaque_digest(company_aliases), id(public_url))
+
+    def _prepare_opportunity_pool(
+        self, *, filters: dict[str, Any],
         public_url: Callable[[Any], str | None], prepare: Callable[[dict[str, Any]], dict[str, Any]],
-        company_aliases: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        filters = filters or {}
+        company_aliases: dict[str, str],
+    ) -> _PreparedOpportunityPool:
         rows = self._opportunity_rows(
-            filters=filters, public_url=public_url, company_aliases=company_aliases or {},
+            filters=filters, public_url=public_url, company_aliases=company_aliases,
         )
         # Scoring is profile dependent. Score the complete deduplicated match
         # set before tier filtering/pagination, never only the first 50 rows.
-        items = [prepare(row) for row in rows]
+        items = tuple(prepare(row) for row in rows)
         tier_counts = {key: 0 for key in (
             "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY",
         )}
@@ -1463,6 +1513,70 @@ class RadarRepository:
             tier_counts[bucket] += 1
             category = str(item.get("primary_category") or "uncategorized")
             category_counts[category] = category_counts.get(category, 0) + 1
+        aliases = {
+            str(alias): index
+            for index, row in enumerate(rows)
+            for alias in (row["_member_ids"] | row["_member_external_ids"])
+        }
+        return _PreparedOpportunityPool(items, tier_counts, category_counts, aliases)
+
+    def _prepared_opportunities(
+        self, *, filters: dict[str, Any], public_url: Callable[[Any], str | None],
+        prepare: Callable[[dict[str, Any]], dict[str, Any]],
+        company_aliases: dict[str, str], cache_scope: str | None,
+    ) -> _PreparedOpportunityPool:
+        # Tier/page changes are projections of the same complete scored set.
+        base_filters = {key: value for key, value in filters.items()
+                        if key not in {"tier_code", "page", "page_size"}}
+
+        def build() -> _PreparedOpportunityPool:
+            return self._prepare_opportunity_pool(
+                filters=base_filters, public_url=public_url,
+                prepare=prepare, company_aliases=company_aliases,
+            )
+
+        if cache_scope is None:
+            # Legacy/internal callers which do not supply a safe user/profile
+            # identity remain uncached, instead of sharing anonymous results.
+            return build()
+        for _attempt in range(2):
+            prefix = self._opportunity_cache_prefix(
+                cache_scope=cache_scope, public_url=public_url,
+                company_aliases=company_aliases,
+            )
+            if prefix is None:
+                return build()
+
+            def stable_build() -> _PreparedOpportunityPool:
+                pool = build()
+                # Writers (including other workers/direct SQL) increment the
+                # revision in their own transaction. Do not publish a cache
+                # entry assembled across two different committed revisions.
+                if self._opportunity_revision() != prefix[1] or date_boundary() != prefix[2]:
+                    raise RevisionChanged()
+                return pool
+
+            try:
+                return self._opportunity_cache.get_or_compute(
+                    (*prefix, opaque_digest(base_filters)), stable_build,
+                )
+            except RevisionChanged:
+                continue
+        # Under a continuous stream of writes, retain the ordinary live read
+        # behavior but never cache an unstable result or block every user.
+        return build()
+
+    def list_opportunities(
+        self, *, page: int = 1, page_size: int = 50, filters: dict[str, Any] | None = None,
+        public_url: Callable[[Any], str | None], prepare: Callable[[dict[str, Any]], dict[str, Any]],
+        company_aliases: dict[str, str] | None = None, cache_scope: str | None = None,
+    ) -> dict[str, Any]:
+        filters = filters or {}
+        pool = self._prepared_opportunities(
+            filters=filters, public_url=public_url, prepare=prepare,
+            company_aliases=company_aliases or {}, cache_scope=cache_scope,
+        )
+        items = pool.items
         matching_total = len(items)
         if filters.get("tier_code"):
             items = [item for item in items if item["tier_bucket"] == filters["tier_code"]]
@@ -1473,20 +1587,50 @@ class RadarRepository:
             statuses[str(item.get("status") or "unknown")] += 1
         offset = (page - 1) * page_size
         return {
-            "items": items[offset:offset + page_size],
+            # Never hand out shared mutable cache values to response assembly
+            # or to an internal caller. Only copy the selected page.
+            "items": deepcopy(list(items[offset:offset + page_size])),
             "total": len(items), "page": page, "page_size": page_size,
             "stats": {
                 "total_opportunities": len(items), "matching_total": matching_total,
                 "verified_count": verification["verified"],
                 "discovered_count": verification["pending"] + verification["conflicted"],
                 "verification_status": verification, "job_status": statuses,
-                "tier_counts": tier_counts, "category_counts": category_counts,
-                "primary_category": category_counts,
+                "tier_counts": dict(pool.tier_counts), "category_counts": dict(pool.category_counts),
+                "primary_category": dict(pool.category_counts),
                 "source_count": len({
                     source["source_id"] for item in items for source in item.get("sources", [])
                 }),
             },
         }
+
+    def get_prepared_opportunity(
+        self, job_id: str, *, public_url: Callable[[Any], str | None],
+        prepare: Callable[[dict[str, Any]], dict[str, Any]], cache_scope: str,
+        company_aliases: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Reuse a cached visible winner, including its discovery ID aliases."""
+        company_aliases = company_aliases or {}
+        prefix = self._opportunity_cache_prefix(
+            cache_scope=cache_scope, public_url=public_url, company_aliases=company_aliases,
+        )
+        if prefix is not None:
+            def match(key: Any, pool: _PreparedOpportunityPool) -> dict[str, Any] | None:
+                if key[:-1] == prefix:
+                    index = pool.aliases.get(job_id)
+                    if index is not None:
+                        return pool.items[index]
+                return None
+
+            cached = self._opportunity_cache.find(match)
+            if cached is not None:
+                return deepcopy(cached)
+        # An archived item might not be in any visible page/cache. Preserve
+        # the existing explicit-detail behavior and authoritative closed wins.
+        row = self.get_opportunity(
+            job_id, public_url=public_url, company_aliases=company_aliases,
+        )
+        return prepare(row) if row is not None else None
 
     def get_opportunity(
         self, job_id: str, *, public_url: Callable[[Any], str | None],

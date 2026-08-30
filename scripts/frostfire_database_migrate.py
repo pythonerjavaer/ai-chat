@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Take a consistent SQLite backup and optionally migrate it to PostgreSQL.
 
-No application/config imports, AI calls, credentials on argv, or row-value logs.
+No application/config initialization, AI calls, credentials on argv, or row-value logs.
 The default is an entirely local dry run. Source files are opened mode=ro;
 PostgreSQL DDL/data are committed together only after full verification.
 """
@@ -243,8 +243,13 @@ def inspect_schema(connection: sqlite3.Connection) -> tuple[Table, ...]:
     ordinary = {row["name"] for row in objects if row["type"] == "table" and not row["name"].startswith("sqlite_")}
     if ordinary != TABLE_SET:
         raise MigrationError("source_must_contain_exactly_the_30_audited_application_tables")
-    if any(row["type"] in {"view", "trigger"} for row in objects):
-        raise MigrationError("source_has_unsupported_views_or_triggers")
+    for row in objects:
+        if row["type"] == "view" or (
+            row["type"] == "trigger" and not _revision_contract().is_known_sqlite_revision_trigger(
+                row["name"], row["tbl_name"], row["sql"],
+            )
+        ):
+            raise MigrationError("source_has_unsupported_views_or_triggers")
     if any(row["type"] == "index" and row["tbl_name"] not in TABLE_SET for row in objects):
         raise MigrationError("source_has_unsupported_index_owner")
     by_name = {row["name"]: row for row in objects if row["type"] == "table"}
@@ -407,6 +412,18 @@ def synthetic_user_count(connection: sqlite3.Connection) -> int:
     return count
 
 
+def _revision_contract() -> Any:
+    # This audited module is stdlib-only and never imports configuration,
+    # application startup, a database driver, or an AI client. Source SQL is
+    # compared to its fixed DDL, never replayed on the destination.
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from backend.future_radar import opportunity_cache
+
+    return opportunity_cache
+
+
 def _connect_postgres(dsn: str, schema: str) -> Any:
     # Lazy import is important: --dry-run works with only Python's stdlib and
     # cannot load backend.config, a developer .env, an AI client, or a DB pool.
@@ -555,13 +572,59 @@ def verify_target_schema(connection: Any, tables: Sequence[Table], schema: str) 
         expected_indexes = {index.name: (index.unique, tuple(_compact_expression(part) for part in index.parts)) for index in table.indexes}
         if len(actual_indexes) != len(indexes) or actual_indexes != expected_indexes:
             raise MigrationError("target_indexes_differ:" + table.name)
+    verify_target_revision_triggers(connection, schema)
+
+
+def _trigger_ddl_shape(sql: str, schema: str) -> str:
+    # pg_get_triggerdef adds identifier quotes and parentheses around each
+    # OR-only distinctness test. The fixed DDL contains no string literals or
+    # mixed boolean operators; compare every remaining token, not a prefix.
+    sql = sql.replace("CREATE OR REPLACE TRIGGER", "CREATE TRIGGER", 1)
+    sql = re.sub(r'"([a-z_][a-z0-9_]*)"', r"\1", sql)
+    # PostgreSQL omits current-schema qualifications for visible objects.
+    # Only this exact, independently checked schema may be elided.
+    sql = sql.replace(schema + ".", "")
+    return re.sub(r"[\s();]", "", sql).lower()
+
+
+def verify_target_revision_triggers(connection: Any, schema: str) -> None:
     triggers = connection.execute(
-        "SELECT COUNT(*) AS count FROM pg_catalog.pg_trigger t "
-        "JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+        "SELECT t.tgname, t.tgenabled, t.tgconstraint, t.tgdeferrable, t.tginitdeferred, "
+        "pg_catalog.pg_get_triggerdef(t.oid, true) AS definition, "
+        "p.proname, pn.nspname AS function_schema, p.prosrc, p.proconfig, "
+        "p.prosecdef, p.pronargs, p.provolatile, p.proparallel, "
+        "l.lanname, rt.typname AS return_type "
+        "FROM pg_catalog.pg_trigger t "
+        "JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+        "JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid "
+        "JOIN pg_catalog.pg_namespace pn ON pn.oid=p.pronamespace "
+        "JOIN pg_catalog.pg_language l ON l.oid=p.prolang "
+        "JOIN pg_catalog.pg_type rt ON rt.oid=p.prorettype "
         "WHERE n.nspname=? AND NOT t.tgisinternal", (schema,),
-    ).fetchone()["count"]
-    if triggers:
-        raise MigrationError("unexpected_target_trigger")
+    ).fetchall()
+    if not triggers:
+        return
+    contract = _revision_contract()
+    function, expected_triggers = contract.postgres_revision_definitions(schema)
+    expected_body = " ".join(function.split("$ff_radar_revision$")[1].split())
+    for row in triggers:
+        expected = expected_triggers.get(row["tgname"])
+        valid = (
+            expected is not None
+            and _trigger_ddl_shape(row["definition"], schema) == _trigger_ddl_shape(expected, schema)
+            and row["tgenabled"] == "O"
+            and not row["tgconstraint"] and not row["tgdeferrable"] and not row["tginitdeferred"]
+            and row["proname"] == contract.POSTGRES_REVISION_FUNCTION
+            and row["function_schema"] == schema
+            and " ".join(row["prosrc"].split()) == expected_body
+            and row["proconfig"] == ["search_path=pg_catalog"]
+            and not row["prosecdef"] and row["pronargs"] == 0
+            and row["provolatile"] == "v" and row["proparallel"] == "u"
+            and row["lanname"] == "plpgsql" and row["return_type"] == "trigger"
+        )
+        if not valid:
+            raise MigrationError("unexpected_target_trigger")
 
 
 def check_target_foreign_keys(connection: Any, tables: Sequence[Table]) -> None:

@@ -8,9 +8,17 @@ continue serving the legacy API while the richer radar tables are populated.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 
-from .normalization import infer_primary_category_from_metadata
+from .normalization import (
+    SEMANTIC_JOB_FIELDS, infer_primary_category_from_metadata, semantic_hash,
+    telecom_primary_category,
+)
+
+
+logger = logging.getLogger(__name__)
+OPERATOR_CATEGORY_MIGRATION = "future_radar_v3_operator_categories"
 
 
 def migrate(connection: sqlite3.Connection) -> None:
@@ -318,6 +326,7 @@ def migrate(connection: sqlite3.Connection) -> None:
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('future_radar_v2_job_taxonomy', datetime('now'))"
     )
+    _backfill_operator_categories(connection)
 
 
 def _ensure_column(
@@ -367,3 +376,40 @@ def _backfill_primary_categories(connection: sqlite3.Connection) -> None:
             "WHERE id=? AND (primary_category IS NULL OR TRIM(primary_category)='')",
             updates,
         )
+
+
+def _backfill_operator_categories(connection: sqlite3.Connection) -> None:
+    """One bounded directory correction; do not mutate historical job facts.
+
+    Preserve source links, evidence, dates, statuses, IDs, and timestamps. Only
+    recognized operator/branch names get the telecom category and a matching
+    semantic hash. Non-operator records remain byte-for-byte untouched.
+    """
+    if connection.execute(
+        "SELECT version FROM schema_migrations WHERE version=?", (OPERATOR_CATEGORY_MIGRATION,)
+    ).fetchone():
+        return
+    updates = []
+    for row in connection.execute(
+        "SELECT * FROM radar_jobs WHERE primary_category IS NULL OR primary_category != ?",
+        ("state_tech_telecom",),
+    ).fetchall():
+        item = dict(row)
+        if not telecom_primary_category(item.get("company")):
+            continue
+        item["primary_category"] = "state_tech_telecom"
+        for key in ("tags", "industry_tags", "role_tags"):
+            try:
+                item[key] = json.loads(item[key]) if isinstance(item.get(key), str) else item.get(key)
+            except (TypeError, ValueError):
+                item[key] = []
+        updates.append(("state_tech_telecom", semantic_hash(item, SEMANTIC_JOB_FIELDS), item["id"]))
+    if updates:
+        connection.executemany(
+            "UPDATE radar_jobs SET primary_category=?, content_hash=? WHERE id=?", updates,
+        )
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, datetime('now'))",
+        (OPERATOR_CATEGORY_MIGRATION,),
+    )
+    logger.info("Future Radar operator category migration updated_count=%s", len(updates))

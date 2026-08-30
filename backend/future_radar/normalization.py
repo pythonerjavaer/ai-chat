@@ -53,6 +53,55 @@ def normalized_key(value: Any) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", clean_text(value).casefold())
 
 
+_OPERATOR_ROOTS = {
+    "china_mobile": ("中国移动", "中国移动集团", "中国移动通信集团", "中国移动通信集团有限公司", "中国移动有限公司"),
+    "china_telecom": ("中国电信", "中国电信集团", "中国电信集团有限公司", "中国电信股份有限公司"),
+    "china_unicom": ("中国联通", "中国联合网络通信", "中国联合网络通信集团", "中国联合网络通信集团有限公司", "中国联合网络通信有限公司", "中国联合网络通信股份有限公司"),
+}
+_OPERATOR_BRANDS = {
+    "china_mobile": ("咪咕文化科技有限公司", "咪咕公司", "中移物联网有限公司", "中移互联网有限公司", "中移金融科技有限公司", "中移信息技术有限公司", "中移苏州软件技术有限公司", "中移杭州信息技术有限公司"),
+    "china_telecom": ("天翼云科技有限公司", "天翼云", "中国电信云计算研究院", "中国电信研究院", "中国电信云网运营部", "中电信人工智能科技北京有限公司", "中电信数智科技有限公司", "中电信数智科技有限公司集成公司", "中电信量子信息科技集团有限公司", "天翼安全科技有限公司", "天翼物联科技有限公司", "天翼数字生活科技有限公司", "天翼视联科技股份有限公司", "中电信数政科技有限公司"),
+    "china_unicom": ("联通数字科技有限公司", "联通数科", "联通智网科技股份有限公司", "联通软件研究院", "中国联通软件研究院", "中国联通研究院", "联通在线信息科技有限公司", "联通数字科技有限公司数科本部"),
+}
+_OPERATOR_REGIONS = (
+    "北京", "天津", "上海", "重庆", "河北", "河南", "云南", "辽宁", "黑龙江", "湖南",
+    "安徽", "山东", "新疆", "江苏", "浙江", "江西", "湖北", "广西", "甘肃", "山西",
+    "内蒙古", "陕西", "吉林", "福建", "贵州", "广东", "青海", "西藏", "四川", "宁夏",
+    "海南", "香港", "澳门", "国际",
+)
+
+
+def canonical_telecom_operator(company: Any) -> str | None:
+    """Bounded employer-directory correction, never a keyword search in job prose.
+
+    Exact group/brand names and their legal regional branches are recognized.
+    Unrelated companies mentioning a carrier, resellers and recruitment portals
+    are not reclassified.  All other employers keep their existing taxonomy.
+    """
+    key = normalized_key(company)
+    if any(marker in key for marker in ("招聘", "合作伙伴", "代理商", "加盟", "外包", "服务商")):
+        return None
+    for operator, roots in _OPERATOR_ROOTS.items():
+        brands = tuple(normalized_key(name) for name in _OPERATOR_BRANDS[operator])
+        if key in roots or key in brands:
+            return operator
+        for root in (*roots, *brands):
+            if not key.startswith(root):
+                continue
+            branch = key[len(root):]
+            if not branch.startswith(_OPERATOR_REGIONS):
+                continue
+            if branch in _OPERATOR_REGIONS:
+                return operator
+            if re.fullmatch(r"[\u4e00-\u9fff]{2,24}(?:公司|有限公司|分公司|研究院|分院)", branch):
+                return operator
+    return None
+
+
+def telecom_primary_category(company: Any) -> str:
+    return "state_tech_telecom" if canonical_telecom_operator(company) else ""
+
+
 def canonicalize_url(value: Any, *, allow_empty: bool = True) -> str | None:
     raw = clean_text(value, limit=2_000)
     if not raw and allow_empty:
@@ -256,7 +305,10 @@ def normalize_job(item: dict[str, Any]) -> dict[str, Any]:
     primary_category = normalize_taxonomy_value(item.get("primary_category"))
     if primary_category and primary_category not in PRIMARY_CATEGORY_CODES:
         raise ValueError(f"Unsupported primary_category: {primary_category}")
-    if not primary_category:
+    operator_category = telecom_primary_category(company)
+    if operator_category:
+        primary_category = operator_category
+    elif not primary_category:
         primary_category = infer_primary_category_from_metadata(item)
     normalized = {
         "program_id": clean_text(item.get("program_id"), limit=180) or None,

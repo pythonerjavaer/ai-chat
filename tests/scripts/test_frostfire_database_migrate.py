@@ -196,6 +196,28 @@ class LocalMigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(migrate.MigrationError, "views_or_triggers"):
             migrate.inspect_schema(self.connection)
 
+    def test_audited_cache_triggers_are_accepted_without_loading_application(self):
+        contract = migrate._revision_contract()
+        contract.install_opportunity_revision(self.connection)
+        self.connection.commit()
+        self.assertEqual(len(migrate.inspect_schema(self.connection)), 30)
+        result = subprocess.run(
+            [sys.executable, "-S", str(ROOT / "scripts/frostfire_database_migrate.py"),
+             "--source", str(self.source), "--backup-dir", str(self.root / "with-cache")],
+            env={"PATH": os.environ.get("PATH", "")}, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["status"], "dry_run_verified_no_remote_connection")
+
+    def test_same_cache_trigger_name_with_different_sql_is_rejected(self):
+        contract = migrate._revision_contract()
+        name, (table, _) = next(iter(contract.SQLITE_REVISION_TRIGGERS.items()))
+        self.connection.execute(
+            f'CREATE TRIGGER "{name}" AFTER INSERT ON "{table}" BEGIN SELECT 1; END'
+        )
+        with self.assertRaisesRegex(migrate.MigrationError, "views_or_triggers"):
+            migrate.inspect_schema(self.connection)
+
     def test_expression_index_is_not_executed_from_untrusted_sql(self):
         self.connection.execute("CREATE INDEX unexpected_expression ON users (length(username))")
         with self.assertRaisesRegex(migrate.MigrationError, "expression_index"):
@@ -321,11 +343,53 @@ close_postgres_pools()
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         with migrate._connect_postgres(self.dsn, self.schema) as target:
-            self.assertEqual(migrate.database_digest(target, self.tables), self.digests)
-            self.assertEqual(target.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 2)
+            actual = migrate.database_digest(target, self.tables)
+            runtime_metadata = {"system_state", "schema_migrations"}
+            self.assertEqual(
+                {k: v for k, v in actual.items() if k not in runtime_metadata},
+                {k: v for k, v in self.digests.items() if k not in runtime_metadata},
+            )
+            before_state = dict(self.sqlite.execute("SELECT key,value FROM system_state").fetchall())
+            after_state = {row["key"]: row["value"] for row in target.execute("SELECT key,value FROM system_state").fetchall()}
+            contract = migrate._revision_contract()
+            self.assertEqual(set(after_state) - set(before_state), {contract.REVISION_KEY, contract.NAMESPACE_KEY})
+            self.assertTrue(all(after_state[key] == value for key, value in before_state.items()))
+            migrate.verify_target_revision_triggers(target, self.schema)
+            before_migrations = dict(self.sqlite.execute("SELECT version,applied_at FROM schema_migrations").fetchall())
+            after_migrations = {row["version"]: row["applied_at"] for row in target.execute("SELECT version,applied_at FROM schema_migrations").fetchall()}
+            self.assertEqual(set(after_migrations) - set(before_migrations), {"future_radar_v3_operator_categories"})
+            self.assertTrue(all(after_migrations[key] == value for key, value in before_migrations.items()))
             self.assertEqual(target.execute("SELECT id,password_hash FROM users").fetchone()["password_hash"], FIXTURE_PASSWORD_HASH)
             migrate.check_target_foreign_keys(target, self.tables)
-        self.assertEqual(self.apply(), "identical_target_skipped")
+        # Added runtime metadata is real drift: never silently hide it from a
+        # full-database migration comparison, even though user rows are intact.
+        with self.assertRaisesRegex(migrate.MigrationError, "different_data_no_changes"):
+            self.apply()
+
+    def test_postgres_audit_accepts_only_fixed_cache_trigger_and_function_definitions(self):
+        self.apply()
+        contract = migrate._revision_contract()
+        with migrate._connect_postgres(self.dsn, self.schema) as target:
+            contract.install_opportunity_revision(target)
+            migrate.verify_target_schema(target, self.tables, self.schema)
+            function_name = f'{migrate.identifier(self.schema)}."{contract.POSTGRES_REVISION_FUNCTION}"'
+            target.execute(
+                f"CREATE OR REPLACE FUNCTION {function_name}() RETURNS trigger LANGUAGE plpgsql "
+                "SET search_path=pg_catalog AS $$ BEGIN RETURN NULL; END; $$"
+            )
+            with self.assertRaisesRegex(migrate.MigrationError, "unexpected_target_trigger"):
+                migrate.verify_target_revision_triggers(target, self.schema)
+
+    def test_postgres_same_named_trigger_with_changed_event_is_rejected(self):
+        self.apply()
+        contract = migrate._revision_contract()
+        with migrate._connect_postgres(self.dsn, self.schema) as target:
+            contract.install_opportunity_revision(target)
+            _, definitions = contract.postgres_revision_definitions(self.schema)
+            original = definitions["ff_radar_cache_v1_radar_jobs_insert"]
+            target.execute(original.replace("AFTER INSERT", "BEFORE INSERT"))
+            with self.assertRaisesRegex(migrate.MigrationError, "unexpected_target_trigger"):
+                migrate.verify_target_revision_triggers(target, self.schema)
 
     def test_forward_self_reference_is_deferred_and_preserved(self):
         connection = sqlite3.connect(self.source)

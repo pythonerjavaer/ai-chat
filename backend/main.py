@@ -30,7 +30,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -54,7 +54,11 @@ from .space_engine import (
     build_preflight,
     render_local_capsule,
 )
-from .recruitment import TIER_DEFINITIONS, job_matches_profile, score_job, semantic_employer_categories
+from .recruitment import (
+    SCORING_VERSION, SCORING_WEIGHTS, TIER_DEFINITIONS,
+    job_matches_profile, score_job, semantic_employer_categories,
+)
+from .future_radar.opportunity_cache import scoring_scope
 from .recruitment_search import (
     WEB_SEARCH_SOURCE,
     WEB_SEARCH_STATE_KEY,
@@ -1110,6 +1114,16 @@ def _public_radar_opportunity(job: dict, profile: dict) -> dict:
     return item
 
 
+def _radar_scoring_scope(user_id: int, profile: dict) -> str:
+    # Every profile field (including updated_at) participates; cache keys keep
+    # only the digest. Rule/code changes cannot reuse an old scoring result.
+    return scoring_scope(user_id, profile, {
+        "version": SCORING_VERSION, "weights": SCORING_WEIGHTS,
+        "tiers": TIER_DEFINITIONS,
+        "scorer": id(score_job), "presenter": id(_public_radar_opportunity),
+    })
+
+
 def _radar_search_metadata() -> dict:
     result: dict = {
         "scope": {
@@ -1120,7 +1134,7 @@ def _radar_search_metadata() -> dict:
         },
         "coverage": None,
     }
-    snapshot = future_radar_service.repository.latest_snapshot_metadata(
+    snapshot = future_radar_service.repository.discovery_summary(
         "openai-public-web-search"
     )
     if snapshot and snapshot["metadata"].get("coverage"):
@@ -1144,8 +1158,7 @@ def _radar_search_metadata() -> dict:
             if isinstance(name, str)
         ]
         result["coverage"]["completed_at"] = snapshot["fetched_at"]
-    search_source = future_radar_service.repository.get_source("openai-public-web-search")
-    result["search_status"] = (search_source or {}).get("status", "pending")
+    result["search_status"] = snapshot.get("status", "pending")
     return result
 
 
@@ -1254,7 +1267,8 @@ def future_radar_opportunities(
     tier_code: Literal[
         "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY"
     ] | None = None,
-) -> dict:
+    compact: bool = False,
+) -> JSONResponse:
     """The default pool includes usable discoveries without a verification gate."""
     filters = {
         "status": status_filter, "verification_status": verification_status,
@@ -1276,23 +1290,32 @@ def future_radar_opportunities(
         public_url=_public_reference_url,
         prepare=lambda job: _public_radar_opportunity(job, profile),
         company_aliases=_radar_company_aliases(),
+        cache_scope=_radar_scoring_scope(user["id"], profile),
     )
-    result["jobs"] = result["items"]
-    result["opportunities"] = result["items"]
+    if not compact:
+        # Older clients keep their aliases. The current UI explicitly asks for
+        # compact mode so large scored records are serialized/sent only once.
+        result["jobs"] = result["items"]
+        result["opportunities"] = result["items"]
     result["tier_definitions"] = list(TIER_DEFINITIONS)
     result["pool"] = "opportunities"
     result.update(_radar_search_metadata())
-    return result
+    # These public records contain only JSON-compatible primitives. Avoid
+    # FastAPI recursively encoding the same large compatibility lists again.
+    return JSONResponse(content=result)
 
 
 @app.get("/api/future-radar/opportunities/{job_id}")
 def future_radar_opportunity(job_id: str, user: User) -> dict:
-    job = future_radar_service.repository.get_opportunity(
+    profile = database.get_recruitment_profile(user["id"])
+    job = future_radar_service.repository.get_prepared_opportunity(
         job_id, public_url=_public_reference_url, company_aliases=_radar_company_aliases(),
+        prepare=lambda item: _public_radar_opportunity(item, profile),
+        cache_scope=_radar_scoring_scope(user["id"], profile),
     )
     if not job:
         raise HTTPException(status_code=404, detail="Radar opportunity not found.")
-    return _public_radar_opportunity(job, database.get_recruitment_profile(user["id"]))
+    return job
 
 
 @app.get("/api/future-radar/jobs")

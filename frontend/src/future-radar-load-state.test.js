@@ -56,6 +56,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   const controls = { fail, legacyFail };
   const calls = [];
   const requestOptions = [];
+  const timers = [];
   const payload = { items: Array.from({ length: 50 }, (_, i) => pendingJob(`pending-${i}`)), total: 255,
     page: 1, page_size: 50, stats: { verification_status: { pending: 255, verified: 0, conflicted: 0 },
       job_status: { unknown: 255 }, tier_counts: { UNRANKED: 255 }, category_counts: { internet_tech: 255 } } };
@@ -63,6 +64,9 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   const state = { token: Symbol("pure-state-session"), music: { enabled: false }, recruitmentJobs: oldJobs, recruitmentWatches: [], recruitmentTierFilter: "ALL", futureRadar: {
     jobsLoaded: existing, jobsError: "", jobs: existing ? [pendingJob("saved-main")] : [],
     jobsLoading: false, loading: false, jobsRequestId: 0, page: 1, pageSize: 50,
+    jobsRequestQuery: "", jobsRequestController: null, jobsRequestPromise: null,
+    jobsAppliedQuery: "", jobsAppliedTier: "ALL", jobsAppliedPage: 1,
+    pollOpportunityController: null, snapshotRequestId: 0,
     totalJobs: existing ? 1 : 0,
     opportunityStats: existing ? { tier_counts: { UNRANKED: 1 }, verification_status: { pending: 1 } } : {},
     filters: { status: DEFAULT_FUTURE_RADAR_STATUS },
@@ -84,6 +88,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   elements.futureRadarFilterForm = { reset() {} };
   const noop = () => {};
   const context = {
+    AbortController, URLSearchParams,
     state, elements, DEFAULT_FUTURE_RADAR_STATUS, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, TIER_CODES, buildFutureRadarJobsQuery,
     futureRadarOpportunityDateCopy, futureRadarOpportunityErrorCopy, futureRadarOpportunitySource,
     futureRadarPublicOpportunityUrl, jobTierBucket, partitionJobsByPriority,
@@ -92,7 +97,10 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     api: async (path, options) => {
       calls.push(path);
       requestOptions.push(options);
+      const custom = controls.apiHandler?.(path, options);
+      if (custom !== undefined) return custom;
       if (path.startsWith("/future-radar/opportunities?")) {
+        if (controls.opportunityHandler) return controls.opportunityHandler(path, options);
         if (controls.fail) throw Object.assign(new Error("private provider diagnostics must not render"), { status: 500 });
         return payload;
       }
@@ -134,7 +142,12 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     storage: { async remove() {} },
     STORAGE_KEYS: { token: "local-test-only" },
     splitRecruitmentValues: () => [],
-    setTimeout: () => null,
+    setTimeout: (callback, delay) => {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => { if (timer) timer.cleared = true; },
     window: { clearTimeout() {}, clearInterval() {}, setInterval() { throw new Error("Unexpected timer start in test"); } },
   };
   for (const name of ["renderFutureRadarPagination", "syncFutureRadarProgramFilter",
@@ -162,8 +175,13 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     extract("async function saveRecruitment(", "\nfunction scheduleRecruitmentAutoFilter"),
   ].join("\n");
   vm.runInContext(functions, context);
-  return { controls, calls, requestOptions, payload, state, elements, context,
+  return { controls, calls, requestOptions, payload, state, elements, context, timers,
     run: (expression) => vm.runInContext(expression, context),
+    flushSelection: async () => {
+      await new Promise(setImmediate);
+      timers.filter((timer) => !timer.cleared && timer.delay === 140).forEach((timer) => timer.callback());
+      await new Promise(setImmediate);
+    },
     cards: () => descendants(elements.recruitmentJobs).filter((el) => el.className === "recruitment-job-card") };
 }
 
@@ -374,4 +392,247 @@ test("reset and the HTML default use active without widening to closed opportuni
   assert.match(html, /id="future-radar-filter-status"><option value="active">全部有效机会（含待核验）/);
   assert.match(html, /value="all">全部（含已关闭）/);
   assert.equal(DEFAULT_FUTURE_RADAR_STATUS, "active");
+});
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+function tierPayload(tier, { id = `row-${tier}`, total = 1, page = 1, size = 1 } = {}) {
+  const unranked = tier === "UNRANKED";
+  return {
+    items: Array.from({ length: size }, (_, index) => ({
+      ...pendingJob(`${id}-${index}`), tier_code: unranked ? null : tier, tier_bucket: tier,
+    })),
+    page, page_size: 50, total,
+    stats: { tier_counts: { T0: 0, "T0.5": 3, T1: 80, "T1.5": 4, T2: 120, "T2.5": 6, T3: 7, UNRANKED: 9, BELOW_PRIORITY: 10 },
+      verification_status: { pending: total, verified: 0 }, category_counts: { internet_tech: 249 } },
+  };
+}
+
+function installTierSnapshot(r, tier, payload = tierPayload(tier)) {
+  r.state.recruitmentTierFilter = tier;
+  r.context.testPayload = payload;
+  r.run("applyFutureRadarJobsPayload(testPayload, futureRadarJobsQuery()); renderRecruitmentJobs(state.futureRadar.jobs);");
+}
+
+function tierButton(r, tier) {
+  return descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === tier);
+}
+
+test("T selection is immediate, and its result/count comes from the complete compact API pool", async () => {
+  const r = runtime({ fail: false });
+  installTierSnapshot(r, "T1");
+  const request = deferred();
+  r.controls.opportunityHandler = () => request.promise;
+  const selecting = r.run("selectRecruitmentTier('T2')");
+  assert.equal(tierButton(r, "T2")["aria-pressed"], "true", "highlight changes before a network response");
+  assert.equal(tierButton(r, "T1")["aria-pressed"], "false");
+  assert.equal(r.cards().length, 0, "a T1 card must not appear under the pending T2 selection");
+  assert.match(r.elements.recruitmentJobs.textContent, /正在筛选T2/);
+  assert.match(r.elements.recruitmentStatus.textContent, /正在读取T2.*全池/);
+  assert.equal(r.elements.futureRadarOpportunityCount.textContent, "—");
+  assert.equal(r.calls.length, 0);
+  await r.flushSelection();
+  assert.equal(r.calls.length, 1);
+  const query = new URLSearchParams(r.calls[0].split("?")[1]);
+  assert.equal(query.get("tier_code"), "T2");
+  assert.equal(query.get("compact"), "true");
+  assert.equal(query.get("page"), "1");
+  request.resolve(tierPayload("T2", { total: 120, size: 50 }));
+  assert.equal(await selecting, true);
+  assert.equal(r.cards().length, 50);
+  assert.equal(r.state.futureRadar.totalJobs, 120, "the 50-row page must not become the global count");
+  assert.match(tierButton(r, "T1").textContent, /80/);
+  assert.match(tierButton(r, "T2").textContent, /120/);
+  assert.equal(r.elements.recruitmentJobs["aria-busy"], "false");
+  assert.match(r.elements.recruitmentJobs.textContent, /当前筛选共 120 个机会 · T2/);
+});
+
+test("same-tier clicks are no-ops after success and share an in-flight selection", async () => {
+  const r = runtime({ fail: false });
+  installTierSnapshot(r, "T1");
+  assert.equal(await r.run("selectRecruitmentTier('T1')"), false);
+  assert.equal(r.calls.length, 0);
+  const request = deferred();
+  r.controls.opportunityHandler = () => request.promise;
+  const reads = [r.run("selectRecruitmentTier('T2')"), r.run("selectRecruitmentTier('T2')"), r.run("loadFutureRadarJobPage(1, true)")];
+  await r.flushSelection();
+  assert.equal(r.calls.length, 1);
+  request.resolve(tierPayload("T2"));
+  assert.deepEqual(await Promise.all(reads), [true, true, true]);
+});
+
+test("rapid cross-tier clicks are coalesced into only the latest server query", async () => {
+  const r = runtime({ fail: false });
+  installTierSnapshot(r, "T1");
+  r.controls.opportunityHandler = () => tierPayload("T1.5");
+  const first = r.run("selectRecruitmentTier('T2')");
+  const firstController = r.state.futureRadar.jobsRequestController;
+  const second = r.run("selectRecruitmentTier('T0.5')");
+  const secondController = r.state.futureRadar.jobsRequestController;
+  const latest = r.run("selectRecruitmentTier('T1.5')");
+  assert.equal(firstController.signal.aborted, true);
+  assert.equal(secondController.signal.aborted, true);
+  assert.equal(tierButton(r, "T1.5")["aria-pressed"], "true");
+  await r.flushSelection();
+  assert.deepEqual(await Promise.all([first, second, latest]), [false, false, true]);
+  assert.equal(r.calls.length, 1);
+  assert.equal(new URLSearchParams(r.calls[0].split("?")[1]).get("tier_code"), "T1.5");
+});
+
+test("in-flight A→B→A responses and errors cannot overwrite the latest A result", async () => {
+  const r = runtime({ fail: false });
+  installTierSnapshot(r, "T1");
+  const requests = [];
+  r.controls.opportunityHandler = (_path, options) => {
+    const request = { ...deferred(), signal: options.signal };
+    requests.push(request);
+    return request.promise; // Deliberately emulate a transport that ignores abort.
+  };
+  const first = r.run("selectRecruitmentTier('UNRANKED')");
+  await r.flushSelection();
+  const second = r.run("selectRecruitmentTier('T0.5')");
+  await r.flushSelection();
+  const latest = r.run("selectRecruitmentTier('UNRANKED')");
+  await r.flushSelection();
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].signal.aborted, true);
+  assert.equal(requests[1].signal.aborted, true);
+  requests[2].resolve(tierPayload("UNRANKED", { id: "latest", total: 19 }));
+  assert.equal(await latest, true);
+  const latestCard = r.cards()[0];
+  requests[1].reject(new Error("superseded upstream failure"));
+  requests[0].resolve(tierPayload("UNRANKED", { id: "old", total: 2 }));
+  assert.deepEqual(await Promise.all([first, second]), [false, false]);
+  assert.equal(r.cards()[0], latestCard);
+  assert.equal(r.state.futureRadar.totalJobs, 19);
+  assert.equal(r.state.futureRadar.jobs[0].id, "latest-0");
+  assert.equal(r.state.futureRadar.jobsError, "");
+});
+
+test("failed T0 selection restores the T3 snapshot label, not a T0-highlighted T3 page, and permits retry", async () => {
+  const r = runtime();
+  installTierSnapshot(r, "T3");
+  const selecting = r.run("selectRecruitmentTier('T0')");
+  await r.flushSelection();
+  assert.equal(await selecting, false);
+  assert.equal(tierButton(r, "T3")["aria-pressed"], "true");
+  assert.equal(tierButton(r, "T0")["aria-pressed"], "false");
+  assert.match(r.elements.recruitmentJobs.textContent, /上次成功快照（T3 机会 · 原筛选条件）/);
+  assert.equal(r.cards().length, 1);
+  assert.equal(r.state.futureRadar.jobs[0].tier_code, "T3");
+  r.controls.fail = false;
+  r.controls.opportunityHandler = () => tierPayload("T0", { total: 0, size: 0 });
+  const retry = r.run("selectRecruitmentTier('T0')");
+  assert.equal(tierButton(r, "T0")["aria-pressed"], "true");
+  await r.flushSelection();
+  assert.equal(await retry, true);
+  assert.equal(r.calls.length, 2);
+  assert.equal(r.cards().length, 0);
+  assert.equal(r.state.futureRadar.totalJobs, 0);
+  assert.match(r.elements.recruitmentJobs.textContent, /当前没有 T0 机会/);
+  assert.equal(r.state.futureRadar.jobsError, "");
+});
+
+test("a cancelled background poll cannot repaint a new T selection or its completed page", async () => {
+  const r = runtime({ fail: false });
+  installTierSnapshot(r, "T1");
+  const poll = deferred();
+  const current = deferred();
+  r.controls.opportunityHandler = (_path, options) => {
+    if (!r.state.futureRadar.jobsLoading) {
+      poll.signal = options.signal;
+      return poll.promise;
+    }
+    return current.promise;
+  };
+  const polling = r.run("pollFutureRadarEvents()");
+  const selecting = r.run("selectRecruitmentTier('T2')");
+  assert.equal(poll.signal.aborted, true);
+  await r.flushSelection();
+  current.resolve(tierPayload("T2"));
+  await selecting;
+  const newCard = r.cards()[0];
+  poll.resolve(tierPayload("T1", { id: "stale-poll" }));
+  await polling;
+  assert.equal(r.cards()[0], newCard);
+  assert.equal(tierButton(r, "T2")["aria-pressed"], "true");
+  assert.equal(r.state.futureRadar.jobsError, "");
+});
+
+test("initial opportunities render before slow metadata, whose completion cannot repaint a later selection", async () => {
+  const r = runtime({ fail: false });
+  const metadata = deferred();
+  r.controls.apiHandler = (path) => path === "/future-radar/programs" ? metadata.promise : undefined;
+  const snapshot = r.run("loadFutureRadarSnapshot()");
+  await new Promise(setImmediate);
+  assert.equal(r.cards().length, 50, "do not wait for all six requests to render opportunities");
+  const selectingResponse = deferred();
+  r.controls.opportunityHandler = () => selectingResponse.promise;
+  const selecting = r.run("selectRecruitmentTier('T1')");
+  assert.equal(r.cards().length, 0);
+  metadata.resolve({ items: [] });
+  await snapshot;
+  assert.equal(r.state.futureRadar.jobsLoading, true);
+  assert.equal(tierButton(r, "T1")["aria-pressed"], "true");
+  assert.match(r.elements.recruitmentJobs.textContent, /正在筛选T1/);
+  await r.flushSelection();
+  selectingResponse.resolve(tierPayload("T1"));
+  assert.equal(await selecting, true);
+  assert.equal(r.cards().length, 1);
+});
+
+test("an initialization refresh joins an in-flight page selection instead of switching back to page one", async () => {
+  const r = runtime({ fail: false });
+  installTierSnapshot(r, "T1", tierPayload("T1", { total: 120 }));
+  const response = deferred();
+  r.controls.opportunityHandler = () => response.promise;
+  const page = r.run("loadFutureRadarJobPage(2)");
+  const controller = r.state.futureRadar.jobsRequestController;
+  const snapshot = r.run("loadFutureRadarSnapshot()");
+  await new Promise(setImmediate);
+  assert.equal(r.calls.filter((path) => path.startsWith("/future-radar/opportunities?")).length, 1);
+  assert.equal(controller.signal.aborted, false);
+  assert.equal(r.state.futureRadar.page, 2);
+  response.resolve(tierPayload("T1", { page: 2, total: 120, id: "page-two" }));
+  assert.deepEqual(await Promise.all([page, snapshot]), [true, true]);
+  assert.equal(r.state.futureRadar.jobsAppliedPage, 2);
+  assert.equal(r.state.futureRadar.jobs[0].id, "page-two-0");
+});
+
+test("revisiting a tier reads a new version instead of trusting a stale client page cache", async () => {
+  const r = runtime({ fail: false });
+  installTierSnapshot(r, "T1");
+  r.controls.opportunityHandler = (path) => {
+    const tier = new URLSearchParams(path.split("?")[1]).get("tier_code");
+    return tierPayload(tier, { id: tier === "T1" ? "new-version" : "other", total: tier === "T1" ? 23 : 7 });
+  };
+  const other = r.run("selectRecruitmentTier('T2')");
+  await r.flushSelection();
+  await other;
+  const revisit = r.run("selectRecruitmentTier('T1')");
+  await r.flushSelection();
+  await revisit;
+  assert.equal(r.calls.length, 2);
+  assert.equal(r.state.futureRadar.totalJobs, 23);
+  assert.equal(r.state.futureRadar.jobs[0].id, "new-version-0");
+});
+
+test("logout cancels an unsent tier debounce and removes all saved request state", async () => {
+  const r = runtime({ fail: false });
+  installTierSnapshot(r, "T1");
+  const selecting = r.run("selectRecruitmentTier('T2')");
+  await new Promise(setImmediate);
+  r.state.token = null;
+  r.run("endFutureRadarSession()");
+  await r.flushSelection();
+  assert.equal(await selecting, false);
+  assert.equal(r.calls.length, 0);
+  assert.equal(r.state.futureRadar.jobsLoaded, false);
+  assert.equal(r.state.futureRadar.jobsAppliedQuery, "");
+  assert.equal(r.state.futureRadar.jobsRequestController, null);
+  assert.equal(r.state.futureRadar.jobsRequestPromise, null);
 });

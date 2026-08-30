@@ -83,7 +83,7 @@ test("real builder and API send the active main-pool GET without blank dates or 
   const data = await r.run("api(`/future-radar/opportunities?${futureRadarJobsQuery()}`, {timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS})");
   assert.equal(server.requests.length, 1);
   assert.deepEqual(server.requests[0], {
-    url: "/api/future-radar/opportunities?page=1&page_size=50&status=active&sort=changed",
+    url: "/api/future-radar/opportunities?page=1&page_size=50&status=active&sort=changed&compact=true",
     method: "GET", authorization: undefined,
   });
   assert.equal(data.total, 255);
@@ -161,6 +161,53 @@ test("the read timeout also covers a stalled JSON body after HTTP headers arrive
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(r.timers[0].cleared, false, "JSON parsing is still inside the timed read");
   r.timers[0].callback();
+  await checked;
+  assert.equal(r.timers[0].cleared, true);
+});
+
+test("superseding a tier aborts the real HTTP read without reporting a timeout", async (t) => {
+  const server = await localServer(t, () => {});
+  const r = runtime(server.base);
+  r.run("globalThis.selectionController = new AbortController()");
+  const request = r.run('api("/future-radar/opportunities?tier_code=T1&compact=true", { signal: selectionController.signal, timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS })');
+  const checked = assert.rejects(request, (error) => {
+    assert.equal(error.code, "REQUEST_SUPERSEDED");
+    assert.equal(error.timeoutMs, undefined);
+    return true;
+  });
+  await server.firstRequest;
+  r.run('selectionController.abort(Object.assign(new Error("selection changed"), {code: "REQUEST_SUPERSEDED"}))');
+  await checked;
+  assert.equal(r.timers[0].cleared, true);
+  assert.equal(r.run("FUTURE_RADAR_REQUEST_CONTROLLERS.size"), 0);
+});
+
+test("an already superseded selection never sends its HTTP request", async (t) => {
+  const server = await localServer(t, (_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end('{"items":[]}');
+  });
+  const r = runtime(server.base);
+  r.run('globalThis.selectionController = new AbortController(); selectionController.abort(Object.assign(new Error("selection changed"), {code: "REQUEST_SUPERSEDED"}))');
+  await assert.rejects(r.run('api("/future-radar/opportunities?tier_code=T2", {signal: selectionController.signal})'), (error) => error.code === "REQUEST_SUPERSEDED");
+  await new Promise(setImmediate);
+  assert.equal(server.requests.length, 0);
+  assert.equal(r.run("FUTURE_RADAR_REQUEST_CONTROLLERS.size"), 0);
+});
+
+test("external cancellation also covers a stalled JSON body after response headers", async (t) => {
+  let headersReceived;
+  const headers = new Promise((resolve) => { headersReceived = resolve; });
+  const server = await localServer(t, (_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.write('{"items":');
+  });
+  const r = runtime(server.base, { onHeaders: headersReceived });
+  r.run("globalThis.selectionController = new AbortController()");
+  const request = r.run('api("/future-radar/opportunities?tier_code=T3", {signal: selectionController.signal})');
+  const checked = assert.rejects(request, (error) => error.code === "REQUEST_SUPERSEDED");
+  await headers;
+  r.run('selectionController.abort(Object.assign(new Error("selection changed"), {code: "REQUEST_SUPERSEDED"}))');
   await checked;
   assert.equal(r.timers[0].cleared, true);
 });

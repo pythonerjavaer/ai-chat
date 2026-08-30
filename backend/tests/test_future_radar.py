@@ -860,8 +860,18 @@ def test_official_registry_uses_exact_public_markers_and_never_generic_jobs(
             continue
         source = radar_service.repository.get_source(source_id)
         assert source["trust_level"] == "verification"
-        assert source["adapter_config"]["adapter"] == "official_html"
-        assert source["adapter_config"]["required_markers"]
+        config = source["adapter_config"]
+        if config["adapter"] == "official_api":
+            assert {
+                "official-china-unicom-campus-2027": "china_unicom_campus",
+                "official-china-telecom-campus-jobs-2027": "china_telecom_campus",
+                "official-china-mobile-campus-notices": "china_mobile_notices",
+            }.get(source_id) == config.get("provider")
+            assert source["url"].startswith("https://")
+            assert config["ai_extract"] is False
+        else:
+            assert config["adapter"] == "official_html"
+            assert config["required_markers"]
 
     # Program overview pages without an exact position do not manufacture a
     # generic "2027 campus recruitment" job.
@@ -2164,6 +2174,14 @@ def test_user_manual_scan_always_bridges_current_verified_legacy_pool(
     assert all(
         source.get("adapter_config", {}).get("adapter")
         in {"official_html", "legacy_database", "public_recruitment_index"}
+        or (
+            source.get("adapter_config", {}).get("adapter") == "official_api"
+            and {
+                "official-china-unicom-campus-2027": "china_unicom_campus",
+                "official-china-telecom-campus-jobs-2027": "china_telecom_campus",
+                "official-china-mobile-campus-notices": "china_mobile_notices",
+            }.get(source["id"]) == source.get("adapter_config", {}).get("provider")
+        )
         for source in radar_service.repository.user_scannable_sources()
     )
     assert captured["force"] is False

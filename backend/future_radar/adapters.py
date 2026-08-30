@@ -9,9 +9,12 @@ import math
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Protocol
@@ -28,15 +31,18 @@ from ..recruitment_search import (
     search_current_recruitment_jobs,
 )
 from ..recruitment_watch import WatchFetchError, fetch_watch_page
-from ..recruitment_watch import normalize_html_text
+from ..recruitment_watch import normalize_html_text, validate_public_https_url
 from .ai import extract_recruitment_content
 from .normalization import (
     PRIMARY_CATEGORY_CODES,
+    canonical_telecom_operator,
     canonicalize_url,
     clean_text,
     normalize_date,
     normalize_taxonomy_value,
     stable_digest,
+    stable_program_external_id,
+    telecom_primary_category,
 )
 from .public_discovery import (
     discover_bank_recruitment_articles,
@@ -101,6 +107,9 @@ def _public_reference_url(value: Any) -> str | None:
     if reference_host == "xiaoyuan.zhaopin.com":
         phone_check_path = re.sub(
             r"^/company/KA\d{6,16}D\d{6,16}/?$", "/company/public-ats-id", phone_check_path,
+        )
+        phone_check_path = re.sub(
+            r"^/job/CC\d{6,16}J\d{6,16}/?$", "/job/public-ats-id", phone_check_path,
         )
     elif reference_host.endswith(".myworkdayjobs.com") and "/job/" in phone_check_path:
         phone_check_path = re.sub(
@@ -587,6 +596,9 @@ class PublicRecruitmentIndexAdapter:
 
 def _legacy_primary_category(item: dict[str, Any], tags: list[Any]) -> str:
     """Map legacy metadata to one starfield without inspecting prose or names."""
+    operator_category = telecom_primary_category(item.get("company"))
+    if operator_category:
+        return operator_category
     explicit = normalize_taxonomy_value(item.get("primary_category"))
     if explicit in PRIMARY_CATEGORY_CODES:
         return explicit
@@ -767,7 +779,7 @@ class LegacyDiscoveryDatabaseAdapter:
                 SELECT id, dedupe_key, external_id, promoted_job_id,
                        CASE WHEN source_id IN (
                            'chatgpt-radar-01', 'chatgpt-radar-02', 'chatgpt-radar-03',
-                           'chatgpt-radar-04', 'chatgpt-radar-05'
+                           'chatgpt-radar-04', 'chatgpt-radar-05', 'chatgpt-radar-06'
                        ) THEN 1 ELSE 0 END AS controlled_chatgpt,
                        company, employer_type, title, city, industry,
                        official_url, canonical_url, opening_date, closing_date,
@@ -909,6 +921,15 @@ class OfficialHtmlAdapter:
                 ] if required_markers else [],
             })
 
+        # Opt-in only: an actual current-year employer campaign is a useful
+        # unscored opportunity, not an invented individual vacancy.  The main
+        # pool already derives recruitment_program from these factual fields.
+        if (
+            programs and config.get("emit_program_listing")
+            and _current_campus_campaign(page.text, year)
+        ):
+            jobs.append(_program_listing(programs[0], config))
+
         configured_jobs = config.get("configured_jobs")
         if configured_jobs not in (None, []) and not isinstance(configured_jobs, list):
             raise ValueError("official_html configured_jobs must be an array of objects.")
@@ -1003,6 +1024,412 @@ class OfficialHtmlAdapter:
             ai_calls=ai_calls,
             model_tokens_used=model_tokens,
         )
+
+
+def _current_campus_campaign(text: str, year: int) -> bool:
+    return bool(re.search(
+        rf"{year}\s*(?:届|年度|年)?\s*(?:全球|秋季|春季)?\s*(?:校园招聘|校招)",
+        text,
+    ))
+
+
+def _program_listing(program: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    program_id = stable_program_external_id(program)
+    operator_category = telecom_primary_category(program["company"])
+    return {
+        "external_id": stable_digest(program_id, "campaign", prefix="job"),
+        "program_external_id": program_id,
+        "company": program["company"],
+        "title": clean_text(config.get("program_listing_title") or program["program_name"], limit=280),
+        "region": program.get("region") or "中国",
+        "city": "",
+        "employer_type": config.get("employer_type") or ("央企科技通信" if operator_category else ""),
+        "industry": config.get("industry") or ("通信运营" if operator_category else ""),
+        "primary_category": config.get("primary_category") or operator_category,
+        "official_url": program["official_url"],
+        "application_url": program["official_url"],
+        "opening_date": program.get("opening_date"),
+        "closing_date": program.get("closing_date"),
+        "status": program["status"],
+        "verification_status": program["verification_status"],
+        "confidence_score": program.get("confidence_score", 0.9),
+        "requirements": _redact_public_text(
+            f"{config.get('requirements') or ''} 这是企业整体校园招聘项目，不是一个具体岗位；具体单位、职位、名额与申请条件以官方岗位列表为准。",
+            limit=8_000,
+        ),
+        "tags": ["校园招聘", str(program["recruitment_year"]), "招聘项目", "官方网页", "recruitment_program"],
+        "evidence": program.get("evidence", []),
+    }
+
+
+def _operator_role_is_current(title: str, details: str, year: int) -> bool:
+    # Experience requirements may mention past internships. Only explicit
+    # internship/social recruitment titles are rejected on that basis.
+    if re.search(r"实习|社会招聘|社招|博士后|\bintern(?:ship)?\b|postdoc", title, re.I):
+        return False
+    cohorts = re.findall(r"(20\d{2})\s*(?:届|年度(?:秋季|春季)?校园招聘)", f"{title} {details}")
+    if cohorts and str(year) not in cohorts:
+        return False
+    # Several official ATS lists retain old rows even after changing their
+    # campaign banner. A precise old graduation window must not be relabelled
+    # with the new group-wide year. Do not confuse publication/founding dates
+    # or "internship experience preferred" with eligibility.
+    windows = [part for part in re.split(r"[。；;\n]", details) if re.search(
+        r"(?:毕业时间|毕业于|毕业日期).*20\d{2}年|20\d{2}年.{0,70}毕业", part
+    )]
+    explicit_current_cohort = bool(re.search(rf"{year}\s*届", details))
+    for window in windows:
+        years = [int(value) for value in re.findall(r"(20\d{2})年", window)]
+        if years and not min(years) <= year <= max(years):
+            if explicit_current_cohort and re.search(r"未就业|择业期|也可|亦可|也接受", window):
+                continue
+            return False
+    return True
+
+
+def _operator_result(
+    programs: list[dict[str, Any]], jobs: list[dict[str, Any]], *,
+    pages: int, observed: int, skipped: int, complete: bool, reason: str = "", total: int | None = None,
+    parse_failures: int = 0,
+) -> AdapterResult:
+    # Persist only public recruitment fields, never the ATS staff/recruiter
+    # profile, anonymous session HTML, scripts or dynamic signing parameters.
+    summary = {"pages": pages, "observed": observed, "jobs": len(jobs), "skipped": skipped,
+               "reported_total": total, "complete": complete, "reason": reason,
+               "parse_failures": parse_failures}
+    digest = hashlib.sha256(json.dumps(
+        {"programs": programs, "jobs": jobs}, ensure_ascii=False, sort_keys=True
+    ).encode("utf-8")).hexdigest()
+    return AdapterResult(
+        programs=programs, jobs=jobs, content_hash=digest,
+        normalized_content=json.dumps(summary, ensure_ascii=False, sort_keys=True),
+        snapshot_complete=complete, status="healthy" if complete else "partial",
+        message=f"Official campus list: {observed} rows, {len(jobs)} opportunities, {pages} pages. {reason}",
+    )
+
+
+class _NoPublicApiRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise WatchFetchError("Public ATS API redirected; no request was forwarded.")
+
+
+def _unicom_public_jobs_page(page_number: int, page_size: int, timeout: float) -> dict[str, Any]:
+    """The read-only list request used by zglt.zhaopin.com/scjobs/index.html.
+
+    Fixed public route and fixed employer org, no Cookie, login or AI. TLS,
+    DNS/private-network validation, response bounds and website limits apply.
+    """
+    endpoint = validate_public_https_url("https://fe.zhaopin.com/grace/api/dsc/search-job-list")
+    payload = {
+        "pageIndex": page_number, "pageSize": page_size, "orgNumbers": ["105347"],
+        "jobSource": 2, "orgDepartmentIds": [], "workRegionIds": "", "jobTypes": "",
+        "priorityMajors": "", "customTags": "", "campusParentDepartmentIds": "",
+    }
+    request = urllib.request.Request(endpoint, data=json.dumps(payload).encode("utf-8"), headers={
+        "User-Agent": "FrostFire-Recruitment-Watch/1.0", "Content-Type": "application/json",
+        "Accept": "application/json", "Referer": "https://zglt.zhaopin.com/",
+    }, method="POST")
+    try:
+        with urllib.request.build_opener(_NoPublicApiRedirect()).open(request, timeout=timeout) as response:
+            final = validate_public_https_url(response.geturl())
+            if final != endpoint or response.headers.get_content_type() != "application/json":
+                raise WatchFetchError("Unexpected public ATS response.")
+            raw = response.read(1_500_001)
+            if len(raw) > 1_500_000:
+                raise WatchFetchError("Public ATS response exceeded the page size limit.")
+            result = json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise WatchFetchError(f"Public ATS returned HTTP {exc.code}.") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise WatchFetchError("Public ATS response is unavailable or invalid.") from exc
+    if not isinstance(result, dict) or result.get("code") != 200 or not isinstance(result.get("data"), dict):
+        raise WatchFetchError("Public ATS did not confirm a successful list response.")
+    return result["data"]
+
+
+class ChinaUnicomCampusAdapter:
+    """Paginate the real public Zhaopin campus list, restricted to China Unicom."""
+
+    def scan(self, source: dict[str, Any]) -> AdapterResult:
+        config = source.get("adapter_config", {})
+        year = int(config.get("recruitment_year", date.today().year + 1))
+        campus_url = "https://zglt.zhaopin.com/home/index.html"
+        page = fetch_watch_page(campus_url, OfficialHtmlAdapter.CAMPUS_MARKERS)
+        if not _current_campus_campaign(page.text, year) or "中国联合网络通信" not in page.text:
+            raise WatchFetchError("China Unicom campaign page no longer confirms the configured campus year.")
+        program = {
+            "company": source["company"], "program_name": f"{year} 校园招聘",
+            "recruitment_year": year, "recruitment_type": "campus", "region": "中国",
+            "opening_date": None, "closing_date": None, "official_url": campus_url,
+            "status": "open", "verification_status": "verified", "confidence_score": 0.95,
+            "evidence": [f"中国联通官方招聘站标题明确为{year}校园招聘；岗位来自该站公开校招列表。"],
+        }
+        jobs = [_program_listing(program, config)]
+        seen: set[str] = set()
+        observed = skipped = pages = 0
+        total = None
+        complete = False
+        reason = ""
+        deadline = time.monotonic() + min(1_200.0, max(30.0, float(config.get("max_scan_seconds", 600))))
+        max_pages = min(500, max(1, int(config.get("max_pages", 200))))
+        for number in range(1, max_pages + 1):
+            if time.monotonic() >= deadline:
+                reason = "Source time budget reached; snapshot remains incomplete."
+                break
+            DOMAIN_LIMITER.wait("fe.zhaopin.com", max(1.0, float(config.get("domain_delay_seconds", 1))))
+            try:
+                data = _unicom_public_jobs_page(number, 50, min(20.0, max(1.0, deadline - time.monotonic())))
+                rows = data.get("jobList")
+                info = data.get("pageInfo") or {}
+                if not isinstance(rows, list) or not isinstance(info, dict):
+                    raise WatchFetchError("Public ATS list/page metadata is invalid.")
+                page_total = int(info["totalNum"])
+                total_pages = int(info["totalPage"])
+                if page_total < 0 or total_pages < 0 or int(info.get("pageIndex", number)) != number:
+                    raise WatchFetchError("Public ATS pagination metadata is inconsistent.")
+            except (WatchFetchError, ValueError, KeyError, TypeError) as exc:
+                reason = f"Page {number} failed ({type(exc).__name__}); retained successful pages."
+                break
+            pages += 1
+            if total is not None and total != page_total:
+                reason = "The public list changed during pagination; closure checks are disabled."
+            total = page_total
+            page_new = 0
+            for row in rows:
+                observed += 1
+                if not isinstance(row, dict) or not isinstance(row.get("job"), dict) or not isinstance(row.get("company"), dict):
+                    skipped += 1
+                    reason = reason or "Some public list rows could not be parsed."
+                    continue
+                job, company = row["job"], row["company"]
+                identifier = clean_text(job.get("jobNumber"), limit=100)
+                title = _redact_public_text(job.get("title"), limit=280)
+                url = _public_reference_url(job.get("url"))
+                if (
+                    not re.fullmatch(r"CC\d{6,16}J\d{6,16}", identifier)
+                    or not url or urllib.parse.urlsplit(url).hostname != "xiaoyuan.zhaopin.com"
+                    or urllib.parse.urlsplit(url).path != f"/job/{identifier}"
+                    or not title or str(company.get("companyId")) != "105347"
+                    or str(job.get("positionSourceType")) != "2"
+                ):
+                    skipped += 1
+                    reason = reason or "Some public list identities/URLs were invalid."
+                    continue
+                if identifier in seen:
+                    reason = reason or "Duplicate rows appeared while paginating; closure checks are disabled."
+                    continue
+                seen.add(identifier)
+                page_new += 1
+                details = _redact_public_text(normalize_html_text(str(job.get("detail") or "")), limit=8_000)
+                if not _operator_role_is_current(title, details, year):
+                    skipped += 1
+                    continue
+                employer = _redact_public_text(company.get("campusOrgName") or source["company"], limit=160)
+                jobs.append({
+                    "external_id": f"unicom-{identifier}", "program_external_id": stable_program_external_id(program),
+                    "company": employer, "title": title, "city": _redact_public_text(job.get("cityName"), limit=160),
+                    "region": "中国", "employer_type": "央企科技通信", "industry": "通信运营",
+                    "primary_category": "state_tech_telecom", "official_url": url, "application_url": url,
+                    # modifiedTime/publishTime in this API are NOT application dates.
+                    "opening_date": None, "closing_date": None, "status": "open",
+                    "verification_status": "verified", "confidence_score": 0.95,
+                    "requirements": _redact_public_text(f"中国联通{year}校园招聘项目公开岗位。{details}", limit=8_000),
+                    "tags": ["校园招聘", str(year), "官方ATS", "确定性解析"],
+                    "evidence": [f"官方{year}校园招聘列表逐字提供此岗位名称及独立公开详情链接。"],
+                })
+            if not rows and total != 0 or rows and not page_new:
+                reason = reason or "Pagination stopped making progress; snapshot remains incomplete."
+                break
+            if total == 0 or number >= total_pages:
+                complete = not reason and observed == total
+                if not complete and not reason:
+                    reason = "Observed row count differs from public total; snapshot remains incomplete."
+                break
+        if not complete and not reason:
+            reason = "Page budget reached; snapshot remains incomplete."
+        return _operator_result([program], jobs, pages=pages, observed=observed, skipped=skipped,
+                                complete=complete, reason=reason, total=total)
+
+
+class ChinaMobileNoticeAdapter:
+    """Read the actual notice feed used by job.10086.cn, without TLS fallback."""
+
+    def __init__(self, html: OfficialHtmlAdapter):
+        self.html = html
+
+    def scan(self, source: dict[str, Any]) -> AdapterResult:
+        config = source.get("adapter_config", {})
+        year = int(config.get("recruitment_year", date.today().year + 1))
+        page = fetch_watch_page(source["url"], ())
+        try:
+            rows = json.loads(page.raw_text)["cData"]["list"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise WatchFetchError("China Mobile public notice feed schema changed.") from exc
+        if not isinstance(rows, list):
+            raise WatchFetchError("China Mobile public notice feed did not contain a list.")
+        programs: list[dict[str, Any]] = []
+        jobs: list[dict[str, Any]] = []
+        failed = 0
+        for row in rows:
+            title = clean_text(row.get("text3"), limit=280) if isinstance(row, dict) else ""
+            if not _current_campus_campaign(title, year) or not _operator_role_is_current(title, "", year):
+                continue
+            prefix = re.split(r"20\d{2}", title, maxsplit=1)[0].strip()
+            if canonical_telecom_operator(prefix) != "china_mobile":
+                continue
+            url = _public_reference_url(urllib.parse.urljoin(source["url"], row.get("detail_href") or row.get("jump_link") or ""))
+            if not url or urllib.parse.urlsplit(url).hostname != "job.10086.cn":
+                failed += 1
+                continue
+            try:
+                result = self.html.scan({**source, "url": url, "company": prefix, "adapter_config": {
+                    **config, "adapter": "official_html", "ai_extract": False,
+                    "required_markers": [title], "program_name": title,
+                    "program_listing_title": f"{year}校园招聘", "emit_program_listing": True,
+                    # text4 is publication metadata, never an application start.
+                    "opening_date": None, "closing_date": None,
+                }})
+                programs.extend(result.programs)
+                jobs.extend(result.jobs)
+            except (WatchFetchError, RuntimeError):
+                failed += 1
+        result = _operator_result(programs, jobs, pages=1, observed=len(rows), skipped=len(rows)-len(programs),
+                                  complete=False, reason=(f"{failed} current notices failed." if failed else "Notice discovery is not a complete vacancy inventory."))
+        if not failed:
+            result.status = "healthy"
+        return result
+
+
+class _TelecomPageMetadata(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.values: dict[str, str] = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "input":
+            return
+        attributes = dict(attrs)
+        key = attributes.get("name") or attributes.get("id")
+        if key in {"currentPage", "lastPage"}:
+            self.values[key] = attributes.get("value") or ""
+
+
+def _telecom_campus_rows(html: str, year: int, source_company: str) -> tuple[list[dict[str, Any]], int, int, int]:
+    """Parse only actual job cards, not the page's filter/organization directory."""
+    blocks = re.findall(
+        r'<li\b[^>]*class=["\'][^"\']*\bposition_list-list-demo\b[^"\']*["\'][^>]*>(.*?)</li>',
+        html, re.S | re.I,
+    )
+    jobs = []
+    skipped = 0
+    parse_failures = 0
+    for block in blocks:
+        identity = re.search(r"toDetailPostUrl\(\s*(\d{1,10})\s*,\s*1\s*,", block)
+        title_match = re.search(r'class=["\']position_list-list-demo-title["\'][^>]*>(.*?)</div>', block, re.S)
+        details = [_redact_public_text(normalize_html_text(value), limit=8_000) for value in re.findall(
+            r'class=["\']detailedInformation["\'][^>]*>(.*?)</div>', block, re.S,
+        )]
+        project = next((part for part in details if part.startswith("招聘项目")), "")
+        title = _redact_public_text(normalize_html_text(title_match[1]), limit=280) if title_match else ""
+        if not identity or not title or not project:
+            parse_failures += 1
+            continue
+        if not _current_campus_campaign(project, year):
+            if re.search(r"20\d{2}.*(?:校园招聘|校招)", project):
+                skipped += 1
+            else:
+                parse_failures += 1
+            continue
+        if not _operator_role_is_current(title, " ".join(details), year):
+            skipped += 1
+            continue
+        first_row = re.search(r'class=["\']position_list-first-row["\'][^>]*>(.*?)</div>', block, re.S)
+        columns = [_redact_public_text(normalize_html_text(value), limit=160) for value in re.findall(
+            r'<span\b[^>]*>(.*?)</span>', first_row[1] if first_row else "", re.S,
+        )]
+        department = columns[0] if columns else ""
+        company = department if canonical_telecom_operator(department) == "china_telecom" else source_company
+        url = "https://wejob.chinatelecom.com.cn/wt/TELE/mobweb/v8/position/detail?" + urllib.parse.urlencode({
+            "recruitType": 1, "postIdsAry": identity[1], "brandCode": 1,
+        })
+        # This public route is used by the site's toDetailPostUrl handler.
+        # Only the public job ID/type/brand are needed; omit openid, operational,
+        # webUserIdToken and anonymous JS signatures entirely.
+        jobs.append({
+            "external_id": f"telecom-{identity[1]}", "company": company, "title": title,
+            "city": columns[1] if len(columns) > 1 else "", "region": "中国",
+            "employer_type": "央企科技通信", "industry": "通信运营", "primary_category": "state_tech_telecom",
+            "official_url": url, "application_url": url, "opening_date": None, "closing_date": None,
+            "status": "closed" if re.search(r"(?:该职位|本岗位)(?:已关闭|已结束)|停止申请", normalize_html_text(block)) else "open",
+            "verification_status": "verified", "confidence_score": 0.95,
+            "requirements": _redact_public_text(
+                f"招聘部门：{department or '以详情页为准'}；具体用人单位以岗位详情为准。 " + " ".join(details), limit=8_000,
+            ),
+            "tags": ["校园招聘", str(year), "官方ATS", "确定性解析"],
+            "evidence": [f"中国电信官方岗位列表逐条标明{year}年度秋季校园招聘、职位名称及公开岗位编号。"],
+        })
+    return jobs, len(blocks), skipped, parse_failures
+
+
+class ChinaTelecomCampusAdapter:
+    """Read China Telecom's public paginated HTML list, without a user session."""
+
+    def scan(self, source: dict[str, Any]) -> AdapterResult:
+        config = source.get("adapter_config", {})
+        year = int(config.get("recruitment_year", date.today().year + 1))
+        base = "https://wejob.chinatelecom.com.cn/wt/TELE/mobweb/v8/position/list"
+        max_pages = min(500, max(1, int(config.get("max_pages", 300))))
+        deadline = time.monotonic() + min(1_200.0, max(30.0, float(config.get("max_scan_seconds", 600))))
+        jobs: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        pages = observed = skipped = parse_failures = 0
+        reason = ""
+        complete = False
+        for number in range(1, max_pages + 1):
+            if time.monotonic() >= deadline:
+                reason = "Source time budget reached; snapshot remains incomplete."
+                break
+            DOMAIN_LIMITER.wait("wejob.chinatelecom.com.cn", max(1.0, float(config.get("domain_delay_seconds", 1))))
+            url = base + "?" + urllib.parse.urlencode({
+                "recruitType": 1, "brandCode": 1, "ajaxMini": "true", "pc.currentPage": number,
+            })
+            try:
+                page = fetch_watch_page(url, (), timeout_seconds=min(20.0, max(1.0, deadline-time.monotonic())))
+                metadata = _TelecomPageMetadata()
+                metadata.feed(page.raw_text)
+                if int(metadata.values.get("currentPage", "0")) != number or metadata.values.get("lastPage") not in {"true", "false"}:
+                    raise WatchFetchError("China Telecom pagination metadata is invalid.")
+                rows, raw_count, dropped, invalid = _telecom_campus_rows(page.raw_text, year, source["company"])
+            except (WatchFetchError, ValueError) as exc:
+                reason = f"Page {number} failed ({type(exc).__name__}); retained successful pages."
+                break
+            pages += 1
+            observed += raw_count
+            skipped += dropped
+            parse_failures += invalid
+            if invalid:
+                reason = "Some public job cards could not be parsed; closure checks are disabled."
+            ids = {row["external_id"] for row in rows}
+            if seen.intersection(ids):
+                reason = "Duplicate rows appeared while paginating; snapshot remains incomplete."
+                break
+            jobs.extend(rows)
+            seen.update(ids)
+            if raw_count == 0 and not re.search(r"暂无(?:招聘)?(?:职位|岗位)|没有符合.*(?:职位|岗位)|无匹配.*(?:职位|岗位)", page.text):
+                reason = "No recognizable job cards or explicit empty-list marker; snapshot remains incomplete."
+                break
+            if metadata.values["lastPage"] == "true":
+                complete = not reason
+                break
+            if raw_count == 0:
+                reason = "Empty non-final page; snapshot remains incomplete."
+                break
+        if not complete and not reason:
+            reason = "Page budget reached; snapshot remains incomplete."
+        if not pages:
+            raise WatchFetchError(reason or "China Telecom public list is unavailable.")
+        return _operator_result([], jobs, pages=pages, observed=observed, skipped=skipped,
+                                complete=complete, reason=reason, parse_failures=parse_failures)
 
 
 def _path_value(value: Any, path: str) -> Any:
@@ -1345,6 +1772,15 @@ def adapter_for_source(
     if adapter_name == "legacy_database":
         return LegacyDatabaseAdapter()
     if adapter_name == "official_api":
+        provider = source.get("adapter_config", {}).get("provider")
+        if provider == "china_unicom_campus":
+            return ChinaUnicomCampusAdapter()
+        if provider == "china_telecom_campus":
+            return ChinaTelecomCampusAdapter()
+        if provider == "china_mobile_notices":
+            return ChinaMobileNoticeAdapter(OfficialHtmlAdapter(
+                repository=repository, api_key=openai_api_key, ai_model=ai_model
+            ))
         return OfficialJsonApiAdapter()
     if adapter_name == "public_feed":
         return PublicFeedAdapter()

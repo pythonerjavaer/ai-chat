@@ -8,6 +8,7 @@ from typing import Any, Callable
 from .config import settings
 from .workspaces import DEFAULT_WORKSPACE, validate_workspace
 from .future_radar.schema import migrate as migrate_future_radar
+from .future_radar.opportunity_cache import install_opportunity_revision
 
 
 SPACE_RUN_HISTORY_LIMIT = 100
@@ -473,6 +474,7 @@ def init_db(*, connection_factory: Callable[[], Any] | None = None) -> None:
                 "WHERE last_status = 'changed' OR change_pending = 1"
             )
         migrate_future_radar(connection)
+        install_opportunity_revision(connection)
 
 
 def _ensure_column(

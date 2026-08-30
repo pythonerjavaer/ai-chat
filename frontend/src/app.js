@@ -131,6 +131,14 @@ const state = {
     opportunityStats: {},
     jobsRequestId: 0,
     jobsLoading: false,
+    jobsRequestQuery: "",
+    jobsRequestController: null,
+    jobsRequestPromise: null,
+    jobsAppliedQuery: "",
+    jobsAppliedTier: "ALL",
+    jobsAppliedPage: 1,
+    pollOpportunityController: null,
+    snapshotRequestId: 0,
     searchScope: {},
     searchCoverage: null,
     searchStatus: "pending",
@@ -614,14 +622,17 @@ function setupRotaryCompasses() {
 }
 
 async function api(path, options = {}) {
-  const { preserveAuthOn401 = false, ...requestOptions } = options;
+  const { preserveAuthOn401 = false, signal: externalSignal, timeoutMs = 15000, ...requestOptions } = options;
   const headers = new Headers(options.headers || {});
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
   const controller = new AbortController();
   const isRadarRequest = path.startsWith("/future-radar/") || path.startsWith("/recruitment/");
   if (isRadarRequest) FUTURE_RADAR_REQUEST_CONTROLLERS.add(controller);
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 15000);
+  const cancel = () => controller.abort(externalSignal.reason);
+  externalSignal?.addEventListener("abort", cancel, { once: true });
+  if (externalSignal?.aborted) cancel();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(API_BASE + path, { ...requestOptions, headers, signal: controller.signal });
     if (response.status === 401 && !preserveAuthOn401 && !path.startsWith("/auth/login")) await logout(false);
@@ -636,15 +647,19 @@ async function api(path, options = {}) {
     return response.status === 204 ? null : await response.json();
   } catch (error) {
     if (controller.signal.aborted && controller.signal.reason?.code === "AUTH_REQUIRED") throw controller.signal.reason;
+    // A superseded selection is cancellation, not a network timeout or a reason
+    // to replace the latest selection with an error from the previous request.
+    if (externalSignal?.aborted) throw externalSignal.reason || error;
     if (error.name === "AbortError") {
       const requestError = new Error("请求超时，请检查服务是否已启动或稍后重试。");
       requestError.code = "REQUEST_TIMEOUT";
-      requestError.timeoutMs = options.timeoutMs || 15000;
+      requestError.timeoutMs = timeoutMs;
       throw requestError;
     }
     throw error;
   } finally {
     if (isRadarRequest) FUTURE_RADAR_REQUEST_CONTROLLERS.delete(controller);
+    externalSignal?.removeEventListener("abort", cancel);
     clearTimeout(timeout);
   }
 }
@@ -853,9 +868,19 @@ function endFutureRadarSession(expired = false) {
   const error = new Error("登录状态已失效，请重新登录。");
   error.status = 401;
   error.code = "AUTH_REQUIRED";
+  state.futureRadar.jobsRequestController?.abort(error);
+  state.futureRadar.pollOpportunityController?.abort(error);
   FUTURE_RADAR_REQUEST_CONTROLLERS.forEach((controller) => controller.abort(error));
   FUTURE_RADAR_REQUEST_CONTROLLERS.clear();
   state.futureRadar.jobsRequestId += 1;
+  state.futureRadar.snapshotRequestId = (state.futureRadar.snapshotRequestId || 0) + 1;
+  state.futureRadar.jobsRequestController = null;
+  state.futureRadar.jobsRequestPromise = null;
+  state.futureRadar.pollOpportunityController = null;
+  state.futureRadar.jobsRequestQuery = "";
+  state.futureRadar.jobsAppliedQuery = "";
+  state.futureRadar.jobsAppliedTier = "ALL";
+  state.futureRadar.jobsAppliedPage = 1;
   state.futureRadar.jobsLoading = false;
   state.futureRadar.loading = false;
   state.futureRadar.polling = false;
@@ -2353,7 +2378,9 @@ function setRecruitmentStatus(message) {
 function renderFutureRadarOpportunityStatus() {
   const radar = state.futureRadar;
   const count = (value) => Math.max(0, Number(value) || 0).toLocaleString("zh-CN");
-  if (radar.jobsLoading) {
+  if (futureRadarSelectionIsPending()) {
+    setRecruitmentStatus(`正在读取${futureRadarTierLabel()}的全池筛选结果… 数量将随最新结果一起更新。`);
+  } else if (radar.jobsLoading) {
     setRecruitmentStatus(radar.jobsLoaded
       ? `正在刷新主机会池；上次成功读取 ${count(radar.totalJobs)} 个机会。`
       : "正在读取主机会池（含聊天 / 搜索待核验线索）…");
@@ -2870,13 +2897,18 @@ function renderFutureRadarOpportunityOverview() {
     makeElement("article", "pending", `聊天 / 搜索发现 ${count(counts.pending)}`),
     makeElement("article", "conflicted", `信息有差异 ${count(counts.conflicted)}`),
   );
-  if (!state.futureRadar.jobsLoaded) {
+  if (futureRadarSelectionIsPending()) {
+    elements.futureRadarOpportunitySummary?.replaceChildren(
+      makeElement("article", "pending", `正在筛选${futureRadarTierLabel()}…`),
+    );
+  } else if (!state.futureRadar.jobsLoaded) {
     elements.futureRadarOpportunitySummary?.replaceChildren(
       makeElement("article", "pending", state.futureRadar.jobsError ? "主机会池尚未加载，请重试" : "正在读取主机会池…"),
     );
   }
   if (elements.futureRadarOpportunityCount) {
-    elements.futureRadarOpportunityCount.textContent = state.futureRadar.jobsLoaded ? count(state.futureRadar.totalJobs) : "—";
+    elements.futureRadarOpportunityCount.textContent = state.futureRadar.jobsLoaded && !futureRadarSelectionIsPending()
+      ? count(state.futureRadar.totalJobs) : "—";
   }
   document.querySelectorAll(".recruitment-checks input").forEach((input) => {
     const label = input.closest("label");
@@ -3182,7 +3214,9 @@ function mergeFutureRadarEvents(incoming, payload = null) {
 function renderFutureRadarPagination() {
   if (!elements.futureRadarPagination) return;
   const totalPages = Math.max(1, Math.ceil(state.futureRadar.totalJobs / Math.max(1, state.futureRadar.pageSize)));
-  elements.futureRadarPageStatus.textContent = `第 ${state.futureRadar.page} / ${totalPages} 页 · 当前筛选 ${state.futureRadar.totalJobs.toLocaleString("zh-CN")} 个机会`;
+  elements.futureRadarPageStatus.textContent = futureRadarSelectionIsPending()
+    ? `正在读取${futureRadarTierLabel()}的全池结果…`
+    : `第 ${state.futureRadar.jobsError ? state.futureRadar.jobsAppliedPage || 1 : state.futureRadar.page} / ${totalPages} 页 · ${state.futureRadar.jobsError ? "上次成功快照" : "当前筛选"} ${state.futureRadar.totalJobs.toLocaleString("zh-CN")} 个机会`;
   elements.futureRadarPagePrev.disabled = state.futureRadar.jobsLoading || state.futureRadar.page <= 1;
   elements.futureRadarPageNext.disabled = state.futureRadar.jobsLoading || state.futureRadar.page >= totalPages;
   elements.futureRadarPagination.classList.toggle("hidden", state.futureRadar.totalJobs <= state.futureRadar.pageSize);
@@ -3197,11 +3231,13 @@ function recordFutureRadarOpportunityFailure(error) {
   return state.futureRadar.jobsError;
 }
 
-function applyFutureRadarJobsPayload(payload) {
+function applyFutureRadarJobsPayload(payload, query = futureRadarJobsQuery()) {
   const previousError = state.futureRadar.jobsError;
   state.futureRadar.jobs = radarCollection(payload, ["opportunities", "jobs"]);
   state.futureRadar.jobsLoaded = true;
   state.futureRadar.jobsError = "";
+  state.futureRadar.jobsAppliedQuery = query;
+  state.futureRadar.jobsAppliedTier = new URLSearchParams(query).get("tier_code") || "ALL";
   if (previousError && elements.futureRadarError?.textContent === previousError) {
     elements.futureRadarError.textContent = "";
     elements.futureRadarError.classList.add("hidden");
@@ -3212,6 +3248,7 @@ function applyFutureRadarJobsPayload(payload) {
   }
   state.futureRadar.totalJobs = radarNumber(payload, ["total"], state.futureRadar.jobs.length);
   state.futureRadar.page = radarNumber(payload, ["page"], state.futureRadar.page);
+  state.futureRadar.jobsAppliedPage = state.futureRadar.page;
   state.futureRadar.pageSize = radarNumber(payload, ["page_size"], state.futureRadar.pageSize);
   state.futureRadar.opportunityStats = payload.stats || {};
   state.futureRadar.searchScope = payload.scope || state.futureRadar.searchScope;
@@ -3225,8 +3262,31 @@ function futureRadarJobsQuery(page = state.futureRadar.page) {
   return buildFutureRadarJobsQuery({
     page,
     pageSize: state.futureRadar.pageSize,
-    filters: { ...state.futureRadar.filters, tier_code: state.recruitmentTierFilter === "ALL" ? "" : state.recruitmentTierFilter },
+    filters: { ...state.futureRadar.filters, compact: true, tier_code: state.recruitmentTierFilter === "ALL" ? "" : state.recruitmentTierFilter },
     categories: selectedRecruitmentStarfields(),
+  });
+}
+
+function futureRadarTierLabel(tier = state.recruitmentTierFilter) {
+  return tier === "ALL" ? "全部机会" : tier === "UNRANKED" ? "未评分机会" : tier === "BELOW_PRIORITY" ? "次级机会" : `${tier} 机会`;
+}
+
+function futureRadarSelectionIsPending() {
+  return state.futureRadar.jobsLoading
+    && state.futureRadar.jobsRequestQuery !== state.futureRadar.jobsAppliedQuery;
+}
+
+function waitForFutureRadarSelection(signal, delayMs) {
+  if (!delayMs || signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer;
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    timer = setTimeout(done, delayMs);
+    signal.addEventListener("abort", done, { once: true });
   });
 }
 
@@ -3279,39 +3339,69 @@ function resetFutureRadarFilters() {
   loadFutureRadarJobPage(1, true);
 }
 
-async function loadFutureRadarJobPage(page, force = false, { scroll = true } = {}) {
+async function loadFutureRadarJobPage(page, force = false, { scroll = true, delayMs = 0 } = {}) {
   if (!state.token) return false;
   const totalPages = Math.max(1, Math.ceil(state.futureRadar.totalJobs / Math.max(1, state.futureRadar.pageSize)));
   const requested = Math.max(1, Number(page) || 1);
   const nextPage = force ? requested : Math.min(totalPages, requested);
-  if (!force && (state.futureRadar.jobsLoading || nextPage === state.futureRadar.page)) return;
-  const requestId = ++state.futureRadar.jobsRequestId;
   const query = futureRadarJobsQuery(nextPage);
+  if (state.futureRadar.jobsLoading && state.futureRadar.jobsRequestQuery === query) {
+    return state.futureRadar.jobsRequestPromise || false;
+  }
+  if (!force && (state.futureRadar.jobsLoading || nextPage === state.futureRadar.page)) return false;
+  const requestId = ++state.futureRadar.jobsRequestId;
+  const superseded = Object.assign(new Error("筛选已切换。"), { code: "REQUEST_SUPERSEDED" });
+  state.futureRadar.jobsRequestController?.abort(superseded);
+  state.futureRadar.pollOpportunityController?.abort(superseded);
+  const controller = new AbortController();
+  state.futureRadar.jobsRequestController = controller;
+  state.futureRadar.jobsRequestQuery = query;
+  state.futureRadar.page = nextPage;
+  state.futureRadar.jobsError = "";
   state.futureRadar.jobsLoading = true;
   setFutureRadarLoading(true);
-  renderFutureRadarPagination();
-  try {
-    const payload = await api(`/future-radar/opportunities?${query}`, {
-      timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
-    });
-    if (requestId !== state.futureRadar.jobsRequestId) return;
-    applyFutureRadarJobsPayload(payload);
-    const displayJobs = futureRadarDisplayJobs(state.recruitmentJobs);
-    renderRecruitmentJobs(displayJobs);
-    renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(displayJobs));
-    if (scroll) elements.recruitmentJobs.scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (error) {
-    if (requestId === state.futureRadar.jobsRequestId) {
-      setFutureRadarLoading(false, recordFutureRadarOpportunityFailure(error));
-      renderFutureRadarOpportunityOverview();
-      renderRecruitmentJobs(state.futureRadar.jobs);
-    }
-  } finally {
-    if (requestId === state.futureRadar.jobsRequestId) {
-      state.futureRadar.jobsLoading = false;
-      setFutureRadarLoading(false, elements.futureRadarError?.textContent || "");
-    }
+  renderFutureRadarOpportunityOverview();
+  if (!state.futureRadar.jobsLoaded || futureRadarSelectionIsPending()) {
+    renderRecruitmentJobs(state.futureRadar.jobs);
   }
+  const current = () => requestId === state.futureRadar.jobsRequestId && !controller.signal.aborted;
+  // Assign the promise before starting the read, so even same-turn callers can
+  // share this request. No cached page is treated as the complete ranked pool.
+  const promise = Promise.resolve().then(async () => {
+    try {
+      await waitForFutureRadarSelection(controller.signal, delayMs);
+      if (!current()) return false;
+      const payload = await api(`/future-radar/opportunities?${query}`, {
+        timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
+        signal: controller.signal,
+      });
+      if (!current()) return false;
+      state.futureRadar.jobsLoading = false;
+      applyFutureRadarJobsPayload(payload, query);
+      const displayJobs = futureRadarDisplayJobs(state.recruitmentJobs);
+      renderRecruitmentJobs(displayJobs);
+      renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(displayJobs));
+      if (scroll) elements.recruitmentJobs.scrollIntoView({ behavior: "smooth", block: "start" });
+      return true;
+    } catch (error) {
+      if (current()) {
+        state.futureRadar.jobsLoading = false;
+        setFutureRadarLoading(false, recordFutureRadarOpportunityFailure(error));
+        renderFutureRadarOpportunityOverview();
+        renderRecruitmentJobs(state.futureRadar.jobs);
+      }
+      return false;
+    } finally {
+      if (requestId === state.futureRadar.jobsRequestId) {
+        state.futureRadar.jobsLoading = false;
+        state.futureRadar.jobsRequestController = null;
+        state.futureRadar.jobsRequestPromise = null;
+        setFutureRadarLoading(false, elements.futureRadarError?.textContent || "");
+      }
+    }
+  });
+  state.futureRadar.jobsRequestPromise = promise;
+  return promise;
 }
 
 function applyIncrementalRadarMetrics(events) {
@@ -3334,29 +3424,28 @@ function applyIncrementalRadarMetrics(events) {
 
 async function loadFutureRadarSnapshot() {
   if (!state.token) return false;
-  const jobsRequestId = ++state.futureRadar.jobsRequestId;
-  state.futureRadar.jobsLoading = true;
-  setFutureRadarLoading(true);
-  renderFutureRadarPagination();
+  const sessionToken = state.token;
+  const snapshotRequestId = (state.futureRadar.snapshotRequestId || 0) + 1;
+  state.futureRadar.snapshotRequestId = snapshotRequestId;
+  // Opportunity results render as soon as that read completes, independently
+  // of slower source/program/run metadata. It shares the filter request owner.
+  const jobs = loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false });
+  const jobsRequestId = state.futureRadar.jobsRequestId;
   const requests = [
     ["dashboard", api("/future-radar/dashboard")],
-    ["jobs", api(`/future-radar/opportunities?${futureRadarJobsQuery()}`, {
-      timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
-    })],
+    ["jobs", jobs],
     ["programs", api("/future-radar/programs")],
     ["events", api("/future-radar/events?limit=50")],
     ["sources", api("/future-radar/sources")],
     ["runs", api("/future-radar/runs")],
   ];
   const results = await Promise.allSettled(requests.map(([, request]) => request));
+  if (sessionToken !== state.token || snapshotRequestId !== state.futureRadar.snapshotRequestId) return false;
   const failures = [];
   results.forEach((result, index) => {
     const key = requests[index][0];
     if (result.status === "rejected") {
       failures.push(key);
-      if (key === "jobs" && jobsRequestId === state.futureRadar.jobsRequestId) {
-        recordFutureRadarOpportunityFailure(result.reason);
-      }
       return;
     }
     const payload = result.value;
@@ -3364,7 +3453,7 @@ async function loadFutureRadarSnapshot() {
       state.futureRadar.dashboard = payload;
       renderFutureRadarDashboard(payload);
     } else if (key === "jobs") {
-      if (jobsRequestId === state.futureRadar.jobsRequestId) applyFutureRadarJobsPayload(payload);
+      if (!payload) failures.push("jobs");
     } else if (key === "programs") {
       state.futureRadar.programs = radarCollection(payload, ["programs"]);
       syncFutureRadarProgramFilter();
@@ -3387,12 +3476,10 @@ async function loadFutureRadarSnapshot() {
   } else if (state.futureRadar.dashboard) {
     renderFutureRadarDashboard(state.futureRadar.dashboard);
   }
-  const displayJobs = futureRadarDisplayJobs(state.recruitmentJobs);
-  renderFutureRadarOpportunityOverview();
-  renderRecruitmentJobs(displayJobs);
-  renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(displayJobs));
+  // Never repaint a saved page under a newer in-flight T/category selection.
+  // loadFutureRadarJobPage alone owns opportunity success/failure rendering.
   if (jobsRequestId === state.futureRadar.jobsRequestId) {
-    state.futureRadar.jobsLoading = false;
+    renderFutureRadarOpportunityOverview();
     setFutureRadarLoading(false, state.futureRadar.jobsError || (failures.length ? `部分情报暂时不可用：${failures.join("、")}。现有数据已保留。` : ""));
   }
   return !failures.includes("jobs");
@@ -3400,6 +3487,9 @@ async function loadFutureRadarSnapshot() {
 
 async function pollFutureRadarEvents() {
   if (!state.token || state.futureRadar.polling || !elements.recruitmentDialog?.open || document.hidden) return;
+  const sessionToken = state.token;
+  const controller = state.futureRadar.jobsLoading ? null : new AbortController();
+  state.futureRadar.pollOpportunityController = controller;
   state.futureRadar.polling = true;
   try {
     const cursor = state.futureRadar.lastEventId;
@@ -3418,8 +3508,12 @@ async function pollFutureRadarEvents() {
         ? Promise.resolve(null)
         : api(`/future-radar/opportunities?${opportunityQuery}`, {
           timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
+          signal: controller.signal,
         }).catch((error) => { opportunityError = error; return null; }),
     ]);
+    if (sessionToken !== state.token || controller?.signal.aborted
+      || state.futureRadar.jobsRequestId !== jobsRequestId
+      || futureRadarJobsQuery() !== opportunityQuery) return;
     if (dashboard) renderFutureRadarDashboard(dashboard);
     // Navigation or filter changes made during polling always win over it.
     if (opportunityPayload && !state.futureRadar.jobsLoading
@@ -3429,7 +3523,7 @@ async function pollFutureRadarEvents() {
       const listChanged = !state.futureRadar.jobsLoaded || Boolean(state.futureRadar.jobsError)
         || JSON.stringify(incomingJobs) !== JSON.stringify(state.futureRadar.jobs)
         || JSON.stringify(opportunityPayload.stats || {}) !== JSON.stringify(state.futureRadar.opportunityStats);
-      applyFutureRadarJobsPayload(opportunityPayload);
+      applyFutureRadarJobsPayload(opportunityPayload, opportunityQuery);
       if (listChanged) {
         renderRecruitmentJobs(state.futureRadar.jobs);
         renderRecruitmentDeadlineAlerts(state.futureRadar.jobs);
@@ -3463,10 +3557,12 @@ async function pollFutureRadarEvents() {
       elements.futureRadarLiveState.replaceChildren(makeElement("i"), document.createTextNode("主机会池暂时无法刷新"));
     }
   } catch (error) {
+    if (sessionToken !== state.token || controller?.signal.aborted) return;
     elements.futureRadarLiveState.className = "radar-live-state warning";
     elements.futureRadarLiveState.replaceChildren(makeElement("i"), document.createTextNode("增量链路暂时离线"));
   } finally {
-    state.futureRadar.polling = false;
+    if (state.futureRadar.pollOpportunityController === controller) state.futureRadar.pollOpportunityController = null;
+    if (sessionToken === state.token) state.futureRadar.polling = false;
   }
 }
 
@@ -3760,13 +3856,19 @@ function recruitmentScoringFactors(job) {
 }
 
 function selectRecruitmentTier(tier) {
+  if (!["ALL", ...TIER_CODES, "UNRANKED", "BELOW_PRIORITY"].includes(tier)) return false;
+  if (state.recruitmentTierFilter === tier && !state.futureRadar.jobsError
+    && (state.futureRadar.jobsLoading || state.futureRadar.jobsLoaded)) {
+    return state.futureRadar.jobsRequestPromise || false;
+  }
   state.recruitmentTierFilter = tier;
   state.futureRadar.page = 1;
-  loadFutureRadarJobPage(1, true, { scroll: false });
+  return loadFutureRadarJobPage(1, true, { scroll: false, delayMs: 140 });
 }
 
 function renderRecruitmentJobs(jobs) {
   elements.recruitmentJobs.replaceChildren();
+  elements.recruitmentJobs.setAttribute("aria-busy", String(state.futureRadar.jobsLoading));
   if (!state.futureRadar.jobsLoaded) {
     const notice = makeElement("div", "empty-list");
     notice.append(
@@ -3783,11 +3885,14 @@ function renderRecruitmentJobs(jobs) {
     return;
   }
   const showingSavedSnapshot = Boolean(state.futureRadar.jobsError);
+  const selectedTier = showingSavedSnapshot
+    ? state.futureRadar.jobsAppliedTier || "ALL" : state.recruitmentTierFilter;
+  const pendingSelection = futureRadarSelectionIsPending();
   if (showingSavedSnapshot) {
     elements.recruitmentJobs.appendChild(makeElement("p", "radar-load-error", state.futureRadar.jobsError));
   }
   const sourceJobs = futureRadarDisplayJobs(jobs);
-  const starfieldJobs = showingSavedSnapshot ? sourceJobs : filterRecruitmentByStarfield(sourceJobs);
+  const starfieldJobs = showingSavedSnapshot || pendingSelection ? sourceJobs : filterRecruitmentByStarfield(sourceJobs);
   const { priorityJobs, belowPriorityJobs, invalidJobs } = partitionJobsByPriority(starfieldJobs);
   const availableJobs = [...priorityJobs, ...invalidJobs.map((job) => ({ ...job, tier_code: null }))];
   const globalTierCounts = state.futureRadar.opportunityStats?.tier_counts;
@@ -3806,14 +3911,14 @@ function renderRecruitmentJobs(jobs) {
   const allButton = makeElement("button", "job-tier-summary-item ALL", "");
   allButton.type = "button";
   allButton.dataset.tier = "ALL";
-  allButton.setAttribute("aria-pressed", String(state.recruitmentTierFilter === "ALL"));
-  allButton.classList.toggle("active", state.recruitmentTierFilter === "ALL");
+  allButton.setAttribute("aria-pressed", String(selectedTier === "ALL"));
+  allButton.classList.toggle("active", selectedTier === "ALL");
   allButton.append(
     makeElement("b", "", "全部"),
     makeElement("small", "", `${allCount} 个`),
   );
   allButton.addEventListener("click", () => {
-    selectRecruitmentTier("ALL");
+    return selectRecruitmentTier("ALL");
   });
   tierSummary.appendChild(allButton);
   tierDefinitions.forEach(([tier, label, range]) => {
@@ -3823,11 +3928,12 @@ function renderRecruitmentJobs(jobs) {
     button.type = "button";
     button.dataset.tier = tier;
     button.title = `${label}：综合分 ${range}`;
-    button.setAttribute("aria-pressed", String(state.recruitmentTierFilter === tier));
-    button.classList.toggle("active", state.recruitmentTierFilter === tier);
+    button.setAttribute("aria-pressed", String(selectedTier === tier));
+    button.setAttribute("aria-busy", String(state.futureRadar.jobsLoading && selectedTier === tier));
+    button.classList.toggle("active", selectedTier === tier);
     button.append(makeElement("b", "", tier), makeElement("small", "", `${label} · ${count}`));
     button.addEventListener("click", () => {
-      selectRecruitmentTier(tier);
+      return selectRecruitmentTier(tier);
     });
     tierSummary.appendChild(button);
   });
@@ -3836,30 +3942,41 @@ function renderRecruitmentJobs(jobs) {
   unrankedButton.type = "button";
   unrankedButton.dataset.tier = "UNRANKED";
   unrankedButton.title = "机会直接展示，现有信息不足时不强行归为 T3";
-  unrankedButton.setAttribute("aria-pressed", String(state.recruitmentTierFilter === "UNRANKED"));
-  unrankedButton.classList.toggle("active", state.recruitmentTierFilter === "UNRANKED");
+  unrankedButton.setAttribute("aria-pressed", String(selectedTier === "UNRANKED"));
+  unrankedButton.classList.toggle("active", selectedTier === "UNRANKED");
   unrankedButton.append(makeElement("b", "", "未评分"), makeElement("small", "", `${unrankedCount} 个`));
   unrankedButton.addEventListener("click", () => {
-    selectRecruitmentTier("UNRANKED");
+    return selectRecruitmentTier("UNRANKED");
   });
   tierSummary.appendChild(unrankedButton);
   elements.recruitmentJobs.appendChild(tierSummary);
+  if (pendingSelection) {
+    const loading = makeElement("div", "empty-list");
+    loading.setAttribute("role", "status");
+    loading.setAttribute("aria-live", "polite");
+    loading.append(
+      makeElement("strong", "", `正在筛选${futureRadarTierLabel()}…`),
+      makeElement("p", "", "正在读取整个机会池的对应结果，数量与列表将同时更新。可以继续切换其他级别。"),
+    );
+    elements.recruitmentJobs.appendChild(loading);
+    return;
+  }
   elements.recruitmentJobs.appendChild(
     makeElement("p", "job-tier-legend", `沿用岗位评价规则：T0 ≥90 · T0.5 85–89 · T1 80–84 · T1.5 75–79 · T2 70–74 · T2.5 65–69 · T3 60–64；信息不足列为“未评分”。上方数量统计全部符合当前检索条件的机会，选择 T 级会筛选整个池子，不限当前页${belowPriorityJobs.length ? `；本页 ${belowPriorityJobs.length} 个低于 60 分的机会保留在下方次级区` : ""}。`),
   );
-  const displayedJobs = showingSavedSnapshot || state.recruitmentTierFilter === "ALL"
+  const displayedJobs = showingSavedSnapshot || selectedTier === "ALL"
     ? availableJobs
-    : state.recruitmentTierFilter === "UNRANKED"
+    : selectedTier === "UNRANKED"
       ? availableJobs.filter((job) => jobTierBucket(job) === "UNRANKED")
-      : availableJobs.filter((job) => jobTierBucket(job) === state.recruitmentTierFilter);
-  const showBelowPriority = (showingSavedSnapshot || state.recruitmentTierFilter === "ALL") && belowPriorityJobs.length > 0;
+      : availableJobs.filter((job) => jobTierBucket(job) === selectedTier);
+  const showBelowPriority = (showingSavedSnapshot || ["ALL", "BELOW_PRIORITY"].includes(selectedTier)) && belowPriorityJobs.length > 0;
   const visibleCount = displayedJobs.length + (showBelowPriority ? belowPriorityJobs.length : 0);
   const matchingTotal = state.futureRadar.jobsLoaded ? state.futureRadar.totalJobs : starfieldJobs.length;
   elements.recruitmentJobs.appendChild(
     makeElement(
       "p",
       "job-tier-filter-result",
-      `本页显示 ${visibleCount} 条 · ${showingSavedSnapshot ? "上次成功快照" : "当前筛选"}共 ${matchingTotal} 个机会${showingSavedSnapshot || state.recruitmentTierFilter === "ALL" ? "" : ` · ${state.recruitmentTierFilter}`}`,
+      `本页显示 ${visibleCount} 条 · ${showingSavedSnapshot ? `上次成功快照（${futureRadarTierLabel(selectedTier)} · 原筛选条件）` : "当前筛选"}共 ${matchingTotal} 个机会${showingSavedSnapshot || selectedTier === "ALL" ? "" : ` · ${selectedTier}`}`,
     ),
   );
   if (!displayedJobs.length && !showBelowPriority) {
