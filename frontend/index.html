@@ -407,15 +407,20 @@
             <p id="future-radar-loading" class="radar-loading hidden" role="status">正在建立招聘情报星图…</p>
             <p id="future-radar-error" class="radar-load-error hidden" role="alert"></p>
             <nav class="radar-tabs" aria-label="未来雷达视图">
-              <button class="active" type="button" data-radar-tab="jobs" aria-selected="true">岗位雷达</button>
-              <button type="button" data-radar-tab="candidates" aria-selected="false">搜索更新池 <span id="future-radar-candidate-tab-count">0</span></button>
+              <button class="active" type="button" data-radar-tab="jobs" aria-selected="true">全部机会 <span id="future-radar-opportunity-count">0</span></button>
               <button type="button" data-radar-tab="programs" aria-selected="false">招聘项目</button>
               <button type="button" data-radar-tab="events" aria-selected="false">情报流</button>
               <button type="button" data-radar-tab="sources" aria-selected="false">信源健康</button>
               <button type="button" data-radar-tab="runs" aria-selected="false">扫描记录</button>
             </nav>
             <section class="radar-tab-panel" data-radar-panel="jobs">
-              <div class="recruitment-disclaimer">信号按方向、行业、城市与雇主坐标排序；公开事实与个性化 T 级分开呈现，请打开原始公告核对资格与时间窗。</div>
+              <header class="radar-candidate-heading">
+                <div><span class="overline">ONE OPPORTUNITY POOL</span><h3>机会池</h3><p>聊天线索、企业搜索发现与官网确认的机会汇聚于此；来源与日期依据随卡片保留，新增信号自动更新。</p></div>
+                <button id="future-radar-opportunity-refresh" type="button">刷新机会 ↻</button>
+              </header>
+              <div id="future-radar-opportunity-coverage" class="radar-candidate-coverage" aria-live="polite"></div>
+              <div id="future-radar-opportunity-summary" class="radar-candidate-summary" aria-live="polite"></div>
+              <div class="recruitment-disclaimer">T 级沿用公司与具体岗位的评价规则，不代表信息已被官网确认；聊天和搜索线索也直接显示，不必切换到另一个池子。</div>
               <form id="future-radar-filter-form" class="radar-filter-bar">
                 <label><span>搜索</span><input id="future-radar-filter-query" maxlength="160" placeholder="公司 / 岗位 / 要求" /></label>
                 <label><span>公司</span><input id="future-radar-filter-company" maxlength="160" placeholder="精确公司名" /></label>
@@ -424,7 +429,7 @@
                 <label><span>雇主类型</span><input id="future-radar-filter-employer-type" maxlength="80" placeholder="例如：大型科技企业" /></label>
                 <label><span>招聘项目</span><select id="future-radar-filter-program"><option value="">全部项目</option></select></label>
                 <label><span>状态</span><select id="future-radar-filter-status"><option value="open">开放</option><option value="all">全部</option><option value="closed">已关闭</option><option value="unknown">未知</option></select></label>
-                <label><span>核验</span><select id="future-radar-filter-verification"><option value="">仅官网已核验</option><option value="verified">已核验</option></select></label>
+                <label><span>信息依据</span><select id="future-radar-filter-verification"><option value="">全部机会</option><option value="verified">官网已确认</option><option value="pending">聊天 / 搜索发现</option><option value="conflicted">信息有差异</option></select></label>
                 <label><span>信源</span><select id="future-radar-filter-source"><option value="">全部信源</option></select></label>
                 <label><span>变化</span><select id="future-radar-filter-event"><option value="">全部变化</option><option value="NEW">NEW</option><option value="UPDATED">UPDATED</option><option value="VERIFIED">VERIFIED</option><option value="CLOSED">CLOSED</option><option value="REOPENED">REOPENED</option></select></label>
                 <label><span>排序</span><select id="future-radar-filter-sort"><option value="changed">最近变化</option><option value="closing">即将截止</option><option value="opening">开放日期</option><option value="first_seen">最新发现</option><option value="company">公司名称</option></select></label>
@@ -437,16 +442,6 @@
               <section id="recruitment-deadline-alerts" class="recruitment-deadline-alerts" aria-live="polite"></section>
               <div id="recruitment-jobs" class="recruitment-jobs"></div>
               <div id="future-radar-pagination" class="radar-pagination"><button id="future-radar-page-prev" type="button">← 上一页</button><span id="future-radar-page-status">第 1 页</span><button id="future-radar-page-next" type="button">下一页 →</button></div>
-            </section>
-            <section class="radar-tab-panel hidden" data-radar-panel="candidates">
-              <header class="radar-candidate-heading">
-                <div><span class="overline">DISCOVERY INBOX</span><h3>搜索更新池</h3><p>这里完整保留扫描新发现，与正式岗位池分开。标记“待官网核验”的信号尚未确认公司、岗位或时间窗，不参与 T 级排名和截止预警。</p></div>
-                <button id="future-radar-candidate-refresh" type="button">刷新更新池 ↻</button>
-              </header>
-              <div id="future-radar-candidate-coverage" class="radar-candidate-coverage" aria-live="polite"></div>
-              <div id="future-radar-candidate-summary" class="radar-candidate-summary" aria-live="polite"></div>
-              <div id="future-radar-candidates" class="radar-candidate-list"></div>
-              <div id="future-radar-candidate-pagination" class="radar-pagination"><button id="future-radar-candidate-page-prev" type="button">← 上一页</button><span id="future-radar-candidate-page-status">第 1 页</span><button id="future-radar-candidate-page-next" type="button">下一页 →</button></div>
             </section>
             <section class="radar-tab-panel hidden" data-radar-panel="programs"><div id="future-radar-programs" class="radar-entity-list"></div></section>
             <section class="radar-tab-panel hidden" data-radar-panel="events"><div id="future-radar-events" class="radar-event-feed" aria-live="polite"></div></section>

@@ -76,11 +76,13 @@ from .live_sources import (
     fetch_public_recruitment_sources,
     is_actionable_recruitment_listing,
     is_priority_campus_listing,
+    is_recruitment_program_listing,
 )
 from .config import settings
 from .future_radar.normalization import (
     PRIMARY_CATEGORY_CODES,
     canonicalize_url as canonicalize_radar_url,
+    normalized_key as radar_normalized_key,
 )
 from .future_radar.schemas import (
     FrostFireSyncV1,
@@ -856,7 +858,7 @@ def admin_usage(
 
 
 _PUBLIC_RADAR_ERROR_MESSAGES = {
-    "COMPANY_SEARCH_INCOMPLETE": "部分企业搜索未完成；已取得的发现保留在搜索更新池，详情见覆盖统计。",
+    "COMPANY_SEARCH_INCOMPLETE": "部分企业搜索未完成；已取得的发现保留在机会池，详情见覆盖统计。",
     "DISCOVERY_LIMITED": "该信源尚未配置可合法访问的公开入口。",
     "AI_CREDITS_EXHAUSTED": "AI 补漏额度暂不可用；确定性官网信源仍会继续扫描。",
     "AI_RATE_LIMITED": "AI 补漏当前受到频率限制；确定性官网信源仍会继续扫描。",
@@ -951,7 +953,8 @@ def _public_search_update(job: dict) -> dict:
         item[field] = _public_reference_url(item.get(field))
     for field in (
         "company", "title", "city", "region", "employer_type", "industry",
-        "description", "responsibilities", "requirements", "program_name",
+        "description", "responsibilities", "requirements", "program_name", "external_id",
+        "primary_category", "organization_category",
     ):
         if item.get(field):
             item[field] = _redact_public_text(str(item[field]), limit=2_000)
@@ -964,7 +967,7 @@ def _public_search_update(job: dict) -> dict:
     public_sources = []
     for source in list(job.get("sources") or []):
         public_sources.append({
-            "source_id": str(source.get("source_id") or "")[:64],
+            "source_id": _redact_public_text(str(source.get("source_id") or ""), limit=64),
             "name": _redact_public_text(str(source.get("name") or ""), limit=160),
             "source_type": str(source.get("source_type") or "")[:40],
             "trust_level": str(source.get("trust_level") or "")[:20],
@@ -1013,6 +1016,89 @@ def _validated_future_radar_categories(values: list[str]) -> list[str]:
             detail=f"Unknown Future Radar category: {sorted(unknown_categories)[0]}",
         )
     return sorted(selected_categories)
+
+
+def _radar_company_aliases() -> dict[str, str]:
+    return {
+        radar_normalized_key(alias): radar_normalized_key(target.canonical_name)
+        for target in build_employer_search_targets()
+        for alias in target.aliases
+    }
+
+
+def _public_radar_opportunity(job: dict, profile: dict) -> dict:
+    # Sanitize before scoring so derived labels cannot copy private transport
+    # fields. The existing role-level scoring rules are deliberately unchanged.
+    item = score_job(_public_search_update(job), profile)
+    program_listing = is_recruitment_program_listing(job)
+    item["listing_kind"] = "recruitment_program" if program_listing else "job"
+    item["is_specific_job"] = not program_listing
+    if program_listing:
+        # A company's broad campaign is useful to open/apply to, but scoring
+        # it as a concrete vacancy would manufacture a job-level T rating.
+        for field in (
+            "job_score", "match_score", "employer_score", "role_score",
+            "career_value_score", "job_condition_score", "tier_code",
+        ):
+            item[field] = None
+        item["score_breakdown"] = {key: None for key in item.get("score_breakdown", {})}
+        item["scoring_factors"] = {
+            key: {**value, "score": None, "contribution": None}
+            for key, value in item.get("scoring_factors", {}).items()
+        }
+        item["scoring_status"] = "unscored_program_listing"
+        item["positive_reasons"] = []
+        item["negative_reasons"] = ["这是企业招聘项目，尚未细分到具体岗位，暂不生成岗位 T 级"]
+        item["match_reasons"] = []
+        item["fit_tags"] = []
+        item["technical_hard"] = False
+        item["quant_barrier"] = False
+    item["employer_categories"] = sorted(semantic_employer_categories(item))
+    item["opportunity_kind"] = "verified" if item["officially_verified"] else "discovered"
+    item["available_in_main_pool"] = True
+    tier = item.get("tier_code")
+    item["tier_bucket"] = (
+        tier if tier in {definition["code"] for definition in TIER_DEFINITIONS}
+        else "BELOW_PRIORITY" if tier else "UNRANKED"
+    )
+    if item["review_state"] == "pending":
+        item["review_label"] = "搜索发现"
+    elif item["review_state"] == "conflicted":
+        item["review_label"] = "来源信息有差异"
+    return item
+
+
+def _radar_search_metadata() -> dict:
+    result: dict = {
+        "scope": {
+            "category_count": len(PERSONAL_MONITOR_POOLS),
+            "list_entry_count": sum(len(pool["employers"]) for pool in PERSONAL_MONITOR_POOLS),
+            "target_count": len(build_employer_search_targets()),
+            "batch_count": len(build_employer_search_batches()),
+        },
+        "coverage": None,
+    }
+    snapshot = future_radar_service.repository.latest_snapshot_metadata(
+        "openai-public-web-search"
+    )
+    if snapshot and snapshot["metadata"].get("coverage"):
+        coverage = snapshot["metadata"]["coverage"]
+        result["coverage"] = {
+            key: coverage.get(key, 0)
+            for key in (
+                "target_count", "searched_count", "failed_count",
+                "employers_with_candidates_count", "batch_count",
+                "failed_batch_count", "coverage_percent",
+            )
+        }
+        result["coverage"]["failed_employers"] = [
+            _redact_public_text(str(name), limit=160)
+            for name in coverage.get("failed_employers", [])
+        ]
+        result["coverage"]["completed_at"] = snapshot["fetched_at"]
+    search_source = future_radar_service.repository.get_source("openai-public-web-search")
+    result["search_status"] = (search_source or {}).get("status", "pending")
+    return result
 
 
 def _reject_secret_like_config(value: object, *, path: str = "config") -> None:
@@ -1074,38 +1160,11 @@ def future_radar_search_updates(
     result["items"] = candidates
     result["candidates"] = candidates
     result["stats"] = future_radar_service.repository.job_stats(filters=filters)
-    targets = build_employer_search_targets()
-    result["scope"] = {
-        "category_count": len(PERSONAL_MONITOR_POOLS),
-        "list_entry_count": sum(len(pool["employers"]) for pool in PERSONAL_MONITOR_POOLS),
-        "target_count": len(targets),
-        "batch_count": len(build_employer_search_batches()),
-    }
-    snapshot = future_radar_service.repository.latest_snapshot_metadata(
-        "openai-public-web-search"
-    )
-    result["coverage"] = None
-    if snapshot and snapshot["metadata"].get("coverage"):
-        coverage = snapshot["metadata"]["coverage"]
-        result["coverage"] = {
-            key: coverage.get(key, 0)
-            for key in (
-                "target_count", "searched_count", "failed_count",
-                "employers_with_candidates_count", "batch_count",
-                "failed_batch_count", "coverage_percent",
-            )
-        }
-        result["coverage"]["failed_employers"] = [
-            _redact_public_text(str(name), limit=160)
-            for name in coverage.get("failed_employers", [])
-        ]
-        result["coverage"]["completed_at"] = snapshot["fetched_at"]
-    search_source = future_radar_service.repository.get_source("openai-public-web-search")
-    result["search_status"] = (search_source or {}).get("status", "pending")
+    result.update(_radar_search_metadata())
     result["pool"] = "search_updates"
     result["notice"] = (
-        "待核验、冲突或未通过核验的记录只是搜索候选；"
-        "只有“已官网核验”记录才会进入正式岗位池。"
+        "搜索档案保留来源与核验状态；有有效公开链接的校招发现可直接在机会主池查看，"
+        "不必等待官网核验。已关闭、过期或被拒绝的记录不在主池展示。"
     )
     return result
 
@@ -1120,6 +1179,72 @@ def future_radar_search_update(job_id: str, user: User) -> dict:
     ):
         raise HTTPException(status_code=404, detail="Search update not found.")
     return _public_search_update(job)
+
+
+@app.get("/api/future-radar/opportunities")
+def future_radar_opportunities(
+    user: User,
+    page: int = Query(default=1, ge=1, le=100_000),
+    page_size: int = Query(default=50, ge=1, le=100),
+    status_filter: Literal["open", "closed", "unknown", "all"] = Query(default="open", alias="status"),
+    verification_status: Literal["pending", "verified", "conflicted", "rejected"] | None = None,
+    company: str | None = Query(default=None, max_length=160),
+    city: str | None = Query(default=None, max_length=160),
+    region: str | None = Query(default=None, max_length=160),
+    employer_type: str | None = Query(default=None, max_length=80),
+    industry: str | None = Query(default=None, max_length=120),
+    program_id: str | None = Query(default=None, max_length=180),
+    source_id: str | None = Query(default=None, max_length=64),
+    q: str | None = Query(default=None, max_length=160),
+    event_type: Literal["NEW", "UPDATED", "CLOSED", "REOPENED", "VERIFIED"] | None = None,
+    opening_before: date | None = None,
+    opening_after: date | None = None,
+    closing_before: date | None = None,
+    closing_after: date | None = None,
+    sort: Literal["changed", "closing", "opening", "first_seen", "company"] = "changed",
+    category: list[str] = Query(default=[]),
+    tier_code: Literal[
+        "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY"
+    ] | None = None,
+) -> dict:
+    """The default pool includes usable discoveries without a verification gate."""
+    filters = {
+        "status": status_filter, "verification_status": verification_status,
+        "company": company, "city": city, "region": region,
+        "employer_type": employer_type, "industry": industry,
+        "program_id": program_id, "source_id": source_id, "q": q,
+        "event_type": event_type,
+        "opening_before": opening_before.isoformat() if opening_before else None,
+        "opening_after": opening_after.isoformat() if opening_after else None,
+        "closing_before": closing_before.isoformat() if closing_before else None,
+        "closing_after": closing_after.isoformat() if closing_after else None,
+        "sort": sort, "active_only": status_filter == "open",
+        "primary_categories": _validated_future_radar_categories(category),
+        "tier_code": tier_code,
+    }
+    profile = database.get_recruitment_profile(user["id"])
+    result = future_radar_service.repository.list_opportunities(
+        page=page, page_size=page_size, filters=filters,
+        public_url=_public_reference_url,
+        prepare=lambda job: _public_radar_opportunity(job, profile),
+        company_aliases=_radar_company_aliases(),
+    )
+    result["jobs"] = result["items"]
+    result["opportunities"] = result["items"]
+    result["tier_definitions"] = list(TIER_DEFINITIONS)
+    result["pool"] = "opportunities"
+    result.update(_radar_search_metadata())
+    return result
+
+
+@app.get("/api/future-radar/opportunities/{job_id}")
+def future_radar_opportunity(job_id: str, user: User) -> dict:
+    job = future_radar_service.repository.get_opportunity(
+        job_id, public_url=_public_reference_url, company_aliases=_radar_company_aliases(),
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Radar opportunity not found.")
+    return _public_radar_opportunity(job, database.get_recruitment_profile(user["id"]))
 
 
 @app.get("/api/future-radar/jobs")
@@ -1979,9 +2104,19 @@ def refresh_recruitment(
 
 
 _TRACKING_QUERY_KEYS = {"fbclid", "gclid", "msclkid"}
+# These are job-level assertions, not the ordinary Campus / Experienced Hires
+# navigation links found together in many ATS page shells.
 _EXPLICIT_NON_CAMPUS_PAGE_PATTERN = re.compile(
-    r"(?:仅限社会招聘|社会招聘|社招岗位|\bexperienced\s+hires?\b|"
-    r"\bexperienced\s+professionals?\b)",
+    r"(?:仅限社会招聘|社招岗位|(?:本|该)(?:岗位|职位)(?:仅面向|仅招|仅限|属于|为)(?:社会招聘|社招)|"
+    r"onlyforexperienced(?:hires?|professionals?)|experienced(?:hires?|professionals?)only)",
+    re.IGNORECASE,
+)
+_EXPLICIT_OVERSEAS_LOCATION_PATTERN = re.compile(
+    r"新加坡|伦敦|纽约|悉尼|墨尔本|东京|大阪|首尔|巴黎|法兰克福|迪拜|多伦多|温哥华|"
+    r"美国|英国|澳大利亚|加拿大|日本|韩国|德国|法国|仅限海外|境外岗位|海外岗位|"
+    r"\b(?:singapore|london|new\s+york|sydney|melbourne|tokyo|osaka|seoul|paris|"
+    r"frankfurt|dubai|toronto|vancouver|united\s+states|united\s+kingdom|australia|"
+    r"canada|japan|germany|france|overseas\s+only)\b",
     re.IGNORECASE,
 )
 
@@ -2019,14 +2154,22 @@ def _verify_ingest_candidate(
 ) -> tuple[str, str | None, dict[str, str | None]]:
     verified_dates = {"opening_date": None, "closing_date": None}
     actionable = {
+        "company": candidate["company"],
         "title": candidate["title"],
+        "city": candidate.get("city", ""),
+        "official_url": candidate.get("canonical_url") or candidate.get("official_url"),
         "requirements": candidate.get("requirements", ""),
         "tags": candidate.get("tags", []),
     }
     if not is_actionable_recruitment_listing(actionable):
         return "rejected", "not_campus", verified_dates
-    location_text = f"{candidate['city']} {candidate['title']}"
-    if not any(marker in location_text for marker in CORE_LOCATION_MARKERS):
+    city = str(candidate.get("city") or "")
+    location_text = f"{city} {candidate['title']}"
+    location_confirmed = any(marker in location_text for marker in CORE_LOCATION_MARKERS)
+    if (
+        _EXPLICIT_OVERSEAS_LOCATION_PATTERN.search(city)
+        and not any(marker in city for marker in CORE_LOCATION_MARKERS)
+    ):
         return "rejected", "location_outside_scope", verified_dates
     try:
         page = fetch_watch_page(candidate["canonical_url"], (), timeout_seconds=5)
@@ -2051,10 +2194,14 @@ def _verify_ingest_candidate(
     )
     if evidence.closed:
         return "closed", "official_page_closed", verified_dates
-    if (
-        _EXPLICIT_NON_CAMPUS_PAGE_PATTERN.search(page_text)
-        and not evidence.cohort_confirmed
-    ):
+    page_identity = _normalized_identity(page_text)
+    title_identity = _normalized_identity(candidate["title"])
+    title_offset = page_identity.find(title_identity) if title_identity else -1
+    job_excerpt = (
+        page_identity[max(0, title_offset - 30):title_offset + len(title_identity) + 140]
+        if title_offset >= 0 else ""
+    )
+    if _EXPLICIT_NON_CAMPUS_PAGE_PATTERN.search(job_excerpt):
         return "rejected", "official_page_non_campus", verified_dates
     if not evidence.readable:
         return "pending", "official_page_unreadable", verified_dates
@@ -2068,6 +2215,10 @@ def _verify_ingest_candidate(
         return "pending", "page_missing_title_evidence", verified_dates
     if not evidence.open_confirmed:
         return "pending", "page_missing_open_application_evidence", verified_dates
+    if not location_confirmed:
+        # Missing/JS-rendered location is not evidence of an overseas job.
+        # Keep the discovery visible without asserting its location is verified.
+        return "pending", "location_unconfirmed", verified_dates
     for field, semantic in (
         ("opening_date", "opening"),
         ("closing_date", "closing"),

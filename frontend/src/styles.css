@@ -340,6 +340,7 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .recruitment-checks > span { flex-basis: 100%; color: #b7c3d1; font-weight: 600; }
 .recruitment-checks label { display: inline-flex; align-items: center; gap: 4px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.025); cursor: pointer; }
 .recruitment-checks input { accent-color: #68d7ff; }
+.radar-category-count { min-width: 1.5em; margin-left: 3px; padding: 1px 4px; border-radius: 5px; background: rgba(93,214,248,.1); color: #9fe5f7; font-variant-numeric: tabular-nums; text-align: center; }
 .monitor-heading { margin-top: 24px; }
 .recruitment-monitor-pools { display: grid; gap: 9px; padding-bottom: 18px; }
 .recruitment-monitor-card { padding: 11px 12px; border: 1px solid rgba(111,218,255,.14); border-radius: 11px; background: rgba(54,164,205,.045); }
@@ -611,6 +612,8 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .job-tier-reason-body .positive-reasons { color: #b8eada; }
 .job-tier-reason-body .negative-reasons { color: #d9bdac; }
 .job-tier-reason-body small { color: #839ba8; font-size: 8px; line-height: 1.45; }
+.job-opportunity-detail .job-tier-reason-body p { margin: 0; color: #b9cad7; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-height: 1.65; }
+.job-opportunity-detail .job-tier-reason-body a { width: fit-content; max-width: 100%; overflow-wrap: anywhere; }
 .job-card-bottom { margin-top: 13px; padding-top: 11px; border-top: 1px solid rgba(255,255,255,.07); color: #8196a7; font-size: 9px; }
 .job-card-bottom strong { color: #ffd28d; font-size: 10px; }
 .job-card-bottom a { color: #9edfff; font-size: 9px; }

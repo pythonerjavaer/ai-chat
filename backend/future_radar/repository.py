@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterator
+
+from ..live_sources import is_actionable_recruitment_listing, is_recruitment_program_listing
+from .normalization import clean_text, normalized_key
 
 
 JSON_SOURCE_FIELDS = ("adapter_config", "query_config", "region_config")
@@ -1241,6 +1245,249 @@ class RadarRepository:
             },
             "source_count": source_count,
         }
+
+    @staticmethod
+    def _campus_opportunity(job: dict[str, Any]) -> bool:
+        """Require campus meaning, not an official-page fetch or a known date."""
+        title = clean_text(job.get("title"))
+        recruitment_type = str(job.get("recruitment_type") or "").casefold()
+        if (
+            re.search(r"社会招聘|社招|experienced\s+hir|lateral\s+hir", title, re.I)
+            or recruitment_type in {"social", "experienced", "lateral"}
+        ):
+            return False
+        text = " ".join(str(job.get(field) or "") for field in (
+            "title", "description", "responsibilities", "requirements", "program_name",
+        )) + " " + " ".join(str(value) for value in job.get("tags", []))
+        if re.search(r"不(?:接受|面向|招收)应届|仅限社会招聘|非应届(?:生|毕业生)", text):
+            return False
+        if is_recruitment_program_listing(job):
+            return True
+        # Verified data already passed the existing source pipeline. New leads
+        # need affirmative campus evidence, but unknown deadlines are fine.
+        campus = bool(re.search(
+            r"校园招聘|校招|秋招|春招|应届|毕业生|20\d{2}\s*届|campus|graduate|early[ -]career",
+            text, re.I,
+        )) or recruitment_type in {"campus", "autumn", "spring", "early"}
+        if not campus and job.get("verification_status") != "verified":
+            return False
+        if recruitment_type == "internship" and not campus:
+            return False
+        if not is_actionable_recruitment_listing({**job, "requirements": text}):
+            return False
+        return bool(title and clean_text(job.get("company"))) and not bool(re.fullmatch(
+            r"(?:20\d{2}[年届]?)?\s*(?:校园招聘|校招|秋招|春招|招聘公告|招聘信息|招聘)",
+            title,
+        ))
+
+    @staticmethod
+    def _opportunity_identity(
+        job: dict[str, Any], company_aliases: dict[str, str],
+    ) -> tuple[str, str, str]:
+        company = normalized_key(job.get("company"))
+        company = company_aliases.get(company, company)
+        title = clean_text(job.get("title")).casefold()
+        title = re.sub(r"20\d{2}\s*(?:[年届])?", "", title)
+        title = re.sub(
+            r"(?:秋季|春季)?校园招聘|(?:秋季|春季)?校招|campus\s+(?:recruitment|hiring)",
+            "", title, flags=re.I,
+        )
+        role = normalized_key(title)
+        aliases = {company, normalized_key(job.get("company"))}
+        aliases.update(key for key, value in company_aliases.items() if value == company)
+        for alias in sorted(aliases, key=len, reverse=True):
+            if alias and role.startswith(alias) and len(role) > len(alias):
+                role = role[len(alias):]
+                break
+        # Never collapse distinct roles just because they share a campaign URL.
+        city = normalized_key(re.sub(r"市(?=$|[、,，/;；])", "", str(job.get("city") or "")))
+        return company, role, city
+
+    def _opportunity_rows(
+        self, *, filters: dict[str, Any], public_url: Callable[[Any], str | None],
+        company_aliases: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        # Resolve identity/status across all provenance before filtering. A
+        # source, date or verification filter must never hide an authoritative
+        # closed copy and resurrect the same opportunity's stale open lead.
+        query_filters = {**filters, "status": "all", "active_only": False, "source_id": None}
+        match_clause, match_params = self._job_filter_clause(query_filters)
+        clause = (
+            "j.verification_status IN ('verified','pending','conflicted')"
+            " AND (j.verification_status='verified' OR EXISTS ("
+            "SELECT 1 FROM job_sources os JOIN monitor_sources oms ON oms.id=os.source_id "
+            "WHERE os.job_id=j.id AND oms.trust_level='discovery'))"
+        )
+        order = {
+            "closing": "j.closing_date IS NULL, j.closing_date, j.last_changed_at DESC, j.id",
+            "opening": "j.opening_date IS NULL, j.opening_date DESC, j.last_changed_at DESC, j.id",
+            "first_seen": "j.first_seen_at DESC, j.id",
+            "company": "j.company COLLATE NOCASE, j.title COLLATE NOCASE, j.id",
+            "changed": "j.last_changed_at DESC, j.id",
+        }.get(filters.get("sort", "changed"), "j.last_changed_at DESC, j.id")
+        with self._connect() as connection:
+            matching_ids = {
+                row["id"] for row in connection.execute(
+                    f"SELECT j.id FROM radar_jobs j WHERE {match_clause}", match_params,
+                ).fetchall()
+            }
+            rows = connection.execute(
+                f"""
+                SELECT j.*, p.program_name, p.recruitment_year, p.recruitment_type,
+                    (SELECT e.event_type FROM radar_events e
+                     WHERE e.entity_type='job' AND e.entity_id=j.id
+                     ORDER BY e.id DESC LIMIT 1) AS latest_event_type,
+                    (SELECT e.detected_at FROM radar_events e
+                     WHERE e.entity_type='job' AND e.entity_id=j.id
+                     ORDER BY e.id DESC LIMIT 1) AS latest_event_at
+                FROM radar_jobs j LEFT JOIN recruitment_programs p ON p.id=j.program_id
+                WHERE {clause} ORDER BY {order}
+                """,
+            ).fetchall()
+            # One provenance query, not an extra query per scored job. Evidence
+            # and source adapter/query configs are deliberately never loaded.
+            source_rows = connection.execute(
+                f"""
+                SELECT js.job_id, js.source_id, ms.name, ms.source_type, ms.trust_level,
+                    js.source_url, js.verification_role, js.discovered_at, js.last_seen_at, js.active
+                FROM radar_jobs j JOIN job_sources js ON js.job_id=j.id
+                JOIN monitor_sources ms ON ms.id=js.source_id WHERE {clause}
+                ORDER BY js.verification_role DESC, js.source_id
+                """,
+            ).fetchall()
+        source_map: dict[str, list[dict[str, Any]]] = {}
+        for row in source_rows:
+            source = dict(row)
+            job_id = source.pop("job_id")
+            source["active"] = bool(source["active"])
+            source_map.setdefault(job_id, []).append(source)
+
+        groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for position, row in enumerate(rows):
+            job = self._decode_job(row)
+            if not self._campus_opportunity(job):
+                continue
+            application_url = public_url(job.get("application_url"))
+            official_url = public_url(job.get("official_url"))
+            if not application_url and not official_url:
+                continue
+            job["application_url"] = application_url or official_url
+            job["official_url"] = official_url
+            job["sources"] = source_map.get(job["id"], [])
+            job["_sort_position"] = position
+            year = job.get("recruitment_year")
+            if not year:
+                match = re.search(r"(?<!\d)(20\d{2})(?!\d)", str(job.get("title") or ""))
+                year = match.group(1) if match else None
+            job["_cohort"] = str(year or "")
+            groups.setdefault(self._opportunity_identity(job, company_aliases), []).append(job)
+
+        deduped = []
+        for group in groups.values():
+            known_years = {item["_cohort"] for item in group if item["_cohort"]}
+            cohorts: dict[str, list[dict[str, Any]]] = {}
+            for item in group:
+                # An unknown cohort can join one unambiguous campaign, but
+                # must not merge two explicitly different graduating classes.
+                cohort = item["_cohort"] or (next(iter(known_years)) if len(known_years) == 1 else "")
+                cohorts.setdefault(cohort, []).append(item)
+            for members in cohorts.values():
+                winner = max(members, key=lambda item: (
+                    item.get("verification_status") == "verified",
+                    str(item.get("last_changed_at") or ""),
+                    item.get("verification_status") == "pending",
+                    str(item["id"]),
+                ))
+                winner = dict(winner)
+                provenance = {}
+                for member in members:
+                    for source in member["sources"]:
+                        key = (source["source_id"], source.get("source_url"), source.get("verification_role"))
+                        provenance[key] = source
+                winner["sources"] = list(provenance.values())
+                winner["_member_ids"] = {member["id"] for member in members}
+                winner["_member_external_ids"] = {member["external_id"] for member in members}
+                if winner["id"] not in matching_ids:
+                    continue
+                if filters.get("source_id") and not any(
+                    source["source_id"] == filters["source_id"] for source in winner["sources"]
+                ):
+                    continue
+                status = filters.get("status", "open")
+                if status and status != "all" and winner.get("status") != status:
+                    continue
+                closing_date = str(winner.get("closing_date") or "")
+                if filters.get("active_only", status == "open") and (
+                    closing_date and closing_date <= date.today().isoformat()
+                ):
+                    continue
+                if status == "open" and not any(source["active"] for source in winner["sources"]):
+                    continue
+                deduped.append(winner)
+        return sorted(deduped, key=lambda item: item["_sort_position"])
+
+    def list_opportunities(
+        self, *, page: int = 1, page_size: int = 50, filters: dict[str, Any] | None = None,
+        public_url: Callable[[Any], str | None], prepare: Callable[[dict[str, Any]], dict[str, Any]],
+        company_aliases: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        filters = filters or {}
+        rows = self._opportunity_rows(
+            filters=filters, public_url=public_url, company_aliases=company_aliases or {},
+        )
+        # Scoring is profile dependent. Score the complete deduplicated match
+        # set before tier filtering/pagination, never only the first 50 rows.
+        items = [prepare(row) for row in rows]
+        tier_counts = {key: 0 for key in (
+            "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY",
+        )}
+        category_counts: dict[str, int] = {}
+        for item in items:
+            tier = item.get("tier_code")
+            bucket = tier if tier in tier_counts else "BELOW_PRIORITY" if tier else "UNRANKED"
+            item["tier_bucket"] = bucket
+            tier_counts[bucket] += 1
+            category = str(item.get("primary_category") or "uncategorized")
+            category_counts[category] = category_counts.get(category, 0) + 1
+        matching_total = len(items)
+        if filters.get("tier_code"):
+            items = [item for item in items if item["tier_bucket"] == filters["tier_code"]]
+        verification = {key: 0 for key in ("pending", "verified", "conflicted", "rejected")}
+        statuses = {key: 0 for key in ("open", "closed", "unknown")}
+        for item in items:
+            verification[str(item.get("verification_status") or "pending")] += 1
+            statuses[str(item.get("status") or "unknown")] += 1
+        offset = (page - 1) * page_size
+        return {
+            "items": items[offset:offset + page_size],
+            "total": len(items), "page": page, "page_size": page_size,
+            "stats": {
+                "total_opportunities": len(items), "matching_total": matching_total,
+                "verified_count": verification["verified"],
+                "discovered_count": verification["pending"] + verification["conflicted"],
+                "verification_status": verification, "job_status": statuses,
+                "tier_counts": tier_counts, "category_counts": category_counts,
+                "primary_category": category_counts,
+                "source_count": len({
+                    source["source_id"] for item in items for source in item.get("sources", [])
+                }),
+            },
+        }
+
+    def get_opportunity(
+        self, job_id: str, *, public_url: Callable[[Any], str | None],
+        company_aliases: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        for item in self._opportunity_rows(
+            # The list explicitly supports closed/unknown archive filters.
+            # Those results must remain inspectable without putting them back
+            # in the default open pool; rejected/private/non-campus stay out.
+            filters={"status": "all", "active_only": False}, public_url=public_url,
+            company_aliases=company_aliases or {},
+        ):
+            if job_id in item["_member_ids"] or job_id in item["_member_external_ids"]:
+                return item
+        return None
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:

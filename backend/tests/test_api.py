@@ -2577,7 +2577,7 @@ def test_web_search_rejects_pool_without_completed_tool_call():
         raise AssertionError("A response without completed web search was accepted")
 
 
-def test_web_search_rejects_uncited_structured_job(monkeypatch):
+def test_web_search_keeps_uncited_structured_job_as_unverified_lead(monkeypatch):
     target_year = date.today().year + (1 if date.today().month >= 6 else 0)
     pool = employer_only_pool(next(
         item for item in recruitment_search.PERSONAL_MONITOR_POOLS
@@ -2622,7 +2622,12 @@ def test_web_search_rejects_uncited_structured_job(monkeypatch):
         SimpleNamespace(responses=FakeResponses()), pool
     )
 
-    assert result.jobs == []
+    assert len(result.jobs) == 1
+    assert "搜索引用待确认" in result.jobs[0]["tags"]
+    assert "待官方核验" in result.jobs[0]["tags"]
+    assert "标题已验证" not in result.jobs[0]["tags"]
+    assert result.jobs[0]["opening_date"] is None
+    assert result.jobs[0]["closing_date"] is None
     assert result.tool_calls == 1
 
 

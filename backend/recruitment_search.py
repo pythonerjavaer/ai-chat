@@ -434,6 +434,7 @@ category 固定填写：{category}
 7. jobs 中的 target_id 必须对应该岗位的目标雇主。返回本次实际搜索发现的全部符合条件的岗位，不要只摘选四条；不同岗位可以共用同一个官方招聘项目链接。保留官方公司名称及分支机构名称，不要为了匹配简称改写雇主。
 8. 搜索完成不等于该企业所有岗位已被穷尽。不得声称已覆盖企业所有岗位；没有找到有效结果时如实返回空 jobs，不要猜测或补齐。
 9. title 保留原公告中的具体岗位名称，不自行拼接年份或“校园招聘”；requirements 中保留原文证实的适用毕业届别，不能依据今天的年份推断。
+10. “{target_year}届是否接收待确认”“如果原文面向{target_year}届才可投递”是条件或疑问，不是本届招聘证据，不能返回为当前开放岗位。只有旧届公告时如实返回无当前结果；原文只发布校招项目时保留项目原称，不自行虚构具体岗位。
 """.strip()
 
 
@@ -615,6 +616,7 @@ _OPEN_PAGE_PATTERN = re.compile(
 
 _CAMPUS_PAGE_PATTERN = re.compile(
     r"(?:校园招聘|校招|应届(?:生|毕业生)?|毕业生|管培生|提前批|"
+    r"(?:20\d{2}|\d{2})\s*届|"
     r"\bcampus\b|\bgraduate(?:s|\s+program(?:me)?)?\b)",
     re.IGNORECASE,
 )
@@ -847,14 +849,34 @@ def _inspect_official_candidate_page(job: dict[str, Any]) -> CandidatePageEviden
     )
 
 
-def _normalize_job(
+def _candidate_cohort_is_unconfirmed(text: str) -> bool:
+    """Do not mistake an instruction or an uncertain new-cohort claim for evidence."""
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    cohort = rf"(?:{target_year}|{str(target_year)[-2:]})\s*届?"
+    normalized = re.sub(r"\s+", "", text.casefold())
+    return bool(re.search(
+        rf"(?:{cohort}.{{0,14}}(?:是否(?:接收|接受|招收|面向)|尚不(?:确定|明确)|未(?:确认|明确)|待(?:核对|核实|确认))"
+        rf"|(?:未(?:明确|确认)|不(?:接受|接收|面向)|不含|排除|是否(?:接收|接受|招收|面向)).{{0,12}}{cohort}"
+        rf"|(?:若|如果|仅当|只有).{{0,24}}{cohort}.{{0,20}}(?:方可|才能|才可|时)"
+        rf"|原文为.{cohort}.{{0,30}}(?:方可|才可|才能))",
+        normalized,
+        re.IGNORECASE,
+    ))
+
+
+def _normalize_job_with_reason(
     item: dict[str, Any],
     pool: dict[str, Any] | None = None,
     target: EmployerSearchTarget | None = None,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, str]:
+    """Normalize public search fields and return a stable, non-sensitive decision."""
+    if not isinstance(item, dict):
+        return None, "invalid_candidate"
     company = str(item.get("company", "")).strip()[:120]
+    if not company:
+        return None, "company_missing"
     if target is not None and not _company_matches_target(company, target):
-        return None
+        return None, "company_alias_mismatch"
     if pool is None:
         pool = next(
             (
@@ -868,32 +890,49 @@ def _normalize_job(
             None,
         )
     if pool is None:
-        return None
+        return None, "employer_outside_scope"
     if target is None:
         pool_employers = {str(value).casefold() for value in pool.get("employers", [])}
         employer_key = _priority_employer(company, pool_employers)
         if not employer_key:
-            return None
+            return None, "employer_outside_scope"
     title = re.sub(r"\s+", " ", str(item.get("title", ""))).strip()[:240]
     needs_management_review = _needs_management_trainee_review(company, title)
     campus_text = f"{title} {item.get('requirements', '')}".lower()
-    if not title or not any(
-        marker in campus_text
-        for marker in ("校园", "校招", "应届", "毕业生", "graduate", "campus", "管培", "提前批")
-    ):
-        return None
+    if not title:
+        return None, "title_missing"
+    if re.search(r"实习|\bintern(?:ship)?\b", title, re.IGNORECASE):
+        return None, "explicit_internship"
+    if re.search(
+        r"(?:(?:仅限|只招|仅招|面向|限定)非应届(?:生|毕业生)?|仅限社会招聘|社招岗位|"
+        r"(?:本|该)(?:岗位|职位).{0,8}(?:社会招聘|社招)|"
+        r"不(?:接收|接受|招收|招录|面向)(?:本届|当前)?(?:应届|毕业生)|"
+        r"experienced\s+(?:hires?|professionals?)\s+only)",
+        campus_text,
+        re.IGNORECASE,
+    ) or re.search(r"(?:社会招聘|社招)", title):
+        return None, "explicit_non_campus"
+    if not _CAMPUS_PAGE_PATTERN.search(campus_text):
+        return None, "not_campus"
     if not _targets_current_graduate_cohort(campus_text):
-        return None
-    official_url = _safe_official_url(str(item.get("official_url", "")).strip())
+        return None, "wrong_or_missing_cohort"
+    if _candidate_cohort_is_unconfirmed(campus_text):
+        return None, "cohort_unconfirmed"
+    raw_url = str(item.get("official_url", "")).strip()
+    if not raw_url:
+        return None, "official_url_missing"
+    if not raw_url.casefold().startswith("https://"):
+        return None, "official_url_not_https"
+    official_url = _safe_official_url(raw_url)
     if not official_url:
-        return None
+        return None, "official_url_unsafe_or_discovery_host"
     closing_date = _date_or_none(item.get("closing_date"))
     opening_date = _date_or_none(item.get("opening_date"))
     today = date.today().isoformat()
     if closing_date and closing_date <= today:
-        return None
+        return None, "deadline_passed"
     if opening_date and opening_date > today:
-        return None
+        return None, "not_open_yet"
     category = EMPLOYER_TYPE_BY_POOL[pool["id"]]
     primary_category = str(pool.get("primary_category") or pool["id"])
     observed_at = datetime.now(timezone.utc).isoformat()
@@ -929,7 +968,15 @@ def _normalize_job(
         "historical_offers": None,
         "last_verified_at": observed_at,
         "status": "open",
-    }
+    }, "normalized"
+
+
+def _normalize_job(
+    item: dict[str, Any],
+    pool: dict[str, Any] | None = None,
+    target: EmployerSearchTarget | None = None,
+) -> dict[str, Any] | None:
+    return _normalize_job_with_reason(item, pool, target)[0]
 
 
 def _usage_value(response: Any, name: str) -> int:
@@ -991,6 +1038,38 @@ def _candidate_was_cited(candidate_url: str, source_urls: set[str]) -> bool:
         if candidate_host and candidate_host == (source_parts.hostname or "").casefold():
             return True
     return False
+
+
+def _inspect_normalized_search_candidate(
+    job: dict[str, Any], target: EmployerSearchTarget, *, cited: bool,
+) -> tuple[dict[str, Any] | None, str]:
+    """Shared deterministic verification for fresh searches and checkpoint replay."""
+    if cited:
+        job["_employer_aliases"] = list(target.aliases)
+        evidence = _inspect_official_candidate_page(job)
+        job.pop("_employer_aliases", None)
+    else:
+        # A university notice may lead to an ATS on a different host. This is
+        # still a discovery lead, not an authenticated official-page assertion.
+        job["tags"].append("搜索引用待确认")
+        evidence = CandidatePageEvidence(readable=False, title_confirmed=False)
+    if evidence.closed:
+        return None, "official_page_closed"
+    for field, semantic in (("opening_date", "opening"), ("closing_date", "closing")):
+        if not evidence.readable or not _semantic_date_appears_in_page(
+            evidence.page_text, job[field], semantic=semantic
+        ):
+            job[field] = None
+    if evidence.title_confirmed:
+        job["tags"].extend(["链接已验证", "标题已验证"])
+        job["tags"] = [tag for tag in job["tags"] if tag not in {"待官方核验", "待打开核对"}]
+        reason = "official_verified"
+    else:
+        job["tags"].append("链接可访问" if evidence.readable else "官方页暂不可读")
+        if "待官方核验" not in job["tags"]:
+            job["tags"].append("待官方核验")
+        reason = "citation_unconfirmed" if not cited else "official_pending"
+    return job, reason
 
 
 def _search_batch(
@@ -1074,46 +1153,16 @@ def _search_batch(
         job = _normalize_job(item, batch.pool, target)
         if not job:
             continue
-        if not _candidate_was_cited(job["url"], cited_source_urls):
-            continue
+        cited = _candidate_was_cited(job["url"], cited_source_urls)
         job_key = (
             job["company"].casefold(), job["title"].casefold(),
             job["city"].casefold(), job["url"],
         )
         if job_key in seen_jobs:
             continue
-        job["_employer_aliases"] = list(target.aliases)
-        evidence = _inspect_official_candidate_page(job)
-        job.pop("_employer_aliases", None)
-        if evidence.closed:
+        job, _ = _inspect_normalized_search_candidate(job, target, cited=cited)
+        if job is None:
             continue
-        job["opening_date"] = (
-            job["opening_date"]
-            if evidence.readable and _semantic_date_appears_in_page(
-                evidence.page_text, job["opening_date"], semantic="opening"
-            )
-            else None
-        )
-        job["closing_date"] = (
-            job["closing_date"]
-            if evidence.readable and _semantic_date_appears_in_page(
-                evidence.page_text, job["closing_date"], semantic="closing"
-            )
-            else None
-        )
-        if evidence.title_confirmed:
-            job["tags"].append("链接已验证")
-            job["tags"].append("标题已验证")
-            job["tags"] = [
-                tag for tag in job["tags"]
-                if tag not in {"待官方核验", "待打开核对"}
-            ]
-        else:
-            job["tags"].append(
-                "链接可访问" if evidence.readable else "官方页暂不可读"
-            )
-            if "待官方核验" not in job["tags"]:
-                job["tags"].append("待官方核验")
         seen_jobs.add(job_key)
         normalized.append(job)
         employers_with_candidates.add(target.canonical_name)

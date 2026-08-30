@@ -103,6 +103,14 @@ def test_pending_ingest_is_immediately_visible_in_new_pool_without_external_scan
     assert pool.status_code == 200
     assert pool.json()["total"] == 1
     assert pool.json()["items"][0]["verification_status"] == "pending"
+    main_pool = harness.client.get(
+        "/api/future-radar/opportunities", headers=harness.bearer
+    )
+    assert main_pool.status_code == 200
+    assert main_pool.json()["total"] == 1
+    assert main_pool.json()["items"][0]["verification_status"] == "pending"
+    assert main_pool.json()["items"][0]["available_in_main_pool"] is True
+    assert main_pool.json()["items"][0]["officially_verified"] is False
     assert harness.client.get(
         "/api/future-radar/jobs", headers=harness.bearer
     ).json()["total"] == 0

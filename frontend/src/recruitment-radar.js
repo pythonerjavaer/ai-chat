@@ -112,6 +112,7 @@ export function filterJobsByStarfields(jobs = [], selectedCategories = []) {
 }
 
 export function jobTierBucket(job = {}) {
+  if (job.listing_kind === "recruitment_program" || job.scoring_status === "unscored_program_listing") return "UNRANKED";
   if (job.tier_code == null) return "UNRANKED";
   if (TIER_CODES.includes(job.tier_code)) return job.tier_code;
   if (job.tier_code === "不建议投") return "BELOW_PRIORITY";
@@ -241,6 +242,58 @@ export function futureRadarCandidateVerification(candidate = {}) {
   if (["closed", "expired"].includes(raw)) return "closed";
   if (["conflicted", "conflict"].includes(raw)) return "conflicted";
   return "pending";
+}
+
+export function futureRadarOpportunitySource(job = {}) {
+  const verification = futureRadarCandidateVerification(job);
+  if (verification === "verified") {
+    return { label: "官网已确认", tone: "healthy", description: "该机会已由官方招聘来源确认；具体申请条件以原文为准。" };
+  }
+  const sourceValues = [job.source_id, job.source, job.source_name, job.discovery_source,
+    ...listValues(job.sources), ...listValues(job.discovered_by), ...listValues(job.discovery_sources)];
+  const names = sourceValues.map((source) => typeof source === "string"
+    ? source
+    : [source?.source_id, source?.id, source?.name, source?.source_name, source?.platform].filter(Boolean).join(" ")).join(" ");
+  const label = /chatgpt|chat[-_ ]?bridge|聊天|受控同步/i.test(names)
+    ? "聊天线索"
+    : /openai|search|搜索|发现|discovery/i.test(names) ? "搜索发现" : "公开线索";
+  return {
+    label,
+    tone: verification === "conflicted" ? "warning" : "pending",
+    description: verification === "conflicted"
+      ? "这条机会已进入主池；不同来源的关键信息有差异，日期与条件请对照原文。"
+      : "这条机会来自招聘线索，已直接进入主池；官网尚未确认全部岗位信息与日期。",
+  };
+}
+
+export function futureRadarPublicOpportunityUrl(job = {}) {
+  const sources = [...listValues(job.sources), ...listValues(job.discovered_by)];
+  const candidates = [job.application_url, job.official_url, job.source_url, job.candidate_url, job.url,
+    ...sources.map((source) => source?.source_url || source?.url)];
+  for (const value of candidates) {
+    if (typeof value !== "string" || !value) continue;
+    try {
+      const url = new URL(value);
+      const host = url.hostname.toLowerCase();
+      if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) continue;
+      if (!host.includes(".") || /^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)) continue;
+      if (host === "chatgpt.com" || host.endsWith(".chatgpt.com") || /[?&](token|api[_-]?key|password|authorization|cookie)=/i.test(url.search)) continue;
+      return url.href;
+    } catch { /* Ignore malformed source links; do not fabricate an endpoint. */ }
+  }
+  return "";
+}
+
+export function futureRadarOpportunityDateCopy(job = {}) {
+  const verified = futureRadarCandidateVerification(job) === "verified";
+  const dateValue = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : null;
+  const opening = dateValue(job.opening_date);
+  const closing = dateValue(job.closing_date);
+  return {
+    opening: opening ? `${verified ? "开放" : "来源标注开放"} ${opening}` : "开放日期未标注",
+    closing: closing ? `${verified ? "截止" : "来源标注截止"} ${closing}` : "截止日期未标注",
+    verified,
+  };
 }
 
 export function isDefaultFutureRadarJobsView(filters = {}) {
