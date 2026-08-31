@@ -589,6 +589,166 @@ class RadarRepository:
         return item
 
     @staticmethod
+    def find_jobs(connection: Any, external_ids: list[str]) -> dict[str, dict[str, Any]]:
+        if not external_ids:
+            return {}
+        rows = connection.execute(
+            "SELECT * FROM radar_jobs WHERE external_id IN (" + ",".join("?" for _ in external_ids) + ")",
+            external_ids,
+        ).fetchall()
+        result = {}
+        for row in rows:
+            item = dict(row)
+            for field in JSON_JOB_FIELDS:
+                item[field] = _decode_json(item.get(field), [])
+            result[item["external_id"]] = item
+        return result
+
+    @staticmethod
+    def new_job_record(
+        item: dict[str, Any], *, job_id: str, program_id: str | None,
+        source_id: str, now: str, existing: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """The exact persisted row shape; no raw adapter evidence in events."""
+        existing = existing or {}
+        row = {key: item.get(key, "") for key in (
+            "company", "title", "city", "region", "employer_type", "industry",
+            "primary_category", "organization_category", "description", "responsibilities", "requirements",
+        )}
+        row.update({key: item.get(key) for key in (
+            "official_url", "application_url", "opening_date", "closing_date",
+        )})
+        row.update({key: list(item.get(key) or []) for key in JSON_JOB_FIELDS})
+        row.update({
+            "id": job_id, "external_id": item["external_id"], "company_id": existing.get("company_id"),
+            "program_id": program_id, "source_id": source_id, "status": item.get("status", "open"),
+            "verification_status": item.get("verification_status", "pending"),
+            "confidence_score": item.get("confidence_score", 0), "content_hash": item["content_hash"],
+            "missing_successes": 0, "first_seen_at": existing.get("first_seen_at", now),
+            "last_seen_at": now, "last_changed_at": now,
+            "created_at": existing.get("created_at", now), "updated_at": now,
+        })
+        return row
+
+    @staticmethod
+    def flush_job_batch(
+        connection: Any, mutations: list[dict[str, Any]], *, source: dict[str, Any],
+        run_id: str, now: str,
+    ) -> None:
+        """Flush a bounded batch in pipeline-capable executemany calls.
+
+        The caller holds its short write transaction; row, event and source
+        linkage either all commit or all roll back. No network or per-row
+        SELECT is performed between these bulk writes.
+        """
+        from .normalization import stable_digest
+
+        changed = [mutation for mutation in mutations if mutation["kind"] != "touch"]
+        companies: dict[str, dict[str, Any]] = {}
+        for mutation in changed:
+            row = mutation["row"]
+            normalized = normalized_key(row["company"])
+            previous = companies.get(normalized, {})
+            companies[normalized] = {
+                "id": stable_digest(row["company"], prefix="company"),
+                "name": row["company"], "normalized": normalized,
+                "employer_type": row.get("employer_type") or previous.get("employer_type", ""),
+                "industry": row.get("industry") or previous.get("industry", ""),
+            }
+        if companies:
+            connection.executemany(
+                """
+                INSERT INTO radar_companies
+                    (id, external_id, name, normalized_name, employer_type, industry, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(normalized_name) DO UPDATE SET
+                    name=excluded.name,
+                    employer_type=CASE WHEN excluded.employer_type!='' THEN excluded.employer_type ELSE radar_companies.employer_type END,
+                    industry=CASE WHEN excluded.industry!='' THEN excluded.industry ELSE radar_companies.industry END,
+                    updated_at=excluded.updated_at
+                """,
+                [(company["id"], company["id"], company["name"], company["normalized"],
+                  company["employer_type"], company["industry"], now, now) for company in companies.values()],
+            )
+            company_ids = {
+                row["normalized_name"]: row["id"] for row in connection.execute(
+                    "SELECT id, normalized_name FROM radar_companies WHERE normalized_name IN ("
+                    + ",".join("?" for _ in companies) + ")", list(companies),
+                ).fetchall()
+            }
+            for mutation in changed:
+                mutation["row"]["company_id"] = company_ids[normalized_key(mutation["row"]["company"])]
+
+        insert_columns = (
+            "id", "external_id", "program_id", "company_id", "company", "title", "city", "region",
+            "employer_type", "industry", "primary_category", "organization_category", "industry_tags",
+            "role_tags", "official_url", "application_url", "opening_date", "closing_date", "status",
+            "verification_status", "confidence_score", "description", "responsibilities", "requirements",
+            "tags", "content_hash", "source_id", "missing_successes", "first_seen_at", "last_seen_at",
+            "last_changed_at", "created_at", "updated_at",
+        )
+        update_columns = tuple(key for key in insert_columns if key not in {"id", "external_id", "first_seen_at", "created_at"})
+
+        def values(row, columns):
+            return tuple(_json(row[key]) if key in JSON_JOB_FIELDS else row.get(key) for key in columns)
+
+        inserts = [values(mutation["row"], insert_columns) for mutation in mutations if mutation["kind"] == "insert"]
+        updates = [(*values(mutation["row"], update_columns), mutation["row"]["id"])
+                   for mutation in mutations if mutation["kind"] == "update"]
+        touches = [(now, now, mutation["row"]["id"]) for mutation in mutations if mutation["kind"] == "touch"]
+        if inserts:
+            connection.executemany(
+                "INSERT INTO radar_jobs (" + ",".join(insert_columns) + ") VALUES ("
+                + ",".join("?" for _ in insert_columns) + ")", inserts,
+            )
+        if updates:
+            connection.executemany(
+                "UPDATE radar_jobs SET " + ",".join(f"{key}=?" for key in update_columns) + " WHERE id=?", updates,
+            )
+        if touches:
+            connection.executemany(
+                "UPDATE radar_jobs SET last_seen_at=?, missing_successes=0, updated_at=? WHERE id=?", touches,
+            )
+        events = []
+        for mutation in mutations:
+            event = mutation["event"]
+            if not event:
+                continue
+            row = mutation["row"]
+            fields = mutation["fields"]
+            identity = f"{run_id}:job:{row['id']}:{event}:{','.join(fields)}"
+            events.append((
+                __import__("hashlib").sha256(identity.encode()).hexdigest(), run_id, "job", row["id"],
+                row["external_id"], event, _json(mutation["before"]) if mutation["before"] else None,
+                _json(row), _json(fields), now, source["id"],
+            ))
+        if events:
+            connection.executemany(
+                """INSERT OR IGNORE INTO radar_events
+                   (event_key, run_id, entity_type, entity_id, external_id, event_type,
+                    before_data, after_data, changed_fields, detected_at, source_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", events,
+            )
+        connection.executemany(
+            """
+            INSERT INTO job_sources
+                (job_id, source_id, source_url, discovered_at, last_seen_at, source_type,
+                 verification_role, evidence, active, missing_successes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+            ON CONFLICT(job_id, source_id) DO UPDATE SET
+                source_url=COALESCE(excluded.source_url, job_sources.source_url),
+                last_seen_at=excluded.last_seen_at, source_type=excluded.source_type,
+                verification_role=CASE WHEN excluded.verification_role='verification'
+                    THEN 'verification' ELSE job_sources.verification_role END,
+                evidence=CASE WHEN excluded.evidence!='[]' THEN excluded.evidence ELSE job_sources.evidence END,
+                active=1, missing_successes=0
+            """,
+            [(mutation["row"]["id"], source["id"], mutation["source_url"], now, now,
+              source["source_type"], mutation["verification_role"], _json(mutation["evidence"]))
+             for mutation in mutations],
+        )
+
+    @staticmethod
     def insert_program(connection: sqlite3.Connection, item: dict[str, Any], *,
                        source_id: str, now: str) -> dict[str, Any]:
         program_id = str(uuid.uuid4())
@@ -885,57 +1045,111 @@ class RadarRepository:
         ).fetchall()
         return [str(row["job_id"]) for row in rows]
 
+    def missing_entity_ids(self, kind: str, source_id: str, seen: set[str]) -> list[str]:
+        table, field = {"job": ("job_sources", "job_id"), "program": ("program_sources", "program_id")}[kind]
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT {field} FROM {table} WHERE source_id=? AND active=1", (source_id,),
+            ).fetchall()
+        return sorted(str(row[field]) for row in rows if str(row[field]) not in seen)
+
+    @staticmethod
+    def retire_job_source_ids(
+        connection: Any, *, source_id: str, job_ids: list[str], run_id: str, now: str,
+    ) -> int:
+        if not job_ids:
+            return 0
+        placeholders = ",".join("?" for _ in job_ids)
+        connection.execute(
+            f"UPDATE job_sources SET active=0 WHERE source_id=? AND job_id IN ({placeholders})",
+            [source_id, *job_ids],
+        )
+        # Another active source, especially an official one, protects the row.
+        # Closing a discovery source is not authority to close that other feed.
+        jobs = connection.execute(
+            f"SELECT j.* FROM radar_jobs j WHERE j.id IN ({placeholders}) AND j.status!='closed' "
+            "AND NOT EXISTS (SELECT 1 FROM job_sources js WHERE js.job_id=j.id AND js.active=1)",
+            job_ids,
+        ).fetchall()
+        if not jobs:
+            return 0
+        connection.executemany(
+            "UPDATE radar_jobs SET status='closed', last_changed_at=?, updated_at=? WHERE id=?",
+            [(now, now, row["id"]) for row in jobs],
+        )
+        events = []
+        for raw in jobs:
+            before = dict(raw)
+            after = {**before, "status": "closed", "last_changed_at": now, "updated_at": now}
+            identity = f"{run_id}:job:{before['id']}:CLOSED:status"
+            events.append((
+                __import__("hashlib").sha256(identity.encode()).hexdigest(), run_id, "job", before["id"],
+                before["external_id"], "CLOSED", _json(before), _json(after), _json(["status"]), now, source_id,
+            ))
+        connection.executemany(
+            """INSERT OR IGNORE INTO radar_events
+               (event_key, run_id, entity_type, entity_id, external_id, event_type,
+                before_data, after_data, changed_fields, detected_at, source_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", events,
+        )
+        return len(jobs)
+
+    @staticmethod
+    def retire_source_observations(
+        connection: Any, *, source_id: str, external_ids: list[str], run_id: str, now: str,
+    ) -> int:
+        if not external_ids:
+            return 0
+        rows = connection.execute(
+            "SELECT j.id FROM radar_jobs j JOIN job_sources js ON js.job_id=j.id "
+            "WHERE js.source_id=? AND js.active=1 AND j.external_id IN ("
+            + ",".join("?" for _ in external_ids) + ")", [source_id, *external_ids],
+        ).fetchall()
+        return RadarRepository.retire_job_source_ids(
+            connection, source_id=source_id, job_ids=[row["id"] for row in rows], run_id=run_id, now=now,
+        )
+
     @staticmethod
     def process_missing_jobs(connection: sqlite3.Connection, *, source: dict[str, Any],
                              seen_job_ids: set[str], threshold: int, run_id: str,
-                             now: str) -> int:
-        closed = 0
+                             now: str, only_ids: list[str] | None = None) -> int:
+        if only_ids == []:
+            return 0
+        clause, parameters = "", [source["id"]]
+        if only_ids is not None:
+            clause = " AND job_id IN (" + ",".join("?" for _ in only_ids) + ")"
+            parameters.extend(only_ids)
         rows = connection.execute(
-            "SELECT job_id, missing_successes FROM job_sources WHERE source_id=? AND active=1",
-            (source["id"],),
+            "SELECT job_id, missing_successes FROM job_sources WHERE source_id=? AND active=1" + clause,
+            parameters,
         ).fetchall()
-        for row in rows:
-            job_id = str(row["job_id"])
-            if job_id in seen_job_ids:
-                continue
-            missing = int(row["missing_successes"]) + 1
-            connection.execute(
-                "UPDATE job_sources SET missing_successes=? WHERE job_id=? AND source_id=?",
-                (missing, job_id, source["id"]),
-            )
-            if missing < threshold:
-                continue
-            connection.execute(
-                "UPDATE job_sources SET active=0 WHERE job_id=? AND source_id=?",
-                (job_id, source["id"]),
-            )
-            remaining = int(connection.execute(
-                "SELECT COUNT(*) FROM job_sources WHERE job_id=? AND active=1", (job_id,)
-            ).fetchone()[0])
-            job = _row(connection.execute("SELECT * FROM radar_jobs WHERE id=?", (job_id,)).fetchone())
-            if remaining == 0 and job and job["status"] != "closed":
-                before = dict(job)
-                connection.execute(
-                    "UPDATE radar_jobs SET status='closed', last_changed_at=?, updated_at=? WHERE id=?",
-                    (now, now, job_id),
-                )
-                after = {**before, "status": "closed", "last_changed_at": now, "updated_at": now}
-                RadarRepository.insert_event(
-                    connection, run_id=run_id, entity_type="job", entity_id=job_id,
-                    external_id=job["external_id"], event_type="CLOSED", before=before,
-                    after=after, fields=["status"], source_id=source["id"], now=now,
-                )
-                closed += 1
-        return closed
+        missing = [(str(row["job_id"]), int(row["missing_successes"]) + 1)
+                   for row in rows if str(row["job_id"]) not in seen_job_ids]
+        if not missing:
+            return 0
+        connection.executemany(
+            "UPDATE job_sources SET missing_successes=? WHERE job_id=? AND source_id=?",
+            [(count, job_id, source["id"]) for job_id, count in missing],
+        )
+        retired = [job_id for job_id, count in missing if count >= threshold]
+        return RadarRepository.retire_job_source_ids(
+            connection, source_id=source["id"], job_ids=retired, run_id=run_id, now=now,
+        )
 
     @staticmethod
     def process_missing_programs(connection: sqlite3.Connection, *, source: dict[str, Any],
                                  seen_program_ids: set[str], threshold: int, run_id: str,
-                                 now: str) -> int:
+                                 now: str, only_ids: list[str] | None = None) -> int:
         closed = 0
+        if only_ids == []:
+            return closed
+        clause, parameters = "", [source["id"]]
+        if only_ids is not None:
+            clause = " AND program_id IN (" + ",".join("?" for _ in only_ids) + ")"
+            parameters.extend(only_ids)
         rows = connection.execute(
-            "SELECT program_id, missing_successes FROM program_sources WHERE source_id=? AND active=1",
-            (source["id"],),
+            "SELECT program_id, missing_successes FROM program_sources WHERE source_id=? AND active=1" + clause,
+            parameters,
         ).fetchall()
         for row in rows:
             program_id = str(row["program_id"])

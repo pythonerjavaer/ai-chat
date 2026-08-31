@@ -161,6 +161,9 @@ class AdapterResult:
     # while an exact row whose official page contains the claimed title can be
     # promoted by the service.
     verified_job_external_ids: set[str] = field(default_factory=set)
+    # Explicit source withdrawals, not jobs merely absent from a partial page.
+    # Scoped legacy ingest uses these to retire only its own provenance link.
+    retired_job_external_ids: set[str] = field(default_factory=set)
 
 
 class SourceAdapter(Protocol):
@@ -761,21 +764,41 @@ class LegacyDiscoveryDatabaseAdapter:
         }
 
     def scan(self, source: dict[str, Any]) -> AdapterResult:
-        del source
-        with database.connect() as connection:
-            legacy_rows = connection.execute(
-                """
-                SELECT id, company, employer_type, title, city, industry, url,
-                       opening_date, closing_date, requirements, tags, status,
-                       last_verified_at
-                FROM recruitment_jobs
-                WHERE source=? OR tags LIKE '%AI网页搜索%'
-                ORDER BY id
-                """,
-                (WEB_SEARCH_SOURCE,),
-            ).fetchall()
-            ingest_rows = connection.execute(
-                """
+        config = source.get("adapter_config") or {}
+        scoped = "candidate_ids" in config
+        candidate_ids: list[str] = []
+        if scoped:
+            raw_ids = config["candidate_ids"]
+            # Internal transport hint, never a query supplied by a source.
+            # An empty/invalid scope must not silently become a full-pool scan.
+            if (
+                not isinstance(raw_ids, list)
+                or len(raw_ids) > 10
+                or any(
+                    not isinstance(value, str)
+                    or not re.fullmatch(r"candidate-[0-9a-f]{32}", value)
+                    for value in raw_ids
+                )
+            ):
+                raise ValueError("candidate_ids must contain at most 10 internal candidate IDs.")
+            candidate_ids = list(dict.fromkeys(raw_ids))
+        legacy_rows = []
+        ingest_rows = []
+        if not scoped or candidate_ids:
+            with database.connect() as connection:
+                if not scoped:
+                    legacy_rows = connection.execute(
+                        """
+                        SELECT id, company, employer_type, title, city, industry, url,
+                               opening_date, closing_date, requirements, tags, status,
+                               last_verified_at
+                        FROM recruitment_jobs
+                        WHERE source=? OR tags LIKE '%AI网页搜索%'
+                        ORDER BY id
+                        """,
+                        (WEB_SEARCH_SOURCE,),
+                    ).fetchall()
+                ingest_query = """
                 SELECT id, dedupe_key, external_id, promoted_job_id,
                        CASE WHEN source_id IN (
                            'chatgpt-radar-01', 'chatgpt-radar-02', 'chatgpt-radar-03',
@@ -785,11 +808,16 @@ class LegacyDiscoveryDatabaseAdapter:
                        official_url, canonical_url, opening_date, closing_date,
                        requirements, tags, incoming_status AS status,
                        verification_status, source_updated_at, last_seen_at
-                FROM recruitment_ingest_candidates ORDER BY id
+                FROM recruitment_ingest_candidates
                 """
-            ).fetchall()
+                if scoped:
+                    placeholders = ",".join("?" for _ in candidate_ids)
+                    ingest_query += f" WHERE id IN ({placeholders})"
+                ingest_query += " ORDER BY id"
+                ingest_rows = connection.execute(ingest_query, tuple(candidate_ids)).fetchall()
 
         jobs_by_id: dict[str, dict[str, Any]] = {}
+        retired_job_external_ids: set[str] = set()
         cursors: list[str] = []
         for rows, is_ingest in ((legacy_rows, False), (ingest_rows, True)):
             for row in rows:
@@ -798,11 +826,20 @@ class LegacyDiscoveryDatabaseAdapter:
                     self._ingest_external_id(item)
                     if is_ingest else self._safe_external_id(item["id"])
                 )
-                job = self._job(item, external_id=external_id)
+                deadline = normalize_date(item.get("closing_date"))
+                explicitly_retired = scoped and is_ingest and (
+                    item.get("status") == "closed"
+                    or item.get("verification_status") in {"closed", "rejected"}
+                    or bool(deadline and deadline <= date.today().isoformat())
+                )
+                job = None if explicitly_retired else self._job(item, external_id=external_id)
                 if job:
                     jobs_by_id[external_id] = job
+                    retired_job_external_ids.discard(external_id)
                 elif is_ingest:
                     jobs_by_id.pop(external_id, None)
+                    if explicitly_retired:
+                        retired_job_external_ids.add(external_id)
                 for field in ("source_updated_at", "last_seen_at", "last_verified_at"):
                     try:
                         timestamp = datetime.fromisoformat(str(item.get(field) or "").replace("Z", "+00:00"))
@@ -823,10 +860,11 @@ class LegacyDiscoveryDatabaseAdapter:
                 "candidate_count": len(jobs),
                 "observed_cursor": max(cursors, default=None),
             }, ensure_ascii=False, sort_keys=True),
-            # Unlike a rolling web response, this is a complete read of the
-            # persisted local pool.  Removed/closed rows can retire this source
-            # link; another active official source still protects its job.
-            snapshot_complete=True,
+            # Only a normal, unscoped Quick Scan reads the complete local pool.
+            # An ingest bridge processes this batch only: missing older rows
+            # are not evidence of closure and must retain their source links.
+            snapshot_complete=not scoped,
+            retired_job_external_ids=retired_job_external_ids,
         )
 
 

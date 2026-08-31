@@ -2561,6 +2561,7 @@ def ingest_recruitment_jobs(
     }
     skipped: list[dict] = []
     source_groups: dict[str, dict] = {}
+    bridge_candidate_ids: list[str] = []
     expected_titles = {
         source["source_id"]: source["title"]
         for source in EXPECTED_CHATGPT_RADAR_SOURCES
@@ -2606,6 +2607,10 @@ def ingest_recruitment_jobs(
         )
 
         stored = database.upsert_recruitment_ingest_candidate(candidate)
+        # Include replays/stale/closed/rejected observations as well as new
+        # rows. The bridge reads their committed state without rescanning the
+        # entire historical pool for every ten-item ingest batch.
+        bridge_candidate_ids.append(stored["id"])
         disposition = stored.pop("disposition")
         if disposition == "stale":
             totals["duplicates"] += 1
@@ -2740,6 +2745,7 @@ def ingest_recruitment_jobs(
                 trigger_type="ingest_bridge",
                 scan_type="quick",
                 source_ids=["legacy-search-discovery"],
+                bridge_candidate_ids=list(dict.fromkeys(bridge_candidate_ids)),
             )
             search_updates_refresh = (
                 {"status": "success"}
