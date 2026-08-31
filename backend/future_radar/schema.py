@@ -15,10 +15,12 @@ from .normalization import (
     SEMANTIC_JOB_FIELDS, infer_primary_category_from_metadata, semantic_hash,
     telecom_primary_category,
 )
+from ..recruitment_directory import employer_category_override
 
 
 logger = logging.getLogger(__name__)
 OPERATOR_CATEGORY_MIGRATION = "future_radar_v3_operator_categories"
+EMPLOYER_CATEGORY_MIGRATION = "future_radar_v4_employer_directory_categories"
 
 
 def migrate(connection: sqlite3.Connection) -> None:
@@ -315,6 +317,9 @@ def migrate(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "radar_jobs", "role_tags", "TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(connection, "radar_jobs", "description", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(connection, "radar_jobs", "responsibilities", "TEXT NOT NULL DEFAULT ''")
+    # Run the versioned repair before the older metadata-only backfill, so a
+    # repaired empty category always receives its matching semantic hash too.
+    _backfill_employer_categories(connection)
     _backfill_primary_categories(connection)
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_radar_jobs_primary_category "
@@ -413,3 +418,41 @@ def _backfill_operator_categories(connection: sqlite3.Connection) -> None:
         (OPERATOR_CATEGORY_MIGRATION,),
     )
     logger.info("Future Radar operator category migration updated_count=%s", len(updates))
+
+
+def _backfill_employer_categories(connection: sqlite3.Connection) -> None:
+    """Repair real indexed categories without rewriting public recruiting facts.
+
+    Existing source links, verification, statuses, dates, employing entities,
+    IDs and timestamps are untouched. Revision triggers invalidate worker
+    caches in this same transaction. Re-running startup does not repeat work.
+    """
+    if connection.execute(
+        "SELECT version FROM schema_migrations WHERE version=?", (EMPLOYER_CATEGORY_MIGRATION,)
+    ).fetchone():
+        return
+    updates = []
+    for row in connection.execute("SELECT * FROM radar_jobs").fetchall():
+        item = dict(row)
+        for key in ("tags", "industry_tags", "role_tags"):
+            try:
+                item[key] = json.loads(item[key]) if isinstance(item.get(key), str) else item.get(key)
+            except (TypeError, ValueError):
+                item[key] = []
+        category = (telecom_primary_category(item.get("company"))
+                    or employer_category_override(item)
+                    or item.get("primary_category")
+                    or infer_primary_category_from_metadata(item))
+        if not category or category == (item.get("primary_category") or ""):
+            continue
+        item["primary_category"] = category
+        updates.append((category, semantic_hash(item, SEMANTIC_JOB_FIELDS), item["id"]))
+    if updates:
+        connection.executemany(
+            "UPDATE radar_jobs SET primary_category=?, content_hash=? WHERE id=?", updates,
+        )
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, datetime('now'))",
+        (EMPLOYER_CATEGORY_MIGRATION,),
+    )
+    logger.info("Future Radar employer category migration updated_count=%s", len(updates))

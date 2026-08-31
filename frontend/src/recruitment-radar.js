@@ -2,7 +2,7 @@ export const STARFIELD_DEFINITIONS = Object.freeze([
   { code: "state_energy_resources", label: "央企能源/资源" },
   { code: "state_tech_telecom", label: "央企科技/通信" },
   { code: "tobacco_monopoly", label: "烟草/专卖体系" },
-  { code: "policy_state_banks", label: "政策行/国有大行" },
+  { code: "policy_state_banks", label: "银行与政策性金融" },
   { code: "securities_public_funds_asset_management", label: "券商/公募/资管" },
   { code: "insurance_integrated_finance", label: "保险/综合金融" },
   { code: "internet_tech", label: "互联网大厂/中厂" },

@@ -12,6 +12,7 @@ from openai import OpenAI
 
 from .config import settings
 from .live_sources import PERSONAL_MONITOR_POOLS, PRIORITY_EMPLOYERS
+from .recruitment_directory import EMPLOYER_ALIAS_GROUPS
 from .future_radar.public_discovery import (
     OfficialDiscoveryCancelled, check_discovery_cancellation, discover_official_job_pages,
 )
@@ -134,46 +135,6 @@ MANAGEMENT_TRAINEE_REVIEW_EMPLOYERS = {
 # ``中国电子`` and ``中国电子科技集团`` are different employers even though one
 # name contains the other.  These groups collapse only obvious bilingual,
 # brand, or legal-name duplicates already present in the left-hand scope.
-EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
-    "国家烟草专卖局": ("中国烟草总公司", "中国烟草", "中烟工业"),
-    "中国电子科技集团": ("中国电科",),
-    "大疆": ("DJI", "大疆创新", "深圳市大疆创新科技"),
-    "中芯国际": ("SMIC",),
-    "B站": ("哔哩哔哩", "Bilibili"),
-    "罗兰贝格": ("Roland Berger",),
-    "亚马逊 / AWS": (
-        "Amazon/AWS", "Amazon", "AWS", "Amazon Web Services", "亚马逊",
-    ),
-    "科尔尼": ("Kearney 科尔尼", "Kearney"),
-    # The sidebar uses familiar short names; official notices commonly use
-    # these legal/brand names.  Alias matching selects a discovery target only,
-    # and never bypasses the separate official-page evidence gate.
-    "工商银行": ("中国工商银行", "ICBC"),
-    "农业银行": ("中国农业银行",),
-    "建设银行": ("中国建设银行", "CCB"),
-    "中国银行": ("Bank of China", "BOC"),
-    "交通银行": ("Bank of Communications", "BOCOM"),
-    "邮储银行": ("中国邮政储蓄银行", "邮政储蓄银行", "PSBC"),
-    "中国移动": ("中国移动通信集团", "China Mobile"),
-    "中国电信": ("中国电信集团", "China Telecom"),
-    "中国联通": ("中国联合网络通信集团", "中国联合网络通信", "China Unicom"),
-    "腾讯": ("腾讯科技", "腾讯计算机系统", "Tencent"),
-    "Microsoft": ("微软",),
-    "Google": ("谷歌",),
-    "Apple": ("苹果",),
-    "NVIDIA": ("英伟达",),
-    "J.P. Morgan": ("JPMorgan", "摩根大通"),
-    "Goldman Sachs": ("高盛",),
-    "Morgan Stanley": ("摩根士丹利",),
-    "UBS": ("瑞银",),
-    "Citi": ("Citibank", "花旗",),
-    "HSBC": ("汇丰",),
-    "BlackRock": ("贝莱德",),
-    "德勤": ("Deloitte",),
-    "普华永道": ("PwC",),
-    "安永": ("EY",),
-    "毕马威": ("KPMG",),
-}
 
 
 @dataclass(frozen=True)

@@ -604,18 +604,16 @@ class PublicRecruitmentIndexAdapter:
 
 
 def _legacy_primary_category(item: dict[str, Any], tags: list[Any]) -> str:
-    """Map legacy metadata to one starfield without inspecting prose or names."""
+    """Use exact directory identities and metadata, never role/JD prose."""
     operator_category = telecom_primary_category(item.get("company"))
     if operator_category:
         return operator_category
+    # The identity-aware helper also repairs old labels inferred from e.g.
+    # '消费金融' in a bank's sector string. It never reads the role or JD.
     explicit = normalize_taxonomy_value(item.get("primary_category"))
-    if explicit in PRIMARY_CATEGORY_CODES:
-        return explicit
-
-    # Only organization metadata participates.  Company, title, requirements
-    # and other prose are deliberately excluded so classification cannot drift
-    # because a role happens to mention another sector.
     return primary_employer_category({
+        "company": item.get("company"),
+        "primary_category": explicit if explicit in PRIMARY_CATEGORY_CODES else "",
         "employer_type": item.get("employer_type"),
         "industry": item.get("industry"),
         "organization_category": item.get("organization_category"),

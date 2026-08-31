@@ -11,6 +11,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterator
+from urllib.parse import urlsplit
 
 from ..live_sources import is_actionable_recruitment_listing, is_recruitment_program_listing
 from .normalization import canonical_telecom_operator, clean_text, normalized_key
@@ -1543,9 +1544,98 @@ class RadarRepository:
         ))
 
     @staticmethod
+    def _workday_opportunity_reference(value: Any) -> tuple[str, str, str, str] | None:
+        """A complete Workday job reference, not a board or campaign number.
+
+        Keep the tenant host and career-site name. Requisition numbers are not
+        globally unique, and a numeric query parameter is not proof of a job.
+        Locale, optional location/slug text and tracking queries do not change
+        the identity of the same requisition within that exact career site.
+        """
+        try:
+            url = urlsplit(str(value or ""))
+            if (url.scheme not in {"https", "http"} or url.username is not None or url.password is not None
+                    or url.port not in {None, 443 if url.scheme == "https" else 80}):
+                return None
+            host = (url.hostname or "").casefold()
+            tenant_match = re.fullmatch(r"([a-z0-9-]+)\.wd\d+\.myworkdayjobs\.com", host)
+            if not tenant_match:
+                return None
+            parts = url.path.strip("/").split("/")
+            if parts and parts[-1].casefold() == "apply":
+                parts.pop()
+            job_index = next((index for index, part in enumerate(parts)
+                              if part.casefold() == "job"), -1)
+            if job_index not in {1, 2} or len(parts) <= job_index + 1:
+                return None
+            if job_index == 2 and not re.fullmatch(r"[a-z]{2}(?:-[a-z]{2,4}){1,2}", parts[0], re.I):
+                return None
+            site = parts[job_index - 1].casefold()
+            if not re.fullmatch(r"[a-z0-9_-]+", site):
+                return None
+            requisition = re.search(r"_((?:JR|R)-?\d{4,})$", parts[-1], re.I)
+            if not requisition:
+                return None
+            return host, site, tenant_match.group(1), requisition.group(1).casefold()
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _opportunity_ats_identity(
+        job: dict[str, Any], company_aliases: dict[str, str],
+    ) -> tuple[str, str, str] | None:
+        references = {
+            reference for field in ("official_url", "application_url")
+            if (reference := RadarRepository._workday_opportunity_reference(job.get(field)))
+        }
+        if not references:
+            return None
+        if len(references) != 1:
+            # A conflicting pair cannot bridge two real requisitions through
+            # title equality. Preserve the ambiguous record independently.
+            identity = job.get("id") or job.get("external_id") or opaque_digest({
+                key: job.get(key) for key in ("company", "title", "city", "official_url", "application_url")
+            })
+            return "ats:conflicting-references", str(identity), ""
+        host, site, tenant, requisition = next(iter(references))
+        raw_company = normalized_key(job.get("company"))
+        company = company_aliases.get(raw_company, raw_company)
+        aliases = {company, raw_company}
+        aliases.update(key for key, target in company_aliases.items() if target == company)
+        tenant_name = normalized_key(tenant)
+        owner = company
+        spelling = clean_text(job.get("company"))
+        scoped = re.search(
+            r"分公司|子公司|分行|支行|部门|事业部|总部|总行|合作|代理|外包|派遣|供应商"
+            r"|中国|香港|澳门|新加坡|澳大利亚|省|市|县|区"
+            r"|\b(?:branch|subsidiary|partner|agency|department|division|china|singapore)\b"
+            r"|\bhong\s+kong\b|outsourc", spelling, re.I,
+        )
+        if scoped:
+            owner = raw_company
+        elif tenant_name in aliases:
+            owner = "tenant:" + tenant_name
+        else:
+            # The public input may explicitly spell an exact bilingual alias,
+            # e.g. 万事达卡（Mastercard）. Do not infer a parent from a substring,
+            # or discard an explicit subsidiary, branch, partner or region.
+            bilingual = re.fullmatch(r"([\u4e00-\u9fff]+)\(([a-z][a-z0-9 .&'-]*)\)", spelling, re.I)
+            if bilingual and normalized_key(bilingual.group(2)) == tenant_name:
+                owner = "tenant:" + tenant_name
+        # A different named hiring entity remains separate even if someone
+        # supplies another employer's ATS link. This key is display-only and
+        # never rewrites company, verification, T scores or stored records.
+        return f"ats:workday:{host}:{site}:{owner}", requisition, ""
+
+    @staticmethod
     def _opportunity_identity(
         job: dict[str, Any], company_aliases: dict[str, str],
     ) -> tuple[str, str, str]:
+        ats_identity = RadarRepository._opportunity_ats_identity(job, company_aliases)
+        if ats_identity is not None:
+            # Strong identities never fall back to title/city equality: two
+            # different requisitions with the same title are different jobs.
+            return ats_identity
         company = normalized_key(job.get("company"))
         company = company_aliases.get(company, company)
         title = clean_text(job.get("title")).casefold()

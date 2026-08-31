@@ -74,6 +74,16 @@ Deep Scan 使用与左侧分类一致的 `PERSONAL_MONITOR_POOLS`。当前十类
 
 非空 `/api/recruitment/ingest` 提交完成后立即尝试仅运行这个本地桥接来源，不触发外部请求或 AI。该步骤仍遵守 Quick Run Lock 与 Source Lock；遇到锁或投影失败时返回 `search_updates_refresh.status=deferred`，已接收候选不会回滚，下一轮 Quick Scan 可补齐投影。空心跳不会启动桥接。
 
+### 统一机会池、企业浏览与分类修复
+
+登录后的前端使用 `/api/future-radar/opportunities` 同时展示可操作的公开线索和已核验记录，并保留各自的真实核验标记；上面的 `/jobs` 和 `/search-updates` 仍是兼容接口。前端默认 `view=companies`，后端 API 默认 `view=jobs`。星域、T 级、城市、来源和关键词筛选先作用于全池，再计算 `total_companies`、`total_opportunities` 和分页。企业页每页默认 20 组；展开时用 `company_key` 加相同筛选条件读取具体岗位，不把企业全部岗位拼回已筛选结果。
+
+企业归组只影响浏览。原招聘主体、总部／分支、具体岗位评分及投递链接不变。Workday 的强身份包含严格校验的 tenant、招聘站点、招聘实体、完整 R/JR 职位号及独立届次判断；只有这些身份一致时才忽略 locale、标题 slug 和待确认城市。不同职位号不再回退到标题合并，冲突的官方／申请职位号保持隔离。共用招聘首页的不同项目范围不合并。合并仅发生在读取展示层，底表记录、来源、原 ID 详情别名和官方关闭状态优先级均保留。
+
+`backend/recruitment_directory.py` 提供搜索与入库共用的公开雇主名录、明确别名和有限的法定／地域单位后缀识别；不读取 JD 中的行业关键词，不把合作商或未明确的子公司自动当作集团总部。分类缺失时可以使用明确的雇主类型补全；目录外机构已有的有效明确分类不会被泛化雇主类型覆盖。银行星域显示为“银行与政策性金融”，分类代码仍为 `policy_state_banks`，现有名录条目与分组数不变。
+
+迁移 `future_radar_v4_employer_directory_categories` 在 SQLite 和 PostgreSQL 上只回填 `radar_jobs.primary_category` 及相应 `content_hash`，通过数据库修订触发器使评分快照失效。它不更改记录 ID、时间、来源、关闭或核验状态，也不删除岗位。评分公式、权重和总部／分支识别不变；补齐行业事实可使原有公式重新计算分数。迁移幂等，未知企业不会为了填满分类而被猜测归类。
+
 ## 3. Source Registry 与适配器
 
 当前支持的适配路径：

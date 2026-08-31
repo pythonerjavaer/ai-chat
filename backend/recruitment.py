@@ -6,6 +6,7 @@ from functools import lru_cache
 from typing import Any
 
 from .recruitment_organizations import assess_organization
+from .recruitment_directory import employer_category_override
 
 
 # Machine-readable organization categories. Classification deliberately uses
@@ -606,8 +607,9 @@ def _primary_category(job: dict[str, Any], categories: set[str]) -> str | None:
 
 
 def primary_employer_category(job: dict[str, Any]) -> str | None:
-    """Choose one UI starfield from structured employer metadata."""
-    return _primary_category(job, semantic_employer_categories(job))
+    """Choose one UI starfield from a directory identity or employer metadata."""
+    return (employer_category_override(job)
+            or _primary_category(job, semantic_employer_categories(job)))
 
 
 def _normalized_organization_category(job: dict[str, Any]) -> str | None:

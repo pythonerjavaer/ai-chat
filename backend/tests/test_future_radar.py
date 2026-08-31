@@ -444,7 +444,7 @@ def test_legacy_adapter_persists_metadata_categories_and_repository_pages_them(
             "requirements": "面向应届生", "status": "open",
         },
         {
-            "id": "legacy-no-name-inference", "company": "Deloitte", "title": "咨询岗",
+            "id": "legacy-no-name-inference", "company": "Deloitte招聘合作伙伴", "title": "咨询岗",
             "employer_type": "其他", "industry": "其他",
             "url": "https://example.com/legacy/unclassified", "tags": ["校园招聘"],
             "requirements": "面向应届生", "status": "open",

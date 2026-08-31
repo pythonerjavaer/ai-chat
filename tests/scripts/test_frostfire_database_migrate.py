@@ -357,7 +357,10 @@ close_postgres_pools()
             migrate.verify_target_revision_triggers(target, self.schema)
             before_migrations = dict(self.sqlite.execute("SELECT version,applied_at FROM schema_migrations").fetchall())
             after_migrations = {row["version"]: row["applied_at"] for row in target.execute("SELECT version,applied_at FROM schema_migrations").fetchall()}
-            self.assertEqual(set(after_migrations) - set(before_migrations), {"future_radar_v3_operator_categories"})
+            self.assertEqual(set(after_migrations) - set(before_migrations), {
+                "future_radar_v3_operator_categories",
+                "future_radar_v4_employer_directory_categories",
+            })
             self.assertTrue(all(after_migrations[key] == value for key, value in before_migrations.items()))
             self.assertEqual(target.execute("SELECT id,password_hash FROM users").fetchone()["password_hash"], FIXTURE_PASSWORD_HASH)
             migrate.check_target_foreign_keys(target, self.tables)
