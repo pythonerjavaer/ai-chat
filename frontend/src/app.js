@@ -2386,15 +2386,19 @@ function setRecruitmentStatus(message) {
   if (elements.recruitmentStatus) elements.recruitmentStatus.textContent = message;
 }
 
+function futureRadarOpportunityReadHint() {
+  return `首次读取或扫描更新后可能较慢，本次最多等待 ${Math.ceil(FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS / 1000)} 秒。`;
+}
+
 function renderFutureRadarOpportunityStatus() {
   const radar = state.futureRadar;
   const count = (value) => Math.max(0, Number(value) || 0).toLocaleString("zh-CN");
   if (futureRadarSelectionIsPending()) {
-    setRecruitmentStatus(`正在读取${futureRadarTierLabel()}的全池筛选结果… 数量将随最新结果一起更新。`);
+    setRecruitmentStatus(`正在读取${futureRadarTierLabel()}的全池筛选结果… 数量将随最新结果一起更新。${futureRadarOpportunityReadHint()}`);
   } else if (radar.jobsLoading) {
     setRecruitmentStatus(radar.jobsLoaded
-      ? `正在刷新主机会池；上次成功读取 ${count(radar.totalJobs)} 个机会。`
-      : "正在读取主机会池（含聊天 / 搜索待核验线索）…");
+      ? `正在刷新主机会池；上次成功读取 ${count(radar.totalJobs)} 个机会。${futureRadarOpportunityReadHint()}`
+      : `正在读取主机会池（含聊天 / 搜索待核验线索）… ${futureRadarOpportunityReadHint()}`);
   } else if (radar.jobsError) {
     setRecruitmentStatus(radar.jobsError);
   } else if (!radar.jobsLoaded) {
@@ -2981,7 +2985,7 @@ function createFutureRadarOpportunityDetail(job) {
   const load = async () => {
     if (!details.open || loaded || loading) return;
     loading = true;
-    body.replaceChildren(makeElement("small", "", "正在读取完整机会信息…"));
+    body.replaceChildren(makeElement("small", "", `正在读取完整机会信息… ${futureRadarOpportunityReadHint()}`));
     try {
       const detail = await api(`/future-radar/opportunities/${encodeURIComponent(job.id)}`, {
         timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
@@ -3924,7 +3928,7 @@ function renderRecruitmentJobs(jobs) {
     const notice = makeElement("div", "empty-list");
     notice.append(
       makeElement("strong", "", state.futureRadar.jobsError ? "主机会池加载失败" : "正在读取主机会池…"),
-      makeElement("p", "", state.futureRadar.jobsError || "正在读取聊天线索、搜索发现与官网确认的机会。"),
+      makeElement("p", "", state.futureRadar.jobsError || `正在读取聊天线索、搜索发现与官网确认的机会。${futureRadarOpportunityReadHint()}`),
     );
     if (state.futureRadar.jobsError) {
       const retry = makeElement("button", "", "重试加载主机会池");
@@ -4007,7 +4011,7 @@ function renderRecruitmentJobs(jobs) {
     loading.setAttribute("aria-live", "polite");
     loading.append(
       makeElement("strong", "", `正在筛选${futureRadarTierLabel()}…`),
-      makeElement("p", "", "正在读取整个机会池的对应结果，数量与列表将同时更新。可以继续切换其他级别。"),
+      makeElement("p", "", `正在读取整个机会池的对应结果，数量与列表将同时更新。${futureRadarOpportunityReadHint()}可以继续切换其他级别，旧筛选结果不会作为新结果显示。`),
     );
     elements.recruitmentJobs.appendChild(loading);
     return;

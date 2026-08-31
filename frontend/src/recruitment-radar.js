@@ -13,7 +13,9 @@ export const STARFIELD_DEFINITIONS = Object.freeze([
 
 export const TIER_CODES = Object.freeze(["T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3"]);
 export const DEFAULT_FUTURE_RADAR_STATUS = "active";
-export const FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS = 45_000;
+// Cold full-pool ranking can take over a minute. This is a read deadline only,
+// not a scan interval, run lock or a change to the default API/auth timeout.
+export const FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS = 120_000;
 
 export function futureRadarCoverageCopy(scope = {}, coverage = null, status = "pending") {
   const count = (value) => Math.max(0, Math.floor(Number(value) || 0));

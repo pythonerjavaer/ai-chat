@@ -229,7 +229,7 @@ test("refresh failure preserves the last successful unified snapshot even after 
   assert.match(r.elements.recruitmentJobs.textContent, /saved-main/);
   assert.doesNotMatch(r.elements.recruitmentJobs.textContent, /legacy-/);
   const queryIndex = r.calls.findIndex((path) => path.startsWith("/future-radar/opportunities?"));
-  assert.equal(r.requestOptions[queryIndex].timeoutMs, 45_000);
+  assert.equal(r.requestOptions[queryIndex].timeoutMs, 120_000);
 });
 
 test("profile-save legacy response cannot overwrite unified-pool totals or failure state", async () => {
@@ -281,7 +281,7 @@ test("pending cards open the unified detail API and expose safe ordinary source 
   await detail.listeners.toggle();
   const index = r.calls.findIndex((path) => path === "/future-radar/opportunities/pending-0");
   assert.ok(index >= 0);
-  assert.equal(r.requestOptions[index].timeoutMs, 45_000);
+  assert.equal(r.requestOptions[index].timeoutMs, 120_000);
   const links = descendants(detail).filter((node) => node.tag === "a");
   assert.ok(links.some((link) => link.href === cardLink.href));
   assert.ok(links.some((link) => link.href === "https://careers.example.com/campus/source"));
@@ -437,10 +437,13 @@ test("T selection is immediate, and its result/count comes from the complete com
   assert.equal(r.cards().length, 0, "a T1 card must not appear under the pending T2 selection");
   assert.match(r.elements.recruitmentJobs.textContent, /正在筛选T2/);
   assert.match(r.elements.recruitmentStatus.textContent, /正在读取T2.*全池/);
+  assert.match(r.elements.recruitmentJobs.textContent, /最多等待 120 秒.*继续切换.*旧筛选结果不会作为新结果显示/);
+  assert.match(r.elements.recruitmentStatus.textContent, /最多等待 120 秒/);
   assert.equal(r.elements.futureRadarOpportunityCount.textContent, "—");
   assert.equal(r.calls.length, 0);
   await r.flushSelection();
   assert.equal(r.calls.length, 1);
+  assert.equal(r.requestOptions[0].timeoutMs, 120_000);
   const query = new URLSearchParams(r.calls[0].split("?")[1]);
   assert.equal(query.get("tier_code"), "T2");
   assert.equal(query.get("compact"), "true");
@@ -453,6 +456,30 @@ test("T selection is immediate, and its result/count comes from the complete com
   assert.match(tierButton(r, "T2").textContent, /120/);
   assert.equal(r.elements.recruitmentJobs["aria-busy"], "false");
   assert.match(r.elements.recruitmentJobs.textContent, /当前筛选共 120 个机会 · T2/);
+});
+
+test("initial and detail cold reads show a 120-second wait without presenting old or partial results", async () => {
+  const r = runtime({ fail: false });
+  const initial = deferred();
+  r.controls.opportunityHandler = () => initial.promise;
+  const loading = r.run("loadFutureRadarJobPage(1, true)");
+  await new Promise(setImmediate);
+  assert.equal(r.cards().length, 0);
+  assert.match(r.elements.recruitmentJobs.textContent, /首次读取或扫描更新后可能较慢.*最多等待 120 秒/);
+  assert.doesNotMatch(r.elements.recruitmentJobs.textContent, /legacy-/);
+  assert.equal(r.state.futureRadar.jobsLoading, true);
+  assert.equal(r.requestOptions.at(-1).timeoutMs, 120_000);
+  initial.resolve(r.payload); await loading;
+
+  const request = deferred();
+  r.controls.apiHandler = (path) => path === "/future-radar/opportunities/pending-0" ? request.promise : undefined;
+  const details = descendants(r.cards()[0]).find((node) => node.dataset.opportunityDetail === "pending-0");
+  details.open = true;
+  const detailLoading = details.listeners.toggle();
+  assert.match(details.textContent, /正在读取完整机会信息.*最多等待 120 秒/);
+  assert.equal(r.requestOptions.at(-1).timeoutMs, 120_000);
+  request.resolve(pendingJob("pending-0")); await detailLoading;
+  assert.doesNotMatch(details.textContent, /正在读取完整机会信息/);
 });
 
 test("same-tier clicks are no-ops after success and share an in-flight selection", async () => {

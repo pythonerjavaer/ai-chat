@@ -44,8 +44,9 @@ function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null 
       opening_after: "", opening_before: "", closing_after: "", closing_before: "" },
   } };
   // Keep the real HTTP/fetch/AbortController chain. Only the clock is controllable,
-  // so a stalled response can exercise the full 45-second deadline without a wait.
+  // so a stalled response can exercise the full 120-second deadline without a wait.
   const timers = [];
+  let elapsed = 0;
   const context = {
     state, API_BASE: base, Headers, FormData, AbortController,
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
@@ -58,7 +59,7 @@ function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null 
       return response;
     },
     setTimeout: (callback, delay) => {
-      const timer = { callback, delay, cleared: false };
+      const timer = { callback, delay, deadline: elapsed + delay, cleared: false };
       timers.push(timer);
       return timer;
     },
@@ -73,7 +74,16 @@ function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null 
     extract("async function api(", "\nfunction showToast"),
     extract("function futureRadarJobsQuery(", "\nfunction syncFutureRadarSourceFilter"),
   ].join("\n"), context);
-  return { state, timers, run: (expression) => vm.runInContext(expression, context) };
+  return { state, timers, run: (expression) => vm.runInContext(expression, context),
+    advance: async (ms) => {
+      elapsed += ms;
+      timers.filter((timer) => !timer.cleared && timer.deadline <= elapsed).forEach((timer) => {
+        timer.cleared = true;
+        timer.callback();
+      });
+      await Promise.resolve();
+    },
+  };
 }
 
 test("real builder and API send the active main-pool GET without blank dates or a cursor", async (t) => {
@@ -90,7 +100,7 @@ test("real builder and API send the active main-pool GET without blank dates or 
   });
   assert.equal(data.total, 255);
   assert.equal(data.items[0].verification_status, "pending");
-  assert.equal(r.timers[0].delay, 45_000);
+  assert.equal(r.timers[0].delay, 120_000);
   assert.equal(r.timers[0].cleared, true);
 });
 
@@ -127,20 +137,56 @@ test("other API reads retain their existing 15-second timeout", async (t) => {
   assert.equal(r.timers[0].cleared, true);
 });
 
+test("list and detail survive a 72.64-second cold read; status and authentication retain 15 seconds", async (t) => {
+  for (const path of ["/future-radar/opportunities?page=1&compact=true", "/future-radar/opportunities/public-cold-read"]) {
+    await t.test(path.includes("?") ? "list" : "detail", async (st) => {
+      let respond;
+      const server = await localServer(st, (_request, response) => {
+        respond = () => {
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({ total: 3218, id: "public-cold-read" }));
+        };
+      });
+      const r = runtime(server.base);
+      let settled = false;
+      const request = r.run(`api(${JSON.stringify(path)}, {timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS})`)
+        .finally(() => { settled = true; });
+      await server.firstRequest;
+      await r.advance(72_640);
+      assert.equal(settled, false);
+      assert.equal(r.timers[0].cleared, false, "the cold read is not aborted at the old 45-second deadline");
+      respond();
+      assert.equal((await request).total, 3218);
+      assert.equal(r.timers[0].delay, 120_000);
+    });
+  }
+  const server = await localServer(t, (_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" }); response.end("{}");
+  });
+  const r = runtime(server.base);
+  await r.run('api("/future-radar/dashboard")');
+  await r.run('api("/auth/me")');
+  assert.deepEqual(r.timers.map((timer) => timer.delay), [15000, 15000]);
+  assert.match(source, /api\("\/future-radar\/run",\s*\{[\s\S]*?timeoutMs: 120_000/,
+    "scan-start deadline remains separate and unchanged");
+});
+
 test("a delayed real HTTP response aborts at the main-pool deadline with a distinct timeout error", async (t) => {
   const server = await localServer(t, () => {});
   const r = runtime(server.base);
   const request = r.run("api(`/future-radar/opportunities?${futureRadarJobsQuery()}`, {timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS})");
   const checked = assert.rejects(request, (error) => {
     assert.equal(error.code, "REQUEST_TIMEOUT");
-    assert.equal(error.timeoutMs, 45_000);
+    assert.equal(error.timeoutMs, 120_000);
     assert.match(futureRadarOpportunityErrorCopy(error), /读取超时/);
     assert.doesNotMatch(futureRadarOpportunityErrorCopy(error), /HTTP/);
     return true;
   });
   await server.firstRequest;
-  assert.equal(r.timers[0].delay, 45_000);
-  r.timers[0].callback();
+  assert.equal(r.timers[0].delay, 120_000);
+  await r.advance(119_999);
+  assert.equal(r.timers[0].cleared, false);
+  await r.advance(1);
   await checked;
   assert.equal(r.timers[0].cleared, true);
 });

@@ -257,16 +257,26 @@ class BoundedScoringCache:
 
     def __init__(self, *, max_entries: int = 16, max_bytes: int = 32 * 1024 * 1024,
                  max_inflight: int = 8, ttl_seconds: float = 300,
+                 refresh_on_hit: bool = False,
                  clock: Callable[[], float] = time.monotonic):
         self.max_entries = max_entries
         self.max_bytes = max_bytes
         self.max_inflight = max_inflight
         self.ttl_seconds = ttl_seconds
+        self.refresh_on_hit = refresh_on_hit
         self._clock = clock
         self._guard = threading.Lock()
         self._entries: OrderedDict[Hashable, tuple[float, int, Any]] = OrderedDict()
         self._pending: dict[Hashable, Future[Any]] = {}
         self._bytes = 0
+
+    def _touch(self, key: Hashable) -> Any:
+        """Caller holds the guard; revision validation is still done upstream."""
+        _, size, value = self._entries[key]
+        if self.refresh_on_hit:
+            self._entries[key] = (self._clock() + self.ttl_seconds, size, value)
+        self._entries.move_to_end(key)
+        return value
 
     def _expire(self) -> None:
         now = self._clock()
@@ -280,8 +290,7 @@ class BoundedScoringCache:
             self._expire()
             existing = self._entries.get(key)
             if existing is not None:
-                self._entries.move_to_end(key)
-                return existing[2]
+                return self._touch(key)
             pending = self._pending.get(key)
             owner = pending is None
             if owner and len(self._pending) < self.max_inflight:
@@ -323,7 +332,7 @@ class BoundedScoringCache:
             for key, (_, _, value) in reversed(self._entries.items()):
                 result = predicate(key, value)
                 if result is not None:
-                    self._entries.move_to_end(key)
+                    self._touch(key)
                     return result
         return None
 

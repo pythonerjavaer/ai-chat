@@ -83,7 +83,13 @@ class _PreparedOpportunityPool:
 class RadarRepository:
     def __init__(self, connect: Callable[[], sqlite3.Connection]):
         self._connect = connect
-        self._opportunity_cache = BoundedScoringCache()
+        # Every list/detail hit checks the transactional revision, date and
+        # user/profile/rules key. TTL is only idle-memory retention, not data
+        # freshness: active tier browsing need not rebuild thousands of scores
+        # every five minutes. New/closed jobs still invalidate immediately.
+        self._opportunity_cache = BoundedScoringCache(
+            ttl_seconds=30 * 60, refresh_on_hit=True,
+        )
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

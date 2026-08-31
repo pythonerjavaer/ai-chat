@@ -384,6 +384,10 @@ def _marker_matches(text: str, marker: str) -> bool:
     normalized, pattern = _marker_rule(marker)
     if not normalized:
         return False
+    # A single escaped token must occur literally before its boundary regex
+    # can match. Multi-word markers retain their flexible whitespace rules.
+    if pattern and " " not in normalized and normalized not in text:
+        return False
     return pattern.search(text) is not None if pattern else normalized in text
 
 

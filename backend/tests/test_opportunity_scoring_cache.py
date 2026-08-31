@@ -502,6 +502,36 @@ def test_cache_entry_memory_inflight_ttl_and_failures_are_bounded():
     assert cache.get_or_compute("retry", lambda: "recovered") == "recovered"
 
 
+def test_idle_cache_hits_extend_retention_but_still_expire_after_inactivity():
+    clock = [0.0]
+    cache = BoundedScoringCache(ttl_seconds=10, refresh_on_hit=True, clock=lambda: clock[0])
+    assert cache.get_or_compute("revision-1", lambda: {"id": "first"}) == {"id": "first"}
+    retained_bytes = cache.info()["bytes"]
+    clock[0] = 9
+    assert cache.get_or_compute("revision-1", lambda: {"id": "incorrect"}) == {"id": "first"}
+    clock[0] = 18
+    assert cache.find(lambda key, value: value if key == "revision-1" else None) == {"id": "first"}
+    assert cache.info()["entries"] == 1 and cache.info()["bytes"] == retained_bytes
+    clock[0] = 27
+    assert cache.info()["entries"] == 1
+    clock[0] = 29
+    assert cache.info() == {"entries": 0, "bytes": 0, "inflight": 0}
+
+
+def test_validated_tier_pool_does_not_rebuild_after_five_minutes_but_closure_does(harness):
+    clock = [0.0]
+    harness.repository._opportunity_cache._clock = lambda: clock[0]
+    saved = harness.insert("top-idle-tier")
+    assert harness.pool()["total"] == 1
+    clock[0] = 301
+    assert harness.pool(filters={"tier_code": "T0"})["total"] == 1
+    assert harness.prepared == ["top-idle-tier"]
+    with harness.repository.transaction() as connection:
+        connection.execute("UPDATE radar_jobs SET status='closed' WHERE id=?", (saved["id"],))
+    assert harness.pool(filters={"tier_code": "T0"})["total"] == 0
+
+
+
 def test_compact_http_payload_keeps_stats_and_default_legacy_aliases(harness, monkeypatch):
     # Call only the route function with a synthetic identity: no account is
     # created, no auth endpoint called, no test browser or network used.
