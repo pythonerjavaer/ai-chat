@@ -9,6 +9,7 @@ import {
   futureRadarOpportunityDateCopy,
   futureRadarOpportunitySource,
   futureRadarPublicOpportunityUrl,
+  futureRadarTierQuery,
   jobTierBucket,
 } from "./recruitment-radar.js";
 
@@ -68,7 +69,7 @@ test("one unified API page is not mixed with old pools or assigned a default T3"
 test("the query applies T filters across the complete API pool", () => {
   const state = { recruitmentTierFilter: "T0.5", futureRadar: { page: 3, pageSize: 50, filters: { status: "open", verification_status: "" } } };
   const query = vm.runInNewContext(`${functionSource("function futureRadarJobsQuery(", "\nfunction syncFutureRadarSourceFilter")}\nfutureRadarJobsQuery(1);`, {
-    state, buildFutureRadarJobsQuery, selectedRecruitmentStarfields: () => ["policy_state_banks"],
+    state, buildFutureRadarJobsQuery, futureRadarTierQuery, selectedRecruitmentStarfields: () => ["policy_state_banks"],
   });
   const params = new URLSearchParams(query);
   assert.equal(params.get("tier_code"), "T0.5");

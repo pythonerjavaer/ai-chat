@@ -9,6 +9,7 @@ import {
   filterJobsByStarfields, futureRadarOpportunityDateCopy,
   futureRadarOpportunityErrorCopy, futureRadarOpportunitySource,
   futureRadarPublicOpportunityUrl, jobTierBucket, partitionJobsByPriority,
+  futureRadarTierQuery, futureRadarVisibleCategoryCount,
 } from "./recruitment-radar.js";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
@@ -63,11 +64,11 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     page: 1, page_size: 50, stats: { verification_status: { pending: 255, verified: 0, conflicted: 0 },
       job_status: { unknown: 255 }, tier_counts: { UNRANKED: 255 }, category_counts: { internet_tech: 255 } } };
   const oldJobs = Array.from({ length: 6 }, (_, i) => pendingJob(`legacy-${i}`));
-  const state = { token: Symbol("pure-state-session"), music: { enabled: false }, recruitmentJobs: oldJobs, recruitmentWatches: [], recruitmentTierFilter: "ALL", futureRadar: {
+  const state = { token: Symbol("pure-state-session"), music: { enabled: false }, recruitmentJobs: oldJobs, recruitmentWatches: [], recruitmentTierFilter: "FOCUS", futureRadar: {
     jobsLoaded: existing, jobsError: "", jobs: existing ? [pendingJob("saved-main")] : [],
     jobsLoading: false, loading: false, jobsRequestId: 0, page: 1, pageSize: 50,
     jobsRequestQuery: "", jobsRequestController: null, jobsRequestPromise: null,
-    jobsAppliedQuery: "", jobsAppliedTier: "ALL", jobsAppliedPage: 1,
+    jobsAppliedQuery: "", jobsAppliedTier: "FOCUS", jobsAppliedPage: 1,
     pollOpportunityController: null, snapshotRequestId: 0,
     totalJobs: existing ? 1 : 0,
     opportunityStats: existing ? { tier_counts: { UNRANKED: 1 }, verification_status: { pending: 1 } } : {},
@@ -98,6 +99,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     buildFutureRadarCompanyJobsQuery, starfieldLabel,
     futureRadarOpportunityDateCopy, futureRadarOpportunityErrorCopy, futureRadarOpportunitySource,
     futureRadarPublicOpportunityUrl, jobTierBucket, partitionJobsByPriority,
+    futureRadarTierQuery, futureRadarVisibleCategoryCount,
     document: { hidden: false, querySelectorAll: () => [], createElement: (tag) => new Element(tag), createTextNode: (text) => text },
     makeElement: (tag, className = "", text = "") => new Element(tag, className, text),
     api: async (path, options) => {
@@ -392,10 +394,13 @@ test("legacy profile compatibility failure cannot block a successful main pool r
 test("reset and the HTML default use active without widening to closed opportunities", async () => {
   const r = runtime({ fail: false });
   r.state.futureRadar.filters.status = "closed";
+  r.state.recruitmentTierFilter = "BELOW_PRIORITY";
   const requested = [];
   r.context.loadFutureRadarJobPage = (page) => requested.push({ page, status: r.state.futureRadar.filters.status });
   r.run("resetFutureRadarFilters()");
   assert.deepEqual(requested, [{ page: 1, status: "active" }]);
+  assert.equal(r.state.recruitmentTierFilter, "FOCUS");
+  assert.equal(new URLSearchParams(r.run("futureRadarJobsQuery()")).get("priority_only"), "true");
   assert.match(html, /id="future-radar-filter-status"><option value="active">全部有效机会（含待核验）/);
   assert.match(html, /value="all">全部（含已关闭）/);
   assert.equal(DEFAULT_FUTURE_RADAR_STATUS, "active");
@@ -910,6 +915,156 @@ test("failed view switch identifies the old snapshot and does not treat companie
   assert.match(r.elements.recruitmentJobs.textContent, /上次成功快照（原筛选条件）/);
   assert.equal(r.companyCards().length, 20);
   assert.equal(r.cards().length, 0);
+  const switchers = descendants(r.elements.recruitmentJobs).filter((node) => node.dataset.opportunityView);
+  assert.equal(switchers.find((node) => node.dataset.opportunityView === "companies")["aria-pressed"], "true");
+  assert.equal(switchers.find((node) => node.dataset.opportunityView === "jobs")["aria-pressed"], "false");
+});
+
+test("focus is the initial applied query and its chip uses full-scope counts rather than page length", async () => {
+  assert.match(source, /recruitmentTierFilter:\s*"FOCUS"/);
+  assert.match(extract('document.querySelectorAll(".recruitment-checks input").forEach', '\n[elements.recruitmentRoles'), /state\.recruitmentTierFilter = "FOCUS"/);
+  const r = runtime({ fail: false });
+  r.payload.stats.tier_counts = { T2: 20, UNRANKED: 255, BELOW_PRIORITY: 2956 };
+  r.payload.stats.priority_total = 275;
+  r.payload.stats.secondary_total = 2956;
+  await r.run("loadFutureRadarJobPage(1, true)");
+  const params = new URLSearchParams(r.calls[0].split("?")[1]);
+  assert.equal(params.get("priority_only"), "true");
+  assert.equal(params.has("tier_code"), false);
+  assert.equal(r.state.futureRadar.jobsAppliedTier, "FOCUS");
+  const focus = descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "FOCUS");
+  assert.equal(focus["aria-pressed"], "true");
+  assert.match(focus.textContent, /重点机会.*275 个/);
+  const all = descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "ALL");
+  assert.match(all.textContent, /全部记录.*3231 个/);
+  delete r.payload.stats.priority_total;
+  r.run("renderRecruitmentJobs()");
+  assert.match(descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "FOCUS").textContent, /275 个/);
+  const selectingAll = r.run("selectRecruitmentTier('ALL')");
+  await r.flushSelection();
+  await selectingAll;
+  assert.equal(new URLSearchParams(r.calls.at(-1).split("?")[1]).get("priority_only"), "false");
+  assert.equal(r.state.futureRadar.jobsAppliedTier, "ALL");
+  const selectingSecondary = r.run("selectRecruitmentTier('BELOW_PRIORITY')");
+  await r.flushSelection();
+  await selectingSecondary;
+  const secondaryParams = new URLSearchParams(r.calls.at(-1).split("?")[1]);
+  assert.equal(secondaryParams.get("priority_only"), "false");
+  assert.equal(secondaryParams.get("tier_code"), "BELOW_PRIORITY");
+});
+
+test("focus preserves unranked records and defensively excludes secondary rows without deleting them", async () => {
+  const r = runtime({ fail: false });
+  const secondary = { ...pendingJob("below-priority"), tier_code: "不建议投", job_score: 40 };
+  r.payload.items = [pendingJob("unranked-kept"), { ...pendingJob("t3-kept"), tier_code: "T3", job_score: 61 }, secondary];
+  await r.run("loadFutureRadarJobPage(1, true)");
+  assert.equal(r.cards().length, 2);
+  assert.match(r.elements.recruitmentJobs.textContent, /unranked-kept.*t3-kept|t3-kept.*unranked-kept/);
+  assert.doesNotMatch(r.elements.recruitmentJobs.textContent, /below-priority/);
+  assert.equal(r.state.futureRadar.jobs.length, 3, "a display safeguard must not delete the source data");
+  const selection = r.run("selectRecruitmentTier('ALL')");
+  await r.flushSelection();
+  await selection;
+  assert.equal(r.cards().length, 3);
+});
+
+test("company expansion and background polling inherit focus priority without introducing a T restriction", async () => {
+  const r = companyRuntime();
+  await r.run("loadFutureRadarJobPage(1, true)");
+  const card = r.companyCards()[0];
+  card.open = true;
+  await card.listeners.toggle();
+  await r.run("pollFutureRadarEvents()");
+  const queries = r.calls.filter((path) => path.startsWith("/future-radar/opportunities?")).map((path) => new URLSearchParams(path.split("?")[1]));
+  assert.ok(queries.some((params) => params.has("company_key")));
+  assert.ok(queries.length >= 3);
+  queries.forEach((params) => {
+    assert.equal(params.get("priority_only"), "true");
+    assert.equal(params.has("tier_code"), false);
+  });
+});
+
+function attachCategoryBadge(r, category) {
+  const label = new Element("label");
+  label.querySelector = () => descendants(label).find((node) => node.className === "radar-category-count");
+  const input = { value: category, closest: () => label };
+  r.context.document.querySelectorAll = (selector) => selector === ".recruitment-checks input" ? [input] : [];
+  return () => label.querySelector();
+}
+
+test("sidebar counts reflect final company/tier scope and hide stale numbers while pending or failed", async () => {
+  const r = companyRuntime();
+  const badge = attachCategoryBadge(r, "state_tech_telecom");
+  const payload = companyPayload({ items: [companyGroup("telecom:china_unicom", "中国联通", 12)], totalCompanies: 1, total: 12 });
+  Object.assign(payload.stats, { category_counts: { state_tech_telecom: 2956 },
+    visible_category_counts: { state_tech_telecom: 12 }, visible_category_company_counts: { state_tech_telecom: 1 } });
+  r.controls.opportunityHandler = () => payload;
+  await r.run("loadFutureRadarJobPage(1, true)");
+  assert.equal(badge().textContent, "1组 · 12条");
+  assert.equal(badge().dataset.status, "ready");
+  const response = deferred();
+  r.controls.opportunityHandler = () => response.promise;
+  const selection = r.run("selectRecruitmentTier('T1')");
+  assert.equal(badge().textContent, "—");
+  assert.equal(badge().dataset.status, "loading");
+  await r.flushSelection();
+  response.reject(Object.assign(new Error("safe test failure"), { status: 503 }));
+  assert.equal(await selection, false);
+  assert.equal(badge().textContent, "—");
+  assert.equal(badge().dataset.status, "error");
+  assert.equal(r.elements.futureRadarOpportunityCount.textContent, "—");
+  assert.match(r.elements.futureRadarOpportunitySummary.textContent, /读取失败.*重点机会快照/);
+  assert.doesNotMatch(r.elements.futureRadarOpportunitySummary.textContent, /2956|12|官网已确认/);
+  const focus = descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "FOCUS");
+  assert.equal(focus["aria-pressed"], "true");
+  r.controls.opportunityHandler = () => ({ ...payload, items: [], total: 0, total_companies: 0, total_opportunities: 0,
+    stats: { ...payload.stats, total_companies: 0, total_opportunities: 0, visible_category_counts: {}, visible_category_company_counts: {} } });
+  const retry = r.run("selectRecruitmentTier('T1')");
+  await r.flushSelection();
+  await retry;
+  assert.equal(badge().textContent, "0组 · 0条");
+  assert.equal(badge().dataset.status, "ready");
+});
+
+test("starfield changes hide the previous category count before the debounced profile-save read", async () => {
+  const r = companyRuntime();
+  const badge = attachCategoryBadge(r, "state_tech_telecom");
+  const payload = companyPayload();
+  payload.stats.visible_category_counts = { state_tech_telecom: 145 };
+  payload.stats.visible_category_company_counts = { state_tech_telecom: 26 };
+  r.controls.opportunityHandler = () => payload;
+  await r.run("loadFutureRadarJobPage(1, true)");
+  assert.equal(badge().textContent, "26组 · 145条");
+  r.context.selectedRecruitmentStarfields = () => ["big_four_professional_services"];
+  r.run("renderFutureRadarOpportunityOverview()");
+  assert.equal(r.state.futureRadar.jobsLoading, false);
+  assert.equal(badge().textContent, "—");
+  assert.equal(badge().dataset.status, "loading");
+  assert.equal(r.elements.futureRadarOpportunityCount.textContent, "—");
+});
+
+test("expanding an old company after a failed request gives a visible main-pool retry instead of an empty panel", async () => {
+  const r = companyRuntime();
+  const successfulHandler = r.controls.opportunityHandler;
+  await r.run("loadFutureRadarJobPage(1, true)");
+  r.controls.opportunityHandler = () => Promise.reject(Object.assign(new Error("test failure"), { status: 503 }));
+  await r.run("selectFutureRadarView('jobs')");
+  const card = r.companyCards()[0];
+  const callsBefore = r.calls.length;
+  card.open = true;
+  await card.listeners.toggle();
+  assert.equal(r.calls.length, callsBefore, "do not fetch a company using a failed new projection");
+  assert.match(card.textContent, /主机会池本次读取失败.*上次成功的企业快照/);
+  const retry = descendants(card).find((node) => node.tag === "button" && node.textContent === "重试主机会池");
+  assert.ok(retry);
+  r.controls.opportunityHandler = (path) => new URLSearchParams(path.split("?")[1]).get("view") === "jobs"
+    ? { ...tierPayload("T2", { id: "recovered-projection", total: 1 }), view: "jobs" }
+    : successfulHandler(path);
+  await retry.listeners.click();
+  assert.equal(r.state.futureRadar.jobsError, "");
+  assert.equal(r.state.futureRadar.jobsAppliedView, "jobs");
+  assert.equal(new URLSearchParams(r.calls.at(-1).split("?")[1]).has("company_key"), false);
+  assert.match(r.cards()[0].textContent, /recovered-projection/);
 });
 
 test("failed switch from company page two retains the old page size and disables mismatched navigation", async () => {

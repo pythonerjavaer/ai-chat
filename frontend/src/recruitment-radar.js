@@ -17,6 +17,38 @@ export const DEFAULT_FUTURE_RADAR_STATUS = "active";
 // not a scan interval, run lock or a change to the default API/auth timeout.
 export const FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS = 120_000;
 
+export function futureRadarTierQuery(tier = "FOCUS") {
+  return {
+    priority_only: tier === "FOCUS",
+    tier_code: ["FOCUS", "ALL"].includes(tier) ? "" : tier,
+  };
+}
+
+export function futureRadarVisibleCategoryCount(stats = {}, category, { view = "jobs", status = "ready" } = {}) {
+  if (status !== "ready") {
+    return { text: "—", status, title: status === "error"
+      ? "当前筛选读取失败；上次成功快照不作为当前数量"
+      : status === "loading" ? "正在读取当前筛选的统计" : "尚未读取当前筛选的统计" };
+  }
+  const value = (counts) => {
+    if (!counts || typeof counts !== "object" || Array.isArray(counts)) return null;
+    const raw = Object.hasOwn(counts, category) ? counts[category] : 0;
+    if (raw == null || raw === "" || !Number.isFinite(Number(raw)) || Number(raw) < 0) return null;
+    return Math.floor(Number(raw)).toLocaleString("zh-CN");
+  };
+  // The legacy category_counts is pre-tier: it cannot represent this view.
+  const opportunities = value(stats.visible_category_counts);
+  const companies = value(stats.visible_category_company_counts);
+  if (opportunities == null) return { text: "—", status: "unavailable", title: "当前筛选统计尚不可用；未使用旧分类总数代替" };
+  return {
+    text: view === "companies" ? `${companies ?? "—"}组 · ${opportunities}条` : `${opportunities}条`,
+    status: view === "companies" && companies == null ? "unavailable" : "ready",
+    title: view === "companies"
+      ? "当前筛选范围的企业展示分组数与机会条数；集团展示分组不改变实际招聘单位"
+      : "当前筛选范围的机会条数；不是监控企业数量",
+  };
+}
+
 export function futureRadarCoverageCopy(scope = {}, coverage = null, status = "pending") {
   const count = (value) => Math.max(0, Math.floor(Number(value) || 0));
   const targets = count(scope.target_count);

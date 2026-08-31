@@ -1926,9 +1926,10 @@ class RadarRepository:
         prepare: Callable[[dict[str, Any]], dict[str, Any]],
         company_aliases: dict[str, str], cache_scope: str | None,
     ) -> _PreparedOpportunityPool:
-        # Tier/view/company/page changes project the same complete scored set.
+        # Priority/tier/view/company/page changes project the same complete
+        # scored set; switching browse scope must not rerun full-pool scoring.
         base_filters = {key: value for key, value in filters.items()
-                        if key not in {"tier_code", "view", "company_key", "page", "page_size"}}
+                        if key not in {"priority_only", "tier_code", "view", "company_key", "page", "page_size"}}
 
         def build() -> _PreparedOpportunityPool:
             return self._prepare_opportunity_pool(
@@ -1989,13 +1990,27 @@ class RadarRepository:
                 category = str(item.get("primary_category") or "uncategorized")
                 category_counts[category] = category_counts.get(category, 0) + 1
         matching_total = len(items)
+        # Facets and scope totals intentionally describe the company/base
+        # match before priority or single-tier selection, as tier_counts and
+        # category_counts did before the focused browse option was added.
+        # Focusing is a read-only projection: secondary records stay available
+        # through the ordinary all/below-priority list and detail endpoints.
+        secondary_total = tier_counts["BELOW_PRIORITY"]
+        priority_total = matching_total - secondary_total
+        if filters.get("priority_only"):
+            items = tuple(item for item in items if item["tier_bucket"] != "BELOW_PRIORITY")
         if filters.get("tier_code"):
             items = [item for item in items if item["tier_bucket"] == filters["tier_code"]]
         verification = {key: 0 for key in ("pending", "verified", "conflicted", "rejected")}
         statuses = {key: 0 for key in ("open", "closed", "unknown")}
+        visible_category_counts: dict[str, int] = {}
+        visible_category_companies: dict[str, set[str]] = {}
         for item in items:
             verification[str(item.get("verification_status") or "pending")] += 1
             statuses[str(item.get("status") or "unknown")] += 1
+            category = str(item.get("primary_category") or "uncategorized")
+            visible_category_counts[category] = visible_category_counts.get(category, 0) + 1
+            visible_category_companies.setdefault(category, set()).add(item["display_company_key"])
         companies = self._opportunity_company_groups(items)
         unknown_companies = sum(company["grouping"] == "unknown" for company in companies)
         view = "companies" if filters.get("view") == "companies" else "jobs"
@@ -2009,6 +2024,7 @@ class RadarRepository:
             "total_opportunities": len(items), "total_companies": len(companies),
             "stats": {
                 "total_opportunities": len(items), "matching_total": matching_total,
+                "priority_total": priority_total, "secondary_total": secondary_total,
                 "total_companies": len(companies),
                 "known_company_count": len(companies) - unknown_companies,
                 "unknown_company_count": unknown_companies,
@@ -2017,6 +2033,13 @@ class RadarRepository:
                 "verification_status": verification, "job_status": statuses,
                 "tier_counts": tier_counts, "category_counts": category_counts,
                 "primary_category": dict(category_counts),
+                # These counts describe the actual visible subset, not the
+                # wider facets or monitored-employer directory. A display
+                # company may occur in several categories, once within each.
+                "visible_category_counts": visible_category_counts,
+                "visible_category_company_counts": {
+                    category: len(keys) for category, keys in visible_category_companies.items()
+                },
                 "source_count": len({
                     source["source_id"] for item in items for source in item.get("sources", [])
                 }),

@@ -76,7 +76,11 @@ Deep Scan 使用与左侧分类一致的 `PERSONAL_MONITOR_POOLS`。当前十类
 
 ### 统一机会池、企业浏览与分类修复
 
-登录后的前端使用 `/api/future-radar/opportunities` 同时展示可操作的公开线索和已核验记录，并保留各自的真实核验标记；上面的 `/jobs` 和 `/search-updates` 仍是兼容接口。前端默认 `view=companies`，后端 API 默认 `view=jobs`。星域、T 级、城市、来源和关键词筛选先作用于全池，再计算 `total_companies`、`total_opportunities` 和分页。企业页每页默认 20 组；展开时用 `company_key` 加相同筛选条件读取具体岗位，不把企业全部岗位拼回已筛选结果。
+登录后的前端使用 `/api/future-radar/opportunities` 同时展示可操作的公开线索和已核验记录，并保留各自的真实核验标记；上面的 `/jobs` 和 `/search-updates` 仍是兼容接口。前端默认“重点机会”及 `view=companies`，重点范围为 T0–T3 加未评分线索；“全部记录”和“次级机会”仍可回看同一机会池中的低分记录。后端 API 默认 `view=jobs`、`priority_only=false` 不变，前端的重点范围显式发送 `priority_only=true`。星域、城市、来源和关键词先限定完整基础集合，再应用重点范围及 T 级筛选，最后计算 `total_companies`、`total_opportunities` 和分页。企业页每页默认 20 组；展开时用 `company_key` 加相同筛选条件读取具体岗位，不把企业全部岗位拼回已筛选结果。
+
+重点范围只是读取投影：不改评分、不删除底表记录，也不会把未评分或未核验线索升级为已确认岗位。`priority_only=true` 与 `tier_code=BELOW_PRIORITY` 同时指定时按交集返回空集。切换重点、全部、T 级、企业浏览及页码共享同一完整评分快照，不重复触发全池评分。
+
+响应 `stats.priority_total` / `secondary_total` 是基础筛选和指定企业范围内、应用重点及 T 级筛选之前的两类数量；既有 `tier_counts` / `category_counts` 保留基础集合的分面统计。`visible_category_counts` 和 `visible_category_company_counts` 则在最终筛选后、分页前统计机会条数与每类去重后的展示企业组数，供侧栏显示“组／条”；同一展示企业可能出现在多个类别，不能跨类别直接累加为全池企业数。切换筛选或请求失败时界面不把旧快照的侧栏数量冒充新条件结果；保留旧快照会明确标注，企业展开失败提供重试说明。
 
 企业归组只影响浏览。原招聘主体、总部／分支、具体岗位评分及投递链接不变。Workday 的强身份包含严格校验的 tenant、招聘站点、招聘实体、完整 R/JR 职位号及独立届次判断；只有这些身份一致时才忽略 locale、标题 slug 和待确认城市。不同职位号不再回退到标题合并，冲突的官方／申请职位号保持隔离。共用招聘首页的不同项目范围不合并。合并仅发生在读取展示层，底表记录、来源、原 ID 详情别名和官方关闭状态优先级均保留。
 

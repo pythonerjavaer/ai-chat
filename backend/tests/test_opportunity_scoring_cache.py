@@ -183,6 +183,119 @@ def test_tier_and_page_switches_score_all_once_with_exact_full_counts(harness):
     assert len(harness.prepared) == 57
 
 
+def test_priority_tier_view_and_company_projections_share_scores_and_keep_secondary_details(harness):
+    rows = [
+        ("top-alpha", "Alpha", "internet_tech"),
+        ("regular-alpha", "Alpha", "internet_tech"),
+        ("unranked-alpha", "Alpha", "policy_state_banks"),
+        ("secondary-alpha", "Alpha", "state_tech_telecom"),
+        ("top-beta", "Beta", "policy_state_banks"),
+        ("secondary-carrier", "中国电信", "state_tech_telecom"),
+        ("unranked-bank", "示例银行", "policy_state_banks"),
+    ]
+    saved = {
+        key: harness.insert(key, company=company, primary_category=category)
+        for key, company, category in rows
+    }
+
+    def prepare(row):
+        item = harness.prepare(row)
+        if row["external_id"].startswith("secondary-"):
+            item["tier_code"] = "不建议投"
+        elif row["external_id"].startswith("unranked-"):
+            item["tier_code"] = None
+        return item
+
+    def project(**kwargs):
+        return harness.repository.list_opportunities(
+            public_url=public_url, prepare=prepare,
+            cache_scope="isolated-priority-projections", **kwargs,
+        )
+
+    full = project()
+    assert full["total"] == 7
+    focused = project(page_size=2, filters={"priority_only": True})
+    assert len(focused["items"]) == 2 and focused["total"] == 5
+    assert focused["stats"]["priority_total"] == 5
+    assert focused["stats"]["secondary_total"] == 2
+    assert focused["stats"]["visible_category_counts"] == {"internet_tech": 2, "policy_state_banks": 3}
+    assert focused["stats"]["visible_category_company_counts"] == {"internet_tech": 1, "policy_state_banks": 3}
+    project(page=2, page_size=2, filters={"priority_only": True})
+    groups = project(filters={"view": "companies", "priority_only": True})
+    assert groups["total_companies"] == 3
+    alpha_key = next(group["company_key"] for group in groups["items"] if group["company_name"] == "Alpha")
+    for priority_only in (False, True):
+        for tier in ("T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY"):
+            page = project(filters={"priority_only": priority_only, "tier_code": tier, "view": "companies"})
+            assert page["total_opportunities"] == (
+                0 if priority_only and tier == "BELOW_PRIORITY" else full["stats"]["tier_counts"][tier]
+            )
+    expanded = project(filters={"company_key": alpha_key, "priority_only": True})
+    assert expanded["total_opportunities"] == 3
+    assert expanded["stats"]["matching_total"] == 4
+    assert expanded["stats"]["priority_total"] == 3 and expanded["stats"]["secondary_total"] == 1
+    # Mutating one response must not corrupt another projection's counters.
+    focused["stats"]["visible_category_counts"]["internet_tech"] = 999
+    focused["stats"]["visible_category_company_counts"]["internet_tech"] = 999
+    assert project(filters={"priority_only": True})["stats"]["visible_category_counts"]["internet_tech"] == 2
+    assert project(filters={"priority_only": True})["stats"]["visible_category_company_counts"]["internet_tech"] == 1
+    detail = harness.repository.get_prepared_opportunity(
+        saved["secondary-carrier"]["id"], public_url=public_url, prepare=prepare,
+        cache_scope="isolated-priority-projections",
+    )
+    assert detail["tier_code"] == "不建议投"
+    assert detail["company"] == "中国电信"
+    assert {item["id"] for item in project()["items"]} == {row["id"] for row in saved.values()}
+    assert len(harness.prepared) == len(rows), "priority is only a projection of the same complete scored cache"
+
+
+def test_priority_projection_refreshes_after_native_scoring_category_and_status_changes(harness):
+    harness.insert("top-steady", company="Alpha", primary_category="internet_tech")
+    changed = harness.insert(
+        "other-changing", company="示例银行", primary_category="state_tech_telecom",
+        requirements="公开次级线索",
+    )
+
+    def prepare(row):
+        item = harness.prepare(row)
+        if row["requirements"] == "公开次级线索":
+            item["tier_code"] = "不建议投"
+        return item
+
+    def project(*, repository=None, **filters):
+        return (repository or harness.repository).list_opportunities(
+            public_url=public_url, prepare=prepare,
+            cache_scope="isolated-priority-mutations", filters={"priority_only": True, **filters},
+        )
+
+    other_worker = RadarRepository(harness.connect)
+    assert project()["total_opportunities"] == project(repository=other_worker)["total_opportunities"] == 1
+    assert project()["stats"]["secondary_total"] == 1
+    before = revision(harness)
+    with other_worker.transaction() as connection:
+        # Simulate a source update without changing any timestamp or invoking
+        # a repository invalidation hook; database revisions own invalidation.
+        connection.execute(
+            "UPDATE radar_jobs SET requirements=?, primary_category=? WHERE id=?",
+            ("新的公开资格条件", "policy_state_banks", changed["id"]),
+        )
+    assert revision(harness) != before
+    for repository in (harness.repository, other_worker):
+        fresh = project(repository=repository)
+        assert fresh["total_opportunities"] == fresh["stats"]["priority_total"] == 2
+        assert fresh["stats"]["secondary_total"] == 0
+        assert fresh["stats"]["visible_category_counts"] == {"internet_tech": 1, "policy_state_banks": 1}
+        assert fresh["stats"]["visible_category_company_counts"] == {"internet_tech": 1, "policy_state_banks": 1}
+    with other_worker.transaction() as connection:
+        connection.execute("UPDATE radar_jobs SET status='closed' WHERE id=?", (changed["id"],))
+    assert project()["total_opportunities"] == project(repository=other_worker)["total_opportunities"] == 1
+    archive = project(priority_only=False, status="all", active_only=False)
+    assert archive["total_opportunities"] == 2
+    assert next(item for item in archive["items"] if item["id"] == changed["id"])["status"] == "closed"
+    with harness.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) AS count FROM radar_jobs").fetchone()["count"] == 2
+
+
 def test_profile_user_rule_and_alias_keys_are_independent(harness):
     harness.insert("top-role")
     profile = {"target_roles": ["数据分析"], "updated_at": "same-second", "private_note": "PRIVATE_PROFILE_TEXT"}

@@ -111,7 +111,7 @@ test("unified opportunities refresh without needing a verified public event", ()
 });
 
 test("T-tier filters go to the unified backend and detail uses the same pool", () => {
-  assert.match(appSource, /tier_code: state\.recruitmentTierFilter === "ALL" \? "" : state\.recruitmentTierFilter/);
+  assert.match(appSource, /futureRadarTierQuery\(state\.recruitmentTierFilter\)/);
   assert.match(appSource, /api\(`\/future-radar\/opportunities\/\$\{encodeURIComponent\(job\.id\)\}`,\s*\{\s*timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS/);
   assert.match(indexSource, /id="future-radar-filter-verification"[^>]*><option value="">全部机会/);
 });

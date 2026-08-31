@@ -20,12 +20,40 @@ import {
   futureRadarRunErrorCopy,
   futureRadarRunSuccessCopy,
   futureRadarSourceErrorCopy,
+  futureRadarTierQuery,
+  futureRadarVisibleCategoryCount,
   isDefaultFutureRadarJobsView,
   jobTierBucket,
   mergeFutureRadarJobs,
   parseRadarRetryAfter,
   partitionJobsByPriority,
 } from "./recruitment-radar.js";
+
+test("focus is a server query including unranked opportunities, not a page-only T filter", () => {
+  for (const tier of ["FOCUS", "ALL", ...TIER_CODES, "UNRANKED", "BELOW_PRIORITY"]) {
+    const params = new URLSearchParams(buildFutureRadarJobsQuery({ filters: futureRadarTierQuery(tier) }));
+    assert.equal(params.get("priority_only"), String(tier === "FOCUS"));
+    assert.equal(params.get("tier_code"), ["FOCUS", "ALL"].includes(tier) ? null : tier);
+  }
+  assert.deepEqual(futureRadarTierQuery(), { priority_only: true, tier_code: "" });
+});
+
+test("category counts use post-filter opportunities and distinct display groups with explicit units", () => {
+  const stats = { category_counts: { state_tech_telecom: 2956 },
+    visible_category_counts: { state_tech_telecom: 12 },
+    visible_category_company_counts: { state_tech_telecom: 1 } };
+  assert.equal(futureRadarVisibleCategoryCount(stats, "state_tech_telecom", { view: "companies" }).text, "1组 · 12条");
+  assert.equal(futureRadarVisibleCategoryCount(stats, "state_tech_telecom", { view: "jobs" }).text, "12条");
+  assert.equal(futureRadarVisibleCategoryCount(stats, "policy_state_banks", { view: "companies" }).text, "0组 · 0条");
+  assert.equal(futureRadarVisibleCategoryCount({ category_counts: { state_tech_telecom: 2956 } }, "state_tech_telecom").text, "—");
+  assert.equal(futureRadarVisibleCategoryCount({ visible_category_counts: { state_tech_telecom: 12 } }, "state_tech_telecom", { view: "companies" }).text, "—组 · 12条");
+  for (const status of ["loading", "error", "unavailable"]) {
+    const result = futureRadarVisibleCategoryCount(stats, "state_tech_telecom", { view: "companies", status });
+    assert.equal(result.text, "—");
+    assert.equal(result.status, status);
+    assert.doesNotMatch(result.title, /2956|1组|12条/);
+  }
+});
 
 test("company coverage distinguishes configured scope from completed search", () => {
   const scope = { category_count: 10, list_entry_count: 218, target_count: 205 };

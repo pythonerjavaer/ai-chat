@@ -9,6 +9,7 @@ import {
   FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
   buildFutureRadarJobsQuery,
   futureRadarOpportunityErrorCopy,
+  futureRadarTierQuery,
 } from "./recruitment-radar.js";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
@@ -37,7 +38,7 @@ async function localServer(t, handler) {
 }
 
 function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null } = {}) {
-  const state = { token: null, recruitmentTierFilter: "ALL", futureRadar: {
+  const state = { token: null, recruitmentTierFilter: "FOCUS", futureRadar: {
     page: 1, pageSize: 50,
     filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "",
       status: DEFAULT_FUTURE_RADAR_STATUS, verification_status: "", source_id: "", event_type: "", sort: "changed",
@@ -51,7 +52,7 @@ function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null 
     state, API_BASE: base, Headers, FormData, AbortController,
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     FUTURE_RADAR_REQUEST_CONTROLLERS: new Set(),
-    FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, buildFutureRadarJobsQuery,
+    FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, buildFutureRadarJobsQuery, futureRadarTierQuery,
     selectedRecruitmentStarfields: () => categories,
     fetch: async (...args) => {
       const response = await fetch(...args);
@@ -95,7 +96,7 @@ test("real builder and API send the active main-pool GET without blank dates or 
   const data = await r.run("api(`/future-radar/opportunities?${futureRadarJobsQuery()}`, {timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS})");
   assert.equal(server.requests.length, 1);
   assert.deepEqual(server.requests[0], {
-    url: "/api/future-radar/opportunities?page=1&page_size=50&status=active&sort=changed&compact=true",
+    url: "/api/future-radar/opportunities?page=1&page_size=50&status=active&sort=changed&compact=true&priority_only=true",
     method: "GET", authorization: undefined,
   });
   assert.equal(data.total, 255);
@@ -120,6 +121,7 @@ test("real HTTP query preserves supported category, fractional T tier and dates"
   assert.equal(params.get("company"), "示例银行");
   assert.equal(params.get("page"), "2");
   assert.equal(params.get("tier_code"), "T0.5");
+  assert.equal(params.get("priority_only"), "false");
   assert.equal(params.get("verification_status"), "pending");
   assert.equal(params.get("closing_after"), "2026-08-30");
   assert.equal(params.has("opening_after"), false);

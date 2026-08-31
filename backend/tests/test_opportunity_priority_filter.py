@@ -1,0 +1,263 @@
+"""Priority is a reversible display projection, tested with synthetic SQLite rows.
+
+No application lifespan, real account, PostgreSQL, network, or configured DB.
+The large fixture is inserted in one transaction, not 2,700 separate commits.
+"""
+
+from __future__ import annotations
+
+import inspect
+import os
+from types import SimpleNamespace
+from typing import get_type_hints
+
+import pytest
+
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+os.environ.setdefault("OPENAI_API_KEY", "unused-priority-filter-test-key")
+os.environ.setdefault("JWT_SECRET", "isolated-priority-filter-test-secret-32-bytes")
+os.environ.setdefault("FUTURE_RADAR_ENABLED", "false")
+os.environ.setdefault("RECRUITMENT_REFRESH_MINUTES", "0")
+
+from backend.future_radar.repository import utc_now
+from backend.tests.test_opportunity_company_groups import pool  # noqa: F401 - shared SQLite fixture
+
+
+ELIGIBLE_TIERS = ("T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", None)
+TELECOM = "state_tech_telecom"
+TECH = "internet_tech"
+FINANCE = "insurance_integrated_finance"
+
+
+@pytest.fixture
+def priority_pool(pool):
+    repository = pool.repository
+    scores = {}
+    kinds = {}
+    sources = {key: repository.get_source(key) for key in ("public-fixture", "other-fixture")}
+
+    def insert_many(specifications):
+        now = utc_now()
+        with repository.transaction() as connection:
+            for specification in specifications:
+                specification = dict(specification)
+                key = specification.pop("key")
+                scores[key] = specification.pop("tier", "T2")
+                kinds[key] = specification.pop("listing_kind", "job")
+                source_id = specification.pop("source_id", "public-fixture")
+                # Synthetic serials such as 2000 must not look like cohorts to
+                # the existing title identity normalizer and collapse 100 jobs.
+                title_key = key.translate(str.maketrans("0123456789", "abcdefghij"))
+                item = {
+                    "external_id": key, "company": "合成测试企业",
+                    "title": f"2027校园招聘数据分析岗 {title_key}", "city": "上海",
+                    "region": "中国大陆", "primary_category": TECH,
+                    "status": "unknown", "verification_status": "pending",
+                    "requirements": "面向2027届毕业生的合成公开测试岗位。",
+                    "official_url": f"https://careers.example.invalid/campus/{key}",
+                    "opening_date": None, "closing_date": None,
+                    "tags": ["校园招聘", "2027届"], "content_hash": key,
+                    **specification,
+                }
+                saved = repository.insert_job(
+                    connection, item, source_id=source_id, program_id=None, now=now,
+                )
+                repository.link_job_source(
+                    connection, job_id=saved["id"], source=sources[source_id],
+                    source_url=item["official_url"], now=now,
+                    verification_role="discovery" if source_id == "public-fixture" else "verification",
+                )
+
+    def prepare(row):
+        return {key: row.get(key) for key in (
+            "id", "external_id", "company", "title", "city", "primary_category",
+            "status", "verification_status", "official_url", "opening_date", "closing_date",
+            "last_changed_at", "sources",
+        )} | {"tier_code": scores[row["external_id"]], "listing_kind": kinds[row["external_id"]]}
+
+    def get(*, filters=None, **kwargs):
+        return repository.list_opportunities(
+            public_url=pool.public_url, prepare=prepare,
+            cache_scope="isolated-priority-filter-fixture",
+            filters={"status": "active", **(filters or {})}, **kwargs,
+        )
+
+    return SimpleNamespace(
+        repository=repository, insert_many=insert_many, get=get,
+        prepare=prepare, public_url=pool.public_url,
+    )
+
+
+def test_large_priority_projection_filters_before_grouping_and_paging_without_deleting_rows(priority_pool):
+    p = priority_pool
+    secondary = [{
+        "key": f"secondary-{index:04d}", "tier": "不建议投",
+        "company": "中国联合网络通信集团有限公司", "primary_category": TELECOM,
+    } for index in range(2500)]
+    eligible = [{
+        "key": f"eligible-{index:03d}", "tier": ELIGIBLE_TIERS[index % 8],
+        "company": f"合成企业{index // 4:03d}",
+        "primary_category": TECH if index % 2 == 0 else FINANCE,
+        "listing_kind": "recruitment_program" if index % 16 == 15 else "job",
+    } for index in range(200)]
+    p.insert_many(secondary + eligible)
+
+    all_jobs = p.get(page_size=50)
+    all_companies = p.get(page_size=20, filters={"view": "companies"})
+    assert all_jobs["total"] == all_jobs["total_opportunities"] == 2700
+    assert all_companies["total"] == all_companies["total_companies"] == 51
+    assert all_companies["total_opportunities"] == 2700
+    assert all_jobs["stats"]["priority_total"] == 200
+    assert all_jobs["stats"]["secondary_total"] == 2500
+    assert all_jobs["stats"]["category_counts"] == {TELECOM: 2500, TECH: 100, FINANCE: 100}
+    assert all_jobs["stats"]["visible_category_company_counts"] == {TELECOM: 1, TECH: 50, FINANCE: 50}
+
+    job_pages = [p.get(page=page, page_size=50, filters={"priority_only": True}) for page in range(1, 5)]
+    jobs = [row for page in job_pages for row in page["items"]]
+    assert len(jobs) == len({row["id"] for row in jobs}) == 200
+    assert all(row["external_id"].startswith("eligible-") for row in jobs)
+    assert {row["tier_bucket"] for row in jobs} == {"T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED"}
+    assert sum(row["listing_kind"] == "recruitment_program" for row in jobs) == 12
+    assert all(page["total"] == 200 and len(page["items"]) == 50 for page in job_pages)
+
+    company_pages = [p.get(page=page, page_size=17, filters={
+        "view": "companies", "priority_only": True,
+    }) for page in range(1, 4)]
+    companies = [row for page in company_pages for row in page["items"]]
+    assert [len(page["items"]) for page in company_pages] == [17, 17, 16]
+    assert len(companies) == len({row["company_key"] for row in companies}) == 50
+    assert sum(row["opportunity_count"] for row in companies) == 200
+    assert not any(row["grouping"] == "telecom_group" for row in companies)
+    for result in [*job_pages, *company_pages]:
+        assert result["total_opportunities"] == 200
+        assert result["total_companies"] == 50
+        stats = result["stats"]
+        assert stats["priority_total"] == 200 and stats["secondary_total"] == 2500
+        assert stats["tier_counts"] == all_jobs["stats"]["tier_counts"]
+        assert stats["category_counts"] == all_jobs["stats"]["category_counts"]
+        assert stats["visible_category_counts"] == {TECH: 100, FINANCE: 100}
+        # Each of these 50 companies has both categories: this is not 100 companies.
+        assert stats["visible_category_company_counts"] == {TECH: 50, FINANCE: 50}
+
+    below = p.get(page=50, page_size=50, filters={"priority_only": False, "tier_code": "BELOW_PRIORITY"})
+    assert below["total"] == 2500 and len(below["items"]) == 50
+    assert all(row["tier_bucket"] == "BELOW_PRIORITY" for row in below["items"])
+    below_companies = p.get(filters={"view": "companies", "tier_code": "BELOW_PRIORITY"})
+    assert below_companies["total"] == 1 and below_companies["items"][0]["opportunity_count"] == 2500
+    assert p.get(filters={"priority_only": False})["total"] == 2700
+    with p.repository._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM radar_jobs").fetchone()[0] == 2700
+        assert connection.execute(
+            "SELECT COUNT(*) FROM radar_jobs WHERE external_id LIKE 'secondary-%' "
+            "AND status='unknown' AND verification_status='pending'"
+        ).fetchone()[0] == 2500
+        assert connection.execute("SELECT COUNT(*) FROM job_sources WHERE active=1").fetchone()[0] == 2700
+
+
+@pytest.mark.parametrize("tier", ["T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY"])
+def test_priority_retains_every_eligible_tier_and_is_conjunctive_with_below(priority_pool, tier):
+    p = priority_pool
+    p.insert_many([{"key": f"tier-{index}", "tier": value} for index, value in enumerate((*ELIGIBLE_TIERS, "不建议投"))])
+    all_tier = p.get(filters={"tier_code": tier})
+    assert all_tier["total"] == 1 and all_tier["items"][0]["tier_bucket"] == tier
+    for view in ("jobs", "companies"):
+        result = p.get(filters={"priority_only": True, "tier_code": tier, "view": view})
+        expected = 0 if tier == "BELOW_PRIORITY" else 1
+        assert result["total"] == result["total_opportunities"] == expected
+        assert result["total_companies"] == expected
+        stats = result["stats"]
+        assert stats["priority_total"] == 8 and stats["secondary_total"] == 1
+        assert stats["tier_counts"] == all_tier["stats"]["tier_counts"]
+        assert stats["category_counts"] == {TECH: 9}
+        assert stats["visible_category_counts"] == ({TECH: 1} if expected else {})
+        assert stats["visible_category_company_counts"] == ({TECH: 1} if expected else {})
+
+
+def test_company_expansion_applies_base_filters_then_priority_and_tier(priority_pool):
+    p = priority_pool
+    root = "中国联合网络通信集团有限公司"
+    branch = "中国联合网络通信有限公司安徽省分公司"
+    common = {"company": root, "primary_category": TELECOM}
+    p.insert_many([
+        {**common, "key": "scope-hit-ranked", "tier": "T1"},
+        {**common, "key": "scope-hit-unranked", "tier": None, "company": branch, "primary_category": TECH},
+        {**common, "key": "scope-hit-secondary", "tier": "不建议投"},
+        {**common, "key": "scope-hit-other-city", "tier": "T0", "city": "北京"},
+        {**common, "key": "scope-hit-other-source", "tier": "T0", "source_id": "other-fixture", "verification_status": "verified"},
+        {**common, "key": "different-search", "tier": "T0"},
+        {**common, "key": "scope-hit-closed", "tier": "T0", "status": "closed"},
+        {**common, "key": "scope-hit-other-category", "tier": "T0", "primary_category": FINANCE},
+        {**common, "key": "scope-hit-other-employer", "tier": "T0", "company": "另一家合成科技企业"},
+    ])
+    filters = {
+        "priority_only": True, "status": "active", "active_only": True,
+        "source_id": "public-fixture", "city": "上海", "q": "scope-hit",
+        "primary_categories": [TELECOM, TECH],
+    }
+    groups = p.get(filters={**filters, "view": "companies"})
+    assert groups["total_companies"] == 2 and groups["total_opportunities"] == 3
+    carrier = next(row for row in groups["items"] if row["grouping"] == "telecom_group")
+    assert carrier["opportunity_count"] == 2
+    expanded = p.get(filters={**filters, "company_key": carrier["company_key"], "tier_code": "UNRANKED"})
+    assert expanded["total"] == expanded["total_opportunities"] == expanded["total_companies"] == 1
+    assert expanded["items"][0]["company"] == branch
+    assert expanded["items"][0]["external_id"] == "scope-hit-unranked"
+    stats = expanded["stats"]
+    assert stats["priority_total"] == 2 and stats["secondary_total"] == 1
+    assert stats["category_counts"] == {TELECOM: 2, TECH: 1}
+    assert stats["tier_counts"]["T1"] == stats["tier_counts"]["UNRANKED"] == stats["tier_counts"]["BELOW_PRIORITY"] == 1
+    assert stats["visible_category_counts"] == {TECH: 1}
+    assert stats["visible_category_company_counts"] == {TECH: 1}
+    assert p.get(filters={**filters, "company_key": carrier["company_key"], "tier_code": "BELOW_PRIORITY"})["total"] == 0
+    secondary = p.get(filters={**filters, "priority_only": False, "company_key": carrier["company_key"], "tier_code": "BELOW_PRIORITY"})
+    assert secondary["total"] == 1 and secondary["items"][0]["external_id"] == "scope-hit-secondary"
+
+
+def test_api_priority_bool_defaults_false_and_validates_without_real_auth_or_lifespan(priority_pool, monkeypatch):
+    from fastapi import Depends, FastAPI
+    from fastapi.params import Query
+    from fastapi.testclient import TestClient
+    from backend import main
+
+    p = priority_pool
+    p.insert_many([{"key": "api-priority", "tier": "T2"}, {"key": "api-secondary", "tier": "不建议投"}])
+    monkeypatch.setattr(main, "future_radar_service", SimpleNamespace(repository=p.repository))
+    monkeypatch.setattr(main.database, "get_recruitment_profile", lambda _id: {})
+    monkeypatch.setattr(main, "_public_reference_url", p.public_url)
+    monkeypatch.setattr(main, "_public_radar_opportunity", lambda row, _profile: p.prepare(row))
+    monkeypatch.setattr(main, "_radar_company_aliases", lambda: {})
+    monkeypatch.setattr(main, "_radar_scoring_scope", lambda _id, _profile: "isolated-priority-api")
+    monkeypatch.setattr(main, "_radar_search_metadata", lambda: {})
+
+    original = main.future_radar_opportunities
+    signature = inspect.signature(original)
+    annotations = get_type_hints(original, include_extras=True)
+    parameter = signature.parameters["priority_only"]
+    default = parameter.default.default if isinstance(parameter.default, Query) else parameter.default
+    assert default is False and annotations["priority_only"] is bool
+
+    def synthetic_user():
+        return {"id": 0}
+
+    def endpoint(**kwargs):
+        return original(**kwargs)
+
+    # Keep the real query annotations/defaults and handler, replacing only auth.
+    # This fresh ASGI app has no application startup or configured DB dependency.
+    parameters = [parameter.replace(annotation=dict, default=Depends(synthetic_user)) if name == "user"
+                  else parameter.replace(annotation=annotations.get(name, parameter.annotation))
+                  for name, parameter in signature.parameters.items()]
+    endpoint.__signature__ = signature.replace(parameters=parameters, return_annotation=annotations.get("return", inspect.Signature.empty))
+    app = FastAPI()
+    app.get("/opportunities")(endpoint)
+    with TestClient(app) as client:
+        for params, expected in (({}, 2), ({"priority_only": "false"}, 2), ({"priority_only": "true"}, 1)):
+            response = client.get("/opportunities", params=params)
+            assert response.status_code == 200, response.text
+            result = response.json()
+            assert result["total"] == expected
+            assert result["stats"]["priority_total"] == result["stats"]["secondary_total"] == 1
+        groups = client.get("/opportunities", params={"priority_only": "true", "view": "companies"}).json()
+        assert groups["total_companies"] == groups["total_opportunities"] == 1
+        assert client.get("/opportunities", params={"priority_only": "true", "tier_code": "BELOW_PRIORITY"}).json()["total"] == 0
+        assert client.get("/opportunities", params={"priority_only": "not-a-boolean"}).status_code == 422
