@@ -16,6 +16,7 @@ import {
   FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
   TIER_CODES,
   buildFutureRadarJobsQuery,
+  buildFutureRadarCompanyJobsQuery,
   canonicalStarfieldCode,
   createCoalescedRadarReload,
   filterJobsByStarfields,
@@ -124,12 +125,17 @@ const state = {
   recruitmentSyncStatus: null,
   futureRadar: {
     dashboard: null,
+    view: "companies",
+    companies: [],
+    totalCompanies: 0,
+    deadlineJobs: [],
+    companyExpansions: new Map(),
     jobs: [],
     jobsLoaded: false,
     jobsError: "",
     totalJobs: 0,
     page: 1,
-    pageSize: 50,
+    pageSize: 20,
     opportunityStats: {},
     jobsRequestId: 0,
     jobsLoading: false,
@@ -138,7 +144,9 @@ const state = {
     jobsRequestPromise: null,
     jobsAppliedQuery: "",
     jobsAppliedTier: "ALL",
+    jobsAppliedView: "companies",
     jobsAppliedPage: 1,
+    jobsAppliedPageSize: 20,
     pollOpportunityController: null,
     snapshotRequestId: 0,
     searchScope: {},
@@ -892,12 +900,21 @@ function endFutureRadarSession(expired = false) {
   state.futureRadar.jobsRequestQuery = "";
   state.futureRadar.jobsAppliedQuery = "";
   state.futureRadar.jobsAppliedTier = "ALL";
+  state.futureRadar.jobsAppliedView = "companies";
   state.futureRadar.jobsAppliedPage = 1;
+  state.futureRadar.jobsAppliedPageSize = 20;
   state.futureRadar.jobsLoading = false;
   state.futureRadar.loading = false;
   state.futureRadar.polling = false;
   state.futureRadar.jobsLoaded = false;
   state.futureRadar.jobs = [];
+  state.futureRadar.view = "companies";
+  state.futureRadar.page = 1;
+  state.futureRadar.pageSize = 20;
+  state.futureRadar.companies = [];
+  state.futureRadar.deadlineJobs = [];
+  state.futureRadar.totalCompanies = 0;
+  resetFutureRadarCompanyExpansions();
   state.futureRadar.totalJobs = 0;
   state.futureRadar.opportunityStats = {};
   state.futureRadar.activeRunTypes.clear();
@@ -2406,7 +2423,7 @@ function renderFutureRadarOpportunityStatus() {
     setRecruitmentStatus("主机会池尚未读取；待核验线索与官网确认机会在同一池展示。");
   } else {
     const counts = radar.opportunityStats?.verification_status || {};
-    setRecruitmentStatus(`主机会池 · 当前筛选 ${count(radar.totalJobs)} 个机会 · 官网已确认 ${count(counts.verified)} · 待核验 ${count(counts.pending)} · 信息有差异 ${count(counts.conflicted)}`);
+    setRecruitmentStatus(`主机会池 · 当前筛选 ${count(radar.totalJobs)} 个机会${radar.totalCompanies == null ? "" : ` · ${count(radar.totalCompanies)} 个企业分组`} · 官网已确认 ${count(counts.verified)} · 待核验 ${count(counts.pending)} · 信息有差异 ${count(counts.conflicted)}`);
   }
 }
 
@@ -2944,6 +2961,7 @@ function renderFutureRadarOpportunityOverview() {
   const counts = stats.verification_status || {};
   const count = (value) => Math.max(0, Number(value) || 0).toLocaleString("zh-CN");
   elements.futureRadarOpportunitySummary?.replaceChildren(
+    ...(state.futureRadar.totalCompanies == null ? [] : [makeElement("article", "", `企业分组 ${count(state.futureRadar.totalCompanies)} · 机会 ${count(state.futureRadar.totalJobs)}`)]),
     makeElement("article", "verified", `官网已确认 ${count(counts.verified)}`),
     makeElement("article", "pending", `聊天 / 搜索发现 ${count(counts.pending)}`),
     makeElement("article", "conflicted", `信息有差异 ${count(counts.conflicted)}`),
@@ -3264,13 +3282,16 @@ function mergeFutureRadarEvents(incoming, payload = null) {
 
 function renderFutureRadarPagination() {
   if (!elements.futureRadarPagination) return;
-  const totalPages = Math.max(1, Math.ceil(state.futureRadar.totalJobs / Math.max(1, state.futureRadar.pageSize)));
+  const companyView = (state.futureRadar.jobsError ? state.futureRadar.jobsAppliedView : state.futureRadar.view) === "companies";
+  const total = companyView ? state.futureRadar.totalCompanies : state.futureRadar.totalJobs;
+  const pageSize = state.futureRadar.jobsError ? state.futureRadar.jobsAppliedPageSize || state.futureRadar.pageSize : state.futureRadar.pageSize;
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
   elements.futureRadarPageStatus.textContent = futureRadarSelectionIsPending()
     ? `正在读取${futureRadarTierLabel()}的全池结果…`
-    : `第 ${state.futureRadar.jobsError ? state.futureRadar.jobsAppliedPage || 1 : state.futureRadar.page} / ${totalPages} 页 · ${state.futureRadar.jobsError ? "上次成功快照" : "当前筛选"} ${state.futureRadar.totalJobs.toLocaleString("zh-CN")} 个机会`;
-  elements.futureRadarPagePrev.disabled = state.futureRadar.jobsLoading || state.futureRadar.page <= 1;
-  elements.futureRadarPageNext.disabled = state.futureRadar.jobsLoading || state.futureRadar.page >= totalPages;
-  elements.futureRadarPagination.classList.toggle("hidden", state.futureRadar.totalJobs <= state.futureRadar.pageSize);
+    : `第 ${state.futureRadar.jobsError ? state.futureRadar.jobsAppliedPage || 1 : state.futureRadar.page} / ${totalPages} 页 · ${state.futureRadar.jobsError ? "上次成功快照" : "当前筛选"} ${Number(total || 0).toLocaleString("zh-CN")} ${companyView ? "个企业分组" : "个机会"}${companyView ? ` · ${state.futureRadar.totalJobs.toLocaleString("zh-CN")} 个机会` : ""}`;
+  elements.futureRadarPagePrev.disabled = state.futureRadar.jobsLoading || Boolean(state.futureRadar.jobsError) || state.futureRadar.page <= 1;
+  elements.futureRadarPageNext.disabled = state.futureRadar.jobsLoading || Boolean(state.futureRadar.jobsError) || state.futureRadar.page >= totalPages;
+  elements.futureRadarPagination.classList.toggle("hidden", total <= pageSize);
   if (elements.futureRadarOpportunityRefresh) {
     elements.futureRadarOpportunityRefresh.disabled = state.futureRadar.jobsLoading;
     elements.futureRadarOpportunityRefresh.textContent = state.futureRadar.jobsLoading ? "读取机会中…" : "刷新机会 ↻";
@@ -3284,11 +3305,16 @@ function recordFutureRadarOpportunityFailure(error) {
 
 function applyFutureRadarJobsPayload(payload, query = futureRadarJobsQuery()) {
   const previousError = state.futureRadar.jobsError;
-  state.futureRadar.jobs = radarCollection(payload, ["opportunities", "jobs"]);
+  const params = new URLSearchParams(query);
+  const view = (payload.view || params.get("view")) === "companies" ? "companies" : "jobs";
+  state.futureRadar.companies = view === "companies" ? radarCollection(payload, ["companies"]) : [];
+  state.futureRadar.jobs = view === "jobs" ? radarCollection(payload, ["opportunities", "jobs"]) : [];
+  state.futureRadar.deadlineJobs = view === "companies" ? payload.deadline_opportunities || [] : [];
   state.futureRadar.jobsLoaded = true;
   state.futureRadar.jobsError = "";
   state.futureRadar.jobsAppliedQuery = query;
-  state.futureRadar.jobsAppliedTier = new URLSearchParams(query).get("tier_code") || "ALL";
+  state.futureRadar.jobsAppliedTier = params.get("tier_code") || "ALL";
+  state.futureRadar.jobsAppliedView = view;
   if (previousError && elements.futureRadarError?.textContent === previousError) {
     elements.futureRadarError.textContent = "";
     elements.futureRadarError.classList.add("hidden");
@@ -3297,10 +3323,14 @@ function applyFutureRadarJobsPayload(payload, query = futureRadarJobsQuery()) {
     elements.futureRadarLiveState.className = "radar-live-state healthy";
     elements.futureRadarLiveState.replaceChildren(makeElement("i"), document.createTextNode("主机会池已恢复"));
   }
-  state.futureRadar.totalJobs = radarNumber(payload, ["total"], state.futureRadar.jobs.length);
+  state.futureRadar.totalJobs = radarNumber(payload, ["total_opportunities"], view === "jobs"
+    ? radarNumber(payload, ["total"], state.futureRadar.jobs.length)
+    : payload.stats?.total_opportunities || 0);
+  state.futureRadar.totalCompanies = radarNumber(payload, ["total_companies"], payload.stats?.total_companies ?? null);
   state.futureRadar.page = radarNumber(payload, ["page"], state.futureRadar.page);
   state.futureRadar.jobsAppliedPage = state.futureRadar.page;
   state.futureRadar.pageSize = radarNumber(payload, ["page_size"], state.futureRadar.pageSize);
+  state.futureRadar.jobsAppliedPageSize = state.futureRadar.pageSize;
   state.futureRadar.opportunityStats = payload.stats || {};
   state.futureRadar.searchScope = payload.scope || state.futureRadar.searchScope;
   state.futureRadar.searchCoverage = payload.coverage ?? state.futureRadar.searchCoverage;
@@ -3313,9 +3343,14 @@ function futureRadarJobsQuery(page = state.futureRadar.page) {
   return buildFutureRadarJobsQuery({
     page,
     pageSize: state.futureRadar.pageSize,
-    filters: { ...state.futureRadar.filters, compact: true, tier_code: state.recruitmentTierFilter === "ALL" ? "" : state.recruitmentTierFilter },
+    filters: { ...state.futureRadar.filters, compact: true, view: state.futureRadar.view || "", tier_code: state.recruitmentTierFilter === "ALL" ? "" : state.recruitmentTierFilter },
     categories: selectedRecruitmentStarfields(),
   });
+}
+
+function resetFutureRadarCompanyExpansions() {
+  for (const entry of state.futureRadar.companyExpansions?.values() || []) entry.controller?.abort();
+  state.futureRadar.companyExpansions = new Map();
 }
 
 function futureRadarTierLabel(tier = state.recruitmentTierFilter) {
@@ -3392,7 +3427,8 @@ function resetFutureRadarFilters() {
 
 async function loadFutureRadarJobPage(page, force = false, { scroll = true, delayMs = 0 } = {}) {
   if (!state.token) return false;
-  const totalPages = Math.max(1, Math.ceil(state.futureRadar.totalJobs / Math.max(1, state.futureRadar.pageSize)));
+  const total = state.futureRadar.view === "companies" ? state.futureRadar.totalCompanies : state.futureRadar.totalJobs;
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, state.futureRadar.pageSize)));
   const requested = Math.max(1, Number(page) || 1);
   const nextPage = force ? requested : Math.min(totalPages, requested);
   const query = futureRadarJobsQuery(nextPage);
@@ -3404,6 +3440,7 @@ async function loadFutureRadarJobPage(page, force = false, { scroll = true, dela
   const superseded = Object.assign(new Error("筛选已切换。"), { code: "REQUEST_SUPERSEDED" });
   state.futureRadar.jobsRequestController?.abort(superseded);
   state.futureRadar.pollOpportunityController?.abort(superseded);
+  resetFutureRadarCompanyExpansions();
   const controller = new AbortController();
   state.futureRadar.jobsRequestController = controller;
   state.futureRadar.jobsRequestQuery = query;
@@ -3571,9 +3608,10 @@ async function pollFutureRadarEvents() {
     if (opportunityPayload && !state.futureRadar.jobsLoading
       && state.futureRadar.jobsRequestId === jobsRequestId
       && futureRadarJobsQuery() === opportunityQuery) {
-      const incomingJobs = radarCollection(opportunityPayload, ["opportunities", "jobs"]);
+      const companiesView = state.futureRadar.view === "companies";
+      const incomingJobs = radarCollection(opportunityPayload, companiesView ? ["companies"] : ["opportunities", "jobs"]);
       const listChanged = !state.futureRadar.jobsLoaded || Boolean(state.futureRadar.jobsError)
-        || JSON.stringify(incomingJobs) !== JSON.stringify(state.futureRadar.jobs)
+        || JSON.stringify(incomingJobs) !== JSON.stringify(companiesView ? state.futureRadar.companies : state.futureRadar.jobs)
         || JSON.stringify(opportunityPayload.stats || {}) !== JSON.stringify(state.futureRadar.opportunityStats);
       applyFutureRadarJobsPayload(opportunityPayload, opportunityQuery);
       if (listChanged) {
@@ -3827,14 +3865,17 @@ function renderRecruitmentMonitors(pools = []) {
 }
 
 function renderRecruitmentDeadlineAlerts(jobs) {
+  const companyView = state.futureRadar.jobsAppliedView === "companies";
+  if (companyView) jobs = state.futureRadar.deadlineJobs || [];
   elements.recruitmentDeadlineAlerts.replaceChildren();
+  if (futureRadarSelectionIsPending()) return;
   const reviewJobs = jobs.filter((job) => ["pending", "conflicted", "failed", "unknown"].includes(recruitmentVerification(job)));
   const verifiedJobs = jobs.filter((job) => recruitmentVerification(job) === "verified").map((job) => ({ ...job, days_left: recruitmentDaysLeft(job) }));
   const urgent = verifiedJobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 7);
   const dated = verifiedJobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0);
   const heading = document.createElement("strong");
   heading.textContent = urgent.length
-    ? `本页时间窗预警 · ${urgent.length} 个官网已确认机会将在 7 天内关闭`
+    ? `${companyView ? "当前筛选近期时间窗（最多 12 条）" : "本页时间窗预警"} · ${urgent.length} 个官网已确认机会将在 7 天内关闭`
     : dated.length
       ? "时间窗预警 · 暂无 7 天内关闭的已核验机会"
       : "时间窗预警 · 暂无原始公告明确标注截止日期，刷新后将自动核验";
@@ -3947,6 +3988,7 @@ function renderRecruitmentJobs(jobs) {
   if (showingSavedSnapshot) {
     elements.recruitmentJobs.appendChild(makeElement("p", "radar-load-error", state.futureRadar.jobsError));
   }
+  elements.recruitmentJobs.appendChild(createFutureRadarViewSelector());
   const sourceJobs = futureRadarDisplayJobs(jobs);
   const starfieldJobs = showingSavedSnapshot || pendingSelection ? sourceJobs : filterRecruitmentByStarfield(sourceJobs);
   const { priorityJobs, belowPriorityJobs, invalidJobs } = partitionJobsByPriority(starfieldJobs);
@@ -4005,6 +4047,17 @@ function renderRecruitmentJobs(jobs) {
     return selectRecruitmentTier("UNRANKED");
   });
   tierSummary.appendChild(unrankedButton);
+  const belowCount = tierCount("BELOW_PRIORITY", belowPriorityJobs.length);
+  if (belowCount || selectedTier === "BELOW_PRIORITY") {
+    const belowButton = makeElement("button", "job-tier-summary-item UNRANKED");
+    belowButton.type = "button";
+    belowButton.dataset.tier = "BELOW_PRIORITY";
+    belowButton.setAttribute("aria-pressed", String(selectedTier === "BELOW_PRIORITY"));
+    belowButton.classList.toggle("active", selectedTier === "BELOW_PRIORITY");
+    belowButton.append(makeElement("b", "", "次级机会"), makeElement("small", "", `低于 60 分 · ${belowCount}`));
+    belowButton.addEventListener("click", () => selectRecruitmentTier("BELOW_PRIORITY"));
+    tierSummary.appendChild(belowButton);
+  }
   elements.recruitmentJobs.appendChild(tierSummary);
   if (pendingSelection) {
     const loading = makeElement("div", "empty-list");
@@ -4020,6 +4073,18 @@ function renderRecruitmentJobs(jobs) {
   elements.recruitmentJobs.appendChild(
     makeElement("p", "job-tier-legend", `沿用岗位评价规则：T0 ≥90 · T0.5 85–89 · T1 80–84 · T1.5 75–79 · T2 70–74 · T2.5 65–69 · T3 60–64；信息不足列为“未评分”。上方数量统计全部符合当前检索条件的机会，选择 T 级会筛选整个池子，不限当前页${belowPriorityJobs.length ? `；本页 ${belowPriorityJobs.length} 个低于 60 分的机会保留在下方次级区` : ""}。`),
   );
+  const displayedView = showingSavedSnapshot ? state.futureRadar.jobsAppliedView : state.futureRadar.view;
+  if (displayedView === "companies") {
+    const companies = state.futureRadar.companies || [];
+    elements.recruitmentJobs.append(
+      makeElement("p", "job-tier-filter-result", `本页 ${companies.length} 个企业分组 · ${showingSavedSnapshot ? "上次成功快照（原筛选条件）" : "当前筛选"}共 ${state.futureRadar.totalCompanies || 0} 个企业分组 / ${state.futureRadar.totalJobs} 个机会`),
+      makeElement("p", "job-tier-legend", "企业按名称稳定分页；展开只显示符合当前 T 级、星域及搜索条件的机会，岗位沿用所选排序。运营商品牌归组仅用于浏览，不改变实际招聘单位或岗位评分；单位未知的线索分别展示。"),
+    );
+    if (!companies.length) {
+      elements.recruitmentJobs.appendChild(makeElement("div", "empty-list", "当前筛选没有匹配企业。可切换 T 级、星域或搜索条件；所有机会仍保留在池中。"));
+    } else companies.forEach((company) => elements.recruitmentJobs.appendChild(createFutureRadarCompanyCard(company)));
+    return;
+  }
   const displayedJobs = showingSavedSnapshot || selectedTier === "ALL"
     ? availableJobs
     : selectedTier === "UNRANKED"
@@ -4056,122 +4121,7 @@ function renderRecruitmentJobs(jobs) {
       makeElement("span", "", `本页 ${tierJobs.length} 个机会`),
     );
     group.appendChild(heading);
-    tierJobs.forEach((job) => {
-    const card = document.createElement("article");
-    card.className = "recruitment-job-card";
-    const dateCopy = futureRadarOpportunityDateCopy(job);
-    const daysLeft = dateCopy.verified ? recruitmentDaysLeft(job) : null;
-    const deadline = `${dateCopy.closing}${daysLeft == null ? "" : ` · ${daysLeft === 0 ? "今天截止" : `${daysLeft} 天后`}`}`;
-    const tierBucket = jobTierBucket(job);
-    const tierCode = tierOrder.includes(tierBucket) ? tierBucket : null;
-    const isRecruitmentProgram = job.listing_kind === "recruitment_program" || job.scoring_status === "unscored_program_listing";
-    const finalScore = tierCode ? finiteRadarScore(job.job_score ?? job.match_score) : null;
-    const verification = recruitmentVerification(job);
-    const origin = futureRadarOpportunitySource(job);
-    const top = makeElement("div", "job-card-top");
-    const labels = document.createElement("div");
-    labels.append(
-      makeElement("span", "job-company", job.company || "机会发布方"),
-      makeElement("span", "job-type", job.employer_type || "重点雇主"),
-      makeElement("span", `job-verification ${origin.tone}`, origin.label),
-    );
-    if (isRecruitmentProgram) labels.appendChild(makeElement("span", "job-type", "招聘项目"));
-    if (verification === "conflicted") labels.appendChild(makeElement("span", "job-verification warning", "信息有差异"));
-    const rank = makeElement("div", "job-rank");
-    if (tierCode) {
-      rank.append(
-        makeElement("span", "job-score", finalScore == null ? "已评分" : `${finalScore} 分`),
-        makeElement("span", `job-tier ${tierCode.replace(".", "-")}`, tierCode),
-      );
-    } else {
-      rank.appendChild(makeElement("span", "job-tier unranked", "未评分"));
-    }
-    top.append(labels, rank);
-    const bottom = makeElement("div", "job-card-bottom");
-    const jobUrl = recruitmentJobUrl(job);
-    if (/^https:\/\//.test(jobUrl)) {
-      const officialLink = makeElement("a", "", verification === "verified" ? (job.application_url ? "进入官方申请页 ↗" : "打开原始公告 ↗") : "打开招聘线索 ↗");
-      officialLink.href = jobUrl;
-      officialLink.target = "_blank";
-      officialLink.rel = "noreferrer";
-      bottom.appendChild(officialLink);
-    } else {
-      bottom.appendChild(makeElement("span", "job-link-pending", "官方入口待核验"));
-    }
-    const reason = document.createElement("details");
-    reason.className = "job-tier-reason";
-    reason.appendChild(makeElement("summary", "", tierCode ? "为什么是这个级别" : "评分状态与适配信息"));
-    const reasonBody = makeElement("div", "job-tier-reason-body");
-    const scoreGrid = makeElement("div", "job-fact-grid job-score-factor-grid");
-    const factorScores = [
-      ["FINAL TIER", tierCode || "未评分"],
-      ["FINAL SCORE", finalScore == null ? "—" : `${finalScore} / 100`],
-      ["EMPLOYER SCORE", tierCode ? finiteRadarScore(job.employer_score) : null],
-      ["ROLE SCORE", tierCode ? finiteRadarScore(job.role_score) : null],
-      ["CAREER VALUE", tierCode ? finiteRadarScore(job.career_value_score) : null],
-      ["JOB CONDITIONS", tierCode ? finiteRadarScore(job.job_condition_score) : null],
-    ];
-    factorScores.forEach(([label, value]) => {
-      scoreGrid.appendChild(makeElement("span", "", `${label} · ${value == null ? "—" : value}`));
-    });
-    const positiveList = makeElement("ul", "positive-reasons");
-    (job.positive_reasons || []).slice(0, 3).forEach((item) => positiveList.appendChild(makeElement("li", "", item)));
-    const negativeList = makeElement("ul", "negative-reasons");
-    (job.negative_reasons || []).slice(0, 2).forEach((item) => negativeList.appendChild(makeElement("li", "", item)));
-    const flags = (job.fit_tags || []).length
-      ? `适配标签：${job.fit_tags.join(" · ")}`
-      : "适配标签：等待更多官方岗位信息";
-    const conciseFactors = tierCode ? recruitmentScoringFactors(job) : [];
-    const factorList = makeElement("ul", "score-factor-reasons");
-    conciseFactors.forEach((item) => factorList.appendChild(makeElement("li", "", item)));
-    const organizationFactors = tierCode && job.organization_assessment
-      ? formatOrganizationAssessment(job.organization_assessment) : [];
-    const organizationList = makeElement("ul", "score-factor-reasons");
-    organizationFactors.forEach((item) => organizationList.appendChild(makeElement("li", "", item)));
-    reasonBody.append(
-      scoreGrid,
-      makeElement("strong", "", isRecruitmentProgram ? "这是招聘项目入口，具体岗位尚未拆分；不以公司等级代替岗位 T 级" : tierCode ? "按现有公司与岗位信息应用统一 T 级规则；排序不等于官网确认" : "岗位信息不足，暂未生成 T 级；机会仍然在主池展示"),
-      ...(organizationFactors.length ? [organizationList] : []),
-      ...(conciseFactors.length ? [makeElement("span", "", "评分依据"), factorList] : []),
-      makeElement("span", "", "主要加分"),
-      positiveList,
-      makeElement("span", "", "主要减分 / 待核对"),
-      negativeList,
-      makeElement("small", "", flags),
-    );
-    reason.appendChild(reasonBody);
-    const programName = job.program_name || job.recruitment_program?.name || job.program?.name;
-    const facts = makeElement("div", "job-fact-grid");
-    facts.append(
-      makeElement("span", "", `项目：${programName || "尚未归入招聘项目"}`),
-      makeElement("span", "", `状态：${radarStatusCopy(job.status || "unknown")}`),
-      makeElement("span", "", `首次发现：${formatRadarTime(job.first_seen_at, "待记录")}`),
-      makeElement("span", "", `最近变化：${formatRadarTime(job.last_changed_at || job.updated_at || job.last_verified_at, "待记录")}`),
-    );
-    const provenance = makeElement("div", "job-provenance");
-    provenance.append(
-      makeElement("span", "", `DISCOVERED BY · ${sourceDisplayValue(job.discovered_by || job.discovery_sources || job.source, "公开信号")}`),
-      makeElement("span", "", verification === "verified" ? `VERIFIED BY · ${sourceDisplayValue(job.verified_by || job.verification_sources, "官方来源")}` : origin.description),
-    );
-    card.append(
-      top,
-      makeElement("h4", "", job.title || "机会信号"),
-      makeElement("p", "job-meta", `${job.city || job.region || "地点待确认"} · ${job.industry || "行业待确认"} · ${deadline}`),
-      makeElement("p", "job-requirements", job.requirements || "请打开官方公告核对申请条件。"),
-      facts,
-      provenance,
-      ...(job.id ? [createFutureRadarOpportunityDetail(job)] : []),
-      reason,
-      bottom,
-    );
-    const watchButton = makeElement("button", "job-watch-button", "跟踪此公告变化");
-    watchButton.type = "button";
-    watchButton.disabled = !/^https:\/\//.test(jobUrl);
-    if (watchButton.disabled) watchButton.title = "等待官方公开链接核验后可建立监控";
-    watchButton.addEventListener("click", () => addRecruitmentWatchFromJob({ ...job, url: jobUrl }, watchButton));
-    bottom.appendChild(watchButton);
-      group.appendChild(card);
-    });
+    tierJobs.forEach((job) => group.appendChild(createRecruitmentJobCard(job)));
     elements.recruitmentJobs.appendChild(group);
   });
   if (showBelowPriority) {
@@ -4229,6 +4179,319 @@ function renderRecruitmentJobs(jobs) {
     secondary.appendChild(body);
     elements.recruitmentJobs.appendChild(secondary);
   }
+}
+
+function createFutureRadarViewSelector() {
+  const nav = makeElement("nav", "radar-opportunity-view-switch");
+  nav.setAttribute("aria-label", "机会展示方式");
+  [["companies", "按企业浏览"], ["jobs", "按岗位浏览"]].forEach(([view, label]) => {
+    const button = makeElement("button", "", label);
+    button.type = "button";
+    button.dataset.opportunityView = view;
+    const selected = (state.futureRadar.view || "jobs") === view;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+    button.addEventListener("click", () => selectFutureRadarView(view));
+    nav.appendChild(button);
+  });
+  nav.appendChild(makeElement("span", "", "企业分组不合并岗位，也不代表企业统一 T 级"));
+  return nav;
+}
+
+function selectFutureRadarView(view) {
+  if (!["companies", "jobs"].includes(view)) return false;
+  if ((state.futureRadar.view || "jobs") === view && !state.futureRadar.jobsError) {
+    return state.futureRadar.jobsRequestPromise || false;
+  }
+  state.futureRadar.view = view;
+  state.futureRadar.page = 1;
+  state.futureRadar.pageSize = view === "companies" ? 20 : 50;
+  return loadFutureRadarJobPage(1, true, { scroll: false });
+}
+
+function createFutureRadarCompanyCard(company) {
+  const key = String(company.company_key);
+  const entries = state.futureRadar.companyExpansions ||= new Map();
+  const signature = JSON.stringify(company);
+  let entry = entries.get(key);
+  if (!entry) {
+    entry = { open: false, loaded: false, loading: false, page: 1, pageSize: 50, jobs: [], requestId: 0 };
+    entries.set(key, entry);
+  } else if (entry.signature !== signature) {
+    entry.controller?.abort();
+    entry.loaded = false;
+    entry.loading = false;
+    entry.page = 1;
+    entry.jobs = [];
+  }
+  entry.signature = signature;
+  entry.company = company;
+  const details = makeElement("details", "radar-company-card");
+  details.dataset.companyKey = key;
+  const summary = makeElement("summary", "radar-company-heading");
+  const heading = makeElement("div", "radar-company-title");
+  heading.append(
+    makeElement("h4", "", company.company_name || "招聘单位待确认"),
+    makeElement("small", "", company.grouping === "telecom_group" ? "集团 / 品牌展示分组 · 招聘单位逐岗保留"
+      : company.grouping === "unknown" ? "单位未知 · 此条线索单独展示" : "同一企业的匹配机会"),
+  );
+  const count = makeElement("div", "radar-company-count");
+  count.append(makeElement("strong", "", `${Number(company.opportunity_count || 0).toLocaleString("zh-CN")} 个机会`), makeElement("small", "", "展开匹配岗位 ▾"));
+  summary.append(heading, count);
+  const meta = makeElement("div", "radar-company-meta");
+  const categoryNames = Object.keys(company.category_counts || {}).map(starfieldLabel);
+  if (categoryNames.length) meta.appendChild(makeElement("span", "", categoryNames.join(" · ")));
+  const cities = company.cities || [];
+  meta.appendChild(makeElement("span", "", cities.length
+    ? `${cities.join(" / ")}${company.city_count > cities.length ? ` 等 ${company.city_count} 个地点` : ""}` : "工作地点待确认"));
+  meta.appendChild(makeElement("span", "", `官网确认 ${company.verified_count || 0} · 待核验 ${company.discovered_count || 0}${company.program_count ? ` · 含 ${company.program_count} 个招聘项目入口` : ""}`));
+  const tiers = makeElement("div", "radar-company-tiers");
+  tiers.setAttribute("aria-label", "匹配岗位的 T 级分布，不是企业评级");
+  [...TIER_CODES, "UNRANKED", "BELOW_PRIORITY"].forEach((tier) => {
+    const total = Number(company.tier_counts?.[tier] || 0);
+    if (!total) return;
+    tiers.appendChild(makeElement("span", `job-tier ${TIER_CODES.includes(tier) ? tier.replace(".", "-") : "unranked"}`,
+      `${tier === "UNRANKED" ? "未评分" : tier === "BELOW_PRIORITY" ? "次级" : tier} · ${total}`));
+  });
+  heading.append(meta, tiers);
+  const body = makeElement("div", "radar-company-jobs");
+  entry.details = details;
+  entry.body = body;
+  details.append(summary, body);
+  details.open = entry.open;
+  const toggle = () => {
+    if (entries.get(key) !== entry || entry.details !== details) return;
+    entry.open = details.open;
+    if (!entry.open) {
+      entry.controller?.abort();
+      entry.loading = false;
+      return;
+    }
+    if (entry.loaded) return renderFutureRadarCompanyJobs(entry);
+    return loadFutureRadarCompanyJobs(key, entry.page);
+  };
+  details.addEventListener("toggle", toggle);
+  if (entry.open) {
+    if (entry.loaded || entry.loading) renderFutureRadarCompanyJobs(entry);
+    else loadFutureRadarCompanyJobs(key, entry.page);
+  }
+  return details;
+}
+
+function renderFutureRadarCompanyJobs(entry) {
+  const body = entry.body;
+  body.replaceChildren();
+  body.setAttribute("aria-busy", String(entry.loading));
+  if (entry.loading) {
+    body.appendChild(makeElement("p", "radar-loading", `正在读取该企业在当前筛选范围内的岗位… ${futureRadarOpportunityReadHint()}`));
+    return;
+  }
+  if (entry.error) {
+    body.appendChild(makeElement("p", "radar-load-error", entry.error));
+    const retry = makeElement("button", "job-watch-button", "重试读取企业岗位");
+    retry.type = "button";
+    retry.addEventListener("click", () => loadFutureRadarCompanyJobs(entry.company.company_key, entry.page));
+    body.appendChild(retry);
+    return;
+  }
+  const pages = Math.max(1, Math.ceil(entry.total / entry.pageSize));
+  body.appendChild(makeElement("p", "job-tier-filter-result", `匹配范围内 ${entry.total} 个机会 · 本页 ${entry.jobs.length} 条 · 第 ${entry.page} / ${pages} 页`));
+  body.appendChild(makeElement("p", "job-tier-legend", "以下招聘单位、T 级、日期、来源与详情均按具体岗位保留；分组名称不是用工主体或评级依据。"));
+  if (!entry.jobs.length) body.appendChild(makeElement("p", "empty-list", "该企业在当前筛选范围内暂无机会，可刷新企业列表。"));
+  entry.jobs.forEach((job) => body.appendChild(createRecruitmentJobCard(job)));
+  if (pages > 1) {
+    const pager = makeElement("nav", "radar-pagination");
+    pager.setAttribute("aria-label", `${entry.company.company_name} 的岗位分页`);
+    const previous = makeElement("button", "", "← 上一页岗位");
+    const next = makeElement("button", "", "下一页岗位 →");
+    previous.type = next.type = "button";
+    previous.disabled = entry.page <= 1;
+    next.disabled = entry.page >= pages;
+    const go = (page) => {
+      const promise = loadFutureRadarCompanyJobs(entry.company.company_key, page);
+      body.scrollIntoView({ behavior: "smooth", block: "start" });
+      return promise;
+    };
+    previous.addEventListener("click", () => go(entry.page - 1));
+    next.addEventListener("click", () => go(entry.page + 1));
+    pager.append(previous, makeElement("span", "", `第 ${entry.page} / ${pages} 页 · 每页 ${entry.pageSize} 条`), next);
+    body.appendChild(pager);
+  }
+}
+
+async function loadFutureRadarCompanyJobs(companyKey, page = 1) {
+  const radar = state.futureRadar;
+  const entry = radar.companyExpansions?.get(companyKey);
+  if (!state.token || radar.view !== "companies" || radar.jobsLoading || radar.jobsError || !entry?.open) return false;
+  const parentQuery = radar.jobsAppliedQuery;
+  const owner = radar.jobsRequestId;
+  const query = buildFutureRadarCompanyJobsQuery({ parentQuery, companyKey, page, pageSize: entry.pageSize });
+  if (entry.loading && entry.query === query) return entry.promise || false;
+  entry.controller?.abort();
+  const controller = new AbortController();
+  const requestId = ++entry.requestId;
+  entry.controller = controller;
+  entry.query = query;
+  entry.page = Math.max(1, Number(page) || 1);
+  entry.loaded = false;
+  entry.loading = true;
+  entry.error = "";
+  renderFutureRadarCompanyJobs(entry);
+  const current = () => radar.companyExpansions?.get(companyKey) === entry
+    && requestId === entry.requestId && !controller.signal.aborted && entry.open
+    && radar.view === "companies" && !radar.jobsLoading
+    && radar.jobsRequestId === owner && radar.jobsAppliedQuery === parentQuery;
+  const promise = Promise.resolve().then(async () => {
+    try {
+      const payload = await api(`/future-radar/opportunities?${query}`, {
+        timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, signal: controller.signal,
+      });
+      if (!current()) return false;
+      entry.jobs = radarCollection(payload, ["opportunities", "jobs"]);
+      entry.total = radarNumber(payload, ["total_opportunities", "total"], entry.jobs.length);
+      entry.page = radarNumber(payload, ["page"], entry.page);
+      entry.pageSize = radarNumber(payload, ["page_size"], entry.pageSize);
+      entry.loaded = true;
+      entry.loading = false;
+      renderFutureRadarCompanyJobs(entry);
+      return true;
+    } catch (error) {
+      if (current()) {
+        entry.loading = false;
+        entry.error = futureRadarOpportunityErrorCopy(error, false);
+        renderFutureRadarCompanyJobs(entry);
+      }
+      return false;
+    } finally {
+      if (requestId === entry.requestId) {
+        entry.loading = false;
+        entry.controller = null;
+        entry.promise = null;
+      }
+    }
+  });
+  entry.promise = promise;
+  return promise;
+}
+
+function createRecruitmentJobCard(job) {
+  const card = document.createElement("article");
+  card.className = "recruitment-job-card";
+  const dateCopy = futureRadarOpportunityDateCopy(job);
+  const daysLeft = dateCopy.verified ? recruitmentDaysLeft(job) : null;
+  const deadline = `${dateCopy.closing}${daysLeft == null ? "" : ` · ${daysLeft === 0 ? "今天截止" : `${daysLeft} 天后`}`}`;
+  const tierBucket = jobTierBucket(job);
+  const tierCode = TIER_CODES.includes(tierBucket) ? tierBucket : null;
+  const belowPriority = tierBucket === "BELOW_PRIORITY";
+  const isRecruitmentProgram = job.listing_kind === "recruitment_program" || job.scoring_status === "unscored_program_listing";
+  const finalScore = tierCode || belowPriority ? finiteRadarScore(job.job_score ?? job.match_score) : null;
+  const verification = recruitmentVerification(job);
+  const origin = futureRadarOpportunitySource(job);
+  const top = makeElement("div", "job-card-top");
+  const labels = document.createElement("div");
+  labels.append(
+    makeElement("span", "job-company", job.company || "机会发布方"),
+    makeElement("span", "job-type", job.employer_type || "重点雇主"),
+    makeElement("span", `job-verification ${origin.tone}`, origin.label),
+  );
+  if (isRecruitmentProgram) labels.appendChild(makeElement("span", "job-type", "招聘项目"));
+  if (verification === "conflicted") labels.appendChild(makeElement("span", "job-verification warning", "信息有差异"));
+  const rank = makeElement("div", "job-rank");
+  if (tierCode) {
+    rank.append(
+      makeElement("span", "job-score", finalScore == null ? "已评分" : `${finalScore} 分`),
+      makeElement("span", `job-tier ${tierCode.replace(".", "-")}`, tierCode),
+    );
+  } else if (belowPriority) {
+    rank.append(makeElement("span", "job-score", finalScore == null ? "低优先级" : `${finalScore} 分`), makeElement("span", "job-tier unranked", "未进入重点池"));
+  } else {
+    rank.appendChild(makeElement("span", "job-tier unranked", "未评分"));
+  }
+  top.append(labels, rank);
+  const bottom = makeElement("div", "job-card-bottom");
+  const jobUrl = recruitmentJobUrl(job);
+  if (/^https:\/\//.test(jobUrl)) {
+    const officialLink = makeElement("a", "", verification === "verified" ? (job.application_url ? "进入官方申请页 ↗" : "打开原始公告 ↗") : "打开招聘线索 ↗");
+    officialLink.href = jobUrl;
+    officialLink.target = "_blank";
+    officialLink.rel = "noreferrer";
+    bottom.appendChild(officialLink);
+  } else {
+    bottom.appendChild(makeElement("span", "job-link-pending", "官方入口待核验"));
+  }
+  const reason = document.createElement("details");
+  reason.className = "job-tier-reason";
+  reason.appendChild(makeElement("summary", "", tierCode ? "为什么是这个级别" : "评分状态与适配信息"));
+  const reasonBody = makeElement("div", "job-tier-reason-body");
+  const scoreGrid = makeElement("div", "job-fact-grid job-score-factor-grid");
+  const factorScores = [
+    ["FINAL TIER", tierCode || (belowPriority ? "未进入重点池" : "未评分")],
+    ["FINAL SCORE", finalScore == null ? "—" : `${finalScore} / 100`],
+    ["EMPLOYER SCORE", tierCode ? finiteRadarScore(job.employer_score) : null],
+    ["ROLE SCORE", tierCode ? finiteRadarScore(job.role_score) : null],
+    ["CAREER VALUE", tierCode ? finiteRadarScore(job.career_value_score) : null],
+    ["JOB CONDITIONS", tierCode ? finiteRadarScore(job.job_condition_score) : null],
+  ];
+  factorScores.forEach(([label, value]) => {
+    scoreGrid.appendChild(makeElement("span", "", `${label} · ${value == null ? "—" : value}`));
+  });
+  const positiveList = makeElement("ul", "positive-reasons");
+  (job.positive_reasons || []).slice(0, 3).forEach((item) => positiveList.appendChild(makeElement("li", "", item)));
+  const negativeList = makeElement("ul", "negative-reasons");
+  (job.negative_reasons || []).slice(0, 2).forEach((item) => negativeList.appendChild(makeElement("li", "", item)));
+  const flags = (job.fit_tags || []).length
+    ? `适配标签：${job.fit_tags.join(" · ")}`
+    : "适配标签：等待更多官方岗位信息";
+  const conciseFactors = tierCode ? recruitmentScoringFactors(job) : [];
+  const factorList = makeElement("ul", "score-factor-reasons");
+  conciseFactors.forEach((item) => factorList.appendChild(makeElement("li", "", item)));
+  const organizationFactors = tierCode && job.organization_assessment
+    ? formatOrganizationAssessment(job.organization_assessment) : [];
+  const organizationList = makeElement("ul", "score-factor-reasons");
+  organizationFactors.forEach((item) => organizationList.appendChild(makeElement("li", "", item)));
+  reasonBody.append(
+    scoreGrid,
+    makeElement("strong", "", isRecruitmentProgram ? "这是招聘项目入口，具体岗位尚未拆分；不以公司等级代替岗位 T 级" : tierCode || belowPriority ? "按现有公司与岗位信息应用统一 T 级规则；排序不等于官网确认" : "岗位信息不足，暂未生成 T 级；机会仍然在主池展示"),
+    ...(organizationFactors.length ? [organizationList] : []),
+    ...(conciseFactors.length ? [makeElement("span", "", "评分依据"), factorList] : []),
+    makeElement("span", "", "主要加分"),
+    positiveList,
+    makeElement("span", "", "主要减分 / 待核对"),
+    negativeList,
+    makeElement("small", "", flags),
+  );
+  reason.appendChild(reasonBody);
+  const programName = job.program_name || job.recruitment_program?.name || job.program?.name;
+  const facts = makeElement("div", "job-fact-grid");
+  facts.append(
+    makeElement("span", "", `项目：${programName || "尚未归入招聘项目"}`),
+    makeElement("span", "", `状态：${radarStatusCopy(job.status || "unknown")}`),
+    makeElement("span", "", `首次发现：${formatRadarTime(job.first_seen_at, "待记录")}`),
+    makeElement("span", "", `最近变化：${formatRadarTime(job.last_changed_at || job.updated_at || job.last_verified_at, "待记录")}`),
+  );
+  const provenance = makeElement("div", "job-provenance");
+  provenance.append(
+    makeElement("span", "", `DISCOVERED BY · ${sourceDisplayValue(job.discovered_by || job.discovery_sources || job.source, "公开信号")}`),
+    makeElement("span", "", verification === "verified" ? `VERIFIED BY · ${sourceDisplayValue(job.verified_by || job.verification_sources, "官方来源")}` : origin.description),
+  );
+  card.append(
+    top,
+    makeElement("h4", "", job.title || "机会信号"),
+    makeElement("p", "job-meta", `${job.city || job.region || "地点待确认"} · ${job.industry || "行业待确认"} · ${deadline}`),
+    makeElement("p", "job-requirements", job.requirements || "请打开官方公告核对申请条件。"),
+    facts,
+    provenance,
+    ...(job.id ? [createFutureRadarOpportunityDetail(job)] : []),
+    reason,
+    bottom,
+  );
+  const watchButton = makeElement("button", "job-watch-button", "跟踪此公告变化");
+  watchButton.type = "button";
+  watchButton.disabled = !/^https:\/\//.test(jobUrl);
+  if (watchButton.disabled) watchButton.title = "等待官方公开链接核验后可建立监控";
+  watchButton.addEventListener("click", () => addRecruitmentWatchFromJob({ ...job, url: jobUrl }, watchButton));
+  bottom.appendChild(watchButton);
+  return card;
 }
 
 async function addRecruitmentWatchFromJob(job, button) {

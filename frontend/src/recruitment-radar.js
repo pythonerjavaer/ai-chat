@@ -280,6 +280,19 @@ export function buildFutureRadarJobsQuery({ page = 1, pageSize = 50, filters = {
   return params.toString();
 }
 
+export function buildFutureRadarCompanyJobsQuery({ parentQuery = "", companyKey, page = 1, pageSize = 50 } = {}) {
+  if (!companyKey) throw new TypeError("companyKey is required");
+  // Clone the successful parent selection, retaining repeated categories and
+  // every search/T/status filter. Never expand from an unrelated saved page.
+  const params = new URLSearchParams(parentQuery);
+  params.set("view", "jobs");
+  params.set("company_key", String(companyKey));
+  params.set("page", String(Math.max(1, Number(page) || 1)));
+  params.set("page_size", String(Math.max(1, Math.min(100, Number(pageSize) || 50))));
+  params.set("compact", "true");
+  return params.toString();
+}
+
 export function buildFutureRadarCandidatesQuery({ page = 1, pageSize = 50 } = {}) {
   return new URLSearchParams({
     page: String(Math.max(1, Number(page) || 1)),

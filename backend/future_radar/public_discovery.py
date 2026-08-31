@@ -1,23 +1,30 @@
 """Deterministic discovery for public recruitment article listings.
 
-This module deliberately stops at *article signals*.  It does not turn a
-listing headline into a verified job, does not log in to any service, and does
-not attempt to bypass a CAPTCHA or an anti-bot challenge.  A later verification
-stage must follow an official employer/ATS URL before a vacancy can enter the
-public job pool.
+Article indexes deliberately stop at *article signals*.  Employer discovery
+also follows public, same-origin listing/pagination/detail links.  Neither path
+declares a vacancy verified: callers must apply the official-page evidence gate.
+No login, JavaScript execution, guessed private API, or CAPTCHA bypass is used.
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
+import time
 import urllib.parse
+import urllib.request
+from collections import deque
 from dataclasses import asdict, dataclass
+from datetime import date
 from html.parser import HTMLParser
 from typing import Any, Callable, Iterable
 
-from ..recruitment_watch import WatchFetchError, WatchFetchResult, fetch_watch_page
+from ..recruitment_watch import (
+    WatchFetchError, WatchFetchResult, fetch_watch_page, normalize_html_text,
+    validate_public_https_url,
+)
 from .normalization import canonicalize_url, clean_text, normalize_date
 
 
@@ -213,6 +220,489 @@ class _PublicListingParser(HTMLParser):
 
 
 FetchPage = Callable[..., WatchFetchResult]
+
+
+# These are independent, per-employer HTTP budgets, not a shared result cap or
+# an AI spending limit.  A large employer cannot consume another one's quota.
+OFFICIAL_LIST_PAGE_BUDGET = 24
+OFFICIAL_DETAIL_PAGE_BUDGET = 120
+OFFICIAL_DISCOVERY_SECONDS = 90.0
+
+
+class OfficialDiscoveryCancelled(RuntimeError):
+    """The existing scan/source lease no longer permits further HTTP work."""
+
+
+def check_discovery_cancellation(check: Callable[[], None] | None) -> None:
+    if check is not None:
+        try:
+            check()
+        except Exception as exc:
+            raise OfficialDiscoveryCancelled("Official discovery lost its scan lease.") from exc
+
+
+@dataclass(frozen=True)
+class OfficialJobCandidate:
+    job: dict[str, Any]
+    page_text: str
+    final_url: str
+
+
+@dataclass(frozen=True)
+class OfficialJobDiscoveryBatch:
+    candidates: tuple[OfficialJobCandidate, ...]
+    coverage: dict[str, Any]
+    content_hash: str
+
+
+_ROLE_WORDS = re.compile(
+    r"工程师|分析师|研究员|经理|专员|助理|顾问|管培生|培训生|设计师|开发|[岗职]位?|"
+    r"\b(?:engineer|analyst|associate|consultant|trainee|scientist|designer|developer)\b",
+    re.IGNORECASE,
+)
+_DUTY_WORDS = re.compile(
+    r"岗位职责|工作职责|职位描述|任职要求|任职资格|岗位要求|职位要求|"
+    r"\b(?:responsibilities|qualifications|job description|requirements)\b", re.IGNORECASE,
+)
+_LIST_WORDS = re.compile(
+    r"岗位列表|职位列表|招聘职位|招聘岗位|查看职位|查看岗位|全部职位|全部岗位|校园招聘|校招|"
+    r"\b(?:careers?|vacancies|job search|search jobs|view jobs|all jobs|positions|campus)\b",
+    re.IGNORECASE,
+)
+_DETAIL_PATH = re.compile(
+    r"/(?:jobs?|positions?|vacanc(?:y|ies))/(?!search(?:/|$)|list(?:/|$))[^/?]+|"
+    r"(?:job|position|vacancy)[_-]?(?:detail|id)|/detail(?:/|\?)", re.IGNORECASE,
+)
+_NEXT_WORDS = re.compile(r"^(?:下一页|下页|更多职位|更多岗位|加载更多|next(?:\s+page)?|load more|[›»>])$", re.IGNORECASE)
+_FORBIDDEN_ACTION = re.compile(
+    # Match action endpoints, not words inside a vacancy slug or a static app
+    # directory (e.g. Account-Management_R-123 or hzzp-apply-web/static/index).
+    r"(?:^|/)(?:login|logout|signin|signup|register|apply|application|resume|account|profile|delete|unsubscribe)(?:[/.;]|$)",
+    re.IGNORECASE,
+)
+_NON_HTML = re.compile(r"\.(?:pdf|docx?|xlsx?|zip|jpe?g|png|gif|svg|mp4|exe)(?:$|\?)", re.IGNORECASE)
+
+
+class _OfficialListingParser(_PublicListingParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.json_ld: list[str] = []
+        self.headings: list[str] = []
+        self.next_links: list[str] = []
+        self.disabled_links: set[str] = set()
+        self.opaque_more = False
+        self._script: list[str] | None = None
+        self._heading: list[str] | None = None
+        self._control: tuple[dict[str, str], list[str]] | None = None
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        attributes = {str(key).casefold(): str(value or "") for key, value in attrs}
+        if tag == "script" and attributes.get("type", "").casefold() == "application/ld+json":
+            self._script = []
+        if not self._ignored_depth:
+            if tag == "h1" or (tag == "h2" and re.search(r"job|position", attributes.get("class", ""))):
+                self._heading = []
+            if tag in {"a", "button", "link"}:
+                disabled = attributes.get("aria-disabled") == "true" or "disabled" in attributes
+                disabled = disabled or "disabled" in attributes.get("class", "").split()
+                if disabled and attributes.get("href"):
+                    self.disabled_links.add(attributes["href"])
+                if not disabled:
+                    if "next" in attributes.get("rel", "").split():
+                        self.next_links.append(attributes.get("href", ""))
+                    if tag != "link":
+                        self._control = (attributes, [])
+        super().handle_starttag(tag, attrs)
+
+    def handle_data(self, data: str) -> None:
+        if self._script is not None:
+            self._script.append(data)
+        if not self._ignored_depth:
+            if self._heading is not None:
+                self._heading.append(data)
+            if self._control is not None:
+                self._control[1].append(data)
+        super().handle_data(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._script is not None:
+            self.json_ld.append("".join(self._script))
+            self._script = None
+        if tag in {"h1", "h2"} and self._heading is not None:
+            self.headings.append(clean_text(" ".join(self._heading), limit=280))
+            self._heading = None
+        if tag in {"a", "button"} and self._control is not None:
+            attributes, parts = self._control
+            label = clean_text(" ".join(parts) or attributes.get("aria-label"), limit=160)
+            if _NEXT_WORDS.fullmatch(label):
+                href = attributes.get("href", "")
+                if href and not href.startswith(("#", "javascript:")):
+                    self.next_links.append(href)
+                else:
+                    self.opaque_more = True
+            self._control = None
+        super().handle_endtag(tag)
+
+
+def _origin(url: str) -> tuple[str, str]:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme.casefold(), parts.netloc.casefold()
+
+
+def _official_link(value: str, base: str) -> str | None:
+    """Only public read-only navigation on the entry point's exact origin."""
+    if not value or value.startswith(("#", "javascript:", "mailto:", "tel:")):
+        return None
+    try:
+        url = urllib.parse.urljoin(base, value)
+        parts = urllib.parse.urlsplit(url)
+        # Hash routers need a provider-specific reader; stripping their route
+        # would otherwise fetch the same shell and invent a successful visit.
+        if parts.fragment.startswith(("/", "!")) or _origin(url) != _origin(base):
+            return None
+        if _EMAIL.search(url) or _API_SECRET.search(url):
+            return None
+        if _FORBIDDEN_ACTION.search(parts.path) or _NON_HTML.search(parts.path):
+            return None
+        if any(key.casefold() in _SENSITIVE_QUERY_KEYS for key, _ in urllib.parse.parse_qsl(parts.query)):
+            return None
+        return canonicalize_url(url, allow_empty=False)
+    except (ValueError, WatchFetchError):
+        return None
+
+
+def _same_origin_opener(origin: tuple[str, str]):
+    class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            target = urllib.parse.urljoin(req.full_url, newurl)
+            if _origin(target) != origin:
+                raise WatchFetchError("Official discovery redirect left its public origin.")
+            if not _official_link(target, req.full_url):
+                raise WatchFetchError("Official discovery redirect is not safe public navigation.")
+            validate_public_https_url(target, resolve_dns=True)
+            return super().redirect_request(req, fp, code, msg, headers, target)
+
+    # fetch_watch_page supplies its own safe redirect handler. Replace it with
+    # an equally strict handler which additionally rejects cross-origin hops
+    # *before* making that request, not merely after receiving its response.
+    return lambda *_handlers: urllib.request.build_opener(SameOriginRedirect())
+
+
+def _job_postings(value: Any) -> Iterable[dict[str, Any]]:
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, list):
+            stack.extend(reversed(item))
+        elif isinstance(item, dict):
+            kinds = item.get("@type", [])
+            if "JobPosting" in (kinds if isinstance(kinds, list) else [kinds]):
+                yield item
+            else:
+                stack.extend(item[key] for key in ("@graph", "mainEntity", "itemListElement", "item") if key in item)
+
+
+def _concrete_title(title: str) -> bool:
+    return bool(
+        2 <= len(title) <= 240 and _ROLE_WORDS.search(title)
+        and not re.search(r"岗位列表|职位列表|全部岗位|全部职位|岗位详情|职位详情|招聘公告|招聘简章|job search", title, re.IGNORECASE)
+        and title not in _GENERIC_NAV_TITLES and not _LIST_WORDS.fullmatch(title)
+        and not _DUTY_WORDS.fullmatch(title)
+    )
+
+
+def _detail_candidates(
+    parser: _OfficialListingParser, page: WatchFetchResult, company: str, hint: str,
+) -> tuple[list[OfficialJobCandidate], list[tuple[str, str]]]:
+    candidates: list[OfficialJobCandidate] = []
+    linked: list[tuple[str, str]] = []
+    visible = str(page.text or "")
+    for raw in parser.json_ld:
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        for item in _job_postings(payload):
+            title = clean_text(item.get("title"), limit=280)
+            target = _official_link(str(item.get("url") or page.final_url), page.final_url)
+            if not target or not title:
+                continue
+            if target != _official_link(page.final_url, page.final_url):
+                linked.append((target, title))
+                continue
+            # Workday can serve the whole vacancy as public JobPosting JSON-LD
+            # with no visible text at all. If a visible body *does* exist, keep
+            # requiring its title to agree (reject unresolved/stale SPA shells).
+            if visible.strip() and title.casefold() not in visible.casefold():
+                continue
+            description = normalize_html_text(str(item.get("description") or ""))
+            if len(description) < 30:
+                continue
+            organization = item.get("hiringOrganization")
+            employer = clean_text(organization.get("name"), limit=160) if isinstance(organization, dict) else ""
+            locations = item.get("jobLocation", [])
+            locations = locations if isinstance(locations, list) else [locations]
+            cities = []
+            for location in locations:
+                address = location.get("address", {}) if isinstance(location, dict) else {}
+                if isinstance(address, dict) and address.get("addressLocality"):
+                    cities.append(clean_text(address["addressLocality"], limit=120))
+            # JobPosting fields are public, typed evidence too (e.g. Workday
+            # serves the JD in JSON-LD). Only allowlisted fields are used;
+            # missing employer/cohort/open-state evidence is never fabricated.
+            evidence_text = f"{visible}\nJobPosting 岗位名称：{title}\n招聘机构：{employer}\n职位描述：{description}"
+            valid_through = normalize_date(str(item.get("validThrough") or "")[:10])
+            candidates.append(OfficialJobCandidate(
+                job={
+                    "company": employer or company, "title": _redact_text(title, limit=240),
+                    "city": "、".join(dict.fromkeys(cities)), "official_url": target,
+                    # datePosted is a publication date, never application opening.
+                    "opening_date": None, "closing_date": None,
+                    "posting_expired": bool(valid_through and valid_through <= date.today().isoformat()),
+                    "requirements": _redact_text(f"{description}\n{visible}", limit=20_000),
+                },
+                page_text=evidence_text, final_url=target,
+            ))
+    if not candidates and _DUTY_WORDS.search(visible):
+        for title in [*parser.headings, hint]:
+            if not _concrete_title(title) or title.casefold() not in visible.casefold():
+                continue
+            location = re.search(r"(?:工作地点|工作城市|职位地点|Location)\s*[:：]\s*([^\s；;<>{}]{2,60})", visible, re.IGNORECASE)
+            candidates.append(OfficialJobCandidate(
+                job={
+                    "company": company, "title": _redact_text(title, limit=240),
+                    "city": _redact_text(location[1], limit=120) if location else "", "official_url": _official_link(page.final_url, page.final_url),
+                    "opening_date": None, "closing_date": None,
+                    "requirements": _redact_text(visible, limit=20_000),
+                },
+                page_text=visible, final_url=_official_link(page.final_url, page.final_url),
+            ))
+            break
+    return candidates, linked
+
+
+def discover_official_job_pages(
+    urls: Iterable[str], *, company: str, fetcher: FetchPage | None = None,
+    initial_pages: dict[str, WatchFetchResult] | None = None,
+    max_listing_pages: int = OFFICIAL_LIST_PAGE_BUDGET,
+    max_detail_pages: int = OFFICIAL_DETAIL_PAGE_BUDGET,
+    max_seconds: float = OFFICIAL_DISCOVERY_SECONDS,
+    timeout_seconds: float = 8.0,
+    before_fetch: Callable[[str], None] | None = None,
+    cancellation_check: Callable[[], None] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> OfficialJobDiscoveryBatch:
+    """Read actual employer links with bounded breadth-first pagination.
+
+    ``pagination_complete`` describes the linked lists, never the company's
+    entire inventory. Only explicit total-count/page-count/empty-list evidence
+    can establish it. Missing links, JS-only pagination and exhausted budgets
+    are partial. Callers must *always* preserve unobserved old vacancies.
+    """
+    if max_listing_pages < 1 or max_detail_pages < 1 or max_seconds <= 0:
+        raise ValueError("Official discovery budgets must be positive.")
+    fetch = fetcher or fetch_watch_page
+    # Preserve existing narrow injected fetcher signatures. The built-in
+    # transport and **kwargs wrappers opt in; unrelated watch callers do not.
+    try:
+        parameters = inspect.signature(fetch).parameters
+        structured_body_options = {"allow_structured_body": True} if (
+            "allow_structured_body" in parameters
+            or any(item.kind == inspect.Parameter.VAR_KEYWORD for item in parameters.values())
+        ) else {}
+    except (TypeError, ValueError):
+        structured_body_options = {}
+    started = clock()
+    lists: deque[tuple[str, int, str]] = deque()
+    details: deque[tuple[str, int, str]] = deque()
+    queued: set[str] = set()
+    read_urls: set[str] = set()
+    sources: list[dict[str, Any]] = []
+    totals: dict[int, set[int]] = {}
+    page_numbers: dict[int, set[int]] = {}
+    page_totals: dict[int, set[int]] = {}
+    detail_urls: dict[int, set[str]] = {}
+    fingerprints: list[tuple[str, str]] = []
+    listing_fingerprints: dict[int, set[str]] = {}
+    candidates: dict[tuple[str, str], OfficialJobCandidate] = {}
+    initial = initial_pages or {}
+    for raw_url in dict.fromkeys(urls):
+        url = _official_link(raw_url, raw_url)
+        index = len(sources)
+        sources.append({
+            "source_id": hashlib.sha256(str(raw_url).encode()).hexdigest()[:16],
+            "status": "pending", "listing_pages_fetched": 0, "detail_pages_fetched": 0,
+            "listing_failures": 0, "detail_failures": 0, "unparsed_detail_pages": 0,
+            "blocked_detail_links": 0,
+            "unresolved_pagination": 0, "deferred_listing_pages": 0, "deferred_detail_pages": 0,
+            "pagination_complete": False,
+        })
+        totals[index], page_numbers[index], page_totals[index], detail_urls[index] = set(), set(), set(), set()
+        listing_fingerprints[index] = set()
+        if url and url not in queued:
+            (details if _DETAIL_PATH.search(url) else lists).append((url, index, ""))
+            queued.add(url)
+        else:
+            sources[index]["status"] = "discovery_limited"
+            sources[index]["reason"] = "unsafe_or_duplicate_entry_point"
+
+    listing_count = detail_count = 0
+    stop_reason = "linked_pages_exhausted"
+    while lists or details:
+        check_discovery_cancellation(cancellation_check)
+        remaining = max_seconds - (clock() - started)
+        if remaining <= 0:
+            stop_reason = "time_budget"
+            break
+        can_list = bool(lists and listing_count < max_listing_pages)
+        can_detail = bool(details and detail_count < max_detail_pages)
+        if not can_list and not can_detail:
+            stop_reason = "page_budget"
+            break
+        # Interleave detail visits so a huge nav tree cannot use all wall time
+        # before any discovered vacancy is inspected.
+        kind = "detail" if can_detail and (not can_list or listing_count > detail_count) else "listing"
+        url, owner, hint = (details if kind == "detail" else lists).popleft()
+        if kind == "detail":
+            detail_count += 1
+        else:
+            listing_count += 1
+        source = sources[owner]
+        try:
+            page = initial.get(url)
+            if page is None:
+                if before_fetch:
+                    before_fetch(urllib.parse.urlsplit(url).hostname or "")
+                check_discovery_cancellation(cancellation_check)
+                remaining = max_seconds - (clock() - started)
+                if remaining <= 0:
+                    (details if kind == "detail" else lists).appendleft((url, owner, hint))
+                    stop_reason = "time_budget"
+                    break
+                page = fetch(
+                    url, (), timeout_seconds=min(timeout_seconds, remaining), max_bytes=1_500_000,
+                    opener_factory=_same_origin_opener(_origin(url)),
+                    **structured_body_options,
+                )
+            check_discovery_cancellation(cancellation_check)
+            final = _official_link(page.final_url, url)
+            if not final:
+                raise WatchFetchError("Unusable official page redirect.")
+            source[f"{kind}_pages_fetched"] += 1
+            fingerprints.append((url, page.fingerprint))
+            # Detect a pagination endpoint returning the same first page or
+            # redirecting every page back to the homepage.
+            if final in read_urls:
+                source["unresolved_pagination"] += 1
+                continue
+            read_urls.add(final)
+            if kind == "listing":
+                if page.fingerprint in listing_fingerprints[owner]:
+                    source["unresolved_pagination"] += 1
+                    continue
+                listing_fingerprints[owner].add(page.fingerprint)
+            parser = _OfficialListingParser()
+            parser.feed(getattr(page, "raw_text", ""))
+            parser.close()
+            found, structured_links = _detail_candidates(parser, page, company, hint)
+            for candidate in found:
+                candidates[(candidate.final_url, candidate.job["title"].casefold())] = candidate
+            if kind == "detail" and not found:
+                source["unparsed_detail_pages"] += 1
+            if parser.opaque_more:
+                source["unresolved_pagination"] += 1
+            listing_text = page.text if kind == "listing" and not found else ""
+            total = re.search(r"(?:共\s*|total\s*:?\s*)(\d+)\s*(?:个|条)?\s*(?:岗位|职位|jobs?|positions?)", listing_text, re.IGNORECASE)
+            if total:
+                totals[owner].add(int(total[1]))
+            counter = re.search(r"(?:第\s*(\d+)\s*页\s*[/,，]?\s*共\s*(\d+)\s*页|page\s+(\d+)\s+of\s+(\d+))", listing_text, re.IGNORECASE)
+            if counter:
+                page_numbers[owner].add(int(counter[1] or counter[3]))
+                page_totals[owner].add(int(counter[2] or counter[4]))
+            if re.search(r"暂无(?:在招)?(?:岗位|职位)|未找到(?:相关)?(?:岗位|职位)|no (?:jobs|positions|vacancies) found", listing_text, re.IGNORECASE):
+                totals[owner].add(0)
+
+            links: list[tuple[str, str, str]] = [(href, title, "detail") for href, title in structured_links]
+            links.extend((href, "", "listing") for href in parser.next_links)
+            for anchor in parser.anchors:
+                label = clean_text(" ".join(anchor.parts) or anchor.title_attribute, limit=280)
+                href = anchor.href
+                if href in parser.disabled_links:
+                    continue
+                if re.fullmatch(r"申请职位|申请岗位|立即申请|立即投递|投递简历|apply(?: now)?", label, re.IGNORECASE):
+                    continue
+                if _NEXT_WORDS.fullmatch(label) or _LIST_WORDS.fullmatch(label):
+                    links.append((href, label, "listing"))
+                elif label.isdigit() and re.search(r"[?&](?:page|p|pageNo|pageIndex)=\d+|/page/\d+", href, re.IGNORECASE):
+                    links.append((href, "", "listing"))
+                elif _concrete_title(label) or _DETAIL_PATH.search(href):
+                    links.append((href, label, "detail"))
+                elif _LIST_WORDS.search(label):
+                    links.append((href, label, "listing"))
+            for href, label, link_kind in links:
+                target = _official_link(href, final)
+                if not target:
+                    source["unresolved_pagination" if link_kind == "listing" else "blocked_detail_links"] += 1
+                    continue
+                if link_kind == "detail":
+                    detail_urls[owner].add(target)
+                if target not in queued and target not in read_urls:
+                    queued.add(target)
+                    (details if link_kind == "detail" else lists).append((target, owner, label))
+        except (WatchFetchError, OSError, ValueError, TypeError):
+            # Deliberately persist stable reason codes, never raw exceptions
+            # containing tokens, private links or response bodies.
+            source[f"{kind}_failures"] += 1
+
+    for queue, field in ((lists, "deferred_listing_pages"), (details, "deferred_detail_pages")):
+        for _, owner, _ in queue:
+            sources[owner][field] += 1
+    for index, source in enumerate(sources):
+        if source["status"] == "discovery_limited":
+            continue
+        total_accounted = len(totals[index]) == 1 and next(iter(totals[index])) == len(detail_urls[index])
+        pages_accounted = (
+            len(page_totals[index]) == 1 and 0 < next(iter(page_totals[index])) <= max_listing_pages
+            and page_numbers[index] == set(range(1, next(iter(page_totals[index])) + 1))
+        )
+        source["listed_detail_urls"] = len(detail_urls[index])
+        source["reported_totals"] = sorted(totals[index])
+        metadata_accounted = bool(totals[index] or page_totals[index]) and (
+            (not totals[index] or total_accounted) and (not page_totals[index] or pages_accounted)
+        )
+        source["pagination_complete"] = bool(
+            metadata_accounted and not source["listing_failures"]
+            and not source["deferred_listing_pages"] and not source["unresolved_pagination"]
+        )
+        complete = source["pagination_complete"] and not any(source[key] for key in (
+            "detail_failures", "deferred_detail_pages", "unparsed_detail_pages", "blocked_detail_links",
+        ))
+        source["status"] = "healthy" if complete else (
+            "failed" if not source["listing_pages_fetched"] and not source["detail_pages_fetched"] else "partial"
+        )
+        source["reason"] = "linked_list_complete" if complete else (
+            stop_reason if source["deferred_listing_pages"] or source["deferred_detail_pages"] else "unconfirmed_or_failed_pages"
+        )
+    coverage = {
+        "scope": "linked_official_lists", "employer": _redact_text(company, limit=160),
+        "source_count": len(sources), "sources": sources,
+        "listing_page_budget": max_listing_pages, "detail_page_budget": max_detail_pages,
+        "pagination_complete": bool(sources) and all(source["pagination_complete"] for source in sources),
+        "status": (
+            "discovery_limited" if not sources else
+            "healthy" if all(source["status"] == "healthy" for source in sources) else
+            "failed" if all(source["status"] == "failed" for source in sources) else "partial"
+        ),
+        "candidate_count": len(candidates),
+        "completion_reason": stop_reason if sources else "no_official_entry_point",
+        # Generic links are never an authoritative whole-company inventory.
+        "snapshot_complete": False,
+    }
+    digest = hashlib.sha256(json.dumps(
+        [sorted(fingerprints), [item.job for item in candidates.values()], coverage],
+        ensure_ascii=False, sort_keys=True,
+    ).encode()).hexdigest()
+    return OfficialJobDiscoveryBatch(tuple(candidates.values()), coverage, digest)
 
 
 def _redact_text(value: Any, *, limit: int) -> str:

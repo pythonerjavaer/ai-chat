@@ -45,6 +45,20 @@ CURRENT_RECRUITMENT_COHORT = f"{CURRENT_RECRUITMENT_COHORT_YEAR}届"
 TEST_AUTHORIZED_ATS = "https://app.mokahr.com"
 
 
+@pytest.fixture(autouse=True)
+def offline_official_discovery_followup(monkeypatch):
+    # These pre-existing API tests isolate hosted search and its single-page
+    # verifier. Real linked-list traversal is covered with synthetic HTTP in
+    # test_official_job_discovery.py, never by live internet in the API suite.
+    monkeypatch.setattr(
+        recruitment_search, "discover_official_job_pages",
+        lambda *_args, **_kwargs: SimpleNamespace(candidates=(), coverage={
+            "status": "partial", "pagination_complete": False,
+            "snapshot_complete": False, "completion_reason": "offline_test_fixture",
+        }),
+    )
+
+
 def employer_only_pool(pool: dict, employer: str) -> dict:
     return {**pool, "employers": [employer]}
 

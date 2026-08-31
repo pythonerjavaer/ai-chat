@@ -475,6 +475,10 @@ class FutureRadarService:
                     # results; business/entity hashes continue to prevent
                     # duplicate jobs and events in every mode.
                     "_force_refresh": bool(force or scan_type == "deep"),
+                    # Cooperative cancellation for bounded public-page walks.
+                    # This callable exists only in the transient scan input;
+                    # registry/snapshot writes below use the original source.
+                    "_cancellation_check": source_lease.ensure_owned,
                 },
             }
             if scan_type == "quick":
@@ -598,7 +602,10 @@ class FutureRadarService:
         counts["model_tokens_used"] = result.model_tokens_used
         now = utc_now()
         verification_role = self._verification_role(source)
-        mixed_verification_source = source.get("adapter_config", {}).get("adapter") == "legacy_database"
+        mixed_verification_source = (
+            source.get("adapter_config", {}).get("adapter") == "legacy_database"
+            or bool(source.get("adapter_config", {}).get("discover_job_links"))
+        )
         program_ids_by_external: dict[str, str] = {}
         seen_program_ids: set[str] = set()
         seen_job_ids: set[str] = set()
@@ -661,6 +668,11 @@ class FutureRadarService:
                 try:
                     item = normalize_job(raw)
                     role = verification_role
+                    if (source.get("adapter_config", {}).get("discover_job_links")
+                            and item.get("verification_status") != "verified"):
+                        # Public link discovery is not item-level attestation,
+                        # even when its entry point is an official employer.
+                        role = "discovery"
                     if item["external_id"] in result.verified_job_external_ids and item.get("official_url"):
                         role = "verification"
                     if (role == "verification" and item.get("official_url")

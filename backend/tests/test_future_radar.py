@@ -703,6 +703,44 @@ def test_discovery_adapter_promotes_only_deterministically_attested_job(radar_se
     assert unconfirmed["sources"][0]["verification_role"] == "discovery"
 
 
+@pytest.mark.parametrize("discover_links", [True, False])
+def test_official_link_discovery_respects_item_attestation_and_preserves_old_jobs(radar_service, discover_links):
+    source = create_source(
+        radar_service, "official-linked-list-test", source_type="official_html",
+        adapter_config={"adapter": "official_html", "discover_job_links": discover_links},
+    )
+    sequence = SequenceAdapter([
+        AdapterResult(jobs=[
+            sample_job("linked-verified", verification_status="verified"),
+            sample_job("linked-pending", verification_status="pending"),
+        ], snapshot_complete=False),
+        AdapterResult(snapshot_complete=False, status="partial"),
+        AdapterResult(snapshot_complete=False, status="partial"),
+        AdapterResult(snapshot_complete=False, status="partial"),
+    ])
+    seen_cancellation_checks = []
+
+    def factory(scan_source):
+        check = scan_source["adapter_config"]["_cancellation_check"]
+        assert callable(check)
+        check()
+        seen_cancellation_checks.append(check)
+        return sequence
+
+    radar_service.adapter_factory = factory
+    for _ in range(4):
+        result = radar_service.run(source_ids=[source["id"]], force=True)
+        assert result["closed_jobs"] == 0
+    verified = radar_service.repository.get_job("linked-verified")
+    pending = radar_service.repository.get_job("linked-pending")
+    assert verified["verification_status"] == "verified" and verified["status"] == "open"
+    assert pending["verification_status"] == ("pending" if discover_links else "verified")
+    assert pending["sources"][0]["verification_role"] == ("discovery" if discover_links else "verification")
+    assert pending["status"] == "open"
+    assert len(seen_cancellation_checks) == 4
+    assert "_cancellation_check" not in radar_service.repository.get_source(source["id"])["adapter_config"]
+
+
 def test_same_program_merges_and_official_source_upgrades_verified(radar_service):
     discovery = create_source(
         radar_service, "program-discovery-source", trust_level="discovery"

@@ -5,6 +5,7 @@ import vm from "node:vm";
 import { createRadarPollingGate } from "./radar-polling.js";
 import {
   DEFAULT_FUTURE_RADAR_STATUS, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, TIER_CODES, buildFutureRadarJobsQuery,
+  buildFutureRadarCompanyJobsQuery, starfieldLabel,
   filterJobsByStarfields, futureRadarOpportunityDateCopy,
   futureRadarOpportunityErrorCopy, futureRadarOpportunitySource,
   futureRadarPublicOpportunityUrl, jobTierBucket, partitionJobsByPriority,
@@ -79,6 +80,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   const elements = Object.fromEntries([
     "recruitmentJobs", "recruitmentError", "recruitmentStatus", "futureRadarLoading", "futureRadarError",
     "futureRadarLiveState", "futureRadarOpportunitySummary", "futureRadarOpportunityCount",
+    "futureRadarPagination", "futureRadarPagePrev", "futureRadarPageNext", "futureRadarPageStatus",
     "futureRadarDashboard", "futureRadarLastScan", "futureRadarLastSuccess", "futureRadarSourceHealth",
     "futureRadarFilterStatus", "futureRadarFilterEvent", "futureRadarFilterVerification", "futureRadarEvents",
     "recruitmentRoles", "recruitmentIndustries", "recruitmentLocations",
@@ -93,6 +95,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     resumeFutureRadarRunStatusPolling() {},
     state, elements, DEFAULT_FUTURE_RADAR_STATUS, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, TIER_CODES, buildFutureRadarJobsQuery,
+    buildFutureRadarCompanyJobsQuery, starfieldLabel,
     futureRadarOpportunityDateCopy, futureRadarOpportunityErrorCopy, futureRadarOpportunitySource,
     futureRadarPublicOpportunityUrl, jobTierBucket, partitionJobsByPriority,
     document: { hidden: false, querySelectorAll: () => [], createElement: (tag) => new Element(tag), createTextNode: (text) => text },
@@ -170,7 +173,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     extract("function setFutureRadarLoading(", "\nfunction mergeFutureRadarEvents"),
     extract("function renderFutureRadarDashboard(", "\nfunction renderFutureRadarPrograms"),
     extract("function eventTimestamp(", "\nfunction renderFutureRadarSources"),
-    extract("function recordFutureRadarOpportunityFailure(", "\nfunction syncFutureRadarSourceFilter"),
+    extract("function renderFutureRadarPagination(", "\nfunction syncFutureRadarSourceFilter"),
     extract("function resetFutureRadarFilters(", "\nfunction applyIncrementalRadarMetrics"),
     extract("async function loadFutureRadarSnapshot(", "\nfunction stopFutureRadarPolling"),
     extract("function recruitmentVerification(", "\nfunction recruitmentScoringFactors"),
@@ -666,4 +669,257 @@ test("logout cancels an unsent tier debounce and removes all saved request state
   assert.equal(r.state.futureRadar.jobsAppliedQuery, "");
   assert.equal(r.state.futureRadar.jobsRequestController, null);
   assert.equal(r.state.futureRadar.jobsRequestPromise, null);
+});
+
+function companyGroup(key, name, total = 1, tier = "T2") {
+  return { company_key: key, company_name: name, grouping: key.startsWith("telecom:") ? "telecom_group" : "company",
+    opportunity_count: total, specific_job_count: total, program_count: 0,
+    tier_counts: { [tier]: total }, category_counts: { state_tech_telecom: total },
+    cities: ["上海", "北京"], city_count: 2, verified_count: 0, discovered_count: total };
+}
+
+function companyPayload({ page = 1, items, totalCompanies = 26, total = 145 } = {}) {
+  return { view: "companies", items: items || (page === 1
+    ? [companyGroup("telecom:china_unicom", "中国联通", 120), ...Array.from({ length: 19 }, (_, i) => companyGroup(`company:${i}`, `其他企业 ${i}`))]
+    : Array.from({ length: 6 }, (_, i) => companyGroup(`company:page-two-${i}`, `第二页企业 ${i}`))),
+  page, page_size: 20, total: totalCompanies, total_companies: totalCompanies, total_opportunities: total,
+  stats: { total_opportunities: total, total_companies: totalCompanies,
+    verification_status: { pending: total, verified: 0, conflicted: 0 },
+    tier_counts: { T2: total }, category_counts: { state_tech_telecom: total } } };
+}
+
+function companyRuntime() {
+  const r = runtime({ fail: false });
+  Object.assign(r.state.futureRadar, { view: "companies", jobsAppliedView: "companies", pageSize: 20,
+    totalCompanies: 0, companies: [], companyExpansions: new Map() });
+  r.controls.opportunityHandler = (path) => {
+    const params = new URLSearchParams(path.split("?")[1]);
+    const page = Number(params.get("page"));
+    if (!params.has("company_key")) return companyPayload({ page });
+    const payload = tierPayload("T2", { page, total: 120, size: page < 3 ? 50 : 20, id: `expanded-page-${page}` });
+    payload.view = "jobs";
+    payload.total_opportunities = 120;
+    payload.total_companies = 1;
+    payload.items.forEach((item) => { item.company = "中国联合网络通信有限公司安徽省分公司"; });
+    return payload;
+  };
+  r.companyCards = () => descendants(r.elements.recruitmentJobs).filter((node) => node.className === "radar-company-card");
+  return r;
+}
+
+test("company expansion clones every parent filter and only replaces projection pagination", () => {
+  const parentQuery = "view=companies&page=3&page_size=20&status=unknown&tier_code=T1&q=数据&source_id=public&category=internet_tech&category=state_tech_telecom";
+  const params = new URLSearchParams(buildFutureRadarCompanyJobsQuery({ parentQuery, companyKey: "company:stable", page: 2 }));
+  assert.equal(params.get("view"), "jobs");
+  assert.equal(params.get("company_key"), "company:stable");
+  assert.equal(params.get("page"), "2");
+  assert.equal(params.get("page_size"), "50");
+  assert.equal(params.get("status"), "unknown");
+  assert.equal(params.get("tier_code"), "T1");
+  assert.equal(params.get("q"), "数据");
+  assert.equal(params.get("source_id"), "public");
+  assert.deepEqual(params.getAll("category"), ["internet_tech", "state_tech_telecom"]);
+  assert.throws(() => buildFutureRadarCompanyJobsQuery(), /companyKey/);
+});
+
+test("frontend defaults to companies and labels full company and opportunity counts separately", async () => {
+  assert.match(source, /futureRadar:\s*\{\s*dashboard: null,\s*view: "companies"/);
+  const r = companyRuntime();
+  await r.run("loadFutureRadarJobPage(1, true)");
+  assert.equal(new URLSearchParams(r.calls[0].split("?")[1]).get("view"), "companies");
+  assert.equal(r.state.futureRadar.totalJobs, 145);
+  assert.equal(r.state.futureRadar.totalCompanies, 26);
+  assert.equal(r.companyCards().length, 20);
+  assert.equal(r.cards().length, 0, "groups are not falsely rendered as jobs");
+  assert.match(r.elements.futureRadarPageStatus.textContent, /第 1 \/ 2 页.*26 个企业分组.*145 个机会/);
+  assert.match(r.elements.recruitmentStatus.textContent, /145 个机会.*26 个企业分组/);
+  assert.match(r.elements.recruitmentJobs.textContent, /企业分组不合并岗位/);
+  assert.equal(r.elements.futureRadarOpportunityCount.textContent, "145");
+  const switcher = descendants(r.elements.recruitmentJobs).find((node) => node.dataset.opportunityView === "companies");
+  assert.equal(switcher["aria-pressed"], "true");
+  await r.run("loadFutureRadarJobPage(2)");
+  assert.equal(r.companyCards().length, 6);
+  assert.match(r.elements.recruitmentJobs.textContent, /第二页企业/);
+  assert.match(r.elements.futureRadarPageStatus.textContent, /第 2 \/ 2 页/);
+});
+
+test("company expansion pages actual jobs with original entities, details and official links", async () => {
+  const r = companyRuntime();
+  r.state.futureRadar.filters = { status: "unknown", city: "上海", q: "数据", source_id: "public" };
+  r.context.selectedRecruitmentStarfields = () => ["internet_tech", "state_tech_telecom"];
+  r.state.recruitmentTierFilter = "T2";
+  await r.run("loadFutureRadarJobPage(1, true)");
+  const card = r.companyCards()[0];
+  card.open = true;
+  assert.equal(await card.listeners.toggle(), true);
+  const query = new URLSearchParams(r.calls.at(-1).split("?")[1]);
+  assert.equal(query.get("company_key"), "telecom:china_unicom");
+  assert.equal(query.get("view"), "jobs");
+  assert.equal(query.get("tier_code"), "T2");
+  assert.equal(query.get("status"), "unknown");
+  assert.equal(query.get("source_id"), "public");
+  assert.equal(query.get("city"), "上海");
+  assert.deepEqual(query.getAll("category"), ["internet_tech", "state_tech_telecom"]);
+  assert.equal(r.cards().length, 50);
+  assert.match(r.cards()[0].textContent, /中国联合网络通信有限公司安徽省分公司/);
+  assert.ok(descendants(r.cards()[0]).some((node) => node.dataset.opportunityDetail));
+  assert.ok(descendants(r.cards()[0]).some((node) => node.tag === "a" && node.href.startsWith("https://careers.example.com/")));
+  const next = descendants(card).find((node) => node.tag === "button" && node.textContent === "下一页岗位 →");
+  await next.listeners.click();
+  assert.equal(new URLSearchParams(r.calls.at(-1).split("?")[1]).get("page"), "2");
+  assert.match(r.cards()[0].textContent, /expanded-page-2/);
+  assert.equal(r.state.futureRadar.page, 1, "nested pagination cannot move the company page");
+  assert.equal(r.state.futureRadar.totalJobs, 145, "nested counts cannot overwrite the main pool");
+  assert.equal(r.state.futureRadar.totalCompanies, 26);
+});
+
+test("view switches retain filters and a late company response cannot overwrite job mode", async () => {
+  const r = companyRuntime();
+  const companies = deferred();
+  const jobs = deferred();
+  r.state.recruitmentTierFilter = "T1";
+  r.state.futureRadar.filters = { q: "data", status: "active", city: "上海" };
+  r.controls.opportunityHandler = (path) => new URLSearchParams(path.split("?")[1]).get("view") === "companies" ? companies.promise : jobs.promise;
+  const first = r.run("loadFutureRadarJobPage(1, true)");
+  await new Promise(setImmediate);
+  const controller = r.state.futureRadar.jobsRequestController;
+  const switchToJobs = r.run("selectFutureRadarView('jobs')");
+  await new Promise(setImmediate);
+  assert.equal(controller.signal.aborted, true);
+  const query = new URLSearchParams(r.calls.at(-1).split("?")[1]);
+  assert.equal(query.get("view"), "jobs");
+  assert.equal(query.get("page_size"), "50");
+  assert.equal(query.get("tier_code"), "T1");
+  assert.equal(query.get("q"), "data");
+  jobs.resolve({ ...tierPayload("T1", { id: "job-mode", total: 8 }), view: "jobs", total_companies: 3, total_opportunities: 8 });
+  assert.equal(await switchToJobs, true);
+  companies.resolve(companyPayload());
+  assert.equal(await first, false);
+  assert.equal(r.state.futureRadar.jobsAppliedView, "jobs");
+  assert.equal(r.state.futureRadar.companies.length, 0);
+  assert.equal(r.state.futureRadar.totalJobs, 8);
+  assert.match(r.cards()[0].textContent, /job-mode/);
+});
+
+test("rapid T changes in company mode use the latest full-pool query and clear stale expansions", async () => {
+  const r = companyRuntime();
+  await r.run("loadFutureRadarJobPage(1, true)");
+  const pending = new Map();
+  r.controls.opportunityHandler = (path, options) => {
+    const params = new URLSearchParams(path.split("?")[1]);
+    const request = { ...deferred(), signal: options.signal };
+    pending.set(params.get("company_key") || params.get("tier_code"), request);
+    return request.promise;
+  };
+  const card = r.companyCards()[0];
+  card.open = true;
+  const expanding = card.listeners.toggle();
+  await new Promise(setImmediate);
+  const first = r.run("selectRecruitmentTier('T1')");
+  await r.flushSelection();
+  const latest = r.run("selectRecruitmentTier('T0.5')");
+  await r.flushSelection();
+  assert.equal(pending.get("telecom:china_unicom").signal.aborted, true);
+  assert.equal(pending.get("T1").signal.aborted, true);
+  pending.get("T0.5").resolve(companyPayload({ items: [companyGroup("company:latest", "最新匹配企业", 1, "T0.5")], totalCompanies: 1, total: 1 }));
+  assert.equal(await latest, true);
+  pending.get("T1").resolve(companyPayload());
+  pending.get("telecom:china_unicom").resolve(tierPayload("T2", { id: "stale-expanded" }));
+  assert.equal(await first, false);
+  assert.equal(await expanding, false);
+  assert.equal(r.state.futureRadar.jobsAppliedTier, "T0.5");
+  assert.equal(r.state.futureRadar.jobsAppliedView, "companies");
+  assert.equal(r.state.futureRadar.totalJobs, 1);
+  assert.match(r.elements.recruitmentJobs.textContent, /最新匹配企业/);
+  assert.doesNotMatch(r.elements.recruitmentJobs.textContent, /stale-expanded/);
+  assert.equal(new URLSearchParams(r.calls.at(-1).split("?")[1]).get("view"), "companies");
+});
+
+test("changing company page cancels an expansion and late rows stay out of the new page", async () => {
+  const r = companyRuntime();
+  await r.run("loadFutureRadarJobPage(1, true)");
+  const response = deferred();
+  const initialHandler = r.controls.opportunityHandler;
+  r.controls.opportunityHandler = (path) => path.includes("company_key=") ? response.promise : initialHandler(path);
+  const card = r.companyCards()[0];
+  card.open = true;
+  const expansion = card.listeners.toggle();
+  await new Promise(setImmediate);
+  const entry = r.state.futureRadar.companyExpansions.get("telecom:china_unicom");
+  const signal = entry.controller.signal;
+  await r.run("loadFutureRadarJobPage(2)");
+  assert.equal(signal.aborted, true);
+  response.resolve(tierPayload("T2", { id: "late-other-page" }));
+  assert.equal(await expansion, false);
+  assert.equal(r.state.futureRadar.page, 2);
+  assert.equal(entry.jobs.length, 0);
+  assert.equal(r.cards().length, 0);
+  assert.doesNotMatch(r.elements.recruitmentJobs.textContent, /late-other-page/);
+});
+
+test("nested page races and collapse keep only the latest expanded page", async () => {
+  const r = companyRuntime();
+  await r.run("loadFutureRadarJobPage(1, true)");
+  const first = deferred(), latest = deferred();
+  r.controls.opportunityHandler = (path) => new URLSearchParams(path.split("?")[1]).get("page") === "1" ? first.promise : latest.promise;
+  const card = r.companyCards()[0];
+  card.open = true;
+  const expanding = card.listeners.toggle();
+  await new Promise(setImmediate);
+  const entry = r.state.futureRadar.companyExpansions.get("telecom:china_unicom");
+  const firstSignal = entry.controller.signal;
+  const secondPage = r.run("loadFutureRadarCompanyJobs('telecom:china_unicom', 2)");
+  await new Promise(setImmediate);
+  assert.equal(firstSignal.aborted, true);
+  latest.resolve(tierPayload("T2", { page: 2, total: 120, id: "latest-expanded" }));
+  assert.equal(await secondPage, true);
+  first.resolve(tierPayload("T2", { page: 1, total: 120, id: "outdated-expanded" }));
+  assert.equal(await expanding, false);
+  assert.equal(entry.page, 2);
+  assert.match(card.textContent, /latest-expanded/);
+  assert.doesNotMatch(card.textContent, /outdated-expanded/);
+  card.open = false;
+  card.listeners.toggle();
+  assert.equal(entry.open, false);
+  card.open = true;
+  card.listeners.toggle();
+  assert.match(card.textContent, /latest-expanded/);
+});
+
+test("unchanged company polling preserves expanded jobs and avoids duplicate reads", async () => {
+  const r = companyRuntime();
+  await r.run("loadFutureRadarJobPage(1, true)");
+  const card = r.companyCards()[0];
+  card.open = true;
+  await card.listeners.toggle();
+  const previousCards = r.cards();
+  await r.run("pollFutureRadarEvents()");
+  assert.equal(r.companyCards()[0], card);
+  assert.equal(r.cards()[0], previousCards[0]);
+  assert.equal(card.open, true);
+  assert.equal(r.calls.filter((path) => path.includes("company_key=")).length, 1);
+});
+
+test("failed view switch identifies the old snapshot and does not treat companies as job cards", async () => {
+  const r = companyRuntime();
+  await r.run("loadFutureRadarJobPage(1, true)");
+  r.controls.opportunityHandler = () => Promise.reject(Object.assign(new Error("not public"), { status: 500 }));
+  assert.equal(await r.run("selectFutureRadarView('jobs')"), false);
+  assert.equal(r.state.futureRadar.view, "jobs");
+  assert.equal(r.state.futureRadar.jobsAppliedView, "companies");
+  assert.match(r.elements.recruitmentJobs.textContent, /上次成功快照（原筛选条件）/);
+  assert.equal(r.companyCards().length, 20);
+  assert.equal(r.cards().length, 0);
+});
+
+test("failed switch from company page two retains the old page size and disables mismatched navigation", async () => {
+  const r = companyRuntime();
+  await r.run("loadFutureRadarJobPage(2, true)");
+  r.controls.opportunityHandler = () => Promise.reject(Object.assign(new Error("not public"), { status: 500 }));
+  await r.run("selectFutureRadarView('jobs')");
+  assert.equal(r.state.futureRadar.pageSize, 50);
+  assert.equal(r.state.futureRadar.jobsAppliedPageSize, 20);
+  assert.match(r.elements.futureRadarPageStatus.textContent, /第 2 \/ 2 页.*上次成功快照.*26 个企业分组/);
+  assert.equal(r.elements.futureRadarPagePrev.disabled, true);
+  assert.equal(r.elements.futureRadarPageNext.disabled, true);
 });

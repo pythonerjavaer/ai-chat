@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import re
 import socket
 import urllib.error
@@ -64,6 +65,60 @@ def normalize_html_text(value: str) -> str:
     except Exception as exc:
         raise WatchFetchError("页面 HTML 无法解析。") from exc
     return re.sub(r"\s+", " ", visible).strip()
+
+
+class _JobPostingBodyParser(HTMLParser):
+    """Read data-only JSON-LD scripts; never execute arbitrary page scripts."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.blocks: list[str] = []
+        self._parts: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        attributes = {key.casefold(): str(value or "") for key, value in attrs}
+        if tag == "script" and attributes.get("type", "").casefold() == "application/ld+json":
+            self._parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._parts is not None:
+            self._parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._parts is not None:
+            self.blocks.append("".join(self._parts))
+            self._parts = None
+
+
+def _structured_jobposting_fingerprint_text(html: str) -> str | None:
+    """An empty visible body is usable only with substantive JobPosting data.
+
+    This opt-in transport exception does not verify the job or manufacture
+    visible text. Its caller still evaluates employer, cohort and open state.
+    """
+    parser = _JobPostingBodyParser()
+    parser.feed(html)
+    parser.close()
+    postings = []
+    for block in parser.blocks:
+        try:
+            stack = [json.loads(block)]
+        except (ValueError, TypeError, RecursionError):
+            continue
+        while stack:
+            item = stack.pop()
+            if isinstance(item, list):
+                stack.extend(item)
+            elif isinstance(item, dict):
+                kinds = item.get("@type", [])
+                if "JobPosting" in (kinds if isinstance(kinds, list) else [kinds]):
+                    title, description = item.get("title"), item.get("description")
+                    if (isinstance(title, str) and title.strip()
+                            and isinstance(description, str) and len(normalize_html_text(description)) >= 30):
+                        postings.append(item)
+                else:
+                    stack.extend(item[key] for key in ("@graph", "mainEntity", "itemListElement", "item") if key in item)
+    return json.dumps(postings, sort_keys=True, ensure_ascii=False) if postings else None
 
 
 def content_fingerprint(text: str) -> str:
@@ -181,6 +236,7 @@ def fetch_watch_page(
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_bytes: int = DEFAULT_MAX_BYTES,
     opener_factory: Callable[..., urllib.request.OpenerDirector] = urllib.request.build_opener,
+    allow_structured_body: bool = False,
 ) -> WatchFetchResult:
     """Fetch and fingerprint a public page without invoking an AI model."""
     safe_url = validate_public_https_url(url, resolve_dns=True)
@@ -228,12 +284,15 @@ def fetch_watch_page(
     except LookupError:
         html = payload.decode("utf-8", errors="replace")
     text = normalize_html_text(html)
+    fingerprint_text = text
     if not text:
-        raise WatchFetchError("监控页面没有可比较的文本内容。")
+        fingerprint_text = _structured_jobposting_fingerprint_text(html) if allow_structured_body else None
+        if not fingerprint_text:
+            raise WatchFetchError("监控页面没有可比较的文本内容。")
     return WatchFetchResult(
         url=safe_url,
         final_url=final_url,
-        fingerprint=content_fingerprint(text),
+        fingerprint=content_fingerprint(fingerprint_text),
         keyword_hits=keyword_hits(text, keywords),
         content_bytes=len(payload),
         http_status=status,

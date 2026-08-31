@@ -568,6 +568,33 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .recruitment-deadline-alerts div { display: grid; gap: 5px; }
 .recruitment-deadline-alerts a { color: #fff0dc; font-size: 10px; line-height: 1.45; }
 .recruitment-jobs { display: grid; gap: 10px; }
+.radar-opportunity-view-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 3px 0 6px; }
+.radar-opportunity-view-switch button { min-height: 36px; padding: 8px 13px; border: 1px solid rgba(116,198,212,.2); border-radius: 9px; background: rgba(45,138,157,.06); color: #9bbbc8; font-size: 11px; cursor: pointer; }
+.radar-opportunity-view-switch button.active { color: #d5fbff; border-color: rgba(116,226,255,.58); background: rgba(59,194,228,.16); }
+.radar-opportunity-view-switch > span { color: #829ba8; font-size: 9px; line-height: 1.5; }
+.radar-company-card { min-width: 0; border: 1px solid rgba(125,209,233,.2); border-radius: 13px; background: rgba(39,104,126,.055); }
+.radar-company-card[open] { border-color: rgba(125,209,233,.36); }
+.radar-company-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 15px; padding: 15px 16px; list-style: none; cursor: pointer; }
+.radar-company-heading::-webkit-details-marker { display: none; }
+.radar-company-heading:focus-visible { outline: 2px solid #91e7f4; outline-offset: 2px; border-radius: 12px; }
+.radar-company-title { min-width: 0; }
+.radar-company-title h4 { margin: 0 0 5px; color: #eaf8ff; font-size: 15px; overflow-wrap: anywhere; }
+.radar-company-title > small { color: #84a5b3; font-size: 9px; }
+.radar-company-count { display: grid; gap: 7px; flex-shrink: 0; padding-top: 2px; text-align: right; }
+.radar-company-count strong { color: #b7ecf5; font-size: 12px; }
+.radar-company-count small { color: #7fc3d2; font-size: 9px; }
+.radar-company-meta { display: grid; gap: 4px; margin: 9px 0; color: #91aab8; font-size: 9px; line-height: 1.55; overflow-wrap: anywhere; }
+.radar-company-tiers { display: flex; flex-wrap: wrap; gap: 5px; }
+.radar-company-tiers .job-tier { padding: 3px 6px; font-size: 9px; }
+.radar-company-jobs { display: grid; gap: 10px; padding: 13px; border-top: 1px solid rgba(125,209,233,.13); }
+.radar-company-jobs > p { margin: 0; }
+.radar-company-jobs .recruitment-job-card { background: rgba(14,31,45,.24); }
+@media (max-width: 600px) {
+  .radar-company-heading { gap: 8px; padding: 12px; }
+  .radar-company-count { flex-shrink: 1; min-width: 78px; }
+  .radar-company-count strong { font-size: 11px; }
+  .radar-company-jobs { padding: 9px; }
+}
 .job-tier-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 4px; }
 .job-tier-summary-item { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 42px; padding: 9px 10px; color: inherit; text-align: left; border: 1px solid rgba(255,255,255,.09); border-radius: 10px; background: rgba(255,255,255,.025); cursor: pointer; transition: transform .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease; }
 .job-tier-summary-item:hover { transform: translateY(-1px); border-color: rgba(133,222,255,.3); background: rgba(93,199,235,.065); }

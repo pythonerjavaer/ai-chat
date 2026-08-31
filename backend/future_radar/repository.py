@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterator
 
 from ..live_sources import is_actionable_recruitment_listing, is_recruitment_program_listing
-from .normalization import clean_text, normalized_key
+from .normalization import canonical_telecom_operator, clean_text, normalized_key
 from .opportunity_cache import (
     BoundedScoringCache, CACHE_FORMAT_VERSION, RevisionChanged,
     date_boundary, opaque_digest, read_opportunity_revision,
@@ -1733,6 +1733,20 @@ class RadarRepository:
             tier_counts[bucket] += 1
             category = str(item.get("primary_category") or "uncategorized")
             category_counts[category] = category_counts.get(category, 0) + 1
+            # Display grouping is assigned AFTER scoring. It is never fed back
+            # into company/department, employer identity deduplication or T.
+            key, name, grouping = self._opportunity_display_company(item, company_aliases)
+            item["display_company_key"] = key
+            item["display_company_name"] = name
+            item["display_company_grouping"] = grouping
+        # Alias spellings have one deterministic display name across T pages.
+        labels: dict[str, str] = {}
+        for item in items:
+            key = item["display_company_key"]
+            name = item["display_company_name"]
+            labels[key] = min(labels.get(key, name), name, key=lambda value: (value.casefold(), value))
+        for item in items:
+            item["display_company_name"] = labels[item["display_company_key"]]
         aliases = {
             str(alias): index
             for index, row in enumerate(rows)
@@ -1740,14 +1754,91 @@ class RadarRepository:
         }
         return _PreparedOpportunityPool(items, tier_counts, category_counts, aliases)
 
+    @staticmethod
+    def _opportunity_display_company(
+        item: dict[str, Any], company_aliases: dict[str, str],
+    ) -> tuple[str, str, str]:
+        """Navigation identity only; never an assertion about the hiring unit."""
+        name = clean_text(item.get("company"), limit=160)
+        normalized = normalized_key(name)
+        if not normalized or normalized in {
+            "未知", "未知公司", "未知企业", "未公开", "未披露", "未注明", "未提供",
+            "待确认", "待核实", "招聘单位待确认", "公司未披露", "企业未披露",
+            "机会发布方", "匿名公司", "unknown", "unknowncompany", "confidential", "na",
+        }:
+            # Unknown employers do not establish a shared company. A stable
+            # per-record key keeps distinct opportunities separately visible.
+            identity = item.get("id") or item.get("external_id") or (
+                name, item.get("title"), item.get("city"), item.get("official_url"),
+            )
+            return "unknown:" + opaque_digest(identity)[:32], name or "招聘单位待确认", "unknown"
+        operator = canonical_telecom_operator(name)
+        if not operator and not re.search(r"招聘|合作伙伴|代理|加盟|外包|服务商", normalized):
+            operator = canonical_telecom_operator(re.sub(r"(?:集团)?总部$", "", normalized))
+            if not operator:
+                # Legal branch names can contain a county/city not in the
+                # maintained province directory. No nationwide city catalog
+                # and no mentions from job prose are used for this display key.
+                branch = re.fullmatch(
+                    r"(中国(?:移动通信集团|联合网络通信|移动|电信|联通))"
+                    r"[\u4e00-\u9fff]{2,40}(?:分公司|支公司|营业部|营业厅|支局)", normalized,
+                )
+                operator = canonical_telecom_operator(branch.group(1)) if branch else None
+        if operator:
+            label = {"china_mobile": "中国移动", "china_telecom": "中国电信", "china_unicom": "中国联通"}[operator]
+            return "telecom:" + operator, label, "telecom_group"
+        canonical = company_aliases.get(normalized, normalized)
+        # Prefer a canonical Chinese name when it exists in the maintained
+        # alias map; otherwise retain the source spelling, not a made-up parent.
+        label = canonical if re.search(r"[\u4e00-\u9fff]", canonical) else name
+        return "company:" + opaque_digest(canonical)[:32], label, "company"
+
+    @staticmethod
+    def _opportunity_company_groups(items: list[dict[str, Any]] | tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            groups.setdefault(item["display_company_key"], []).append(item)
+        summaries = []
+        for key, members in groups.items():
+            tier_counts: dict[str, int] = {}
+            category_counts: dict[str, int] = {}
+            for item in members:
+                tier = item["tier_bucket"]
+                tier_counts[tier] = tier_counts.get(tier, 0) + 1
+                category = str(item.get("primary_category") or "uncategorized")
+                category_counts[category] = category_counts.get(category, 0) + 1
+            companies = sorted({clean_text(item.get("company")) for item in members if item.get("company")})
+            cities = sorted({clean_text(item.get("city")) for item in members if item.get("city")})
+            closing = sorted({str(item["closing_date"]) for item in members if item.get("closing_date")})
+            summaries.append({
+                "company_key": key,
+                "company_name": members[0]["display_company_name"],
+                "grouping": members[0]["display_company_grouping"],
+                "opportunity_count": len(members),
+                "specific_job_count": sum(item.get("listing_kind") != "recruitment_program" for item in members),
+                "program_count": sum(item.get("listing_kind") == "recruitment_program" for item in members),
+                "tier_counts": tier_counts, "category_counts": category_counts,
+                "hiring_unit_count": len(companies), "hiring_units": companies[:12],
+                "city_count": len(cities), "cities": cities[:8],
+                "verified_count": sum(item.get("verification_status") == "verified" for item in members),
+                "discovered_count": sum(item.get("verification_status") != "verified" for item in members),
+                "earliest_closing_date": closing[0] if closing else None,
+                "latest_changed_at": max((str(item.get("last_changed_at") or "") for item in members), default="") or None,
+            })
+        # Stable employer-name pagination, independent of volume / ingestion
+        # order. A carrier with 2,000 roles still consumes exactly one card.
+        return sorted(summaries, key=lambda item: (
+            normalized_key(item["company_name"]), item["company_name"], item["company_key"],
+        ))
+
     def _prepared_opportunities(
         self, *, filters: dict[str, Any], public_url: Callable[[Any], str | None],
         prepare: Callable[[dict[str, Any]], dict[str, Any]],
         company_aliases: dict[str, str], cache_scope: str | None,
     ) -> _PreparedOpportunityPool:
-        # Tier/page changes are projections of the same complete scored set.
+        # Tier/view/company/page changes project the same complete scored set.
         base_filters = {key: value for key, value in filters.items()
-                        if key not in {"tier_code", "page", "page_size"}}
+                        if key not in {"tier_code", "view", "company_key", "page", "page_size"}}
 
         def build() -> _PreparedOpportunityPool:
             return self._prepare_opportunity_pool(
@@ -1797,6 +1888,16 @@ class RadarRepository:
             company_aliases=company_aliases or {}, cache_scope=cache_scope,
         )
         items = pool.items
+        tier_counts = dict(pool.tier_counts)
+        category_counts = dict(pool.category_counts)
+        if filters.get("company_key"):
+            items = tuple(item for item in items if item["display_company_key"] == filters["company_key"])
+            tier_counts = {key: 0 for key in tier_counts}
+            category_counts = {}
+            for item in items:
+                tier_counts[item["tier_bucket"]] += 1
+                category = str(item.get("primary_category") or "uncategorized")
+                category_counts[category] = category_counts.get(category, 0) + 1
         matching_total = len(items)
         if filters.get("tier_code"):
             items = [item for item in items if item["tier_bucket"] == filters["tier_code"]]
@@ -1805,24 +1906,42 @@ class RadarRepository:
         for item in items:
             verification[str(item.get("verification_status") or "pending")] += 1
             statuses[str(item.get("status") or "unknown")] += 1
+        companies = self._opportunity_company_groups(items)
+        unknown_companies = sum(company["grouping"] == "unknown" for company in companies)
+        view = "companies" if filters.get("view") == "companies" else "jobs"
+        selected = companies if view == "companies" else items
         offset = (page - 1) * page_size
-        return {
+        result = {
             # Never hand out shared mutable cache values to response assembly
             # or to an internal caller. Only copy the selected page.
-            "items": deepcopy(list(items[offset:offset + page_size])),
-            "total": len(items), "page": page, "page_size": page_size,
+            "items": deepcopy(list(selected[offset:offset + page_size])),
+            "view": view, "total": len(selected), "page": page, "page_size": page_size,
+            "total_opportunities": len(items), "total_companies": len(companies),
             "stats": {
                 "total_opportunities": len(items), "matching_total": matching_total,
+                "total_companies": len(companies),
+                "known_company_count": len(companies) - unknown_companies,
+                "unknown_company_count": unknown_companies,
                 "verified_count": verification["verified"],
                 "discovered_count": verification["pending"] + verification["conflicted"],
                 "verification_status": verification, "job_status": statuses,
-                "tier_counts": dict(pool.tier_counts), "category_counts": dict(pool.category_counts),
-                "primary_category": dict(pool.category_counts),
+                "tier_counts": tier_counts, "category_counts": category_counts,
+                "primary_category": dict(category_counts),
                 "source_count": len({
                     source["source_id"] for item in items for source in item.get("sources", [])
                 }),
             },
         }
+        if view == "companies":
+            result["company_sort"] = "name"
+            # Keep official deadline alerts available without shipping every
+            # expanded job. This bounded preview covers the full matching pool.
+            dated = sorted((item for item in items if item.get("closing_date")
+                            and item.get("verification_status") == "verified"
+                            and str(item["closing_date"]) >= date.today().isoformat()),
+                           key=lambda item: (item["closing_date"], str(item.get("id"))))
+            result["deadline_opportunities"] = deepcopy(dated[:12])
+        return result
 
     def get_prepared_opportunity(
         self, job_id: str, *, public_url: Callable[[Any], str | None],

@@ -6,12 +6,15 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from openai import OpenAI
 
 from .config import settings
 from .live_sources import PERSONAL_MONITOR_POOLS, PRIORITY_EMPLOYERS
+from .future_radar.public_discovery import (
+    OfficialDiscoveryCancelled, check_discovery_cancellation, discover_official_job_pages,
+)
 from .recruitment_watch import (
     WatchFetchError,
     fetch_watch_page,
@@ -188,6 +191,9 @@ class WebRecruitmentSearchResult:
     failed_employers: tuple[str, ...] = ()
     search_batches: int = 0
     failed_batches: tuple[str, ...] = ()
+    # Separate hosted-search execution from actual official-list coverage.
+    # A successful model request is not proof that every ATS page was read.
+    official_discovery: tuple[dict[str, Any], ...] = ()
 
     @property
     def target_count(self) -> int:
@@ -1060,12 +1066,16 @@ def _candidate_was_cited(candidate_url: str, source_urls: set[str]) -> bool:
 
 def _inspect_normalized_search_candidate(
     job: dict[str, Any], target: EmployerSearchTarget, *, cited: bool,
+    page_evidence: CandidatePageEvidence | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     """Shared deterministic verification for fresh searches and checkpoint replay."""
     if cited:
-        job["_employer_aliases"] = list(target.aliases)
-        evidence = _inspect_official_candidate_page(job)
-        job.pop("_employer_aliases", None)
+        if page_evidence is None:
+            job["_employer_aliases"] = list(target.aliases)
+            evidence = _inspect_official_candidate_page(job)
+            job.pop("_employer_aliases", None)
+        else:
+            evidence = page_evidence
     else:
         # A university notice may lead to an ATS on a different host. This is
         # still a discovery lead, not an authenticated official-page assertion.
@@ -1090,10 +1100,56 @@ def _inspect_normalized_search_candidate(
     return job, reason
 
 
+def _discover_company_official_jobs(
+    batch: EmployerSearchBatch, cited_urls: set[str], existing: list[dict[str, Any]],
+    *, cancellation_check: Callable[[], None] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Give each sidebar employer the same non-AI official-link crawl budget.
+
+    Known employer/ATS citations can seed discovery even when the model emitted
+    no jobs. An explicitly cited candidate on an unknown host may be followed,
+    but the shared evidence gate still keeps its jobs pending. Never guess URLs
+    from company names, consume other companies' quotas, or make more AI calls.
+    """
+    target = batch.targets[0]
+    urls = list(dict.fromkeys([
+        *sorted(url for url in cited_urls if _safe_official_url(url) and _official_domain_confirmed(
+            target.canonical_name, url, target.aliases,
+        )),
+        *(job["url"] for job in existing if _candidate_was_cited(job["url"], cited_urls)),
+    ]))
+    discovered = discover_official_job_pages(
+        urls, company=target.canonical_name, fetcher=fetch_watch_page,
+        cancellation_check=cancellation_check,
+    )
+    jobs: list[dict[str, Any]] = []
+    decisions: dict[str, int] = {}
+    for candidate in discovered.candidates:
+        if candidate.job.get("posting_expired"):
+            decisions["official_posting_expired"] = decisions.get("official_posting_expired", 0) + 1
+            continue
+        job, reason = _normalize_job_with_reason(candidate.job, batch.pool, target)
+        if job is not None:
+            job["_employer_aliases"] = list(target.aliases)
+            evidence = _evaluate_official_candidate_page(job, candidate.page_text, candidate.final_url)
+            job.pop("_employer_aliases", None)
+            job, reason = _inspect_normalized_search_candidate(
+                job, target, cited=True, page_evidence=evidence,
+            )
+        decisions[reason] = decisions.get(reason, 0) + 1
+        if job is not None:
+            job["tags"].append("官网列表逐页发现")
+            jobs.append(job)
+    coverage = {**discovered.coverage, "accepted_count": len(jobs), "candidate_decisions": decisions}
+    return jobs, coverage
+
+
 def _search_batch(
     api_client: OpenAI,
     batch: EmployerSearchBatch,
+    *, cancellation_check: Callable[[], None] | None = None,
 ) -> WebRecruitmentSearchResult:
+    check_discovery_cancellation(cancellation_check)
     if len(batch.targets) != 1:
         raise RuntimeError(
             "Employer search requires exactly one target per request."
@@ -1131,6 +1187,7 @@ def _search_batch(
         store=False,
     )
     response_status = str(_response_value(response, "status", "completed"))
+    check_discovery_cancellation(cancellation_check)
     if response_status != "completed" or _response_value(response, "incomplete_details"):
         raise RuntimeError(
             f"Employer search batch {batch.id} returned an incomplete response."
@@ -1161,6 +1218,7 @@ def _search_batch(
     seen_jobs: set[tuple[str, str, str, str]] = set()
     employers_with_candidates: set[str] = set()
     for item in payload["jobs"]:
+        check_discovery_cancellation(cancellation_check)
         if not isinstance(item, dict):
             continue
         target = targets_by_id.get(str(item.get("target_id", "")))
@@ -1184,6 +1242,36 @@ def _search_batch(
         seen_jobs.add(job_key)
         normalized.append(job)
         employers_with_candidates.add(target.canonical_name)
+    try:
+        discovered, official_coverage = _discover_company_official_jobs(
+            batch, cited_source_urls, normalized, cancellation_check=cancellation_check,
+        )
+        existing_by_key = {
+            (job["company"].casefold(), job["title"].casefold(), job["city"].casefold(), job["url"]): job
+            for job in normalized
+        }
+        for job in discovered:
+            key = (job["company"].casefold(), job["title"].casefold(), job["city"].casefold(), job["url"])
+            if key not in seen_jobs:
+                seen_jobs.add(key)
+                normalized.append(job)
+                existing_by_key[key] = job
+                employers_with_candidates.add(batch.targets[0].canonical_name)
+            elif "标题已验证" in job.get("tags", []):
+                # A previously pending model row can be attested by this
+                # deterministic follow-up; don't discard that fresh evidence.
+                existing_by_key[key].update(job)
+    except OfficialDiscoveryCancelled:
+        raise
+    except Exception:
+        # Preserve completed search results on an independent HTTP/parser
+        # failure. The source is partial, not a falsely successful empty scan.
+        official_coverage = {
+            "employer": batch.targets[0].canonical_name, "status": "failed",
+            "pagination_complete": False, "snapshot_complete": False,
+            "completion_reason": "official_discovery_failed", "accepted_count": 0,
+        }
+        logger.warning("Official-list discovery failed for search batch %s", batch.id)
     target_names = tuple(target.canonical_name for target in batch.targets)
     return WebRecruitmentSearchResult(
         jobs=normalized,
@@ -1196,6 +1284,7 @@ def _search_batch(
         searched_employers=target_names,
         employers_with_candidates=tuple(sorted(employers_with_candidates)),
         search_batches=1,
+        official_discovery=(official_coverage,),
     )
 
 
@@ -1228,10 +1317,14 @@ def _search_pool(api_client: OpenAI, pool: dict[str, Any]) -> WebRecruitmentSear
             name for result in results for name in result.employers_with_candidates
         })),
         search_batches=len(results),
+        official_discovery=tuple(item for result in results for item in result.official_discovery),
     )
 
 
-def search_current_recruitment_jobs(client: OpenAI | None = None) -> WebRecruitmentSearchResult:
+def search_current_recruitment_jobs(
+    client: OpenAI | None = None, *, cancellation_check: Callable[[], None] | None = None,
+) -> WebRecruitmentSearchResult:
+    check_discovery_cancellation(cancellation_check)
     api_client = client or OpenAI(api_key=settings.openai_api_key)
     pools = list(PERSONAL_MONITOR_POOLS)
     targets = build_employer_search_targets(pools)
@@ -1248,13 +1341,20 @@ def search_current_recruitment_jobs(client: OpenAI | None = None) -> WebRecruitm
     max_workers = min(8, len(batches))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_search_batch, api_client, batch): batch
+            executor.submit(
+                _search_batch, api_client, batch,
+                **({"cancellation_check": cancellation_check} if cancellation_check is not None else {}),
+            ): batch
             for batch in batches
         }
         for future in as_completed(futures):
             batch = futures[future]
             try:
                 results.append(future.result())
+            except OfficialDiscoveryCancelled:
+                for pending in futures:
+                    pending.cancel()
+                raise
             except Exception:
                 failed_pools.add(str(batch.pool["id"]))
                 failed_batches.append(batch.id)
@@ -1313,6 +1413,7 @@ def search_current_recruitment_jobs(client: OpenAI | None = None) -> WebRecruitm
         ),
         search_batches=len(batches),
         failed_batches=tuple(sorted(failed_batches)),
+        official_discovery=tuple(item for result in results for item in result.official_discovery),
     )
     logger.info(
         "Recruitment company coverage targets=%d searched=%d candidates=%d "

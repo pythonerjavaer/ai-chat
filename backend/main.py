@@ -1273,6 +1273,8 @@ def future_radar_opportunities(
         "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY"
     ] | None = None,
     compact: bool = False,
+    view: Literal["jobs", "companies"] = "jobs",
+    company_key: str | None = Query(default=None, max_length=100),
 ) -> JSONResponse:
     """The default pool includes usable discoveries without a verification gate."""
     filters = {
@@ -1287,7 +1289,7 @@ def future_radar_opportunities(
         "closing_after": closing_after.isoformat() if closing_after else None,
         "sort": sort, "active_only": status_filter in {"active", "open"},
         "primary_categories": _validated_future_radar_categories(category),
-        "tier_code": tier_code,
+        "tier_code": tier_code, "view": view, "company_key": company_key,
     }
     profile = database.get_recruitment_profile(user["id"])
     result = future_radar_service.repository.list_opportunities(
@@ -1300,8 +1302,11 @@ def future_radar_opportunities(
     if not compact:
         # Older clients keep their aliases. The current UI explicitly asks for
         # compact mode so large scored records are serialized/sent only once.
-        result["jobs"] = result["items"]
-        result["opportunities"] = result["items"]
+        if view == "companies":
+            result["companies"] = result["items"]
+        else:
+            result["jobs"] = result["items"]
+            result["opportunities"] = result["items"]
     result["tier_definitions"] = list(TIER_DEFINITIONS)
     result["pool"] = "opportunities"
     result.update(_radar_search_metadata())

@@ -24,7 +24,11 @@ from openai import OpenAI
 from .. import database
 from ..recruitment import primary_employer_category
 from ..recruitment_search import (
+    EMPLOYER_ALIAS_GROUPS,
+    EmployerSearchTarget,
     WEB_SEARCH_SOURCE,
+    _company_matches_target,
+    _evaluate_official_candidate_page,
     _inspect_official_candidate_page,
     _normalize_job as normalize_web_search_job,
     _semantic_date_appears_in_page,
@@ -45,6 +49,8 @@ from .normalization import (
     telecom_primary_category,
 )
 from .public_discovery import (
+    check_discovery_cancellation,
+    discover_official_job_pages,
     discover_bank_recruitment_articles,
     discover_sasac_recruitment_articles,
 )
@@ -896,15 +902,19 @@ class OfficialHtmlAdapter:
             raise DiscoveryLimitedError("Source URL is not configured.")
         domain = source.get("domain") or ""
         minimum = float(source.get("adapter_config", {}).get("domain_delay_seconds", 1.0))
+        cancellation_check = source.get("adapter_config", {}).get("_cancellation_check")
         last_error: Exception | None = None
         page = None
         for attempt in range(3):
             try:
+                check_discovery_cancellation(cancellation_check)
                 DOMAIN_LIMITER.wait(domain, minimum)
                 page = fetch_watch_page(
                     source["url"],
                     self.CAMPUS_MARKERS,
                     timeout_seconds=float(source.get("adapter_config", {}).get("timeout_seconds", 10)),
+                    **({"allow_structured_body": True}
+                       if source.get("adapter_config", {}).get("discover_job_links") else {}),
                 )
                 break
             except WatchFetchError as exc:
@@ -1053,12 +1063,87 @@ class OfficialHtmlAdapter:
             except RuntimeError:
                 logger.warning("AI extraction degraded for source %s", source["id"])
 
+        coverage: dict[str, Any] = {}
+        content_hash = page.fingerprint
+        normalized_content = page.text[:20_000]
+        snapshot_complete = True
+        status = "healthy"
+        if config.get("discover_job_links"):
+            # A linked-list crawl is not an authoritative company snapshot;
+            # missing pages must never retire previously collected vacancies.
+            snapshot_complete = False
+            aliases = {company}
+            aliases.update(self._configured_markers(config, "employer_aliases"))
+            for canonical, values in EMPLOYER_ALIAS_GROUPS.items():
+                if company in (canonical, *values):
+                    aliases.update((canonical, *values))
+            target = EmployerSearchTarget(
+                id=source["id"], canonical_name=company, aliases=tuple(sorted(aliases)),
+                pool_id="", primary_category=config.get("primary_category", ""), pool_name="", focus="",
+            )
+            discovered = discover_official_job_pages(
+                [reference_url], company=company, fetcher=fetch_watch_page,
+                initial_pages={reference_url: page},
+                max_listing_pages=int(config.get("max_listing_pages", 24)),
+                max_detail_pages=int(config.get("max_detail_pages", 120)),
+                max_seconds=float(config.get("max_scan_seconds", 90)),
+                timeout_seconds=float(config.get("timeout_seconds", 10)),
+                before_fetch=lambda host: DOMAIN_LIMITER.wait(host, minimum),
+                cancellation_check=cancellation_check,
+            )
+            decisions: dict[str, int] = {}
+            existing_keys = {(job.get("title"), job.get("official_url")) for job in jobs}
+            for candidate in discovered.candidates:
+                item = candidate.job
+                if not _company_matches_target(item["company"], target):
+                    reason = "employer_mismatch"
+                elif item.get("posting_expired"):
+                    reason = "official_posting_expired"
+                elif not _operator_role_is_current(item["title"], candidate.page_text, year):
+                    reason = "not_current_campus"
+                else:
+                    evidence = _evaluate_official_candidate_page(
+                        {**item, "url": candidate.final_url, "_employer_aliases": list(aliases)},
+                        candidate.page_text, candidate.final_url,
+                    )
+                    if evidence.closed:
+                        reason = "official_page_closed"
+                    elif not evidence.cohort_confirmed:
+                        reason = "cohort_unconfirmed"
+                    elif (item["title"], candidate.final_url) in existing_keys:
+                        reason = "already_configured"
+                    else:
+                        reason = "official_verified" if evidence.title_confirmed else "official_pending"
+                        jobs.append({
+                            "external_id": stable_digest(source["id"], item["title"], item.get("city", ""), candidate.final_url, prefix="job"),
+                            "company": item["company"], "title": item["title"], "city": item.get("city", ""),
+                            "region": config.get("region", "中国"),
+                            "employer_type": config.get("employer_type", ""), "industry": config.get("industry", ""),
+                            "primary_category": config.get("primary_category", ""),
+                            "official_url": candidate.final_url, "application_url": candidate.final_url,
+                            "opening_date": None, "closing_date": None,
+                            "status": "open" if evidence.open_confirmed else "unknown",
+                            "verification_status": "verified" if evidence.title_confirmed else "pending",
+                            "confidence_score": 0.95 if evidence.title_confirmed else 0.6,
+                            "requirements": _redact_public_text(item.get("requirements", ""), limit=8_000),
+                            "tags": ["校园招聘", "官方网页", "官网列表逐页发现"],
+                            "evidence": ["来自实际公开职位链接；按公司、标题、届次与开放状态核验。"],
+                        })
+                        existing_keys.add((item["title"], candidate.final_url))
+                decisions[reason] = decisions.get(reason, 0) + 1
+            coverage = {**discovered.coverage, "candidate_decisions": decisions}
+            status = "healthy" if discovered.coverage["status"] == "healthy" else "partial"
+            content_hash = hashlib.sha256(f"{page.fingerprint}:{discovered.content_hash}".encode()).hexdigest()
+            normalized_content = json.dumps({"kind": "official_link_discovery", "coverage": coverage}, ensure_ascii=False, sort_keys=True)
+
         return AdapterResult(
             programs=programs,
             jobs=jobs,
-            content_hash=page.fingerprint,
-            normalized_content=page.text[:20_000],
-            snapshot_complete=True,
+            content_hash=content_hash,
+            normalized_content=normalized_content,
+            snapshot_complete=snapshot_complete,
+            status=status,
+            coverage=coverage,
             ai_calls=ai_calls,
             model_tokens_used=model_tokens,
         )
@@ -1693,8 +1778,10 @@ class PublicFeedAdapter:
 
 class OpenAIWebSearchAdapter:
     def scan(self, source: dict[str, Any]) -> AdapterResult:
-        del source
-        result = search_current_recruitment_jobs()
+        cancellation_check = source.get("adapter_config", {}).get("_cancellation_check")
+        result = search_current_recruitment_jobs(
+            **({"cancellation_check": cancellation_check} if cancellation_check is not None else {}),
+        )
         jobs = [
             {
                 "external_id": item["id"],
@@ -1738,11 +1825,18 @@ class OpenAIWebSearchAdapter:
                 "coverage_percent": result.coverage_percent,
                 "failed_employers": list(result.failed_employers),
             }
+        official_discovery = list(getattr(result, "official_discovery", ()))
+        if official_discovery:
+            coverage.update({
+                "official_discovery": official_discovery,
+                "official_pagination_complete_count": sum(bool(item.get("pagination_complete")) for item in official_discovery),
+                "official_partial_or_failed_count": sum(item.get("status") != "healthy" for item in official_discovery),
+            })
         return AdapterResult(
             jobs=jobs, content_hash=digest, snapshot_complete=False,
             ai_calls=result.tool_calls, model_tokens_used=result.total_tokens,
             coverage=coverage,
-            status="partial" if coverage.get("failed_count") else "healthy",
+            status="partial" if coverage.get("failed_count") or coverage.get("official_partial_or_failed_count") else "healthy",
             verified_job_external_ids=verified_job_external_ids,
         )
 

@@ -69,6 +69,37 @@ python3 scripts/frostfire_chatgpt_bridge.py --submit \
 
 用户主动导出的 `FROSTFIRE_SYNC_V1` 文件、公开文章与公开 RSS/Atom 仍可使用 `scripts/frostfire_source_import.py`，但它们是显式导入，不会自动读取私人账号。五个公众号逻辑来源的自动 discovery 则由 Deep Scan 中的 `wechat_web_search` 完成，无需把微信登录信息交给应用。
 
+### 多消息历史回填（单独的摘要账本）
+
+`scripts/frostfire_chatgpt_history.py` 接收**已经脱敏、按新到旧排序**的单一来源历史。它本身不打开浏览器、不读取会话或 Cookie、不接受完整消息正文。顶层只能有 `source_id`、`history_complete` 和 `messages`；来源严格限定 `chatgpt-radar-01` 至 `chatgpt-radar-06`。每个消息对象只能有 `message_digest`（事先计算的 64 位小写 SHA-256）和 `rows`（沿用单消息桥接的招聘字段白名单）。必须先在提取端移除个人经历、建议、联系方式、私有链接及未授权内容，摘要不能替代这一步清理。
+
+只有确认已读取该来源可访问的全部历史时，提取端才能声明 `history_complete=true`。只读取了已渲染的一部分时必须为 `false`；本脚本不会把这个标志自动改为“已抓完”。没有可用消息、读取失败或结构无效均报错，不发送空心跳。只有显式提供的合法 `rows=[]` 消息可以授权空心跳。
+
+默认执行与 `--dry-run` 相同：只校验并输出数量，不读 Keychain、不联网、不写账本。`--emit` 仅输出由允许字段组成的 ingest 批次数组，便于人工复核；不包含消息摘要或历史元数据。
+
+```bash
+python3 scripts/frostfire_chatgpt_history.py --dry-run \
+  < /path/to/sanitized-recruitment-history.json
+
+python3 scripts/frostfire_chatgpt_history.py --emit \
+  < /path/to/sanitized-recruitment-history.json
+
+python3 scripts/frostfire_chatgpt_history.py --submit --timeout 180 \
+  < /path/to/sanitized-recruitment-history.json
+```
+
+历史回填的边界：
+
+- 同一稳定岗位或相同公司、岗位、城市及规范化招聘地址，在多消息中只取最新版本；不生成岗位方向与城市的笛卡尔积。每批最多 10 条，稳定 ID 重试不变。
+- 分页回溯得到的片段可能比已提交版本更旧。修改已有岗位时，当前输入必须同时包含较旧的、与已有成功摘要相符的版本作为顺序锚点；否则计为 `unanchored_history_update` 保留待审，不让不相交的历史片段覆盖较新的数据。新岗位及已确认的相同内容不受影响。
+- 所有拟提交批次先经过现有 `frostfire_ingest.py --dry-run` 子进程检查，全部通过后才从 `frostfire-recruitment-ingest` Keychain 项读取 Token；历史脚本不使用环境变量 Token。
+- 过去或明确关闭的历史记录只计入 `held_rows`，不会回写去关闭线上仍有效的岗位。由于现有 ingest 将当天日期也判为到期，当天截止的历史记录同样先保留待人工复核，不自动发关闭请求。最新记录被保留时，也不会用更旧的开放版本将其复活。
+- 未知日期保持 `null`。未知或缺失状态不在请求中强行写成 `open`，只附加“开放状态待核验”；旧 ingest 对省略状态仍使用兼容默认值，因此它**不是开放状态核验结论**。服务端必须继续核验候选，`pending` 可以在统一机会池作为来源线索展示，但不冒充 `accepted`。
+- 每批只有实际 HTTP 2xx 且 `received` 与提交条数完全一致，才记录该批的岗位内容摘要。消息涉及的全部条目获得成功回执或已存在的相同内容回执后，才记为消息完成；有保留项的消息不会假报完整。中途失败退出码为 `4`，保留此前成功批次的摘要，下次只补未确认条目。无法确认响应时也不推进，使用稳定 ID 重试。
+- 摘要账本位于 `~/Library/Application Support/Frostfire/chatgpt-history-ledger.json`，与旧单消息游标完全独立，只保存逻辑来源、SHA-256、布尔状态和数量。文件权限 `600`、父目录 `700`，原子替换；本机锁阻止使用同一本账本的并发回填。`--ledger-file` 可指定仓库外的私有目录用于离线测试，不允许写进 Git 项目。
+
+输出中的 `input_history_complete` 仅转述提取端声明；只有声明完整且所有消息确已处理成功时，结果中的 `history_complete` 才会为真。新增消息包含已成功同步的相同岗位时，复用既有摘要回执，不重复 POST。账本不会保存岗位 payload、招聘 URL、原消息、Token 或真实会话标识；原始提取材料的保管与清理由提取端负责。
+
 所有导入器拒绝 HTTP、账号信息、非标准 HTTPS 端口、本机/内网/保留地址、不安全重定向、带凭证参数的 URL、超大响应和包含敏感字段的结构化内容。公开网页摘要中的邮箱、电话、密钥样式文本和会话标识会在截断前脱敏；校验错误、HTTP 错误和服务端响应也不会回显被拒绝的值或接收密钥。公开页面不可访问时会报告失败，不伪造成功心跳。
 
 原有低层提交器仍可接收旧招聘候选契约：

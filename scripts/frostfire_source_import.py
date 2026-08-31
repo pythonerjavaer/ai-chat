@@ -31,7 +31,6 @@ SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
 
-from backend.future_radar.adapters import PublicFeedAdapter  # noqa: E402
 from backend.future_radar.normalization import clean_text, stable_digest  # noqa: E402
 from backend.future_radar.schemas import FrostFireSyncV1  # noqa: E402
 from backend.recruitment_watch import (  # noqa: E402
@@ -360,6 +359,11 @@ def payload_from_article(
 
 
 def payload_from_feed(url: str, source_id: str, *, publisher: str, timeout: float) -> dict[str, Any]:
+    # Pure validation/structured imports are also used by the offline history
+    # and browser bridges. Do not load the application's database/OpenAI
+    # configuration unless this explicitly requested feed operation needs it.
+    from backend.future_radar.adapters import PublicFeedAdapter
+
     source_id = _validate_logical_source_id(source_id)
     parsed = urllib.parse.urlsplit(validate_public_https_url(url, resolve_dns=True))
     result = PublicFeedAdapter().scan({

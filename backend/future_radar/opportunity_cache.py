@@ -29,7 +29,7 @@ from typing import Any, Callable, Hashable
 REVISION_KEY = "future_radar.opportunities.revision.v1"
 NAMESPACE_KEY = "future_radar.opportunities.namespace.v1"
 POSTGRES_REVISION_FUNCTION = "_ff_radar_opportunity_revision_v1"
-CACHE_FORMAT_VERSION = "public-opportunity-score-cache-v1"
+CACHE_FORMAT_VERSION = "public-opportunity-score-cache-v2-company-display"
 
 # These are precisely the inputs selected/filterable by _opportunity_rows.
 # In particular, source scheduling/leases/errors, raw evidence, and model cache
