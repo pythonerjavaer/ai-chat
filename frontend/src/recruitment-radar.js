@@ -215,6 +215,60 @@ export function formatScoringFactors(factors) {
   }).slice(0, 6);
 }
 
+export function formatOrganizationAssessment(assessment) {
+  if (!assessment || typeof assessment !== "object" || Array.isArray(assessment)) return [];
+  const conciseText = (value, limit = 160) => {
+    const text = listValues(value)
+      .filter((item) => typeof item === "string")
+      .map((item) => item.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .slice(0, 3)
+      .join("；");
+    return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+  };
+  const finiteRange = (value, maximum) => {
+    if (typeof value !== "number" && typeof value !== "string") return null;
+    if (typeof value === "string" && !value.trim()) return null;
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 && number <= maximum ? number : null;
+  };
+  const platformScore = (value) => {
+    const points = finiteRange(value, 16);
+    if (points == null) return null;
+    const normalized = points / 16 * 100;
+    const lower = Math.floor(normalized);
+    // Legacy payloads need the backend's Python round() rule before weighting.
+    return normalized - lower === 0.5 ? lower + lower % 2 : Math.round(normalized);
+  };
+  const level = conciseText(assessment.level, 60);
+  const label = conciseText(assessment.label, 60);
+  const basisText = conciseText(assessment.basis);
+  const basis = ["none", "unknown"].includes(basisText.toLowerCase()) ? "" : basisText;
+  const evidence = conciseText(assessment.evidence);
+  const note = conciseText(assessment.note);
+  const baseScore = finiteRange(assessment.base_platform_score, 100)
+    ?? platformScore(assessment.base_platform_points);
+  const actualScore = finiteRange(assessment.platform_score, 100)
+    ?? platformScore(assessment.platform_points);
+  if (!level && !label && !basis && !evidence && !note && baseScore == null && actualScore == null) return [];
+
+  const confidence = conciseText(assessment.confidence).toLowerCase();
+  const unresolvedLevel = ["unknown", "unspecified"].includes(level);
+  const unknown = !level || unresolvedLevel || !label || !["explicit", "inferred"].includes(confidence);
+  const levelLabel = unknown ? (unresolvedLevel && label ? label : "层级未知") : label;
+  const confidenceCopy = unknown ? "层级信息不足，待核对"
+    : confidence === "explicit" ? "文本明确线索" : "依据线索推断";
+  const displayScore = (value) => value == null ? "—" : `${value}/100`;
+  const lines = [
+    `招聘单位层级：${levelLabel}（${confidenceCopy}）`,
+    `集团/平台基准 → 实际单位平台分：${displayScore(baseScore)} → ${displayScore(actualScore)}（仅平台维度，非最终 T 分）`,
+  ];
+  const explanation = conciseText([...new Set([basis, evidence].filter(Boolean))]);
+  if (explanation) lines.push(`识别依据：${explanation}`);
+  lines.push(`说明：${note ? `${note} ` : ""}层级识别仅供评分参考，不代表官方核验。`);
+  return lines;
+}
+
 export function buildFutureRadarJobsQuery({ page = 1, pageSize = 50, filters = {}, categories = [] } = {}) {
   const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
   Object.entries(filters).forEach(([key, value]) => {
@@ -439,7 +493,7 @@ export function futureRadarRunSuccessCopy(run = {}, totalJobs = 0) {
 export const RADAR_ENRICHMENT_KEYS = Object.freeze([
   "match_score", "job_score", "tier_code", "score_breakdown",
   "employer_score", "role_score", "career_value_score", "job_condition_score",
-  "scoring_factors", "scoring_status", "scoring_version",
+  "scoring_factors", "scoring_status", "scoring_version", "organization_assessment",
   "positive_reasons", "negative_reasons", "fit_tags", "employer_categories",
   "organization_category", "industry_tags", "role_tags", "primary_category", "days_left",
 ]);
@@ -447,7 +501,7 @@ export const RADAR_ENRICHMENT_KEYS = Object.freeze([
 const SCORING_ENRICHMENT_KEYS = new Set([
   "match_score", "job_score", "tier_code", "score_breakdown",
   "employer_score", "role_score", "career_value_score", "job_condition_score",
-  "scoring_factors", "scoring_status", "scoring_version",
+  "scoring_factors", "scoring_status", "scoring_version", "organization_assessment",
   "positive_reasons", "negative_reasons", "fit_tags",
 ]);
 
@@ -473,7 +527,9 @@ export function mergeFutureRadarJobs(radarJobs = [], legacyJobs = []) {
     jobIdentityKeys(job).forEach((key) => seen.add(key));
     if (!legacy) return job;
     const merged = { ...job };
-    const explicitlyUnranked = Object.hasOwn(job, "tier_code") && job.tier_code === null;
+    const explicitlyUnranked = (Object.hasOwn(job, "tier_code") && job.tier_code == null)
+      || job.listing_kind === "recruitment_program"
+      || job.scoring_status === "unscored_program_listing";
     RADAR_ENRICHMENT_KEYS.forEach((key) => {
       // An explicit null from Radar means “not scored / not classified yet” and
       // must not be overwritten by a stale legacy estimate.

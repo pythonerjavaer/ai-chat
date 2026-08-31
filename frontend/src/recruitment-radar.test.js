@@ -1,12 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 
 import {
   STARFIELD_DEFINITIONS,
+  TIER_CODES,
   buildFutureRadarCandidatesQuery,
   buildFutureRadarJobsQuery,
   createCoalescedRadarReload,
   filterJobsByStarfields,
+  formatOrganizationAssessment,
   formatRadarCooldown,
   formatScoringFactors,
   futureRadarActiveRunTypes,
@@ -195,11 +199,47 @@ test("candidate verification normalizes review aliases without treating unknown 
 test("Radar null scoring is not overwritten by stale legacy enrichment", () => {
   const [merged] = mergeFutureRadarJobs(
     [{ external_id: "same", company: "Example", title: "专项人才", tier_code: null, match_score: null }],
-    [{ external_id: "same", company: "Example", title: "专项人才", tier_code: "T1", match_score: 82, role_score: 88 }],
+    [{ external_id: "same", company: "Example", title: "专项人才", tier_code: "T1", match_score: 82, role_score: 88,
+      organization_assessment: { level: "group_headquarters", label: "集团总部" } }],
   );
   assert.equal(merged.tier_code, null);
   assert.equal(merged.match_score, null);
   assert.equal(merged.role_score, undefined);
+  assert.equal(merged.organization_assessment, undefined);
+});
+
+test("Radar enriches ranked organization details without replacing a current or explicit null assessment", () => {
+  const current = { level: "city_branch", label: "地市级分支机构" };
+  const legacy = { level: "group_headquarters", label: "集团总部" };
+  const jobs = mergeFutureRadarJobs(
+    [
+      { id: "missing", tier_code: "T1" },
+      { id: "current", tier_code: "T2", organization_assessment: current },
+      { id: "null", tier_code: "T1", organization_assessment: null },
+    ],
+    ["missing", "current", "null"].map((id) => ({ id, organization_assessment: legacy })),
+  );
+  assert.equal(jobs[0].organization_assessment, legacy);
+  assert.equal(jobs[1].organization_assessment, current);
+  assert.equal(jobs[2].organization_assessment, null);
+});
+
+test("recruitment programs never inherit legacy scores or organization assessments", () => {
+  for (const program of [
+    { listing_kind: "recruitment_program" },
+    { scoring_status: "unscored_program_listing" },
+    { tier_code: undefined },
+  ]) {
+    const [merged] = mergeFutureRadarJobs(
+      [{ id: "program", ...program }],
+      [{ id: "program", tier_code: "T0", job_score: 98, employer_score: 100,
+        organization_assessment: { level: "group_headquarters", label: "集团总部" } }],
+    );
+    assert.equal(jobTierBucket(merged), "UNRANKED");
+    assert.equal(merged.job_score, undefined);
+    assert.equal(merged.employer_score, undefined);
+    assert.equal(merged.organization_assessment, undefined);
+  }
 });
 
 test("Radar keeps non-duplicate verified carryover jobs in the default pool", () => {
@@ -303,4 +343,199 @@ test("structured four-part scoring factors render concise explanations instead o
       "薪酬、地点与工作条件：中等（60/100，加权 6/10）",
     ],
   );
+});
+
+test("organization assessment is absent for old API responses instead of inventing a level", () => {
+  for (const value of [undefined, null, "", "group_headquarters", [], {}, { unrelated: "value" }]) {
+    assert.deepEqual(formatOrganizationAssessment(value), []);
+  }
+});
+
+test("organization detail distinguishes text evidence and platform normalization from final T score", () => {
+  assert.deepEqual(formatOrganizationAssessment({
+    level: "province_branch", label: "省级分支机构", confidence: "explicit",
+    base_platform_points: 16, platform_points: 12, platform_adjustment: -4,
+    is_group_headquarters: false, basis: "招聘单位名称", evidence: ["单位名称明确标注省分公司"],
+    note: "按实际用人单位调整平台分。",
+  }), [
+    "招聘单位层级：省级分支机构（文本明确线索）",
+    "集团/平台基准 → 实际单位平台分：100/100 → 75/100（仅平台维度，非最终 T 分）",
+    "识别依据：招聘单位名称；单位名称明确标注省分公司",
+    "说明：按实际用人单位调整平台分。 层级识别仅供评分参考，不代表官方核验。",
+  ]);
+});
+
+test("inferred and unknown organization levels stay qualified and do not assume group headquarters", () => {
+  const inferred = formatOrganizationAssessment({
+    level: "city_branch", label: "地市级分支机构", confidence: "inferred",
+    base_platform_points: "14.4", platform_points: "10.4",
+  });
+  assert.equal(inferred[0], "招聘单位层级：地市级分支机构（依据线索推断）");
+  assert.match(inferred[1], /90\/100 → 65\/100/);
+  assert.match(inferred.at(-1), /不代表官方核验/);
+  const unknown = formatOrganizationAssessment({
+    level: "unknown", label: "单位层级未明确", confidence: "unknown",
+    base_platform_points: 16, platform_points: 16,
+  });
+  assert.match(unknown[0], /招聘单位层级：单位层级未明确.*层级信息不足，待核对/);
+  assert.doesNotMatch(unknown.join(" "), /集团总部/);
+  const unspecified = formatOrganizationAssessment({
+    level: "unspecified", label: "组织层级待核验", confidence: "unknown", basis: "none", evidence: [],
+    base_platform_points: 14, platform_points: 14,
+  });
+  assert.match(unspecified[0], /招聘单位层级：组织层级待核验.*层级信息不足，待核对/);
+  assert.doesNotMatch(unspecified.join(" "), /识别依据|none/);
+  const missingConfidence = formatOrganizationAssessment({ level: "group_headquarters", label: "集团总部" });
+  assert.match(missingConfidence[0], /层级未知.*待核对/);
+  assert.doesNotMatch(missingConfidence.join(" "), /集团总部/);
+});
+
+test("organization platform points reject malformed values instead of fabricating zero or final scores", () => {
+  const assessment = { level: "city_branch", label: "地市级分支机构", confidence: "explicit", base_platform_points: 16 };
+  assert.match(formatOrganizationAssessment({ ...assessment, platform_points: 0 })[1], /100\/100 → 0\/100/);
+  assert.match(formatOrganizationAssessment({ ...assessment, platform_points: 16 })[1], /100\/100 → 100\/100/);
+  for (const value of [null, undefined, "", " ", true, [], {}, -1, 17, Infinity, NaN, "invalid"]) {
+    assert.match(formatOrganizationAssessment({ ...assessment, platform_points: value })[1], /100\/100 → —/);
+  }
+});
+
+test("legacy organization points use Python half-to-even rounding on the full 0–16 range", () => {
+  const expectedScores = [0, 6, 12, 19, 25, 31, 38, 44, 50, 56, 62, 69, 75, 81, 88, 94, 100];
+  expectedScores.forEach((score, points) => {
+    const lines = formatOrganizationAssessment({ base_platform_points: points, platform_points: points });
+    assert.equal(lines[1], `集团/平台基准 → 实际单位平台分：${score}/100 → ${score}/100（仅平台维度，非最终 T 分）`);
+  });
+});
+
+test("organization details prefer valid server platform scores including zero over legacy points", () => {
+  const assessment = { base_platform_points: 14, platform_points: 10 };
+  for (const [base, actual] of [[92, 68], [0, 0], [100, 100], ["88", "62"]]) {
+    const lines = formatOrganizationAssessment({ ...assessment, base_platform_score: base, platform_score: actual });
+    assert.equal(lines[1], `集团/平台基准 → 实际单位平台分：${base}/100 → ${actual}/100（仅平台维度，非最终 T 分）`);
+  }
+  assert.match(formatOrganizationAssessment({ base_platform_score: 88, platform_score: 62 })[1], /88\/100 → 62\/100/);
+});
+
+test("invalid server platform scores fall back independently to valid legacy points", () => {
+  const assessment = { base_platform_points: 14, platform_points: 10 };
+  for (const value of [null, undefined, "", " ", true, [], {}, -1, 101, Infinity, NaN, "invalid"]) {
+    const baseInvalid = formatOrganizationAssessment({ ...assessment, base_platform_score: value, platform_score: 70 });
+    const actualInvalid = formatOrganizationAssessment({ ...assessment, base_platform_score: 90, platform_score: value });
+    assert.match(baseInvalid[1], /88\/100 → 70\/100/);
+    assert.match(actualInvalid[1], /90\/100 → 62\/100/);
+  }
+});
+
+test("organization evidence is concise plain text and ignores object-shaped evidence", () => {
+  const lines = formatOrganizationAssessment({
+    level: "subsidiary", label: "独立子公司", confidence: "inferred",
+    basis: "  单位名称\n及公告  ", evidence: [{ text: "unsupported evidence object" }, "公开招聘文字"],
+    note: "说明".repeat(150),
+  });
+  assert.equal(lines[2], "识别依据：单位名称 及公告；公开招聘文字");
+  assert.match(lines[3], /… 层级识别仅供评分参考/);
+  assert.ok(lines[3].length < 200);
+  assert.doesNotMatch(lines.join(" "), /\[object Object\]|unsupported evidence object/);
+});
+
+function renderScoringDetail(job) {
+  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const extract = (startMarker, endMarker) => {
+    const start = source.indexOf(startMarker);
+    const end = source.indexOf(endMarker, start);
+    assert.ok(start >= 0 && end > start);
+    return source.slice(start, end);
+  };
+  class Element {
+    constructor(tag) {
+      this.tag = tag;
+      this.className = "";
+      this.children = [];
+      this.dataset = {};
+      this.classList = { toggle() {} };
+      this._text = "";
+    }
+    append(...nodes) { this.children.push(...nodes); }
+    appendChild(node) { this.children.push(node); return node; }
+    replaceChildren(...nodes) { this.children = [...nodes]; this._text = ""; }
+    setAttribute() {}
+    addEventListener() {}
+    set textContent(value) { this._text = String(value); this.children = []; }
+    get textContent() { return this._text + this.children.map((node) => node.textContent).join(" "); }
+    set innerHTML(value) { assert.fail(`Unexpected HTML write: ${value}`); }
+  }
+  const elements = { recruitmentJobs: new Element("section") };
+  const context = {
+    elements, TIER_CODES, formatOrganizationAssessment, jobTierBucket, partitionJobsByPriority,
+    document: { createElement: (tag) => new Element(tag) },
+    state: { recruitmentTierFilter: "ALL", futureRadar: { jobsLoaded: true, totalJobs: 1 } },
+    futureRadarSelectionIsPending: () => false,
+    futureRadarDisplayJobs: () => [job],
+    filterRecruitmentByStarfield: (jobs) => jobs,
+    futureRadarOpportunityDateCopy: () => ({ verified: false, closing: "时间待确认" }),
+    finiteRadarScore: (value) => value == null ? null : Number(value),
+    recruitmentVerification: () => "pending",
+    futureRadarOpportunitySource: () => ({ tone: "pending", label: "公开线索", description: "来源待核对" }),
+    recruitmentJobUrl: () => "",
+    recruitmentScoringFactors: (item) => formatScoringFactors(item.scoring_factors),
+    radarStatusCopy: () => "待核对",
+    formatRadarTime: () => "待记录",
+    sourceDisplayValue: (_value, fallback) => fallback,
+  };
+  vm.runInNewContext([
+    extract("function makeElement(", "\nfunction setCrossExamCounts"),
+    extract("function renderRecruitmentJobs(", "\nasync function addRecruitmentWatchFromJob"),
+    "renderRecruitmentJobs();",
+  ].join("\n"), context);
+  const descendants = (node) => [node, ...node.children.flatMap(descendants)];
+  return descendants(elements.recruitmentJobs).find((node) => node.className === "job-tier-reason");
+}
+
+test("T detail renders organization evidence as text while retaining the four scoring factors", () => {
+  const detail = renderScoringDetail({
+    tier_code: "T1", job_score: 83, employer_score: 75, role_score: 90, career_value_score: 80, job_condition_score: 60,
+    organization_assessment: {
+      level: "province_branch", label: "省级分支机构", confidence: "explicit",
+      base_platform_points: 16, platform_points: 12,
+      evidence: "<img src=x> 公告文字",
+    },
+    scoring_factors: { employer_platform: { label: "平台质量", weight: 35, score: 75, contribution: 26 } },
+  });
+  assert.match(detail.textContent, /招聘单位层级：省级分支机构/);
+  assert.match(detail.textContent, /100\/100 → 75\/100.*非最终 T 分/);
+  assert.match(detail.textContent, /<img src=x> 公告文字/);
+  assert.match(detail.textContent, /FINAL SCORE · 83 \/ 100/);
+  assert.match(detail.textContent, /EMPLOYER SCORE · 75.*ROLE SCORE · 90.*CAREER VALUE · 80.*JOB CONDITIONS · 60/);
+  assert.match(detail.textContent, /平台质量：较高（75\/100，加权 26\/35）/);
+});
+
+test("organization detail and EMPLOYER SCORE share the same rounded score for new and legacy payloads", () => {
+  for (const scores of [{}, { base_platform_score: 88, platform_score: 62 }]) {
+    const detail = renderScoringDetail({
+      tier_code: "T2", job_score: 72, employer_score: 62,
+      organization_assessment: {
+        level: "city_branch", label: "地市分支", confidence: "explicit",
+        base_platform_points: 14, platform_points: 10, ...scores,
+      },
+    });
+    assert.match(detail.textContent, /EMPLOYER SCORE · 62/);
+    assert.match(detail.textContent, /集团\/平台基准 → 实际单位平台分：88\/100 → 62\/100/);
+    assert.doesNotMatch(detail.textContent, /62\.5|63\/100/);
+  }
+});
+
+test("unranked and old-API T details never display stale or invented organization scoring", () => {
+  const stale = {
+    tier_code: null, job_score: 98, employer_score: 100,
+    organization_assessment: { level: "group_headquarters", label: "集团总部", confidence: "explicit" },
+    scoring_factors: { employer_platform: { label: "旧平台评分", score: 100 } },
+  };
+  for (const job of [stale, { ...stale, tier_code: "T0", listing_kind: "recruitment_program" }]) {
+    const detail = renderScoringDetail(job);
+    assert.match(detail.textContent, /FINAL TIER · 未评分.*FINAL SCORE · —.*EMPLOYER SCORE · —/);
+    assert.doesNotMatch(detail.textContent, /招聘单位层级|集团总部|旧平台评分|98 \/ 100/);
+  }
+  const legacyDetail = renderScoringDetail({ tier_code: "T1", job_score: 83 });
+  assert.match(legacyDetail.textContent, /FINAL SCORE · 83 \/ 100/);
+  assert.doesNotMatch(legacyDetail.textContent, /招聘单位层级|实际单位平台分|层级未知/);
 });

@@ -180,6 +180,41 @@ def test_unranked_and_below_priority_filters_keep_existing_score_meaning(harness
     assert result["items"][0]["tier_bucket"] == bucket
 
 
+def test_organization_scores_survive_pool_detail_cache_and_tier_filter(harness):
+    from backend.recruitment import SCORING_VERSION
+
+    companies = [
+        "中国电信集团总部", "中国电信河北省分公司",
+        "中国电信石家庄市分公司", "中国电信正定县分公司",
+    ]
+    for index, company in enumerate(companies):
+        harness.insert(
+            f"organization-{index}", company=company,
+            title="2027 校园招聘数据产品分析师", employer_type="央国企科技", industry="通信",
+            primary_category="state_tech_telecom", verification_status="verified",
+            responsibilities="负责金融科技数据产品、风险模型和商业分析，参与产品策略设计。",
+        )
+    pool = get_pool(harness, compact=True)
+    assert pool["total"] == 4
+    rows = {row["company"]: row for row in pool["items"]}
+    platforms = [rows[company]["employer_score"] for company in companies]
+    assert all(left > right for left, right in zip(platforms, platforms[1:]))
+    assert {row["scoring_version"] for row in rows.values()} == {SCORING_VERSION}
+    for row in rows.values():
+        assert row["organization_assessment"]["platform_score"] == row["employer_score"]
+        response = harness.client.get(
+            f"/api/future-radar/opportunities/{row['id']}", headers=harness.auth,
+        )
+        assert response.status_code == 200
+        detail = response.json()
+        for key in ("scoring_version", "organization_assessment", "job_score", "tier_code"):
+            assert detail[key] == row[key]
+        filtered = get_pool(harness, tier_code=row["tier_bucket"], compact=True)
+        assert row["id"] in {item["id"] for item in filtered["items"]}
+        assert all(item["tier_bucket"] == row["tier_bucket"] for item in filtered["items"])
+        assert filtered["total"] == pool["stats"]["tier_counts"][row["tier_bucket"]]
+
+
 @pytest.mark.parametrize("overrides", [
     {"status": "closed"},
     {"verification_status": "rejected"},

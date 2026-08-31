@@ -1079,7 +1079,7 @@ def _radar_company_aliases() -> dict[str, str]:
 
 def _public_radar_opportunity(job: dict, profile: dict) -> dict:
     # Sanitize before scoring so derived labels cannot copy private transport
-    # fields. The existing role-level scoring rules are deliberately unchanged.
+    # fields. Apply the same organization/role model to every source and pool.
     item = score_job(_public_search_update(job), profile)
     program_listing = is_recruitment_program_listing(job)
     item["listing_kind"] = "recruitment_program" if program_listing else "job"

@@ -5,6 +5,8 @@ from datetime import date
 from functools import lru_cache
 from typing import Any
 
+from .recruitment_organizations import assess_organization
+
 
 # Machine-readable organization categories. Classification deliberately uses
 # metadata fields only; a company name or a role title is not a sector label.
@@ -118,7 +120,7 @@ SCORING_WEIGHTS = {
     "career_value": 10,
     "job_conditions": 10,
 }
-SCORING_VERSION = "future-radar-job-ranking-v2"
+SCORING_VERSION = "future-radar-job-ranking-v3-organization-role"
 
 CORE_CITIES = {
     "北京", "上海", "深圳", "广州", "杭州", "南京", "苏州", "成都", "武汉", "西安",
@@ -137,7 +139,7 @@ ELITE_PLATFORM_MARKERS = (
 
 STRONG_PLATFORM_MARKERS = (
     "农业银行", "邮储银行", "国家电网", "中国石油", "中国石化", "中国海油",
-    "中国移动", "中国电信", "中国联通", "中国商飞", "华为", "腾讯", "阿里",
+    "中国移动", "中国电信", "中国联通", "中国联合网络通信", "中国商飞", "华为", "腾讯", "阿里",
     "字节", "byteplus", "蚂蚁", "美团", "京东", "百度", "拼多多", "大疆", "dji",
     "中芯国际", "smic", "hsbc", "汇丰", "ubs", "citi", "罗兰贝格", "roland berger",
     "中信期货", "中信建投", "华泰证券", "国泰海通", "嘉实基金", "富国基金",
@@ -146,9 +148,9 @@ STRONG_PLATFORM_MARKERS = (
 )
 
 FINANCE_TERMS = (
-    "金融", "finance", "会计", "accounting", "投资", "investment", "资本", "市场", "交易",
-    "trading", "风险", "risk", "信贷", "credit", "估值", "审计", "audit", "合规",
-    "compliance", "财务", "fp&a", "证券", "基金", "银行", "tax", "税务",
+    "金融", "finance", "financial", "会计", "accounting", "投资", "investment", "资本", "金融市场", "交易",
+    "trading", "信用风险", "credit risk", "市场风险", "market risk", "信贷", "credit", "估值", "审计", "audit",
+    "财务", "fp&a", "证券", "基金", "银行", "tax", "税务",
     "asset_management", "investment_research", "financial_markets",
 )
 TECH_TERMS = (
@@ -179,6 +181,7 @@ LOW_VALUE_TERMS = (
     "测试", "运维", "devops", "实施", "售后", "地市支行", "基层支行", "customer service",
     "customer support", "shared service", "shared services", "routine operations", "routine support",
     "sales support", "administrative support", "back office support",
+    "产品支撑", "售前支撑", "业务宣传", "商机转化", "客户拓展", "陪访",
 )
 HARD_TECH_TERMS = (
     "c++", "java后端", "后端开发", "底层", "infra", "devops", "运维", "操作系统", "芯片",
@@ -190,8 +193,56 @@ HIGH_QUANT_BARRIER_TERMS = (
 HIGH_INTENSITY_TERMS = (
     "高强度", "investment banking", "投行", "sales and trading", "战略咨询", "consultant", "咨询", "hft",
 )
-HEADQUARTER_TERMS = ("总部", "总行", "集团总部", "研究院", "核心科技子公司", "head office")
-BRANCH_TERMS = ("地市", "支行", "分理处", "县级", "基层", "普通分公司")
+
+# Some ATS adapters preserve the complete JD in `requirements`. Read the
+# actual duty section there, not the list of accepted majors or the group's
+# marketing introduction. These are evidence boundaries, not AI inferences.
+ROLE_SECTION = re.compile(
+    r"[【\[]?(?:岗位职责|工作职责|主要职责|职位职责|职责描述|工作内容|工作描述|岗位描述|"
+    r"job responsibilities|key responsibilities|responsibilities|what you(?:'|’)ll do)"
+    r"(?:\s*[:：]|\s*[】\]]|[ \t]*\r?\n)",
+    re.IGNORECASE,
+)
+NON_ROLE_SECTION = re.compile(
+    r"[【\[]?(?:任职资格|任职要求|任职条件|应聘条件|应聘要求|职位要求|岗位要求|资格要求|专业要求|学历要求|招聘条件|"
+    r"基本条件|招聘对象|其他要求|研究方向|专业方向|工作地点|公司简介|企业简介|集团简介|关于我们|薪酬福利|"
+    r"福利待遇|招聘部门|招聘单位|qualifications|requirements|about us|"
+    r"about the company|what we offer|benefits)(?:\s*[:：]|\s*[】\]]|[ \t]*\r?\n)",
+    re.IGNORECASE,
+)
+EMPLOYER_BOILERPLATE = re.compile(
+    r"公司简介|企业简介|集团简介|关于我们|总部(?:位于|设在|坐落)|"
+    r"(?:本公司|我们公司|本集团|我们集团|公司|集团)(?:是|成立|创立|拥有|业务覆盖|"
+    r"业务涵盖|主营|致力于|布局|专注于)|"
+    r"\b(?:about us|about (?:the |our )?company|our company|our group|"
+    r"headquartered|founded in|established in)\b",
+    re.IGNORECASE,
+)
+DUTY_ACTION = re.compile(
+    r"^\s*(?:[\d一二三四五六七八九十]+[.、)）]\s*)?"
+    r"(?:(?:本岗位|该岗位|主要|将)\s*)*(?:负责|参与|承担|开展|构建|制定|"
+    r"完成|执行|协助|推进|组织|统筹)|"
+    r"^\s*(?:\d+[.)]\s*)?(?:(?:you will|you'll|responsible for)\s+)?"
+    r"(?:build|develop|research|analy[sz]e|design|deliver|conduct|manage|"
+    r"support|operate|maintain|advise|audit)\b",
+    re.IGNORECASE,
+)
+QUALIFICATION_LEAD = re.compile(
+    r"^\s*(?:[\d一二三四五六七八九十]+[.、)）]\s*)?(?:"
+    r"研究生|研究方向|专业方向|专业要求|学历要求|学位要求|任职条件|应聘条件|"
+    r"(?:研究|管理|分析|开发|设计)(?:能力|经验|背景|经历|学位|学历|学专业)|"
+    r"\b(?:research degree|research experience|research interests|research background|"
+    r"management experience|development experience|analysis skills)\b)",
+    re.IGNORECASE,
+)
+PAST_EXPERIENCE_REQUIREMENT = re.compile(
+    r"(?:负责|参与|承担|开展|构建|制定|完成|执行|协助|推进|组织|统筹)过|"
+    r"(?:曾经?|有过).{0,80}(?:负责|参与|项目|工作)|者优先|"
+    r"(?:具备|具有|拥有|有).{0,100}(?:相关经验|项目经验|工作经验|经验者|经历者)|"
+    r"\b(?:prior|previous|past)\s+experience\b|\bexperience\s+(?:preferred|required)\b",
+    re.IGNORECASE,
+)
+ROLE_SENTENCE_BOUNDARY = re.compile(r"[\n\r]+|(?<=[。；;!?！？])\s*|(?<=\.)\s+")
 
 ROLE_TAG_MARKERS: dict[str, tuple[str, ...]] = {
     "ai_governance": ("ai governance", "人工智能治理", "算法治理"),
@@ -366,8 +417,77 @@ def _job_text(job: dict[str, Any]) -> str:
     )
 
 
+def _duty_text(value: Any, *, qualification_field: bool = False) -> str:
+    """Keep job duties; never turn a company's introduction/major list into JD.
+
+    Full ATS pages can arrive in `requirements`, so dropping that field would
+    lose real duties. Labeled duty sections take precedence. In an unlabeled
+    qualification field only explicit work-action sentences are useful.
+    """
+    text = " ".join(_as_values(value)).strip()
+    if not text:
+        return ""
+    sections = list(ROLE_SECTION.finditer(text))
+    if sections:
+        parts = []
+        for index, marker in enumerate(sections):
+            end = sections[index + 1].start() if index + 1 < len(sections) else len(text)
+            stop = NON_ROLE_SECTION.search(text, marker.end(), end)
+            parts.append(text[marker.end():stop.start() if stop else end])
+        text = " ".join(parts)
+        qualification_field = False
+    else:
+        # A standalone JD must not accidentally include the qualifications or
+        # employer introduction that follows the work itself.
+        stop = NON_ROLE_SECTION.search(text)
+        if stop and not qualification_field:
+            text = text[:stop.start()]
+    sentences = []
+    for sentence in ROLE_SENTENCE_BOUNDARY.split(text):
+        sentence = sentence.strip()
+        if not sentence or EMPLOYER_BOILERPLATE.search(sentence) or QUALIFICATION_LEAD.search(sentence):
+            continue
+        if qualification_field and (
+            PAST_EXPERIENCE_REQUIREMENT.search(sentence) or not DUTY_ACTION.search(sentence)
+        ):
+            continue
+        sentences.append(sentence)
+    return " ".join(sentences).casefold()
+
+
 def _role_source_text(job: dict[str, Any]) -> str:
-    return _joined_fields(job, ("title", "description", "responsibilities", "requirements"))
+    parts = [str(job.get("title") or "").casefold()]
+    # Explicit responsibilities are authoritative for the actual work. Do not
+    # let a broad company/program description override a concrete duty field.
+    duties = _duty_text(job.get("responsibilities"))
+    if duties:
+        parts.append(duties)
+    else:
+        parts.extend((
+            _duty_text(job.get("description")),
+            _duty_text(job.get("requirements"), qualification_field=True),
+        ))
+    return " ".join(part for part in parts if part).strip()
+
+
+def _organization_assessment(job: dict[str, Any]) -> dict[str, Any]:
+    company = str(job.get("company") or "").casefold()
+    if _contains_any(company, set(ELITE_PLATFORM_MARKERS)):
+        points, band = 14, "头部平台基准"
+    elif _contains_any(company, set(STRONG_PLATFORM_MARKERS)):
+        points, band = 13, "重点平台基准"
+    elif semantic_employer_categories(job):
+        points, band = 11, "行业平台参考基准"
+    else:
+        points, band = 8, "平台资料有限"
+    assessment = assess_organization(job, base_platform_points=points, platform_band=band)
+    # Publish the same rounded dimension actually used by the weighted score.
+    # Consumers must not re-round 62.5 differently in JavaScript.
+    return {
+        **assessment,
+        "base_platform_score": round(assessment["base_platform_points"] / 16 * 100),
+        "platform_score": round(assessment["platform_points"] / 16 * 100),
+    }
 
 
 @lru_cache(maxsize=1024)
@@ -513,12 +633,12 @@ def _normalized_industry_tags(job: dict[str, Any]) -> list[str]:
 
 def _normalize_role_tags(job: dict[str, Any]) -> list[str]:
     source_text = _role_source_text(job)
-    explicit_values = [value.casefold() for value in _as_values(job.get("role_tags"))]
-    explicit_text = " ".join(explicit_values)
-    combined = f"{source_text} {explicit_text}".strip()
+    # A broad campaign's precomputed role tags are not evidence of this job's
+    # duties. Re-derive scoring tags from the actual title/work instead of
+    # perpetuating a stale or over-broad AI/finance annotation.
     return [
         code for code, markers in ROLE_TAG_MARKERS.items()
-        if code in explicit_values or _contains_any(combined, set(markers))
+        if _contains_any(source_text, set(markers))
     ]
 
 
@@ -540,15 +660,11 @@ def _has_sufficient_role_evidence(job: dict[str, Any], role_tags: list[str]) -> 
     title = str(job.get("title", "")).strip()
     if not _is_generic_role_title(title, str(job.get("company", ""))):
         return True
-    if _as_values(job.get("role_tags")):
-        return bool(role_tags)
-    jd_text = _joined_fields(job, ("description", "responsibilities", "requirements"))
+    jd_text = _role_source_text({**job, "title": ""})
     compact = re.sub(r"\s+", "", jd_text)
     jd_job = {
         "title": "",
-        "description": job.get("description", ""),
-        "responsibilities": job.get("responsibilities", ""),
-        "requirements": job.get("requirements", ""),
+        "responsibilities": jd_text,
         "role_tags": [],
     }
     jd_tags = _normalize_role_tags(jd_job)
@@ -583,11 +699,11 @@ def job_matches_profile(job: dict[str, Any], profile: dict[str, Any]) -> bool:
 
 
 def _score_dimensions(
-    job: dict[str, Any], profile: dict[str, Any], role_tags: list[str]
+    job: dict[str, Any], profile: dict[str, Any], role_tags: list[str],
+    organization: dict[str, Any],
 ) -> tuple[dict[str, int], list[str], list[str], list[str]]:
     text = _job_text(job)
     role_text = _role_text(job, role_tags)
-    company = str(job.get("company", "")).casefold()
     city_text = f"{job.get('city', '')} {job.get('title', '')}".casefold()
     tags = {str(tag).strip() for tag in (job.get("tags") or [])}
     role_tag_set = set(role_tags)
@@ -595,23 +711,18 @@ def _score_dimensions(
     negatives: list[str] = []
     fit_tags: list[str] = []
 
-    if _contains_any(company, set(ELITE_PLATFORM_MARKERS)):
-        platform = 14
-        positives.append("平台层级与行业资源强")
-    elif _contains_any(company, set(STRONG_PLATFORM_MARKERS)):
-        platform = 13
-        positives.append("属于重点平台或核心行业机构")
-    elif semantic_employer_categories(job):
-        platform = 11
-    else:
-        platform = 8
-    if _contains_any(text, set(HEADQUARTER_TERMS)):
-        platform = min(16, platform + 2)
-        positives.append("总部、总行或核心平台层级")
-        fit_tags.append("总部/核心平台")
-    if _contains_any(text, set(BRANCH_TERMS)):
-        platform = max(4, platform - 3)
-        negatives.append("地区分支或基层层级限制平台价值")
+    platform = organization["platform_points"]
+    is_headquarters = organization["is_group_headquarters"]
+    if is_headquarters:
+        positives.append("招聘单位明确为集团总部或总行；未将地区本部当作集团总部")
+        fit_tags.append("集团总部/总行")
+    elif organization["platform_adjustment"] < 0:
+        negatives.append(organization["note"])
+        fit_tags.append(organization["label"])
+    elif organization["confidence"] == "unknown":
+        negatives.append("招聘单位层级资料不足，未计入总部或核心子机构加分")
+    if platform >= 13:
+        positives.append("实际招聘平台具有较强资源；平台基准不直接决定岗位 T 级")
 
     high_value_role = bool(role_tag_set.intersection(HIGH_VALUE_ROLE_TAGS))
     low_value_role = bool(role_tag_set.intersection(LOW_VALUE_ROLE_TAGS)) or _contains_any(
@@ -626,13 +737,15 @@ def _score_dimensions(
         positives.append("岗位职能具备较高专业壁垒与长期价值")
     elif role_tag_set.intersection(PROFESSIONAL_ROLE_TAGS):
         job_quality += 2
-    if "management_trainee" in role_tag_set or _contains_any(
-        role_text, {"轮岗", "导师", "培养", "定岗", "graduate program", "管培"}
+    if _contains_any(
+        role_text, {"轮岗", "导师", "定岗", "rotational", "mentorship", "structured training"}
     ):
         job_quality += 2
-        positives.append("存在明确培养或轮岗路径")
+        positives.append("岗位职责明确提及培养、导师或轮岗安排")
         fit_tags.append("培养路径")
-    if _contains_any(text, set(HEADQUARTER_TERMS)):
+    elif "management_trainee" in role_tag_set:
+        negatives.append("管培名称不等于明确的轮岗、定岗或管理晋升路径")
+    if is_headquarters:
         job_quality += 1
     if low_value_role:
         job_quality -= 5
@@ -640,12 +753,23 @@ def _score_dimensions(
         fit_tags.append("低优先级")
     job_quality = max(2, min(15, job_quality))
 
+    # Routine work cannot be promoted by AI/finance buzzwords elsewhere in the
+    # same JD. This adjusts the role component, not a company-specific T cap.
+    routine_title = _contains_any(str(job.get("title") or "").casefold(), {
+        "柜员", "客户经理", "客服", "销售", "行政", "录入", "shared service",
+        "customer service", "customer support", "sales support", "back office support",
+    })
+    if routine_title:
+        job_quality = min(job_quality, 7)
+
     background_groups = sum(
         1
         for terms in (FINANCE_TERMS, TECH_TERMS, PRODUCT_MANAGEMENT_TERMS)
         if _contains_any(role_text, set(terms))
     )
     background_utilization = {0: 3, 1: 6, 2: 11, 3: 14}[background_groups]
+    if routine_title:
+        background_utilization = min(background_utilization, 8)
     if background_groups >= 2:
         positives.append("岗位同时利用至少两类复合背景")
         fit_tags.append("复合背景")
@@ -673,12 +797,16 @@ def _score_dimensions(
     if low_value_role:
         career_fit -= 3
     career_fit = max(1, min(12, career_fit))
+    if routine_title:
+        career_fit = min(career_fit, 6)
 
     career_ceiling = 6 + (2 if platform >= 13 else 1 if platform >= 11 else 0)
     if high_value_role:
         career_ceiling += 2
-    if _contains_any(text, set(HEADQUARTER_TERMS)):
+    if is_headquarters:
         career_ceiling += 1
+    if organization["level"] in {"city_branch", "local_branch", "third_party"}:
+        career_ceiling -= 1
     if low_value_role:
         career_ceiling -= 3
         negatives.append("长期晋升与职业天花板偏低")
@@ -692,32 +820,29 @@ def _score_dimensions(
     if mobility >= 7:
         positives.append("能力可迁移到金融科技、数据产品、风险或战略方向")
 
+    qualification_text = f"{role_text} {_joined_fields(job, ('requirements',))}"
     probability = 5
-    if _contains_any(role_text, {"校园招聘", "校招", "应届", "graduate", "new analyst", "2027届"}):
+    if _contains_any(qualification_text, {"校园招聘", "校招", "应届", "graduate", "new analyst", "2027届"}):
         probability += 1
-    if _contains_any(role_text, {"专业不限", "finance", "computer science", "business analytics", "金融", "计算机"}):
+    if _contains_any(qualification_text, {"专业不限", "finance", "computer science", "business analytics", "金融", "计算机"}):
         probability += 1
-    if _contains_any(role_text, {"博士", "phd", "数学竞赛", "工作经验", "仅限"}) or quant_hard:
+    if _contains_any(qualification_text, {"博士", "phd", "数学竞赛", "工作经验", "仅限"}) or quant_hard:
         probability -= 2
         negatives.append("资格或竞争门槛较高，需作为冲刺评估")
         fit_tags.append("冲刺")
     probability = max(1, min(7, probability))
 
+    # A famous parent does not establish this subsidiary/branch's salary.
+    # Unpublished compensation stays neutral rather than earning a logo bonus.
     compensation = 3
-    if platform >= 14 or role_tag_set.intersection({"quant", "quant_research", "financial_markets", "investment"}):
-        compensation += 2
-    elif platform >= 11:
-        compensation += 1
-    compensation = min(6, compensation)
 
     work_life_balance = 3
     if _contains_any(role_text, set(HIGH_INTENSITY_TERMS)) or "高强度" in tags:
         work_life_balance -= 1
-        negatives.append("工作强度较高，长期可持续性需权衡")
-    if semantic_employer_categories(job).intersection(
-        {"policy_state_banks", "state_energy_resources", "state_tech_telecom", "insurance_integrated_finance"}
-    ):
-        work_life_balance += 1
+        negatives.append("岗位类型可能具有较高工作强度，实际安排需核对")
+    if _contains_any(role_text, {"轮班", "倒班", "夜班", "驻场", "on-call", "on call"}):
+        work_life_balance -= 1
+        negatives.append("职责包含值守、轮班或驻场安排，可持续性需权衡")
     if _contains_any(role_text, {"极端加班", "超低延迟"}):
         work_life_balance -= 1
     work_life_balance = max(1, min(5, work_life_balance))
@@ -831,6 +956,7 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
     industry_tags = _normalized_industry_tags(job)
     role_tags = _normalize_role_tags(job)
     days_left = _days_left(job)
+    organization = _organization_assessment(job)
 
     if not _has_sufficient_role_evidence(job, role_tags):
         empty_groups: dict[str, int | None] = {key: None for key in SCORING_WEIGHTS}
@@ -846,6 +972,7 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
             "scoring_status": "unscored_insufficient_role_data",
             "scoring_version": SCORING_VERSION,
             "scoring_factors": _scoring_factors(empty_groups, empty_groups),
+            "organization_assessment": organization,
             "positive_reasons": [],
             "negative_reasons": ["尚未取得足够具体的岗位职责或 JD，暂不生成 T 级"],
             "match_reasons": [],
@@ -861,7 +988,7 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
             "role_tags": role_tags,
         }
 
-    dimensions, positives, negatives, fit_tags = _score_dimensions(job, profile, role_tags)
+    dimensions, positives, negatives, fit_tags = _score_dimensions(job, profile, role_tags, organization)
     group_scores = _normalized_group_scores(dimensions)
     score, contributions = _weighted_contributions(group_scores)
     tier_code = tier_for_score(score)
@@ -878,6 +1005,7 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         "scoring_status": "scored",
         "scoring_version": SCORING_VERSION,
         "scoring_factors": _scoring_factors(group_scores, contributions),
+        "organization_assessment": organization,
         "positive_reasons": positives[:3] or ["岗位具备可核验的基础职业价值"],
         "negative_reasons": negatives[:2] or ["仍需结合完整 JD 与个人约束继续核对"],
         "match_reasons": positives[:3] or ["已按岗位级职业价值模型完成评分"],

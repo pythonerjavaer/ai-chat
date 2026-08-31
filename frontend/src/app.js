@@ -19,6 +19,7 @@ import {
   canonicalStarfieldCode,
   createCoalescedRadarReload,
   filterJobsByStarfields,
+  formatOrganizationAssessment,
   formatScoringFactors,
   futureRadarActiveRunTypes,
   futureRadarAiSearchNotice,
@@ -4064,7 +4065,7 @@ function renderRecruitmentJobs(jobs) {
     const tierBucket = jobTierBucket(job);
     const tierCode = tierOrder.includes(tierBucket) ? tierBucket : null;
     const isRecruitmentProgram = job.listing_kind === "recruitment_program" || job.scoring_status === "unscored_program_listing";
-    const finalScore = isRecruitmentProgram ? null : finiteRadarScore(job.job_score ?? job.match_score);
+    const finalScore = tierCode ? finiteRadarScore(job.job_score ?? job.match_score) : null;
     const verification = recruitmentVerification(job);
     const origin = futureRadarOpportunitySource(job);
     const top = makeElement("div", "job-card-top");
@@ -4105,10 +4106,10 @@ function renderRecruitmentJobs(jobs) {
     const factorScores = [
       ["FINAL TIER", tierCode || "未评分"],
       ["FINAL SCORE", finalScore == null ? "—" : `${finalScore} / 100`],
-      ["EMPLOYER SCORE", finiteRadarScore(job.employer_score)],
-      ["ROLE SCORE", finiteRadarScore(job.role_score)],
-      ["CAREER VALUE", finiteRadarScore(job.career_value_score)],
-      ["JOB CONDITIONS", finiteRadarScore(job.job_condition_score)],
+      ["EMPLOYER SCORE", tierCode ? finiteRadarScore(job.employer_score) : null],
+      ["ROLE SCORE", tierCode ? finiteRadarScore(job.role_score) : null],
+      ["CAREER VALUE", tierCode ? finiteRadarScore(job.career_value_score) : null],
+      ["JOB CONDITIONS", tierCode ? finiteRadarScore(job.job_condition_score) : null],
     ];
     factorScores.forEach(([label, value]) => {
       scoreGrid.appendChild(makeElement("span", "", `${label} · ${value == null ? "—" : value}`));
@@ -4120,12 +4121,17 @@ function renderRecruitmentJobs(jobs) {
     const flags = (job.fit_tags || []).length
       ? `适配标签：${job.fit_tags.join(" · ")}`
       : "适配标签：等待更多官方岗位信息";
-    const conciseFactors = recruitmentScoringFactors(job);
+    const conciseFactors = tierCode ? recruitmentScoringFactors(job) : [];
     const factorList = makeElement("ul", "score-factor-reasons");
     conciseFactors.forEach((item) => factorList.appendChild(makeElement("li", "", item)));
+    const organizationFactors = tierCode && job.organization_assessment
+      ? formatOrganizationAssessment(job.organization_assessment) : [];
+    const organizationList = makeElement("ul", "score-factor-reasons");
+    organizationFactors.forEach((item) => organizationList.appendChild(makeElement("li", "", item)));
     reasonBody.append(
       scoreGrid,
       makeElement("strong", "", isRecruitmentProgram ? "这是招聘项目入口，具体岗位尚未拆分；不以公司等级代替岗位 T 级" : tierCode ? "按现有公司与岗位信息应用统一 T 级规则；排序不等于官网确认" : "岗位信息不足，暂未生成 T 级；机会仍然在主池展示"),
+      ...(organizationFactors.length ? [organizationList] : []),
       ...(conciseFactors.length ? [makeElement("span", "", "评分依据"), factorList] : []),
       makeElement("span", "", "主要加分"),
       positiveList,

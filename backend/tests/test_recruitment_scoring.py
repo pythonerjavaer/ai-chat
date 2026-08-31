@@ -1,4 +1,5 @@
 from backend.recruitment import (
+    SCORING_VERSION,
     SCORING_WEIGHTS,
     job_matches_profile,
     score_job,
@@ -166,7 +167,7 @@ def test_generic_program_without_substantive_jd_is_explicitly_unscored():
         {},
     )
     assert scored["scoring_status"] == "unscored_insufficient_role_data"
-    assert scored["scoring_version"] == "future-radar-job-ranking-v2"
+    assert scored["scoring_version"] == SCORING_VERSION
     assert scored["job_score"] is None
     assert scored["match_score"] is None
     assert scored["tier_code"] is None
@@ -204,7 +205,7 @@ def test_tier_tag_cannot_override_job_score_and_weighted_breakdown_is_exact():
     )
     assert with_hint["match_score"] == expected
     assert with_hint["scoring_status"] == "scored"
-    assert with_hint["scoring_version"] == "future-radar-job-ranking-v2"
+    assert with_hint["scoring_version"] == SCORING_VERSION
     assert set(with_hint["scoring_factors"]) == set(SCORING_WEIGHTS)
 
 
