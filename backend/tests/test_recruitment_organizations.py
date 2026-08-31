@@ -309,6 +309,56 @@ def test_same_entity_legal_suffix_or_known_group_alias_is_not_a_contract_conflic
     assert "冲突" not in result["basis"]
 
 
+@pytest.mark.parametrize("fields,unit,contract_conflict", [
+    ({
+        "title": "财务管理(省业财)",
+        "requirements": "招聘部门:湖北业财赋能中心;具体用人单位以岗位详情为准。 工作描述:负责报表管理、风险管理。",
+    }, "湖北业财赋能中心", False),
+    ({
+        "title": "后端应用开发工程师(百事应)",
+        "requirements": "招聘部门:上海电信百事应信息有限公司;具体用人单位以岗位详情为准。 工作描述:负责后端开发。 合同签署方:上海电信百事应信息有限公司",
+    }, "上海电信百事应信息有限公司", True),
+    ({"department": "上海电信百事应信息有限公司"}, "上海电信百事应信息有限公司", False),
+    ({"requirements": "招聘部门:上海电信百事应信息有限公司;具体用人单位以岗位详情为准。"}, "上海电信百事应信息有限公司", False),
+])
+def test_specific_unresolved_hiring_unit_does_not_inherit_campaign_group_platform(fields, unit, contract_conflict):
+    result = assess("中国电信集团有限公司", **fields)
+    assert result["level"] == "unspecified"
+    assert result["confidence"] == "unknown"
+    assert result["base_platform_points"] == 13
+    assert result["platform_points"] == 10
+    assert result["platform_adjustment"] == -3
+    assert not result["is_group_headquarters"]
+    assert result["basis"].startswith("requirements.招聘部门" if "requirements" in fields else "department")
+    assert "具体单位待核验" in result["basis"]
+    assert unit in result["evidence"][0]
+    assert unit in result["note"]
+    assert "不据此推定省级机构、子公司或外包关系" in result["note"]
+    assert ("签约主体冲突" in result["basis"]) is contract_conflict
+    if contract_conflict:
+        assert any("合同签署方" in item for item in result["evidence"])
+
+
+@pytest.mark.parametrize("company,level,points", [
+    ("中国电信集团有限公司", "unspecified", 13),
+    ("中国电信集团总部", "group_headquarters", 15),
+    ("工商银行总行", "group_headquarters", 15),
+])
+@pytest.mark.parametrize("department", ["财务部", "财务管理中心", "人力资源部"])
+def test_plain_internal_department_preserves_its_actual_group_or_headquarters(company, level, points, department):
+    for fields in ({"department": department}, {"requirements": f"招聘部门：{department}；岗位职责另见。"}):
+        result = assess(company, **fields)
+        assert result["level"] == level
+        assert result["platform_points"] == points
+        assert "具体单位待核验" not in result["basis"]
+
+
+def test_same_legal_company_in_hiring_department_is_not_a_different_unresolved_entity():
+    result = assess("中国电信集团有限公司", department="中国电信集团有限公司")
+    assert result["platform_points"] == 13
+    assert "具体单位待核验" not in result["basis"]
+
+
 def test_labelled_recruiting_unit_is_not_confused_with_following_company_intro():
     result = assess(
         "中国电信集团有限公司",

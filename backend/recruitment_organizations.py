@@ -99,14 +99,18 @@ _TITLE_SERVICE_OBJECT = re.compile(
     re.I,
 )
 _CONTRACT_FIELDS = {"contract_company", "contract_entity", "signing_company", "signing_entity", "legal_employer"}
-_CONTRACT_LABELS = {"签约单位", "劳动合同签订单位", "雇佣单位"}
+_CONTRACT_LABELS = {"签约单位", "劳动合同签订单位", "合同签署方", "雇佣单位"}
 _DEPARTMENT_FIELDS = {"department", "department_name", "hiring_department"}
 _THIRD_PARTY_SERVICE_OBJECT = re.compile(
     r"(?:外包商?|派遣人员|合作伙伴|代理商)(?:管理|治理|协调|对接|支持|提供|拓展|运营|服务(?!商))"
 )
 _UNIT_STATEMENT = re.compile(
     r"(?:^|[\n\r。；;])\s*(招聘单位|招聘部门|用人单位|所属单位|所属公司|任职单位|"
-    r"雇佣单位|签约单位|劳动合同签订单位|岗位归属|所属机构|招聘公司)\s*[:：]\s*([^\n\r。；;]{2,160})"
+    r"雇佣单位|签约单位|劳动合同签订单位|合同签署方|岗位归属|所属机构|招聘公司)\s*[:：]\s*([^\n\r。；;]{2,160})"
+)
+_LEGAL_ENTITY_ENDING = re.compile(r"(?:股份有限公司|有限责任公司|有限公司)$")
+_NAMED_REGIONAL_UNIT = re.compile(
+    rf"^(?:{_PROVINCE_SCOPE})[\u4e00-\u9fffA-Za-z·]{{2,60}}(?:中心|事业部|机构|办事处)$"
 )
 _EMPLOYMENT_STATEMENT = re.compile(
     r"(?:^|[\n\r。；;])\s*(?:(?:本|该)(?:岗位|职位)|用工形式|用工方式|合同性质|劳动关系)"
@@ -376,6 +380,33 @@ def _conflicting_contracts(candidates: list[_Assessment]) -> list[_Assessment]:
     return contracts if len(identities) > 1 else []
 
 
+def _specific_unresolved_units(candidates: list[_Assessment]) -> list[_Assessment]:
+    """Do not transfer a campaign group's resources to a different named unit.
+
+    A distinct company-form name or named regional institution is not evidence
+    of a subsidiary relationship or an exact administrative level.  Plain
+    internal departments such as 财务部 do not meet this narrow condition.
+    """
+    company = next((item for item in candidates if item.source.removesuffix(".单位目录") == "company"), None)
+    if not company:
+        return []
+    company_identity = _entity_identity(company.text)
+    result = []
+    for item in candidates:
+        explicit_unit = (
+            item.source in (*_ENTITY_FIELDS, *_CONTRACT_FIELDS)
+            or item.source.startswith(("requirements.", "responsibilities.", "description."))
+        )
+        if item.level != "unspecified" or item.source == "company" or not explicit_unit:
+            continue
+        name = _public_evidence(item.text)
+        if _entity_identity(name) == company_identity:
+            continue
+        if _LEGAL_ENTITY_ENDING.search(name) or _NAMED_REGIONAL_UNIT.fullmatch(name):
+            result.append(item)
+    return result
+
+
 def _platform_points(level: str, base: int) -> int:
     if level == "group_headquarters":
         return min(16, base + 2)
@@ -408,6 +439,10 @@ def assess_organization(
         key=lambda item: (_SPECIFICITY[item.level], item.confidence == "explicit"),
         default=_Assessment("unspecified", "none", "", "unknown"),
     )
+    unresolved_units = _specific_unresolved_units(candidates)
+    specific_unresolved = bool(unresolved_units) and assessment.level in {"unspecified", "group_headquarters"}
+    if specific_unresolved:
+        assessment = unresolved_units[0]
     conflicting_contracts = _conflicting_contracts(candidates)
     if conflicting_contracts and assessment.level == "group_headquarters":
         # A highest-level headline cannot establish the employer when the
@@ -419,7 +454,7 @@ def assess_organization(
             default=_Assessment("unspecified", conflicting_contracts[0].source, conflicting_contracts[0].text, "unknown"),
         )
     points = _platform_points(assessment.level, base)
-    if conflicting_contracts:
+    if conflicting_contracts or specific_unresolved:
         points = min(points, base, 10)
     evidence = []
     if assessment.text:
@@ -427,10 +462,16 @@ def assess_organization(
     if assessment.auxiliary:
         evidence.append(assessment.auxiliary)
     note = _NOTES[assessment.level]
+    if specific_unresolved:
+        note = (
+            f"具体招聘单位“{_public_evidence(assessment.text)}”的层级与独立平台资源尚待核验；"
+            "不继承统一招聘集团的完整平台基准，也不据此推定省级机构、子公司或外包关系。"
+        )
     if assessment.source.endswith(".单位目录"):
         note += "依据已有公开单位目录识别关联实体，不代表实际用工或核心资质已获核验。"
     if conflicting_contracts:
         note += "招聘实体与签约单位署名存在差异或冲突，按保守层级处理；需核验真实签约主体，不将最高层级名称视为已确定雇主。"
+    if conflicting_contracts or specific_unresolved:
         sources = [item for item in candidates if item.source.removesuffix(".单位目录") == "company"]
         for item in (*sources, *conflicting_contracts):
             snippet = f"{item.source}：{_public_evidence(item.text)}"
@@ -441,7 +482,7 @@ def assess_organization(
         "level": assessment.level,
         "label": _LABELS[assessment.level],
         "confidence": assessment.confidence,
-        "basis": assessment.source + ("+title.岗位署名" if assessment.auxiliary else "") + ("+签约主体冲突" if conflicting_contracts else ""),
+        "basis": assessment.source + ("+title.岗位署名" if assessment.auxiliary else "") + ("+具体单位待核验" if specific_unresolved else "") + ("+签约主体冲突" if conflicting_contracts else ""),
         "evidence": evidence,
         "base_platform_points": base,
         "platform_band": str(platform_band),

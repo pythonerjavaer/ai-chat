@@ -120,7 +120,7 @@ SCORING_WEIGHTS = {
     "career_value": 10,
     "job_conditions": 10,
 }
-SCORING_VERSION = "future-radar-job-ranking-v3-organization-role"
+SCORING_VERSION = "future-radar-job-ranking-v3.1-organization-role"
 
 CORE_CITIES = {
     "北京", "上海", "深圳", "广州", "杭州", "南京", "苏州", "成都", "武汉", "西安",
