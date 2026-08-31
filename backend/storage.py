@@ -666,7 +666,7 @@ class _Pool:
 
 
 _pools_lock = threading.Lock()
-_pools: dict[tuple[str, str, int], _Pool] = {}
+_pools: dict[tuple[str, str, int, str], _Pool] = {}
 
 
 class Connection:
@@ -883,6 +883,7 @@ class Connection:
 
 def connect_postgres(
     dsn: str, *, schema: str = "frostfire", timeout: float = 30.0, max_size: int = 4,
+    purpose: str = "application",
 ) -> Connection:
     """Connect only to the explicitly supplied PostgreSQL database.
 
@@ -898,7 +899,14 @@ def connect_postgres(
         raise sqlite3.ProgrammingError("PostgreSQL pool size must be between 1 and 16.")
     if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 300:
         raise sqlite3.ProgrammingError("Invalid PostgreSQL timeout.")
-    key = (hashlib.sha256(dsn.encode()).hexdigest(), schema, max_size)
+    if not isinstance(purpose, str) or purpose not in {"application", "health"}:
+        raise sqlite3.ProgrammingError("Invalid PostgreSQL pool purpose.")
+    # A real database probe must not wait behind all four application writers.
+    # Only this explicit, fixed purpose gets a separate pool; callers cannot
+    # invent unbounded pool names or enlarge the health connection allowance.
+    if purpose == "health":
+        max_size = 1
+    key = (hashlib.sha256(dsn.encode()).hexdigest(), schema, max_size, purpose)
     with _pools_lock:
         pool = _pools.get(key)
         if pool is None or pool.closed:

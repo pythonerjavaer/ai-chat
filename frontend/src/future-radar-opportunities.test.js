@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { createRadarPollingGate } from "./radar-polling.js";
 import {
   FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
   buildFutureRadarJobsQuery,
@@ -89,6 +90,7 @@ function pollingContext({ race = false, unchanged = false } = {}) {
   const result = { applied: 0, rendered: 0 };
   const context = {
     AbortController,
+    radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
     state, document: { hidden: false },
     elements: { recruitmentDialog: { open: true }, futureRadarLiveState: { replaceChildren() {} } },

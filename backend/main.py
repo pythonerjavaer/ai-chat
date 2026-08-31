@@ -847,12 +847,17 @@ def prepare_chat(
 
 @app.get("/api/health")
 def health() -> dict:
+    started = time.perf_counter()
     try:
-        with database.connect(timeout=2.0) as connection:
+        with database.connect_health(timeout=2.0) as connection:
             connection.execute("SELECT 1").fetchone()
-    except Exception:
+    except Exception as exc:
         # Never return a healthy deployment just because the HTTP process is
         # alive, and never include credentials/driver diagnostics in health.
+        logger.warning(
+            "Database health probe failed purpose=health error_type=%s duration_ms=%d",
+            type(exc).__name__, int((time.perf_counter() - started) * 1000),
+        )
         raise HTTPException(status_code=503, detail="Database is unavailable.") from None
     return {
         "status": "ok", "version": app.version,
@@ -1491,26 +1496,9 @@ def future_radar_sources(user: User, enabled: bool | None = None) -> dict:
     return {"items": sources, "sources": sources, "total": len(sources)}
 
 
-@app.post("/api/future-radar/run")
-async def run_future_radar(
-    user: ConsentedUser,
-    request: RadarRunRequest | None = None,
-    admin_token: Annotated[str | None, Header(alias="X-Admin-Token")] = None,
-) -> dict:
-    payload = request or RadarRunRequest()
+def _future_radar_run_sources(payload: RadarRunRequest) -> list[str]:
+    """Blocking registry validation runs in a worker, never the event loop."""
     scan_type = payload.scan_type
-    if payload.force:
-        configured_token = settings.admin_dashboard_token
-        if not configured_token:
-            raise HTTPException(
-                status_code=503,
-                detail="Administrator Force Scan is not configured.",
-            )
-        if not admin_token or not secrets.compare_digest(admin_token, configured_token):
-            raise HTTPException(
-                status_code=401,
-                detail="Force Scan requires administrator authorization.",
-            )
     for source_id in payload.source_ids:
         if not future_radar_service.repository.get_source(source_id):
             raise HTTPException(status_code=404, detail=f"Radar source not found: {source_id}")
@@ -1539,6 +1527,30 @@ async def run_future_radar(
                 else "No configured discovery sources are currently available."
             ),
         )
+    return source_ids
+
+
+@app.post("/api/future-radar/run")
+async def run_future_radar(
+    user: ConsentedUser,
+    request: RadarRunRequest | None = None,
+    admin_token: Annotated[str | None, Header(alias="X-Admin-Token")] = None,
+) -> dict:
+    payload = request or RadarRunRequest()
+    scan_type = payload.scan_type
+    if payload.force:
+        configured_token = settings.admin_dashboard_token
+        if not configured_token:
+            raise HTTPException(
+                status_code=503,
+                detail="Administrator Force Scan is not configured.",
+            )
+        if not admin_token or not secrets.compare_digest(admin_token, configured_token):
+            raise HTTPException(
+                status_code=401,
+                detail="Force Scan requires administrator authorization.",
+            )
+    source_ids = await asyncio.to_thread(_future_radar_run_sources, payload)
     del user
     try:
         result = await asyncio.to_thread(

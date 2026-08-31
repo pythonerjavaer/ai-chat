@@ -38,6 +38,18 @@ def connect(*, timeout: float = 30.0) -> Any:
     return connection
 
 
+def connect_health(*, timeout: float = 2.0) -> Any:
+    """Use the same real database/TLS policy with one reserved probe slot."""
+    if getattr(settings, "database_backend", "sqlite") == "postgres":
+        from .storage import connect_postgres
+
+        return connect_postgres(
+            settings.database_url, schema=settings.database_schema,
+            timeout=timeout, max_size=1, purpose="health",
+        )
+    return connect(timeout=timeout)
+
+
 def close_database_pools() -> None:
     if getattr(settings, "database_backend", "sqlite") == "postgres":
         from .storage import close_postgres_pools

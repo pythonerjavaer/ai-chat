@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import test from "node:test";
 import vm from "node:vm";
+import { createRadarPollingGate } from "./radar-polling.js";
 import {
   DEFAULT_FUTURE_RADAR_STATUS,
   FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
@@ -47,6 +48,7 @@ function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null 
   const timers = [];
   const context = {
     state, API_BASE: base, Headers, FormData, AbortController,
+    radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     FUTURE_RADAR_REQUEST_CONTROLLERS: new Set(),
     FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, buildFutureRadarJobsQuery,
     selectedRecruitmentStarfields: () => categories,

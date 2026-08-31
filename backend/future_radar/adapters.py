@@ -1447,12 +1447,21 @@ class ChinaTelecomCampusAdapter:
             parse_failures += invalid
             if invalid:
                 reason = "Some public job cards could not be parsed; closure checks are disabled."
-            ids = {row["external_id"] for row in rows}
-            if seen.intersection(ids):
+            duplicate = False
+            for row in rows:
+                identifier = row["external_id"]
+                # Add IDs one by one so duplicates within this page are also
+                # detected. Keep the first observation and every distinct row
+                # already parsed, but never use an unstable list for closure.
+                if identifier in seen:
+                    duplicate = True
+                    skipped += 1
+                    continue
+                seen.add(identifier)
+                jobs.append(row)
+            if duplicate:
                 reason = "Duplicate rows appeared while paginating; snapshot remains incomplete."
                 break
-            jobs.extend(rows)
-            seen.update(ids)
             if raw_count == 0 and not re.search(r"暂无(?:招聘)?(?:职位|岗位)|没有符合.*(?:职位|岗位)|无匹配.*(?:职位|岗位)", page.text):
                 reason = "No recognizable job cards or explicit empty-list marker; snapshot remains incomplete."
                 break

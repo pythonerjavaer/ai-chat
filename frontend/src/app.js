@@ -35,6 +35,7 @@ import {
   starfieldLabel,
 } from "./recruitment-radar.js";
 import "./styles.css";
+import { radarPollingGate, RADAR_STATUS_INTERVAL_MS } from "./radar-polling.js";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -54,7 +55,7 @@ const WORKSPACE_ORDER = ["legal", "general", "finance"];
 const CHATGPT_MONITOR_SOURCE_COUNT = 6;
 const RECRUITMENT_REFRESH_LABEL = "同步候选源 ↻";
 const FUTURE_RADAR_POLL_INTERVAL_MS = 30_000;
-const FUTURE_RADAR_RUN_STATUS_POLL_MS = 2_500;
+const FUTURE_RADAR_RUN_STATUS_POLL_MS = RADAR_STATUS_INTERVAL_MS;
 const FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS = 20;
 const FUTURE_RADAR_SCAN_TYPES = Object.freeze(["quick", "deep"]);
 const FUTURE_RADAR_REQUEST_CONTROLLERS = new Set();
@@ -156,6 +157,8 @@ const state = {
     runDelayTimer: { quick: null, deep: null },
     runStatusPollTimer: { quick: null, deep: null },
     runStatusPollPending: { quick: false, deep: false },
+    runStatusTracking: { quick: false, deep: false },
+    terminalSnapshotPromise: null,
     activeRunTypes: new Set(),
     filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" },
   },
@@ -623,6 +626,9 @@ function setupRotaryCompasses() {
 
 async function api(path, options = {}) {
   const { preserveAuthOn401 = false, signal: externalSignal, timeoutMs = 15000, ...requestOptions } = options;
+  const isRadarRead = (path.startsWith("/future-radar/") || path.startsWith("/recruitment/"))
+    && (!options.method || options.method === "GET");
+  if (isRadarRead) radarPollingGate.assertAllowed();
   const headers = new Headers(options.headers || {});
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
@@ -644,12 +650,15 @@ async function api(path, options = {}) {
       requestError.retryAfter = response.headers.get("Retry-After");
       throw requestError;
     }
-    return response.status === 204 ? null : await response.json();
+    const result = response.status === 204 ? null : await response.json();
+    if (isRadarRead) radarPollingGate.success();
+    return result;
   } catch (error) {
     if (controller.signal.aborted && controller.signal.reason?.code === "AUTH_REQUIRED") throw controller.signal.reason;
     // A superseded selection is cancellation, not a network timeout or a reason
     // to replace the latest selection with an error from the previous request.
     if (externalSignal?.aborted) throw externalSignal.reason || error;
+    if (isRadarRead) radarPollingGate.failure(error);
     if (error.name === "AbortError") {
       const requestError = new Error("请求超时，请检查服务是否已启动或稍后重试。");
       requestError.code = "REQUEST_TIMEOUT";
@@ -855,6 +864,7 @@ function applyUser() {
 }
 
 function endFutureRadarSession(expired = false) {
+  radarPollingGate.clearSession();
   stopFutureRadarPolling();
   FUTURE_RADAR_SCAN_TYPES.forEach((scanType) => {
     stopFutureRadarRunStatusPolling(scanType);
@@ -862,6 +872,7 @@ function endFutureRadarSession(expired = false) {
     state.futureRadar.runDelayTimer[scanType] = null;
     state.futureRadar.runDelayUntil[scanType] = 0;
     state.futureRadar.runStarting[scanType] = false;
+    if (state.futureRadar.runStatusTracking) state.futureRadar.runStatusTracking[scanType] = false;
   });
   window.clearTimeout(recruitmentAutoFilterTimer);
   recruitmentAutoFilterTimer = null;
@@ -2731,12 +2742,32 @@ function stopFutureRadarRunStatusPolling(scanType) {
   state.futureRadar.runStatusPollTimer[scanType] = null;
 }
 
+function canPollFutureRadar() {
+  return Boolean(state.token && elements.recruitmentDialog?.open && !document.hidden);
+}
+
+function readFutureRadarDashboard() {
+  return radarPollingGate.dashboard(() => api("/future-radar/dashboard"), state.token);
+}
+
+function resumeFutureRadarRunStatusPolling() {
+  if (!canPollFutureRadar() || radarPollingGate.suspended()) return;
+  FUTURE_RADAR_SCAN_TYPES.forEach((scanType) => {
+    if (state.futureRadar.runStatusTracking?.[scanType] || state.futureRadar.activeRunTypes.has(scanType)) {
+      state.futureRadar.runStatusTracking ||= { quick: false, deep: false };
+      state.futureRadar.runStatusTracking[scanType] = true;
+      scheduleFutureRadarRunStatusPoll(scanType);
+    }
+  });
+}
+
 function scheduleFutureRadarRunStatusPoll(scanType) {
   stopFutureRadarRunStatusPolling(scanType);
+  if (!canPollFutureRadar() || radarPollingGate.suspended()) return;
   state.futureRadar.runStatusPollTimer[scanType] = window.setTimeout(() => {
     state.futureRadar.runStatusPollTimer[scanType] = null;
     pollFutureRadarRunUntilTerminal(scanType);
-  }, FUTURE_RADAR_RUN_STATUS_POLL_MS);
+  }, radarPollingGate.delay(FUTURE_RADAR_RUN_STATUS_POLL_MS));
 }
 
 function latestFutureRadarRunForType(scanType) {
@@ -2751,11 +2782,13 @@ function latestFutureRadarRunForType(scanType) {
 }
 
 async function pollFutureRadarRunUntilTerminal(scanType) {
-  if (state.futureRadar.runStatusPollPending[scanType] || !state.token) return;
+  if (state.futureRadar.runStatusPollPending[scanType] || !canPollFutureRadar() || radarPollingGate.suspended()) return;
+  const sessionToken = state.token;
   state.futureRadar.runStatusPollPending[scanType] = true;
   const scanLabel = scanType === "deep" ? "Deep Scan" : "Quick Scan";
   try {
-    const dashboard = await api("/future-radar/dashboard");
+    const dashboard = await readFutureRadarDashboard();
+    if (sessionToken !== state.token || !canPollFutureRadar()) return;
     renderFutureRadarDashboard(dashboard);
     if (futureRadarActiveRunTypes(dashboard).includes(scanType)) {
       setFutureRadarLoading(true, "");
@@ -2765,8 +2798,16 @@ async function pollFutureRadarRunUntilTerminal(scanType) {
     }
 
     stopFutureRadarRunStatusPolling(scanType);
+    state.futureRadar.runStatusTracking[scanType] = false;
     setFutureRadarActionStatus(`${scanLabel} 已结束，正在刷新岗位池与扫描记录…`, "running");
-    const snapshotReadable = await loadFutureRadarSnapshot();
+    // Quick and Deep finishing together share one final snapshot, not two bursts.
+    if (!state.futureRadar.terminalSnapshotPromise) {
+      state.futureRadar.terminalSnapshotPromise = loadFutureRadarSnapshot().finally(() => {
+        state.futureRadar.terminalSnapshotPromise = null;
+      });
+    }
+    const snapshotReadable = await state.futureRadar.terminalSnapshotPromise;
+    if (sessionToken !== state.token || !canPollFutureRadar()) return;
     const terminalRun = latestFutureRadarRunForType(scanType);
     const resultCopy = !snapshotReadable
       ? `${scanLabel} 已在服务端结束；主机会池读取失败，请点击“刷新机会”重试。`
@@ -2776,14 +2817,16 @@ async function pollFutureRadarRunUntilTerminal(scanType) {
     const tone = snapshotReadable ? futureRadarRunTone(terminalRun || {}) : "warning";
     showToast(resultCopy, 7000);
     startFutureRadarRunDelay(scanType, FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS, resultCopy, tone);
-  } catch (_) {
-    if (!state.token) {
+  } catch (error) {
+    if (sessionToken !== state.token || !canPollFutureRadar()) {
       stopFutureRadarRunStatusPolling(scanType);
       return;
     }
     markFutureRadarRunActive(scanType);
     setFutureRadarLoading(true, "");
-    setFutureRadarActionStatus(`${scanLabel} 的请求窗口已结束，正在重新确认服务端运行状态…`, "running");
+    setFutureRadarActionStatus(radarPollingGate.suspended()
+      ? "服务连续不可用，自动跟踪已暂停；请稍后点击刷新机会重试。扫描仍由服务端运行锁管理。"
+      : `${scanLabel} 正在等待服务恢复后再次确认；不会重复启动扫描。`, "warning");
     scheduleFutureRadarRunStatusPoll(scanType);
   } finally {
     state.futureRadar.runStatusPollPending[scanType] = false;
@@ -2791,6 +2834,9 @@ async function pollFutureRadarRunUntilTerminal(scanType) {
 }
 
 function startFutureRadarRunStatusPolling(scanType) {
+  // A pre-POST idle response (including an in-flight read) cannot end this run.
+  radarPollingGate.invalidateDashboard();
+  state.futureRadar.runStatusTracking[scanType] = true;
   markFutureRadarRunActive(scanType);
   stopFutureRadarRunStatusPolling(scanType);
   pollFutureRadarRunUntilTerminal(scanType);
@@ -3432,7 +3478,7 @@ async function loadFutureRadarSnapshot() {
   const jobs = loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false });
   const jobsRequestId = state.futureRadar.jobsRequestId;
   const requests = [
-    ["dashboard", api("/future-radar/dashboard")],
+    ["dashboard", readFutureRadarDashboard()],
     ["jobs", jobs],
     ["programs", api("/future-radar/programs")],
     ["events", api("/future-radar/events?limit=50")],
@@ -3487,6 +3533,7 @@ async function loadFutureRadarSnapshot() {
 
 async function pollFutureRadarEvents() {
   if (!state.token || state.futureRadar.polling || !elements.recruitmentDialog?.open || document.hidden) return;
+  if (radarPollingGate.suspended() || radarPollingGate.delay() > 0) return;
   const sessionToken = state.token;
   const controller = state.futureRadar.jobsLoading ? null : new AbortController();
   state.futureRadar.pollOpportunityController = controller;
@@ -3500,7 +3547,7 @@ async function pollFutureRadarEvents() {
     const [payload, dashboard, opportunityPayload] = await Promise.all([
       api(`/future-radar/events${query}`).catch(() => null),
       state.futureRadar.activeRunTypes.size
-        ? api("/future-radar/dashboard").catch(() => null)
+        ? readFutureRadarDashboard().catch(() => null)
         : Promise.resolve(null),
       // Chat and search leads must refresh even when there is no verified-only
       // public change event. The unified API owns filtering, ranking and totals.
@@ -3569,11 +3616,13 @@ async function pollFutureRadarEvents() {
 function stopFutureRadarPolling() {
   window.clearInterval(state.futureRadar.pollingTimer);
   state.futureRadar.pollingTimer = null;
+  FUTURE_RADAR_SCAN_TYPES.forEach(stopFutureRadarRunStatusPolling);
 }
 
 function startFutureRadarPolling() {
   stopFutureRadarPolling();
   if (!state.token || !elements.recruitmentDialog?.open || document.hidden) return;
+  resumeFutureRadarRunStatusPolling();
   state.futureRadar.pollingTimer = window.setInterval(pollFutureRadarEvents, FUTURE_RADAR_POLL_INTERVAL_MS);
 }
 
@@ -3594,11 +3643,13 @@ async function runFutureRadarNow(scanType = "quick") {
     : "Quick Scan 正在核对已知官网、ATS、API 与招聘页面；同类型运行不会重复创建…", "running");
   try {
     stopFutureRadarRunStatusPolling(scanType);
+    radarPollingGate.invalidateDashboard();
     const run = await api("/future-radar/run", {
       method: "POST",
       body: JSON.stringify({ scan_type: scanType }),
       timeoutMs: 120_000,
     });
+    radarPollingGate.invalidateDashboard();
     setFutureRadarActionStatus(`${scanLabel} 已返回，正在刷新岗位池、信源健康与变化记录…`, "running");
     const snapshotReadable = await loadFutureRadarSnapshot();
     const runResultCopy = snapshotReadable
@@ -4695,7 +4746,11 @@ elements.futureRadarRun.addEventListener("click", () => runFutureRadarNow("quick
 elements.futureRadarDeepRun.addEventListener("click", () => runFutureRadarNow("deep"));
 elements.futureRadarPagePrev.addEventListener("click", () => loadFutureRadarJobPage(state.futureRadar.page - 1));
 elements.futureRadarPageNext.addEventListener("click", () => loadFutureRadarJobPage(state.futureRadar.page + 1));
-elements.futureRadarOpportunityRefresh.addEventListener("click", () => loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false }));
+elements.futureRadarOpportunityRefresh.addEventListener("click", () => {
+  radarPollingGate.resume();
+  resumeFutureRadarRunStatusPolling();
+  loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false });
+});
 elements.futureRadarFilterForm.addEventListener("submit", (event) => {
   event.preventDefault();
   readFutureRadarFilters();

@@ -232,6 +232,65 @@ def test_telecom_follows_real_pagination_and_uses_clean_public_detail_links(monk
         assert job["opening_date"] is None and job["closing_date"] is None
 
 
+@pytest.mark.parametrize("same_page", [True, False])
+def test_telecom_duplicate_ids_are_deduplicated_and_never_complete(monkeypatch, same_page):
+    first = telecom_card(137901, title="原始岗位名称")
+    repeated = telecom_card(137901, title="重复卡片中的不同名称")
+    distinct = telecom_card(137902)
+    cards = [first + repeated + distinct] if same_page else [first, repeated + distinct]
+    calls = []
+
+    def fetch(url, *args, **kwargs):
+        number = int(parse_qs(urlsplit(url).query)["pc.currentPage"][0])
+        calls.append(number)
+        return telecom_page(number, number == len(cards), cards[number - 1])
+
+    monkeypatch.setattr(adapters, "fetch_watch_page", fetch)
+    item = source("official-china-telecom-campus-jobs-2027")
+    result = ChinaTelecomCampusAdapter().scan(item)
+    assert calls == list(range(1, len(cards) + 1))
+    assert [job["external_id"] for job in result.jobs] == ["telecom-137901", "telecom-137902"]
+    assert result.jobs[0]["title"] == "原始岗位名称"
+    assert result.snapshot_complete is False and result.status == "partial"
+    summary = json.loads(result.normalized_content)
+    assert summary["observed"] == 3 and summary["skipped"] == 1
+    assert "Duplicate" in summary["reason"]
+    # The same response has a stable fingerprint and does not reorder IDs.
+    replay = ChinaTelecomCampusAdapter().scan(item)
+    assert replay.jobs == result.jobs and replay.content_hash == result.content_hash
+
+
+@pytest.mark.parametrize("same_page", [True, False])
+def test_telecom_duplicate_snapshot_does_not_retire_an_unseen_historical_job(monkeypatch, service, same_page):
+    item = service.repository.get_source("official-china-telecom-campus-jobs-2027")
+    adapter = ChinaTelecomCampusAdapter()
+    monkeypatch.setattr(adapters, "fetch_watch_page", lambda *a, **k: telecom_page(1, True, telecom_card(137999)))
+    initial = adapter.scan(item)
+    run = service.repository.create_run(trigger_type="test", source_ids=[item["id"]])
+    assert service.process_result(source=item, result=initial, run_id=run["id"])["new_jobs"] == 1
+    with database.connect() as connection:
+        old_job = dict(connection.execute("SELECT * FROM radar_jobs").fetchone())
+        old_link = dict(connection.execute("SELECT * FROM job_sources").fetchone())
+    first = telecom_card(137901)
+    cards = [first + first] if same_page else [first, first]
+
+    def fetch(url, *args, **kwargs):
+        number = int(parse_qs(urlsplit(url).query)["pc.currentPage"][0])
+        return telecom_page(number, number == len(cards), cards[number - 1])
+
+    monkeypatch.setattr(adapters, "fetch_watch_page", fetch)
+    for _ in range(3):
+        result = adapter.scan(item)
+        assert result.snapshot_complete is False
+        run = service.repository.create_run(trigger_type="test", source_ids=[item["id"]])
+        counts = service.process_result(source=item, result=result, run_id=run["id"])
+        assert not counts["errors"] and counts["closed_jobs"] == 0
+    with database.connect() as connection:
+        assert dict(connection.execute("SELECT * FROM radar_jobs WHERE id=?", (old_job["id"],)).fetchone()) == old_job
+        assert dict(connection.execute("SELECT * FROM job_sources WHERE job_id=?", (old_job["id"],)).fetchone()) == old_link
+        assert connection.execute("SELECT COUNT(*) FROM radar_jobs").fetchone()[0] == 2
+
+
 def test_telecom_malformed_card_is_not_a_complete_snapshot(monkeypatch):
     malformed = telecom_card(137903).replace("position_list-list-demo-title", "changed-title-markup")
     monkeypatch.setattr(adapters, "fetch_watch_page", lambda *a, **k: telecom_page(1, True, telecom_card()+malformed))

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { createRadarPollingGate } from "./radar-polling.js";
 import {
   DEFAULT_FUTURE_RADAR_STATUS, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, TIER_CODES, buildFutureRadarJobsQuery,
   filterJobsByStarfields, futureRadarOpportunityDateCopy,
@@ -89,6 +90,8 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   const noop = () => {};
   const context = {
     AbortController, URLSearchParams,
+    radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
+    resumeFutureRadarRunStatusPolling() {},
     state, elements, DEFAULT_FUTURE_RADAR_STATUS, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, TIER_CODES, buildFutureRadarJobsQuery,
     futureRadarOpportunityDateCopy, futureRadarOpportunityErrorCopy, futureRadarOpportunitySource,
     futureRadarPublicOpportunityUrl, jobTierBucket, partitionJobsByPriority,
@@ -156,6 +159,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     "renderRecruitmentWatches", "renderHomeRecruitmentAlerts", "renderRecruitmentMonitors", "renderRecruitmentSyncStatus",
     "renderFutureRadarRunAvailability", "applyIncrementalRadarMetrics", "addRecruitmentWatchFromJob", "showToast", "renderMusicUI"]) context[name] = noop;
   vm.createContext(context);
+  context.readFutureRadarDashboard = () => context.api("/future-radar/dashboard");
   const functions = [
     "let recruitmentAutoFilterTimer = null;",
     extract("function endFutureRadarSession(", "\nasync function loadWorkspaces"),

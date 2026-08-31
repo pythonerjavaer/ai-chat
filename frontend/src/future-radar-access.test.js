@@ -67,7 +67,7 @@ test("a timed-out scan immediately restores the server lock and polls to termina
 
   assert.match(functionSource, /timedOut = \/请求超时/);
   assert.match(functionSource, /startFutureRadarRunStatusPolling\(scanType\)/);
-  assert.match(pollSource, /api\("\/future-radar\/dashboard"\)/);
+  assert.match(pollSource, /readFutureRadarDashboard\(\)/);
   assert.match(pollSource, /futureRadarActiveRunTypes\(dashboard\)\.includes\(scanType\)/);
   assert.match(pollSource, /scheduleFutureRadarRunStatusPoll\(scanType\)/);
   assert.match(pollSource, /loadFutureRadarSnapshot\(\)/);
