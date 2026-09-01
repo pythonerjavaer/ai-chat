@@ -380,6 +380,9 @@ def test_existing_scoring_rules_are_used_without_fabricated_tiers(harness):
     assert project["is_specific_job"] is False
     assert project["tier_code"] is None
     assert project["scoring_status"] == "unscored_program_listing"
+    assert project["raw_job_score"] is None
+    assert project["calibration_adjustment"] is None
+    assert all(value is None for value in project["dimension_scores"].values())
 
 
 @pytest.mark.parametrize("company,title", [

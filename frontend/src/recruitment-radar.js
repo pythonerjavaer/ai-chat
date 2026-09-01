@@ -241,7 +241,7 @@ export function formatScoringFactors(factors) {
       const weight = finiteScore(value.weight);
       if (score == null) return [`${label}：等待岗位信息`];
       const level = score >= 85 ? "高" : score >= 70 ? "较高" : score >= 55 ? "中等" : "较低";
-      const weighted = contribution == null || weight == null ? "" : `，加权 ${contribution}/${weight}`;
+      const weighted = contribution == null || weight == null ? "" : `，贡献 ${contribution}/${weight}`;
       return [`${label}：${level}（${score}/100${weighted}）`];
     }
     return value == null || value === "" ? [] : [`${label}：${value}`];
@@ -539,6 +539,8 @@ export function futureRadarRunSuccessCopy(run = {}, totalJobs = 0) {
 export const RADAR_ENRICHMENT_KEYS = Object.freeze([
   "match_score", "job_score", "tier_code", "score_breakdown",
   "employer_score", "role_score", "career_value_score", "job_condition_score",
+  "institution_score", "institution_tier_code", "institution_reason", "raw_job_score",
+  "calibration_adjustment", "calibration_reason", "dimension_scores",
   "scoring_factors", "scoring_status", "scoring_version", "organization_assessment",
   "positive_reasons", "negative_reasons", "fit_tags", "employer_categories",
   "organization_category", "industry_tags", "role_tags", "primary_category", "days_left",
@@ -547,6 +549,8 @@ export const RADAR_ENRICHMENT_KEYS = Object.freeze([
 const SCORING_ENRICHMENT_KEYS = new Set([
   "match_score", "job_score", "tier_code", "score_breakdown",
   "employer_score", "role_score", "career_value_score", "job_condition_score",
+  "institution_score", "institution_tier_code", "institution_reason", "raw_job_score",
+  "calibration_adjustment", "calibration_reason", "dimension_scores",
   "scoring_factors", "scoring_status", "scoring_version", "organization_assessment",
   "positive_reasons", "negative_reasons", "fit_tags",
 ]);

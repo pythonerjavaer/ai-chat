@@ -200,10 +200,15 @@ def test_no_automatic_state_owned_salary_or_wlb_bonus():
     assert state["job_condition_score"] == neutral["job_condition_score"]
 
 
-def test_weighted_score_stays_exact_and_scoring_version_invalidates_old_cache():
+def test_original_eleven_dimension_score_stays_exact_and_invalidates_old_cache():
     row = score_job(opportunity("中国电信河北省分公司"), {})
     assert SCORING_VERSION != "future-radar-job-ranking-v2"
-    assert SCORING_WEIGHTS == {"employer_platform": 35, "role_function": 45, "career_value": 10, "job_conditions": 10}
-    assert row["job_score"] == sum(row["score_breakdown"].values())
+    assert SCORING_WEIGHTS == {
+        "employer_platform": 16, "role_function": 41,
+        "career_value": 20, "job_conditions": 23,
+    }
+    assert row["raw_job_score"] == sum(row["score_breakdown"].values())
+    assert row["job_score"] == row["raw_job_score"] + row["calibration_adjustment"]
+    assert row["raw_job_score"] == sum(row["dimension_scores"].values())
     assert row["employer_score"] == round(row["organization_assessment"]["platform_points"] / 16 * 100)
     assert row["employer_score"] == row["organization_assessment"]["platform_score"]

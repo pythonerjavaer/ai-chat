@@ -1090,9 +1090,11 @@ def _public_radar_opportunity(job: dict, profile: dict) -> dict:
         for field in (
             "job_score", "match_score", "employer_score", "role_score",
             "career_value_score", "job_condition_score", "tier_code",
+            "raw_job_score", "calibration_adjustment", "calibration_reason",
         ):
             item[field] = None
         item["score_breakdown"] = {key: None for key in item.get("score_breakdown", {})}
+        item["dimension_scores"] = {key: None for key in item.get("dimension_scores", {})}
         item["scoring_factors"] = {
             key: {**value, "score": None, "contribution": None}
             for key, value in item.get("scoring_factors", {}).items()
@@ -1104,6 +1106,7 @@ def _public_radar_opportunity(job: dict, profile: dict) -> dict:
         item["fit_tags"] = []
         item["technical_hard"] = False
         item["quant_barrier"] = False
+        item["manual_override"] = False
     item["employer_categories"] = sorted(semantic_employer_categories(item))
     item["opportunity_kind"] = "verified" if item["officially_verified"] else "discovered"
     item["available_in_main_pool"] = True

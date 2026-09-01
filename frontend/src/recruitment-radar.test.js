@@ -360,16 +360,16 @@ test("unknown scan failures never echo raw server diagnostics", () => {
 test("structured four-part scoring factors render concise explanations instead of object text", () => {
   assert.deepEqual(
     formatScoringFactors({
-      employer_platform: { label: "平台质量", weight: 35, score: 82, contribution: 29 },
-      role_function: { label: "岗位职能与匹配", weight: 45, score: 91, contribution: 41 },
-      career_value: { label: "职业发展与退出价值", weight: 10, score: 78, contribution: 8 },
-      job_conditions: { label: "薪酬、地点与工作条件", weight: 10, score: 60, contribution: 6 },
+      employer_platform: { label: "平台质量", weight: 16, score: 82, contribution: 13 },
+      role_function: { label: "岗位职能与匹配", weight: 41, score: 91, contribution: 37 },
+      career_value: { label: "职业发展与退出价值", weight: 20, score: 78, contribution: 16 },
+      job_conditions: { label: "薪酬、地点与工作条件", weight: 23, score: 60, contribution: 14 },
     }),
     [
-      "平台质量：较高（82/100，加权 29/35）",
-      "岗位职能与匹配：高（91/100，加权 41/45）",
-      "职业发展与退出价值：较高（78/100，加权 8/10）",
-      "薪酬、地点与工作条件：中等（60/100，加权 6/10）",
+      "平台质量：较高（82/100，贡献 13/16）",
+      "岗位职能与匹配：高（91/100，贡献 37/41）",
+      "职业发展与退出价值：较高（78/100，贡献 16/20）",
+      "薪酬、地点与工作条件：中等（60/100，贡献 14/23）",
     ],
   );
 });
@@ -523,19 +523,31 @@ function renderScoringDetail(job) {
 test("T detail renders organization evidence as text while retaining the four scoring factors", () => {
   const detail = renderScoringDetail({
     tier_code: "T1", job_score: 83, employer_score: 75, role_score: 90, career_value_score: 80, job_condition_score: 60,
+    raw_job_score: 88, calibration_adjustment: -5,
+    calibration_reason: "实际招聘主体层级校准",
+    dimension_scores: {
+      platform: 14, job_quality: 14, background_utilization: 14, career_fit: 12,
+      career_ceiling: 10, mobility: 7, probability: 6, compensation: 4,
+      work_life_balance: 3, city: 3, further_education: 1,
+    },
+    institution_tier_code: "T1.5", institution_score: 77,
     organization_assessment: {
       level: "province_branch", label: "省级分支机构", confidence: "explicit",
       base_platform_points: 16, platform_points: 12,
       evidence: "<img src=x> 公告文字",
     },
-    scoring_factors: { employer_platform: { label: "平台质量", weight: 35, score: 75, contribution: 26 } },
+    scoring_factors: { employer_platform: { label: "平台质量", weight: 16, score: 75, contribution: 12 } },
   });
   assert.match(detail.textContent, /招聘单位层级：省级分支机构/);
   assert.match(detail.textContent, /100\/100 → 75\/100.*非最终 T 分/);
   assert.match(detail.textContent, /<img src=x> 公告文字/);
   assert.match(detail.textContent, /FINAL SCORE · 83 \/ 100/);
+  assert.match(detail.textContent, /11D BASE SCORE · 88 \/ 100.*CALIBRATION · -5/);
+  assert.match(detail.textContent, /11 维原始分.*平台层级 · 14.*岗位质量 · 14.*继续教育 · 1/);
+  assert.match(detail.textContent, /校准说明：实际招聘主体层级校准/);
+  assert.match(detail.textContent, /INSTITUTION TIER · T1\.5.*INSTITUTION SCORE · 77/);
   assert.match(detail.textContent, /EMPLOYER SCORE · 75.*ROLE SCORE · 90.*CAREER VALUE · 80.*JOB CONDITIONS · 60/);
-  assert.match(detail.textContent, /平台质量：较高（75\/100，加权 26\/35）/);
+  assert.match(detail.textContent, /平台质量：较高（75\/100，贡献 12\/16）/);
 });
 
 test("organization detail and EMPLOYER SCORE share the same rounded score for new and legacy payloads", () => {

@@ -141,6 +141,13 @@ EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
         "Amazon/AWS", "Amazon", "AWS", "Amazon Web Services", "亚马逊",
     ),
     "科尔尼": ("Kearney 科尔尼", "Kearney"),
+    "L.E.K. Consulting": ("L.E.K.", "LEK Consulting"),
+    "BytePlus": ("BytePlus（字节跳动）",),
+    "天翼云": ("天翼云科技有限公司",),
+    "联通数科": ("联通数字科技有限公司",),
+    "中证信用": ("中证信用增进股份有限公司",),
+    "华为终端云": ("华为终端云服务有限公司",),
+    "平安科技": ("平安科技（深圳）有限公司",),
     # The sidebar uses familiar short names; official notices commonly use
     # these legal/brand names.  Alias matching selects a discovery target only,
     # and never bypasses the separate official-page evidence gate.
@@ -206,16 +213,40 @@ _REGIONS = (
 )
 _REGION_SUFFIX = re.compile(
     r"^(?:" + "|".join(sorted(_REGIONS, key=len, reverse=True)) + r")"
-    r"(?:省|市)?(?:分公司|分行|支行|公司|分部|办事处)?(?:本部|总部)?$"
+    r"(?:省|市)?(?:分公司|分行|支行|公司|分部|营业部|办事处)?(?:本部|总部)?$"
+)
+# Official feeds frequently use county/city names that are not worth hard-coding
+# into ``_REGIONS``.  Accept only a short geographic token followed by an
+# explicit branch noun (optionally a nested business office); this is much
+# narrower than arbitrary prefix matching and still covers 正定县支行、保定分行
+# and 北京分行营业部.
+_GENERIC_REGION_BRANCH_SUFFIX = re.compile(
+    r"^[\u4e00-\u9fff]{2,6}(?:省|市|自治区|自治州|地区|县|区|旗)?"
+    r"(?:分公司|分行|支行|支公司|分部|办事处)"
+    r"(?:营业部|本部)?$"
 )
 _FOREIGN_REGION_SUFFIXES = {
     "china", "mainlandchina", "greaterchina", "hongkong", "hongkongchina",
     "australia", "singapore", "apac", "asiapacific",
 }
-_NAMED_UNITS = {"总部", "集团总部", "总行", "信用卡中心", "总行信用卡中心"}
+_NAMED_UNITS = {
+    "总部", "集团总部", "总行", "信用卡中心", "总行信用卡中心", "研究院", "研究所",
+}
 _NUMBERED_RESEARCH_UNIT = re.compile(
     r"^(?:集团)?(?:公司)?(?:第?[零〇一二三四五六七八九十百两0-9]{1,10}院)?"
     r"第?[零〇一二三四五六七八九十百两0-9]{1,10}(?:研究所|研究院|所)$"
+)
+_INTERNAL_UNIT_SUFFIX = re.compile(
+    r"^[\u4e00-\u9fffA-Za-z0-9]{2,40}(?:事业部|部门|部|司|局|中心|研究院|研究所)$"
+)
+_UNSAFE_INTERNAL_IDENTITY = re.compile(
+    r"协会|学会|商会|交易商|银行业|银行间|保险信息|移动互联网|"
+    r"合作方|合作伙伴|服务商|代理商|供应商|"
+    r"分公司|分行|支行|支公司|营业部|办事处|代表处"
+)
+_UNSAFE_BRANCH_IDENTITY = re.compile(
+    r"协会|学会|商会|交易商|银行业|银行间|保险信息|移动互联网|"
+    r"合作方|合作伙伴|服务商|代理商|供应商|有限责任|有限公司|股份公司"
 )
 
 
@@ -236,6 +267,120 @@ def _legal_identity_keys(value: Any) -> set[str]:
         result.add(shorter)
         key = shorter
     return result
+
+
+@lru_cache(maxsize=1)
+def _canonical_employer_index() -> dict[str, str]:
+    """Map maintained public aliases to one stable employer identity.
+
+    The index deliberately contains only names already present in the product's
+    employer directory.  It does not infer ownership from a shared prefix, so
+    an association, partner or unnamed subsidiary cannot inherit a parent's
+    scoring calibration.
+    """
+    configured_alias: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for canonical, values in EMPLOYER_ALIAS_GROUPS.items():
+        aliases = tuple(dict.fromkeys((canonical, *values)))
+        for alias in aliases:
+            for key in _legal_identity_keys(alias):
+                configured_alias[key] = (canonical, aliases)
+
+    identities: dict[str, set[str]] = {}
+
+    def add_forms(canonical: str, aliases: tuple[str, ...]) -> None:
+        forms = (
+            *aliases,
+            *(f"{left} {right}" for left in aliases for right in aliases if left != right),
+        )
+        for form in forms:
+            for key in _legal_identity_keys(form):
+                if key:
+                    identities.setdefault(key, set()).add(canonical)
+
+    for canonical, values in EMPLOYER_ALIAS_GROUPS.items():
+        add_forms(canonical, tuple(dict.fromkeys((canonical, *values))))
+
+    for pool in PERSONAL_MONITOR_POOLS:
+        for employer in pool["employers"]:
+            configured = next(
+                (
+                    value for key in _legal_identity_keys(employer)
+                    if (value := configured_alias.get(key)) is not None
+                ),
+                None,
+            )
+            canonical, aliases = configured or (employer, (employer,))
+            add_forms(canonical, aliases)
+    return {
+        key: next(iter(values))
+        for key, values in identities.items()
+        if len(key) >= 2 and len(values) == 1
+    }
+
+
+def canonical_employer_identity(company: Any) -> str:
+    """Return a maintained canonical employer for an exact/bounded identity.
+
+    Legal company suffixes and explicit headquarters/region/branch suffixes are
+    accepted.  Arbitrary prefix continuations are not: ``中国银行间市场交易商协会``
+    therefore cannot become ``中国银行`` merely because its text starts with
+    the same four characters.
+    """
+    raw = str(company or "").strip()
+    if not raw or len(raw) > 500 or _IDENTITY_NOISE.search(raw):
+        return ""
+    return _cached_canonical_employer_identity(raw)
+
+
+@lru_cache(maxsize=4096)
+def _cached_canonical_employer_identity(raw: str) -> str:
+    index = _canonical_employer_index()
+    keys = _legal_identity_keys(raw)
+    direct = {index[key] for key in keys if key in index}
+    if len(direct) == 1:
+        return next(iter(direct))
+    if len(direct) > 1:
+        return ""
+
+    matched: set[str] = set()
+    for key in keys:
+        for root, canonical in index.items():
+            if not key.startswith(root):
+                continue
+            suffix = key[len(root):]
+            suffix = re.sub(r"^(?:股份有限公司|有限责任公司|有限公司|集团公司)", "", suffix)
+            if (
+                suffix in _NAMED_UNITS
+                or suffix in _FOREIGN_REGION_SUFFIXES
+                or _REGION_SUFFIX.fullmatch(suffix)
+                or (
+                    _GENERIC_REGION_BRANCH_SUFFIX.fullmatch(suffix)
+                    and not _UNSAFE_BRANCH_IDENTITY.search(suffix)
+                )
+                or _NUMBERED_RESEARCH_UNIT.fullmatch(suffix)
+                or (
+                    _INTERNAL_UNIT_SUFFIX.fullmatch(suffix)
+                    and not re.search(r"(?:股份有限公司|有限责任公司|有限公司|公司)$", suffix)
+                    and not _UNSAFE_INTERNAL_IDENTITY.search(suffix)
+                )
+            ):
+                matched.add(canonical)
+    return next(iter(matched)) if len(matched) == 1 else ""
+
+
+@lru_cache(maxsize=1)
+def monitored_employer_identities() -> frozenset[str]:
+    """Return the versioned canonical identities shown in the monitor scope.
+
+    Membership is exact and data-driven.  It supplies a conservative platform
+    baseline for an employer the product explicitly monitors; the employer's
+    industry category still has no effect on scoring.
+    """
+    identities: set[str] = set()
+    for pool in PERSONAL_MONITOR_POOLS:
+        for employer in pool["employers"]:
+            identities.add(canonical_employer_identity(employer) or str(employer))
+    return frozenset(identities)
 
 
 @lru_cache(maxsize=1)
@@ -295,6 +440,8 @@ def _cached_directory_category(raw: str) -> str:
             suffix = re.sub(r"^(?:股份有限公司|有限责任公司|有限公司|集团公司)", "", suffix)
             if (suffix in _NAMED_UNITS or suffix in _FOREIGN_REGION_SUFFIXES
                     or _REGION_SUFFIX.fullmatch(suffix)
+                    or (_GENERIC_REGION_BRANCH_SUFFIX.fullmatch(suffix)
+                        and not _UNSAFE_BRANCH_IDENTITY.search(suffix))
                     or _NUMBERED_RESEARCH_UNIT.fullmatch(suffix)):
                 matched.add(category)
     return next(iter(matched)) if len(matched) == 1 else ""

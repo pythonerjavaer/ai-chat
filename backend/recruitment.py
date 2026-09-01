@@ -6,7 +6,11 @@ from functools import lru_cache
 from typing import Any
 
 from .recruitment_organizations import assess_organization
-from .recruitment_directory import employer_category_override
+from .recruitment_directory import (
+    canonical_employer_identity,
+    employer_category_override,
+    monitored_employer_identities,
+)
 
 
 # Machine-readable organization categories. Classification deliberately uses
@@ -115,13 +119,153 @@ BREAKDOWN_LIMITS = {
     "further_education": 2,
 }
 
+# These four values are presentation groups for the original eleven-dimension
+# model.  They are the exact sums of the dimension limits below, not a second
+# weighting pass.  In v3 the groups were normalized and weighted 35/45/10/10,
+# which silently changed platform influence from 16% to 35% and caused the
+# product owner's calibrated T tiers to drift in both directions.
 SCORING_WEIGHTS = {
-    "employer_platform": 35,
-    "role_function": 45,
-    "career_value": 10,
-    "job_conditions": 10,
+    "employer_platform": 16,
+    "role_function": 41,
+    "career_value": 20,
+    "job_conditions": 23,
 }
-SCORING_VERSION = "future-radar-job-ranking-v3.1-organization-role"
+SCORING_VERSION = "future-radar-job-ranking-v4-original-eleven-dimensions"
+
+TIER_TARGET_SCORES = {
+    "T0": 92,
+    "T0.5": 87,
+    "T1": 82,
+    "T1.5": 77,
+    "T2": 72,
+    "T2.5": 67,
+    "T3": 62,
+}
+
+TIER_MAX_SCORES = {
+    "T0": 100,
+    "T0.5": 89,
+    "T1": 84,
+    "T1.5": 79,
+    "T2": 74,
+    "T2.5": 69,
+    "T3": 64,
+}
+
+# The institution baseline and the concrete job are deliberately separate.
+# A headquarters/core vacancy may rise one half-step above its platform
+# baseline when the other ten dimensions justify it; it may not leap several
+# tiers on an attractive title alone.  Regional hiring units use the stricter
+# hierarchy ceiling below.
+INSTITUTION_JOB_MAX_SCORES = {
+    "T0": 100,
+    "T0.5": 89,
+    "T1": 89,
+    "T1.5": 84,
+    "T2": 79,
+    "T2.5": 74,
+    "T3": 69,
+}
+
+# Hiring-unit hierarchy is a job-level safety boundary even when an employer
+# has not yet been added to the institution calibration directory.
+ORGANIZATION_LEVEL_MAX_SCORES = {
+    "provincial_branch": 79,
+    "city_branch": 69,
+    "branch_unspecified": 69,
+    "local_branch": 64,
+    "research_institute": 79,
+    "subsidiary": 69,
+    "third_party": 59,
+}
+
+# Institution baselines are deliberately separate from final job tiers.  They
+# are platform/hiring-unit calibration anchors, never industry classifications.
+# A weak role at a great institution can still finish at T3 or below.
+INSTITUTION_T0_MARKERS = (
+    "中国人民银行", "国家开发银行", "中国进出口银行", "中国农业发展银行",
+    "中央国债登记结算", "中国外汇交易中心", "上海清算所", "中国结算",
+)
+INSTITUTION_T05_MARKERS = (
+    "工商银行", "中国工商银行", "建设银行", "中国建设银行", "中国银行", "交通银行",
+    "中金公司", "中国国际金融", "中信证券", "point72", "goldman sachs", "高盛",
+    "j.p. morgan", "jpmorgan", "morgan stanley", "blackrock", "贝莱德",
+    "腾讯", "字节跳动", "byteplus", "byteplus（字节跳动）", "蚂蚁集团",
+)
+INSTITUTION_T1_MARKERS = (
+    "南方基金", "易方达", "华夏基金", "嘉实基金", "富国基金", "汇添富", "博时基金",
+    "麦肯锡", "kearney", "科尔尼", "l.e.k", "lek consulting", "波士顿咨询", "bcg",
+    "amazon web services", "aws", "microsoft", "google", "apple", "nvidia",
+    "阿里巴巴", "百度", "美团", "京东", "拼多多",
+)
+INSTITUTION_T15_MARKERS = (
+    "农业银行", "中国农业银行", "邮储银行", "中国邮政储蓄银行",
+    "中国移动", "中国电信", "中国联通", "中国联合网络通信", "中国铁塔",
+    "中信期货", "中信建投", "华泰证券", "国泰海通", "平安银行", "中证信用",
+    "华为", "大疆", "dji", "中芯国际", "smic", "hsbc", "汇丰", "ubs", "citi",
+    "罗兰贝格", "roland berger", "deloitte", "德勤", "pwc", "普华永道",
+    "ey", "安永", "kpmg", "毕马威", "天翼云", "联通数科", "平安科技",
+    "华为终端云",
+)
+CORE_SUBSIDIARY_MARKERS = (
+    "天翼云", "联通数科", "中证信用", "平安科技", "华为终端云",
+)
+
+# These exact public jobs were explicitly calibrated in the first usable
+# Future Radar release.  A stable id or URL is necessary but not sufficient:
+# company and title must also match, so a reused campaign URL cannot turn an
+# unrelated vacancy into a trusted anchor.  Arbitrary source tags such as
+# `T0` never enter this trust boundary.
+CURATED_JOB_TIER_ANCHORS_BY_ID = {
+    "monitor-756f4c9a12018115fe2580c0": ("Point72", "Point72 Academy Investment Analyst Program for Upcoming Graduates（2027 – HK）", "T0.5"),
+    "monitor-435fbfa31b2181c0139a6f01": ("BytePlus（字节跳动）", "Strategy Manager Graduate（BytePlus）– 2027 Start", "T0.5"),
+    "monitor-6c490d4b9a88994bbb291d52": ("HSBC 汇丰", "Markets – Sales and Trading – Graduate", "T1"),
+    "monitor-af74366074399c64a116a5a1": ("Goldman Sachs 高盛", "2027 APEJ Hong Kong Compliance New Analyst", "T1"),
+    "monitor-b5806098f02357821d7b882e": ("Goldman Sachs 高盛", "2027 APEJ Hong Kong Investment Banking Classic New Analyst", "T1"),
+    "monitor-fb7614a0bb5f6827479f3b33": ("Roland Berger 罗兰贝格", "Campus Recruitment 2027 Junior Consultant – Shanghai", "T1"),
+    "monitor-0043a79b1459d30533dbf2b4": ("Amazon Web Services", "Program Manager – Investment, Early Career – 2027, Strategic Investment & GTM", "T1"),
+    "monitor-7285abedd82792d46f05bb6a": ("DJI 大疆创新", "2027“拓疆者”数字管理构建者计划｜数字管理研发工程师", "T1"),
+    "monitor-fe54585fadc44217601f7f5f": ("Amazon Web Services", "Sales Ops Analyst – Beijing, Early Career – 2027", "T1.5"),
+    "monitor-9c3093ed8f8bca9b0303dd74": ("Goldman Sachs 高盛", "2027 APEJ Hong Kong FICC and Equities Quantitative Strats New Analyst", "T1.5"),
+    "monitor-4a1dc474206bbd808337476c": ("中芯国际", "大数据工程师-张江（2027届校招）", "T1"),
+    "monitor-4db8c6bde4658af4c2fa6d6d": ("中芯国际", "大数据工程师（2027届校招）", "T1"),
+    "monitor-b9b5b111ac5b0448e7291581": ("中芯国际", "算法工程师-张江（2027届校招）", "T1.5"),
+    "monitor-e6f3117522b597feb95e1682": ("中芯国际", "算法工程师（2027届校招）", "T1.5"),
+    "monitor-548ad831bfc0a3a96b7c8e3a": ("中芯国际", "智能制造算法工程师（2027届校招）", "T1.5"),
+    "monitor-6c74b12148797b5a36ae9dcd": ("中芯国际", "智能制造算法工程师（2027届校招）", "T1.5"),
+}
+CURATED_JOB_ANCHOR_ID_BY_URL = {
+    "https://job-boards.greenhouse.io/point72/jobs/8572402002": "monitor-756f4c9a12018115fe2580c0",
+    "https://joinbytedance.com/search/7666025583887173893": "monitor-435fbfa31b2181c0139a6f01",
+    "https://apply.careers.hsbc.com/emergingtalent/job/central-markets-sales-and-trading-graduate-hong/1365763657": "monitor-6c490d4b9a88994bbb291d52",
+    "https://higher.gs.com/roles/170760": "monitor-af74366074399c64a116a5a1",
+    "https://higher.gs.com/roles/170778": "monitor-b5806098f02357821d7b882e",
+    "https://jobs.smartrecruiters.com/rolandberger/744000142586389-campus-recruitment-2027-junior-consultant-shanghai": "monitor-fb7614a0bb5f6827479f3b33",
+    "https://amazon.jobs/en/jobs/10501900/program-manager-investment-early-career-2027-strategic-investment-gtm": "monitor-0043a79b1459d30533dbf2b4",
+    "https://careers.dji.com/zh-cn/campus/digital-recruitment": "monitor-7285abedd82792d46f05bb6a",
+    "https://www.amazon.jobs/en/jobs/10503293/sales-ops-analyst-beijing-early-career-2027": "monitor-fe54585fadc44217601f7f5f",
+    "https://higher.gs.com/roles/182119": "monitor-9c3093ed8f8bca9b0303dd74",
+    "https://smics.zhiye.com/campusxq?c=&jc=2&jobid=390852385&ky=&p=1%5e21%2c3%5e-1": "monitor-4a1dc474206bbd808337476c",
+    "https://smics.zhiye.com/campusxq?c=&jc=2&jobid=390852326&ky=&p=1%5e21%2c3%5e-1": "monitor-4db8c6bde4658af4c2fa6d6d",
+    "https://smics.zhiye.com/campusxq?c=&jc=2&jobid=390852390&ky=&p=1%5e21%2c3%5e-1": "monitor-b9b5b111ac5b0448e7291581",
+    "https://smics.zhiye.com/campusxq?c=&jc=2&jobid=390852323&ky=&p=1%5e21%2c3%5e-1": "monitor-e6f3117522b597feb95e1682",
+    "https://smics.zhiye.com/campusxq?c=&jc=2&jobid=390852320&ky=&p=1%5e21%2c3%5e-1": "monitor-548ad831bfc0a3a96b7c8e3a",
+    "https://smics.zhiye.com/campusxq?c=&jc=2&jobid=390852243&ky=&p=1%5e21%2c3%5e-1": "monitor-6c74b12148797b5a36ae9dcd",
+}
+
+# The original product specification also named these concrete company-role
+# examples.  They are intentionally narrow phrase signatures, not a rule that
+# every job at the same company inherits the same tier.
+CURATED_ROLE_TIER_RULES = (
+    ("南方基金", "ai产品", "T1"),
+    ("kearney", "business analyst", "T1"),
+    ("科尔尼", "business analyst", "T1"),
+    ("lek consulting", "associate", "T1"),
+    ("中信期货", "风险", "T1.5"),
+    ("平安银行资金运营中心", "金融市场培训生", "T1.5"),
+    ("华为终端云", "ai产品", "T1.5"),
+    ("中证信用", "风险数据产品", "T1.5"),
+)
 
 CORE_CITIES = {
     "北京", "上海", "深圳", "广州", "杭州", "南京", "苏州", "成都", "武汉", "西安",
@@ -177,19 +321,37 @@ PORTABLE_SKILL_TERMS = (
     "数据", "data", "ai", "人工智能", "产品", "product", "风险", "risk", "战略", "strategy",
     "投资", "investment", "商业分析", "business analyst", "sql", "python", "治理", "governance",
 )
-LOW_VALUE_TERMS = (
-    "柜员", "客户经理", "销售", "纯销售", "普通运营", "客服", "事务", "行政支持", "录入",
-    "测试", "运维", "devops", "实施", "售后", "地市支行", "基层支行", "customer service",
-    "customer support", "shared service", "shared services", "routine operations", "routine support",
-    "sales support", "administrative support", "back office support",
-    "产品支撑", "售前支撑", "业务宣传", "商机转化", "客户拓展", "陪访",
-)
-HARD_TECH_TERMS = (
-    "c++", "java后端", "后端开发", "底层", "infra", "devops", "运维", "操作系统", "芯片",
-    "算法工程师", "大模型训练", "深度学习训练", "测试工程师",
-)
+LOW_VALUE_TITLE_TERMS = {
+    "柜员", "客户经理", "渠道销售", "客服专员", "客服代表", "行政支持", "资料录入",
+    "测试工程师", "运维工程师", "devops engineer", "实施工程师", "实施顾问", "售后",
+    "shared service", "sales support", "administrative support", "back office support",
+    "business support", "产品支撑", "售前支撑",
+}
+PRIMARY_ROUTINE_DUTY_TERMS = {
+    "负责柜面", "负责客户拓展", "承担销售指标", "完成销售目标", "负责渠道销售",
+    "负责客服", "接听客服热线", "处理客户投诉", "处理客户咨询", "负责工单处理",
+    "负责资料录入", "负责行政事务", "负责测试执行", "负责缺陷记录", "负责驻场运维",
+    "负责系统实施", "负责售后服务", "business development quota", "sales quota",
+    "负责培训陪访", "负责业务培训", "负责产品培训", "负责业务宣传", "负责产品宣传",
+    "负责产品支撑", "承担培训陪访", "承担业务宣传", "承担产品支撑",
+    "培训陪访", "产品支撑", "业务宣传", "指标下达", "收入完成",
+    "handle customer complaints", "answer customer calls", "execute test cases",
+    "data entry", "routine filing",
+}
+PRIMARY_HARD_TECH_DUTY_TERMS = {
+    "负责c++开发", "负责后端开发", "负责底层开发", "负责infra", "负责devops",
+    "负责运维", "负责操作系统", "负责芯片研发", "负责算法开发", "负责大模型训练",
+    "承担平台开发", "承担平台运维", "承担运维", "平台开发、运维",
+    "develop c++", "build backend systems", "build infrastructure", "own devops",
+}
+HARD_TECH_TITLE_TERMS = {
+    "c++开发", "后端开发", "底层开发", "infrastructure engineer", "infra engineer",
+    "devops engineer", "运维工程师", "操作系统工程师", "芯片研发", "芯片设计",
+    "芯片工程师", "算法工程师", "大模型训练", "深度学习训练", "测试工程师",
+}
 HIGH_QUANT_BARRIER_TERMS = (
-    "hft", "超低延迟", "alpha research", "随机微积分", "数学竞赛", "quantitative strats", "量化研究",
+    "hft", "超低延迟", "low latency", "随机微积分", "stochastic calculus", "数学竞赛", "quantitative strats",
+    "pure alpha research", "纯alpha", "精通c++", "expert c++", "advanced c++", "high-performance c++",
 )
 HIGH_INTENSITY_TERMS = (
     "高强度", "investment banking", "投行", "sales and trading", "战略咨询", "consultant", "咨询", "hft",
@@ -299,8 +461,33 @@ EXCEPTIONAL_ROLE_TAGS = {
     "quant_research", "data_science", "investment_research", "transaction_advisory",
     "technology_strategy", "ai_governance", "model_risk",
 }
-LOW_VALUE_ROLE_TAGS = {"operations", "sales", "customer_service", "support"}
+# "资金运营 / 投资运营 / 交易运营" and professional support functions are
+# not the same as repetitive content operations or back-office support.  The
+# latter are detected from a routine title or explicit primary-duty evidence.
+LOW_VALUE_ROLE_TAGS = {"sales", "customer_service", "operations", "support"}
 PROFESSIONAL_ROLE_TAGS = {"audit", "tax", "compliance", "advisory", "consulting"}
+PROFESSIONAL_OPERATIONS_TERMS = {
+    "资金运营", "投资运营", "交易运营", "金融市场", "treasury", "trading operations",
+    "investment operations", "portfolio operations", "settlement operations",
+}
+PROFESSIONAL_MARKETS_SALES_TERMS = {
+    "sales and trading", "sales & trading", "global markets", "financial markets",
+    "institutional sales", "markets sales", "金融市场", "销售交易", "机构销售",
+}
+PRIMARY_SALES_TERMS = {
+    "纯销售", "客户经理", "渠道销售", "渠道拓展", "客户拓展", "商机转化",
+    "销售目标", "销售业绩", "营销目标", "业绩指标", "陪访", "account executive",
+    "relationship manager", "business development", "sales target", "sales quota",
+}
+ROUTINE_SUPPORT_TITLE_TERMS = {
+    "business support", "support analyst", "support specialist", "operations analyst",
+    "operation analyst", "行政支持", "后台支持", "支持岗", "普通运营", "共享服务",
+    "shared service",
+}
+STRATEGIC_OPERATIONS_TITLE_TERMS = {
+    "strategy and operations", "strategy & operations", "strategic operations",
+    "战略运营", "策略运营", "风险运营", "投资运营", "资金运营", "交易运营",
+}
 
 ROLE_SYNONYMS: dict[str, tuple[str, ...]] = {
     "产品": ("产品", "product"),
@@ -473,19 +660,71 @@ def _role_source_text(job: dict[str, Any]) -> str:
 
 def _organization_assessment(job: dict[str, Any]) -> dict[str, Any]:
     company = str(job.get("company") or "").casefold()
-    if _contains_any(company, set(ELITE_PLATFORM_MARKERS)):
-        points, band = 14, "头部平台基准"
-    elif _contains_any(company, set(STRONG_PLATFORM_MARKERS)):
-        points, band = 13, "重点平台基准"
-    elif semantic_employer_categories(job):
-        points, band = 11, "行业平台参考基准"
+    organization_job = job
+    parent_company = str(job.get("parent_company") or "")
+    internal_parent_unit = bool(re.search(
+        r"(?:事业部|部门|部|司|局|中心|研究院|研究所)$", _identity_text(company),
+    ))
+    if (
+        internal_parent_unit
+        and parent_company
+        and canonical_employer_identity(company)
+        and canonical_employer_identity(company) == canonical_employer_identity(parent_company)
+    ):
+        # An internal department/research unit is not an independent subsidiary
+        # merely because a richer source also includes its parent company.
+        organization_job = {key: value for key, value in job.items() if key != "parent_company"}
+    if _company_matches_any(company, CORE_SUBSIDIARY_MARKERS):
+        # The full legal name and the familiar short name must describe the
+        # same separately incorporated core subsidiary.
+        organization_job = {**job, "subsidiary": job.get("subsidiary") or job.get("company")}
     else:
-        points, band = 8, "平台资料有限"
-    assessment = assess_organization(job, base_platform_points=points, platform_band=band)
-    # Publish the same rounded dimension actually used by the weighted score.
+        structured_core = next(
+            (
+                str(job.get(field) or "")
+                for field in (
+                    "subsidiary", "subsidiary_name", "hiring_entity", "recruiting_entity",
+                    "employer_entity", "hiring_unit", "recruitment_unit",
+                )
+                if _company_matches_any(
+                    str(job.get(field) or ""), CORE_SUBSIDIARY_MARKERS,
+                )
+            ),
+            "",
+        )
+        if structured_core:
+            # A maintained core subsidiary named in a structured hiring field
+            # is the actual platform being scored, even when ``company`` holds
+            # only the parent group used by the source campaign.
+            organization_job = {**organization_job, "subsidiary": structured_core}
+    probe = assess_organization(
+        organization_job, base_platform_points=8, platform_band="平台识别探针",
+    )
+    scoring_company = str(probe.get("entity_name") or company).casefold()
+    institution_tier, _ = _institution_identity_calibration(scoring_company)
+    if institution_tier in {"T0", "T0.5", "T1"}:
+        points, band = 14, "头部平台基准"
+    elif institution_tier == "T1.5":
+        points, band = 13, "重点平台基准"
+    elif institution_tier == "T2":
+        points, band = 11, "监控机构基准"
+    elif _company_matches_any(scoring_company, ELITE_PLATFORM_MARKERS):
+        points, band = 14, "头部平台基准"
+    elif _company_matches_any(scoring_company, STRONG_PLATFORM_MARKERS):
+        points, band = 13, "重点平台基准"
+    else:
+        # Category membership is a search/filter concern, not platform
+        # evidence.  An unknown employer must not gain seven weighted points
+        # merely because a producer labelled it telecom, bank or internet.
+        points, band = 8, "平台资料有限；行业分类不参与机构定级"
+    assessment = assess_organization(
+        organization_job, base_platform_points=points, platform_band=band,
+    )
+    # Publish the same rounded dimension used by the direct 100-point score.
     # Consumers must not re-round 62.5 differently in JavaScript.
     return {
         **assessment,
+        "employer_identity": scoring_company,
         "base_platform_score": round(assessment["base_platform_points"] / 16 * 100),
         "platform_score": round(assessment["platform_points"] / 16 * 100),
     }
@@ -514,6 +753,189 @@ def _marker_matches(text: str, marker: str) -> bool:
 
 def _contains_any(text: str, markers: tuple[str, ...] | set[str]) -> bool:
     return any(_marker_matches(text, marker) for marker in markers)
+
+
+def _company_matches_marker(company: str, marker: str) -> bool:
+    """Match one maintained employer identity, never an arbitrary prefix."""
+    canonical_company = canonical_employer_identity(company)
+    canonical_marker = canonical_employer_identity(marker)
+    if canonical_marker:
+        # A maintained marker must also resolve through the maintained identity
+        # grammar.  Never fall back to raw startswith after that check fails.
+        return bool(canonical_company) and canonical_company == canonical_marker
+
+    company_key = _identity_text(company)
+    marker_key = _identity_text(marker)
+    if not company_key or not marker_key:
+        return False
+    if company_key == marker_key:
+        return True
+    if not company_key.startswith(marker_key):
+        return False
+    suffix = company_key[len(marker_key):]
+    # Fallback only exists for narrow calibration entries that are not yet in
+    # the public employer directory.  Accept legal/hiring-unit continuations;
+    # reject lexical collisions such as 中国银行间市场交易商协会.
+    legal = r"(?:集团)?(?:股份有限公司|有限责任公司|有限公司|公司)"
+    unit = (
+        r"(?:集团总部|总部|总行|[\u4e00-\u9fff]{2,24}"
+        r"(?:省|市|自治区|自治州|地区|县|区|旗)?"
+        r"(?:分公司|分行|支行|支公司|分部|营业部|办事处))"
+    )
+    return bool(re.fullmatch(rf"(?:{legal}|(?:{legal})?{unit})", suffix))
+
+
+def _company_matches_any(company: str, markers: tuple[str, ...] | set[str]) -> bool:
+    return any(_company_matches_marker(company, marker) for marker in markers)
+
+
+def _identity_text(value: Any) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").casefold())
+
+
+_TIER_ORDER = tuple(definition["code"] for definition in TIER_DEFINITIONS)
+
+
+def _worse_tier(left: str, right: str) -> str:
+    return _TIER_ORDER[max(_TIER_ORDER.index(left), _TIER_ORDER.index(right))]
+
+
+def _institution_identity_calibration(company: str) -> tuple[str | None, str]:
+    """Resolve one identity once for both platform points and institution tier."""
+    if _company_matches_any(company, INSTITUTION_T0_MARKERS):
+        return "T0", "政策性金融/核心金融基础设施"
+    if _company_matches_any(company, INSTITUTION_T05_MARKERS):
+        return "T0.5", "准终极平台"
+    if _company_matches_any(company, INSTITUTION_T1_MARKERS):
+        return "T1", "核心主申平台"
+    if _company_matches_any(company, INSTITUTION_T15_MARKERS):
+        return "T1.5", "高质量重点平台"
+    if _company_matches_any(company, ELITE_PLATFORM_MARKERS):
+        return "T1", "头部平台"
+    if _company_matches_any(company, STRONG_PLATFORM_MARKERS):
+        return "T2", "重点监控平台"
+    canonical = canonical_employer_identity(company)
+    if canonical and canonical in monitored_employer_identities():
+        # This is an exact identity from the maintained left-hand monitor
+        # directory, not a score inferred from an industry label.  Unreviewed
+        # directory employers receive a deliberately conservative baseline;
+        # the concrete role can still move independently under the original
+        # eleven-dimension model.
+        return "T2", "重点监控机构基准"
+    return None, "机构资料不足"
+
+
+def _institution_baseline(
+    job: dict[str, Any], organization: dict[str, Any],
+) -> dict[str, Any]:
+    """Return an institution/hiring-unit baseline independent of the job.
+
+    The directory is a versioned product calibration, not a social prestige
+    ranking.  An industry category alone never establishes a baseline.  The
+    actual hiring unit then applies the original HQ > province > city > local
+    rule without pretending that a provincial headquarters is group HQ.
+    """
+    company = str(
+        organization.get("employer_identity") or job.get("company") or ""
+    ).casefold()
+    tier, band = _institution_identity_calibration(company)
+    if tier is None:
+        return {
+            "tier_code": None,
+            "score": None,
+            "band": "机构资料不足",
+            "reason": "只有行业分类或单位名称，未据此制造机构 T 级",
+        }
+
+    level = str(organization.get("level") or "unspecified")
+    is_core_subsidiary = _company_matches_any(company, CORE_SUBSIDIARY_MARKERS)
+    is_bank = _company_matches_any(company, {
+        "中国人民银行", "国家开发银行", "中国进出口银行", "中国农业发展银行",
+        "工商银行", "中国工商银行", "农业银行", "中国农业银行", "建设银行",
+        "中国建设银行", "中国银行", "交通银行", "邮储银行", "中国邮政储蓄银行",
+    })
+    is_telecom = _company_matches_any(company, {
+        "中国移动", "中国电信", "中国联通", "中国联合网络通信", "中国铁塔",
+    })
+    if level == "provincial_branch":
+        if is_bank:
+            tier = _worse_tier(tier, "T1.5")
+        elif is_telecom:
+            tier = _worse_tier(tier, "T2")
+        else:
+            tier = _worse_tier(tier, "T2")
+    elif level == "city_branch":
+        tier = _worse_tier(tier, "T2.5")
+    elif level == "local_branch":
+        tier = _worse_tier(tier, "T3")
+    elif level == "branch_unspecified":
+        # Unknown city/province names must not be optimistically treated as a
+        # provincial headquarters. Exact province units are recognized above.
+        tier = _worse_tier(tier, "T2.5")
+    elif level == "subsidiary" and not is_core_subsidiary:
+        tier = _worse_tier(tier, "T2.5")
+    elif level == "research_institute" and tier not in {"T0", "T0.5"}:
+        tier = _worse_tier(tier, "T1.5")
+    elif level == "third_party":
+        tier = "T3"
+
+    return {
+        "tier_code": tier,
+        "score": TIER_TARGET_SCORES[tier],
+        "band": band,
+        "reason": f"{band}；实际招聘主体按{organization.get('label', '组织层级待核验')}校准",
+    }
+
+
+def _curated_job_tier_anchor(
+    job: dict[str, Any], organization: dict[str, Any] | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve only exact code-owned identities; never consume source T tags."""
+    company = _identity_text(job.get("company"))
+    title = _identity_text(job.get("title"))
+
+    def identity_tier(anchor_id: str) -> str | None:
+        anchor = CURATED_JOB_TIER_ANCHORS_BY_ID.get(anchor_id)
+        if not anchor:
+            return None
+        expected_company, expected_title, tier = anchor
+        if company == _identity_text(expected_company) and title == _identity_text(expected_title):
+            return tier
+        return None
+
+    for field in ("id", "external_id", "source_item_id"):
+        tier = identity_tier(str(job.get(field) or "").strip())
+        if tier:
+            return tier, "first_release"
+    for field in ("application_url", "canonical_url", "official_url", "url"):
+        url = str(job.get(field) or "").strip().casefold().rstrip("/")
+        tier = identity_tier(CURATED_JOB_ANCHOR_ID_BY_URL.get(url, ""))
+        if tier:
+            return tier, "first_release"
+
+    excluded_named_example_titles = {
+        "intern", "internship", "实习", "director", "总监", "assistant", "助理",
+        "support", "支持", "operations", "运营", "客服", "销售",
+    }
+    duty_job = {**job, "title": ""}
+    duty_text = _role_source_text(duty_job)
+    duty_tags = set(_normalize_role_tags(duty_job))
+    named_example_has_core_evidence = bool(
+        duty_text
+        and duty_tags.intersection(HIGH_VALUE_ROLE_TAGS | PROFESSIONAL_ROLE_TAGS)
+    )
+    named_company = str(
+        (organization or {}).get("employer_identity") or job.get("company") or ""
+    )
+    for company_marker, title_marker, tier in CURATED_ROLE_TIER_RULES:
+        if (
+            _company_matches_marker(named_company, company_marker)
+            and _identity_text(title_marker) in title
+            and not _contains_any(str(job.get("title") or "").casefold(), excluded_named_example_titles)
+            and named_example_has_core_evidence
+        ):
+            return tier, "named_example"
+    return None, None
 
 
 @lru_cache(maxsize=2048)
@@ -649,6 +1071,61 @@ def _role_text(job: dict[str, Any], role_tags: list[str] | None = None) -> str:
     return f"{_role_source_text(job)} {' '.join(normalized)}".strip()
 
 
+def _is_low_value_role(role_tags: list[str], role_text: str, title: str = "") -> bool:
+    tags = set(role_tags).intersection(LOW_VALUE_ROLE_TAGS)
+    title_text = str(title).casefold()
+    title_role_tags = set(_normalize_role_tags({"title": title_text}))
+    title_has_core_role = bool(title_role_tags.intersection(HIGH_VALUE_ROLE_TAGS))
+    professional_markets_sales = (
+        "financial_markets" in role_tags
+        and _contains_any(role_text, PROFESSIONAL_MARKETS_SALES_TERMS)
+    )
+    title_is_sales = (
+        "sales" in tags
+        and not professional_markets_sales
+        and _contains_any(title_text, {"sales", "销售", "渠道", "客户经理", "business development"})
+        and not title_has_core_role
+    )
+    duties_are_sales = (
+        "sales" in tags
+        and not professional_markets_sales
+        and _contains_any(role_text, PRIMARY_SALES_TERMS)
+    )
+    title_is_customer_service = (
+        "customer_service" in tags
+        and _contains_any(title_text, {"customer service", "customer support", "客服", "客户服务"})
+        and not title_has_core_role
+    )
+    if title_is_customer_service or title_is_sales or duties_are_sales:
+        return True
+    routine_duty_count = sum(
+        1 for marker in PRIMARY_ROUTINE_DUTY_TERMS if _marker_matches(role_text, marker)
+    )
+    # One implementation/support phrase can be incidental to a substantive
+    # product, research or consulting role.  Two independent routine duties
+    # show that the actual job is support-led even when its title says 产品经理.
+    if routine_duty_count >= 2:
+        return True
+    if routine_duty_count == 1 and not title_has_core_role:
+        return True
+    if _contains_any(title_text, LOW_VALUE_TITLE_TERMS):
+        return True
+    if tags.intersection({"operations", "support"}):
+        if _contains_any(role_text, PROFESSIONAL_OPERATIONS_TERMS):
+            return False
+        strategic_operations = _contains_any(title_text, STRATEGIC_OPERATIONS_TITLE_TERMS)
+        routine_title = _contains_any(title_text, ROUTINE_SUPPORT_TITLE_TERMS)
+        if routine_title and not strategic_operations:
+            return True
+        if strategic_operations or title_has_core_role:
+            return False
+        # A verb such as "support" inside legal/research/professional work is
+        # not enough.  Generic support/operations is low only when the title or
+        # primary-duty evidence above establishes that it is the actual role.
+        return False
+    return False
+
+
 def _is_generic_role_title(title: str, company: str = "") -> bool:
     normalized = re.sub(r"[\s·|_—–-]+", "", title).casefold()
     normalized = re.sub(r"(?:20\d{2})(?:届|年)?", "", normalized)
@@ -727,9 +1204,7 @@ def _score_dimensions(
         positives.append("实际招聘平台具有较强资源；平台基准不直接决定岗位 T 级")
 
     high_value_role = bool(role_tag_set.intersection(HIGH_VALUE_ROLE_TAGS))
-    low_value_role = bool(role_tag_set.intersection(LOW_VALUE_ROLE_TAGS)) or _contains_any(
-        role_text, set(LOW_VALUE_TERMS)
-    )
+    low_value_role = _is_low_value_role(role_tags, role_text, str(job.get("title") or ""))
     job_quality = 8
     if high_value_role or _contains_any(role_text, set(CORE_ROLE_TERMS)):
         job_quality += 4
@@ -770,7 +1245,7 @@ def _score_dimensions(
         if _contains_any(role_text, set(terms))
     )
     background_utilization = {0: 3, 1: 6, 2: 11, 3: 14}[background_groups]
-    if routine_title:
+    if routine_title or low_value_role:
         background_utilization = min(background_utilization, 8)
     if background_groups >= 2:
         positives.append("岗位同时利用至少两类复合背景")
@@ -786,8 +1261,14 @@ def _score_dimensions(
         career_fit += 2
     if role_tag_set.intersection(PROFESSIONAL_ROLE_TAGS):
         career_fit += 1
-    technical_hard = _contains_any(role_text, set(HARD_TECH_TERMS))
-    quant_hard = _contains_any(role_text, set(HIGH_QUANT_BARRIER_TERMS))
+    is_quant_role = bool(role_tag_set.intersection({"quant", "quant_research"}))
+    title_text = str(job.get("title") or "").casefold()
+    technical_hard = _contains_any(title_text, HARD_TECH_TITLE_TERMS) or _contains_any(
+        role_text, PRIMARY_HARD_TECH_DUTY_TERMS,
+    )
+    quant_hard = is_quant_role and _contains_any(
+        role_text, set(HIGH_QUANT_BARRIER_TERMS),
+    )
     if technical_hard:
         career_fit -= 3
         negatives.append("技术偏硬，与‘技术作为职业杠杆’的偏好存在距离")
@@ -799,7 +1280,7 @@ def _score_dimensions(
     if low_value_role:
         career_fit -= 3
     career_fit = max(1, min(12, career_fit))
-    if routine_title:
+    if routine_title or low_value_role:
         career_fit = min(career_fit, 6)
 
     career_ceiling = 6 + (2 if platform >= 13 else 1 if platform >= 11 else 0)
@@ -908,17 +1389,105 @@ def _normalized_group_scores(dimensions: dict[str, int]) -> dict[str, int]:
     }
 
 
-def _weighted_contributions(group_scores: dict[str, int]) -> tuple[int, dict[str, int]]:
-    raw = {
-        key: group_scores[key] * SCORING_WEIGHTS[key] / 100
-        for key in SCORING_WEIGHTS
+def _group_contributions(dimensions: dict[str, int]) -> dict[str, int]:
+    """Aggregate the original 11 direct points into four UI groups."""
+    return {
+        "employer_platform": dimensions["platform"],
+        "role_function": (
+            dimensions["job_quality"] + dimensions["background_utilization"]
+            + dimensions["career_fit"]
+        ),
+        "career_value": dimensions["career_ceiling"] + dimensions["mobility"],
+        "job_conditions": (
+            dimensions["probability"] + dimensions["compensation"]
+            + dimensions["work_life_balance"] + dimensions["city"]
+            + dimensions["further_education"]
+        ),
     }
-    score = max(0, min(100, round(sum(raw.values()))))
-    contributions = {key: int(value) for key, value in raw.items()}
-    remainder = score - sum(contributions.values())
-    for key in sorted(raw, key=lambda item: raw[item] - contributions[item], reverse=True)[:remainder]:
-        contributions[key] += 1
-    return score, contributions
+
+
+def _calibrated_job_score(
+    job: dict[str, Any], dimensions: dict[str, int], role_tags: list[str],
+    organization: dict[str, Any], institution: dict[str, Any],
+) -> tuple[int, str | None, str | None]:
+    """Apply narrow evidence-based calibration without rewriting dimensions."""
+    raw_score = max(0, min(100, sum(dimensions.values())))
+    curated_tier, anchor_kind = _curated_job_tier_anchor(job, organization)
+    candidate_score = TIER_TARGET_SCORES[curated_tier] if curated_tier else raw_score
+    level = str(organization.get("level") or "unspecified")
+    ceiling = 100
+    reasons: list[str] = []
+    if curated_tier:
+        reasons.append(
+            "首版受控岗位锚点" if anchor_kind == "first_release"
+            else "最初规则中的具名岗位校准"
+        )
+    institution_tier = institution.get("tier_code")
+
+    # A baseline is not the final job tier. Standalone/core units can contain a
+    # role above their institution baseline, while explicit regional hiring
+    # units retain the original HQ > province > city > local ceiling.
+    branch_levels = {"provincial_branch", "city_branch", "local_branch", "branch_unspecified"}
+    if institution_tier in INSTITUTION_JOB_MAX_SCORES:
+        maximum = (
+            TIER_MAX_SCORES[institution_tier]
+            if level in branch_levels
+            else INSTITUTION_JOB_MAX_SCORES[institution_tier]
+        )
+        ceiling = min(ceiling, maximum)
+        reasons.append(f"机构基准 {institution_tier} 与实际招聘主体层级")
+    elif institution_tier is None and candidate_score >= 80 and anchor_kind != "first_release":
+        # The original T1 definition requires a high-quality platform. An
+        # unknown employer therefore remains at T1.5 or below until its exact
+        # identity is calibrated; an attractive title alone cannot supply the
+        # missing institution dimension.
+        ceiling = min(ceiling, 79)
+        reasons.append("机构平台资料不足，暂不进入 T0–T1")
+
+    core_subsidiary = _company_matches_any(
+        str(organization.get("employer_identity") or job.get("company") or ""),
+        CORE_SUBSIDIARY_MARKERS,
+    )
+    level_ceiling = ORGANIZATION_LEVEL_MAX_SCORES.get(level)
+    if level == "subsidiary" and core_subsidiary:
+        level_ceiling = None
+    if level == "research_institute" and institution_tier in {"T0", "T0.5"}:
+        level_ceiling = None
+    if level_ceiling is not None:
+        ceiling = min(ceiling, level_ceiling)
+        reasons.append(f"实际招聘主体为{organization.get('label', '非总部层级')}")
+
+    role_tag_set = set(role_tags)
+    role_text = _role_text(job, role_tags)
+    low_value_role = _is_low_value_role(role_tags, role_text, str(job.get("title") or ""))
+    if low_value_role and anchor_kind != "first_release":
+        ceiling = min(ceiling, 64)
+        reasons.append("纯销售、客服、重复运营或普通支持岗位不高于 T3")
+
+    # T0 is a scarcity gate: a T0 institution alone is not enough.  The
+    # concrete role must use at least two parts of the composite background and
+    # belong to the core product/risk/data/investment/strategy family.
+    if institution.get("tier_code") == "T0" and candidate_score >= 90:
+        composite = dimensions["background_utilization"] >= 11
+        structured_trainee = (
+            "management_trainee" in role_tag_set
+            and _contains_any(role_text, {"轮岗", "导师", "定岗", "rotational", "mentorship"})
+        )
+        core_role = bool(role_tag_set.intersection(HIGH_VALUE_ROLE_TAGS)) or structured_trainee
+        if not (composite and core_role):
+            ceiling = min(ceiling, 89)
+            reasons.append("未同时满足 T0 的复合背景与核心岗位稀缺门槛")
+    elif candidate_score >= 90:
+        ceiling = min(ceiling, 89)
+        reasons.append("T0 仅保留给极少数 T0 机构的高度匹配核心岗位")
+
+    score = min(candidate_score, ceiling)
+    reason = (
+        "；".join(dict.fromkeys(reasons))
+        if curated_tier or score != raw_score
+        else None
+    )
+    return score, reason, anchor_kind
 
 
 def _days_left(job: dict[str, Any]) -> int | None:
@@ -959,18 +1528,27 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
     role_tags = _normalize_role_tags(job)
     days_left = _days_left(job)
     organization = _organization_assessment(job)
+    institution = _institution_baseline(job, organization)
 
     if not _has_sufficient_role_evidence(job, role_tags):
         empty_groups: dict[str, int | None] = {key: None for key in SCORING_WEIGHTS}
+        empty_dimensions: dict[str, int | None] = {key: None for key in BREAKDOWN_LIMITS}
         return {
             **job,
             "job_score": None,
             "match_score": None,
+            "raw_job_score": None,
+            "calibration_adjustment": None,
+            "calibration_reason": None,
             "employer_score": None,
             "role_score": None,
             "career_value_score": None,
             "job_condition_score": None,
+            "institution_score": institution["score"],
+            "institution_tier_code": institution["tier_code"],
+            "institution_reason": institution["reason"],
             "score_breakdown": dict(empty_groups),
+            "dimension_scores": empty_dimensions,
             "scoring_status": "unscored_insufficient_role_data",
             "scoring_version": SCORING_VERSION,
             "scoring_factors": _scoring_factors(empty_groups, empty_groups),
@@ -991,19 +1569,39 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         }
 
     dimensions, positives, negatives, fit_tags = _score_dimensions(job, profile, role_tags, organization)
+    raw_score = max(0, min(100, sum(dimensions.values())))
+    score, calibration_reason, anchor_kind = _calibrated_job_score(
+        job, dimensions, role_tags, organization, institution,
+    )
+    manual_override = bool(anchor_kind)
     group_scores = _normalized_group_scores(dimensions)
-    score, contributions = _weighted_contributions(group_scores)
+    contributions = _group_contributions(dimensions)
     tier_code = tier_for_score(score)
+    if anchor_kind == "first_release":
+        positives.insert(0, "该岗位使用首版已核验的个人 T 级校准锚点")
+        fit_tags.append("受控校准")
+    elif anchor_kind == "named_example":
+        positives.insert(0, "该岗位按最初规则中的具名示例进行受控校准")
+        fit_tags.append("受控校准")
+    elif calibration_reason:
+        negatives.insert(0, calibration_reason)
 
     return {
         **job,
         "job_score": score,
         "match_score": score,
+        "raw_job_score": raw_score,
+        "calibration_adjustment": score - raw_score,
+        "calibration_reason": calibration_reason,
         "employer_score": group_scores["employer_platform"],
         "role_score": group_scores["role_function"],
         "career_value_score": group_scores["career_value"],
         "job_condition_score": group_scores["job_conditions"],
+        "institution_score": institution["score"],
+        "institution_tier_code": institution["tier_code"],
+        "institution_reason": institution["reason"],
         "score_breakdown": contributions,
+        "dimension_scores": dict(dimensions),
         "scoring_status": "scored",
         "scoring_version": SCORING_VERSION,
         "scoring_factors": _scoring_factors(group_scores, contributions),
@@ -1014,7 +1612,7 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         "fit_tags": list(dict.fromkeys(fit_tags)),
         "technical_hard": "技术偏硬" in fit_tags,
         "quant_barrier": "量化高门槛" in fit_tags,
-        "manual_override": False,
+        "manual_override": manual_override,
         "tier_code": tier_code,
         "days_left": days_left,
         "primary_category": primary_category,

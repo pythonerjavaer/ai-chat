@@ -4492,6 +4492,9 @@ function createRecruitmentJobCard(job) {
     makeElement("span", "job-type", job.employer_type || "重点雇主"),
     makeElement("span", `job-verification ${origin.tone}`, origin.label),
   );
+  if (TIER_CODES.includes(job.institution_tier_code)) {
+    labels.appendChild(makeElement("span", "job-type", `机构基准 ${job.institution_tier_code}`));
+  }
   if (isRecruitmentProgram) labels.appendChild(makeElement("span", "job-type", "招聘项目"));
   if (verification === "conflicted") labels.appendChild(makeElement("span", "job-verification warning", "信息有差异"));
   const rank = makeElement("div", "job-rank");
@@ -4522,9 +4525,15 @@ function createRecruitmentJobCard(job) {
   reason.appendChild(makeElement("summary", "", tierCode ? "为什么是这个级别" : "评分状态与适配信息"));
   const reasonBody = makeElement("div", "job-tier-reason-body");
   const scoreGrid = makeElement("div", "job-fact-grid job-score-factor-grid");
+  const rawScore = tierCode || belowPriority ? finiteRadarScore(job.raw_job_score) : null;
+  const adjustment = tierCode || belowPriority ? Number(job.calibration_adjustment) : NaN;
   const factorScores = [
     ["FINAL TIER", tierCode || (belowPriority ? "未进入重点池" : "未评分")],
     ["FINAL SCORE", finalScore == null ? "—" : `${finalScore} / 100`],
+    ["11D BASE SCORE", rawScore == null ? "—" : `${rawScore} / 100`],
+    ["CALIBRATION", Number.isFinite(adjustment) ? `${adjustment > 0 ? "+" : ""}${adjustment}` : "—"],
+    ["INSTITUTION TIER", job.institution_tier_code || "待核验"],
+    ["INSTITUTION SCORE", finiteRadarScore(job.institution_score)],
     ["EMPLOYER SCORE", tierCode ? finiteRadarScore(job.employer_score) : null],
     ["ROLE SCORE", tierCode ? finiteRadarScore(job.role_score) : null],
     ["CAREER VALUE", tierCode ? finiteRadarScore(job.career_value_score) : null],
@@ -4532,6 +4541,21 @@ function createRecruitmentJobCard(job) {
   ];
   factorScores.forEach(([label, value]) => {
     scoreGrid.appendChild(makeElement("span", "", `${label} · ${value == null ? "—" : value}`));
+  });
+  const dimensionLabels = {
+    platform: "平台层级", job_quality: "岗位质量", background_utilization: "复合背景",
+    career_fit: "职业方向", career_ceiling: "长期上限", mobility: "迁移能力",
+    probability: "资格匹配", compensation: "薪酬福利", work_life_balance: "可持续性",
+    city: "城市地域", further_education: "继续教育",
+  };
+  const dimensionGrid = makeElement("div", "job-fact-grid job-score-factor-grid");
+  let dimensionCount = 0;
+  Object.entries(dimensionLabels).forEach(([key, label]) => {
+    const value = finiteRadarScore(job.dimension_scores?.[key]);
+    if (value != null) {
+      dimensionGrid.appendChild(makeElement("span", "", `${label} · ${value}`));
+      dimensionCount += 1;
+    }
   });
   const positiveList = makeElement("ul", "positive-reasons");
   (job.positive_reasons || []).slice(0, 3).forEach((item) => positiveList.appendChild(makeElement("li", "", item)));
@@ -4549,6 +4573,8 @@ function createRecruitmentJobCard(job) {
   organizationFactors.forEach((item) => organizationList.appendChild(makeElement("li", "", item)));
   reasonBody.append(
     scoreGrid,
+    ...(dimensionCount ? [makeElement("span", "", "11 维原始分"), dimensionGrid] : []),
+    ...(job.calibration_reason ? [makeElement("small", "", `校准说明：${job.calibration_reason}`)] : []),
     makeElement("strong", "", isRecruitmentProgram ? "这是招聘项目入口，具体岗位尚未拆分；不以公司等级代替岗位 T 级" : tierCode || belowPriority ? "按现有公司与岗位信息应用统一 T 级规则；排序不等于官网确认" : "岗位信息不足，暂未生成 T 级；机会仍然在主池展示"),
     ...(organizationFactors.length ? [organizationList] : []),
     ...(conciseFactors.length ? [makeElement("span", "", "评分依据"), factorList] : []),

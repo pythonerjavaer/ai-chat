@@ -69,11 +69,15 @@ _CITY_UNIT = re.compile(
 _COMMON_CITY_UNIT = re.compile(
     "(?:" + "|".join(_COMMON_CITIES) + r")(?:分公司|分行|公司|分部)"
 )
+_SPECIAL_CITY_UNIT = re.compile(r"雄安新区(?:分公司|分行|公司|分部)$")
 _BRANCH = re.compile(r"分公司|分行|分部|分支机构|分支|\bbranch(?:\s+office)?\b", re.I)
 _SUBSIDIARY = re.compile(r"子公司|子企业|附属公司|控股子企业|参股公司|\bsubsidiar(?:y|ies)\b", re.I)
 _NESTED_LEGAL_ENTITY = re.compile(
     r"集团(?!有限责任公司|股份有限公司|有限公司|公司)"
     r"[\u4e00-\u9fffA-Za-z（）()·\s]{2,50}(?:有限责任公司|股份有限公司|有限公司)"
+)
+_PARENTHETICAL_REGIONAL_ENTITY = re.compile(
+    r"[（(][^()（）]{2,24}[）)](?:股份有限公司|有限责任公司|有限公司)$"
 )
 _RESEARCH_INSTITUTE = re.compile(r"研究院|研究所|研究分院|\bresearch\s+institute\b", re.I)
 _HEADQUARTERS = re.compile(r"集团总部|总部|总行|\bhead\s+office\b|\bheadquarters\b", re.I)
@@ -259,6 +263,8 @@ def _assess_entity(text: str, source: str, *, subsidiary: bool = False) -> _Asse
     )
     if _third_party(text) and not internal_service_department:
         return _Assessment("third_party", source, text)
+    if _SPECIAL_CITY_UNIT.search(text):
+        return _Assessment("city_branch", source, text, "inferred")
     # Mask province/municipality units before interpreting 市/区 suffixes.  This
     # still leaves an actual lower unit, e.g. 上海市分公司浦东新区支公司, visible.
     remainder = _PROVINCIAL_UNIT.sub(" ", text)
@@ -282,6 +288,10 @@ def _assess_entity(text: str, source: str, *, subsidiary: bool = False) -> _Asse
     if affiliate_level:
         return _Assessment(affiliate_level, f"{source}.单位目录", text, "inferred")
     if _NESTED_LEGAL_ENTITY.search(text):
+        return _Assessment("subsidiary", source, text, "inferred")
+    if _PARENTHETICAL_REGIONAL_ENTITY.search(text):
+        # A separately incorporated regional entity is not the parent group's
+        # headquarters merely because the parent's brand starts its name.
         return _Assessment("subsidiary", source, text, "inferred")
     if _RESEARCH_INSTITUTE.search(text):
         return _Assessment("research_institute", source, text)
@@ -482,6 +492,8 @@ def assess_organization(
         "level": assessment.level,
         "label": _LABELS[assessment.level],
         "confidence": assessment.confidence,
+        "entity_name": _public_evidence(assessment.text),
+        "entity_source": assessment.source,
         "basis": assessment.source + ("+title.岗位署名" if assessment.auxiliary else "") + ("+具体单位待核验" if specific_unresolved else "") + ("+签约主体冲突" if conflicting_contracts else ""),
         "evidence": evidence,
         "base_platform_points": base,

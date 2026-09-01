@@ -178,7 +178,7 @@ def test_generic_program_without_substantive_jd_is_explicitly_unscored():
     assert all(value is None for value in scored["score_breakdown"].values())
 
 
-def test_tier_tag_cannot_override_job_score_and_weighted_breakdown_is_exact():
+def test_tier_tag_cannot_override_job_score_and_direct_breakdown_is_exact():
     base = {
         "company": "示例专业服务机构",
         "title": "Technology Consulting Data Analyst",
@@ -197,13 +197,11 @@ def test_tier_tag_cannot_override_job_score_and_weighted_breakdown_is_exact():
     assert with_hint["tier_code"] == without_hint["tier_code"]
     assert with_hint["manual_override"] is False
     assert sum(with_hint["score_breakdown"].values()) == with_hint["match_score"]
-    expected = round(
-        with_hint["employer_score"] * SCORING_WEIGHTS["employer_platform"] / 100
-        + with_hint["role_score"] * SCORING_WEIGHTS["role_function"] / 100
-        + with_hint["career_value_score"] * SCORING_WEIGHTS["career_value"] / 100
-        + with_hint["job_condition_score"] * SCORING_WEIGHTS["job_conditions"] / 100
-    )
-    assert with_hint["match_score"] == expected
+    assert with_hint["match_score"] == sum(with_hint["score_breakdown"].values())
+    assert {
+        key: value["contribution"] for key, value in with_hint["scoring_factors"].items()
+    } == with_hint["score_breakdown"]
+    assert sum(SCORING_WEIGHTS.values()) == 100
     assert with_hint["scoring_status"] == "scored"
     assert with_hint["scoring_version"] == SCORING_VERSION
     assert set(with_hint["scoring_factors"]) == set(SCORING_WEIGHTS)
