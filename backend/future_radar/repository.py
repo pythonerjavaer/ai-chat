@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 import uuid
+from collections import deque
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -14,7 +15,9 @@ from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 
 from ..live_sources import is_actionable_recruitment_listing, is_recruitment_program_listing
-from .normalization import canonical_telecom_operator, clean_text, normalized_key
+from .normalization import (
+    PRIMARY_CATEGORY_CODES, canonical_telecom_operator, clean_text, normalized_key,
+)
 from .opportunity_cache import (
     BoundedScoringCache, CACHE_FORMAT_VERSION, RevisionChanged,
     date_boundary, opaque_digest, read_opportunity_revision,
@@ -39,6 +42,14 @@ QUICK_SCAN_ADAPTERS = frozenset({
 DEEP_SCAN_ADAPTERS = frozenset({
     "openai_web_search", "wechat_public", "wechat_web_search",
 })
+
+BALANCED_CATEGORY_LIMIT = 60
+BALANCED_COMPANY_LIMIT = 6
+BALANCED_TIER_ORDER = {
+    code: index for index, code in enumerate(
+        ("T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED")
+    )
+}
 
 PUBLIC_JOB_EVENT_FIELDS = (
     "company", "title", "city", "region", "status",
@@ -1921,6 +1932,115 @@ class RadarRepository:
             normalized_key(item["company_name"]), item["company_name"], item["company_key"],
         ))
 
+    @staticmethod
+    def _balanced_changed_timestamp(value: Any) -> float:
+        """Return a deterministic UTC timestamp without trusting local time."""
+        try:
+            parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    @classmethod
+    def _balanced_rank_key(cls, item: dict[str, Any]) -> tuple[Any, ...]:
+        """Rank one candidate using only already-scored public fields."""
+        score = item.get("job_score")
+        if not isinstance(score, (int, float)):
+            score = item.get("match_score")
+        numeric_score = float(score) if isinstance(score, (int, float)) else -1.0
+        specific = item.get("is_specific_job")
+        if specific is None:
+            specific = item.get("listing_kind") != "recruitment_program"
+        stable_id = str(item.get("external_id") or item.get("id") or opaque_digest({
+            key: item.get(key) for key in ("company", "title", "city", "official_url")
+        }))
+        return (
+            BALANCED_TIER_ORDER.get(str(item.get("tier_bucket") or ""), len(BALANCED_TIER_ORDER)),
+            -numeric_score,
+            0 if item.get("verification_status") == "verified" else 1,
+            0 if specific else 1,
+            -cls._balanced_changed_timestamp(item.get("last_changed_at")),
+            stable_id,
+        )
+
+    @classmethod
+    def _balanced_opportunities(
+        cls, items: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    ) -> tuple[dict[str, Any], ...]:
+        """Select a diverse reversible view; never mutate or delete the pool.
+
+        The ten official starfields take turns, and companies take turns
+        inside each starfield. One display company shares its six places
+        across every starfield. Unclassified records remain available in the
+        ordinary focused/full projections but do not enter this curated view.
+        """
+        lanes: dict[str, dict[str, list[dict[str, Any]]]] = {
+            category: {} for category in PRIMARY_CATEGORY_CODES
+        }
+        for item in items:
+            if item.get("tier_bucket") == "BELOW_PRIORITY":
+                continue
+            category = str(item.get("primary_category") or "")
+            if category not in PRIMARY_CATEGORY_CODES:
+                continue
+            company_key = str(item["display_company_key"])
+            lanes[category].setdefault(company_key, []).append(item)
+        company_queues: dict[str, deque[str]] = {}
+        company_offsets: dict[str, dict[str, int]] = {}
+        for category, company_lanes in lanes.items():
+            for company_lane in company_lanes.values():
+                company_lane.sort(key=cls._balanced_rank_key)
+            company_queues[category] = deque(sorted(
+                company_lanes,
+                key=lambda company_key: (
+                    cls._balanced_rank_key(company_lanes[company_key][0]), company_key,
+                ),
+            ))
+            company_offsets[category] = {company_key: 0 for company_key in company_lanes}
+
+        order = [category for category in PRIMARY_CATEGORY_CODES if company_queues[category]]
+        selected_per_category = {category: 0 for category in order}
+        selected_per_company: dict[str, int] = {}
+        selected: list[dict[str, Any]] = []
+        while order:
+            next_order: list[str] = []
+            for category in order:
+                if selected_per_category[category] >= BALANCED_CATEGORY_LIMIT:
+                    continue
+                chosen = None
+                queue = company_queues[category]
+                while queue:
+                    company_key = queue.popleft()
+                    if selected_per_company.get(company_key, 0) >= BALANCED_COMPANY_LIMIT:
+                        continue
+                    company_lane = lanes[category][company_key]
+                    offset = company_offsets[category][company_key]
+                    if offset >= len(company_lane):
+                        continue
+                    chosen = company_lane[offset]
+                    company_offsets[category][company_key] = offset + 1
+                    if (
+                        offset + 1 < len(company_lane)
+                        and selected_per_company.get(company_key, 0) + 1 < BALANCED_COMPANY_LIMIT
+                    ):
+                        queue.append(company_key)
+                    break
+                if chosen is None:
+                    continue
+                selected.append(chosen)
+                selected_per_category[category] += 1
+                company_key = str(chosen["display_company_key"])
+                selected_per_company[company_key] = selected_per_company.get(company_key, 0) + 1
+                if (
+                    selected_per_category[category] < BALANCED_CATEGORY_LIMIT
+                    and queue
+                ):
+                    next_order.append(category)
+            order = next_order
+        return tuple(selected)
+
     def _prepared_opportunities(
         self, *, filters: dict[str, Any], public_url: Callable[[Any], str | None],
         prepare: Callable[[dict[str, Any]], dict[str, Any]],
@@ -1929,7 +2049,7 @@ class RadarRepository:
         # Priority/tier/view/company/page changes project the same complete
         # scored set; switching browse scope must not rerun full-pool scoring.
         base_filters = {key: value for key, value in filters.items()
-                        if key not in {"priority_only", "tier_code", "view", "company_key", "page", "page_size"}}
+                        if key not in {"priority_only", "balanced_only", "tier_code", "view", "company_key", "page", "page_size"}}
 
         def build() -> _PreparedOpportunityPool:
             return self._prepare_opportunity_pool(
@@ -1978,11 +2098,20 @@ class RadarRepository:
             filters=filters, public_url=public_url, prepare=prepare,
             company_aliases=company_aliases or {}, cache_scope=cache_scope,
         )
-        items = pool.items
+        all_items = pool.items
+        balanced_items = self._balanced_opportunities(all_items)
+        items = all_items
         tier_counts = dict(pool.tier_counts)
         category_counts = dict(pool.category_counts)
         if filters.get("company_key"):
-            items = tuple(item for item in items if item["display_company_key"] == filters["company_key"])
+            company_key = filters["company_key"]
+            # Balance the complete base pool first. Expanding a company must
+            # show exactly the rows selected on the parent page, not grant the
+            # company a fresh per-request quota.
+            items = tuple(item for item in all_items if item["display_company_key"] == company_key)
+            balanced_items = tuple(
+                item for item in balanced_items if item["display_company_key"] == company_key
+            )
             tier_counts = {key: 0 for key in tier_counts}
             category_counts = {}
             for item in items:
@@ -1997,7 +2126,11 @@ class RadarRepository:
         # through the ordinary all/below-priority list and detail endpoints.
         secondary_total = tier_counts["BELOW_PRIORITY"]
         priority_total = matching_total - secondary_total
-        if filters.get("priority_only"):
+        balanced_total = len(balanced_items)
+        balanced_excluded_total = max(0, priority_total - balanced_total)
+        if filters.get("balanced_only"):
+            items = balanced_items
+        elif filters.get("priority_only"):
             items = tuple(item for item in items if item["tier_bucket"] != "BELOW_PRIORITY")
         if filters.get("tier_code"):
             items = [item for item in items if item["tier_bucket"] == filters["tier_code"]]
@@ -2012,6 +2145,11 @@ class RadarRepository:
             visible_category_counts[category] = visible_category_counts.get(category, 0) + 1
             visible_category_companies.setdefault(category, set()).add(item["display_company_key"])
         companies = self._opportunity_company_groups(items)
+        if filters.get("balanced_only"):
+            balanced_order: dict[str, int] = {}
+            for index, item in enumerate(items):
+                balanced_order.setdefault(item["display_company_key"], index)
+            companies.sort(key=lambda company: balanced_order[company["company_key"]])
         unknown_companies = sum(company["grouping"] == "unknown" for company in companies)
         view = "companies" if filters.get("view") == "companies" else "jobs"
         selected = companies if view == "companies" else items
@@ -2025,6 +2163,14 @@ class RadarRepository:
             "stats": {
                 "total_opportunities": len(items), "matching_total": matching_total,
                 "priority_total": priority_total, "secondary_total": secondary_total,
+                "balanced_total": balanced_total,
+                "balanced_excluded_total": balanced_excluded_total,
+                "selection_mode": (
+                    "balanced" if filters.get("balanced_only")
+                    else "priority" if filters.get("priority_only")
+                    else "tier" if filters.get("tier_code")
+                    else "all"
+                ),
                 "total_companies": len(companies),
                 "known_company_count": len(companies) - unknown_companies,
                 "unknown_company_count": unknown_companies,
@@ -2046,7 +2192,7 @@ class RadarRepository:
             },
         }
         if view == "companies":
-            result["company_sort"] = "name"
+            result["company_sort"] = "balanced" if filters.get("balanced_only") else "name"
             # Keep official deadline alerts available without shipping every
             # expanded job. This bounded preview covers the full matching pool.
             dated = sorted((item for item in items if item.get("closing_date")

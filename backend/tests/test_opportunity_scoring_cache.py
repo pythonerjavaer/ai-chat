@@ -666,7 +666,9 @@ def test_compact_http_payload_keeps_stats_and_default_legacy_aliases(harness, mo
     ).body)
     assert full["jobs"] == full["opportunities"] == full["items"]
     assert compact["items"] == full["items"]
-    assert compact["stats"] == full["stats"] and compact["total"] == full["total"] == 1
+    assert compact["stats"] | {"selection_mode": "all"} == full["stats"]
+    assert compact["stats"]["selection_mode"] == "tier"
+    assert compact["total"] == full["total"] == 1
     assert "jobs" not in compact and "opportunities" not in compact
     assert len(harness.prepared) == 1
 

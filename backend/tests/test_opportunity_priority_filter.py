@@ -19,6 +19,7 @@ os.environ.setdefault("JWT_SECRET", "isolated-priority-filter-test-secret-32-byt
 os.environ.setdefault("FUTURE_RADAR_ENABLED", "false")
 os.environ.setdefault("RECRUITMENT_REFRESH_MINUTES", "0")
 
+from backend.future_radar.normalization import PRIMARY_CATEGORY_CODES
 from backend.future_radar.repository import utc_now
 from backend.tests.test_opportunity_company_groups import pool  # noqa: F401 - shared SQLite fixture
 
@@ -34,6 +35,9 @@ def priority_pool(pool):
     repository = pool.repository
     scores = {}
     kinds = {}
+    job_scores = {}
+    changed_at = {}
+    calls = []
     sources = {key: repository.get_source(key) for key in ("public-fixture", "other-fixture")}
 
     def insert_many(specifications):
@@ -44,6 +48,8 @@ def priority_pool(pool):
                 key = specification.pop("key")
                 scores[key] = specification.pop("tier", "T2")
                 kinds[key] = specification.pop("listing_kind", "job")
+                job_scores[key] = specification.pop("job_score", None)
+                changed_at[key] = specification.pop("changed_at", None)
                 source_id = specification.pop("source_id", "public-fixture")
                 # Synthetic serials such as 2000 must not look like cohorts to
                 # the existing title identity normalizer and collapse 100 jobs.
@@ -69,11 +75,20 @@ def priority_pool(pool):
                 )
 
     def prepare(row):
-        return {key: row.get(key) for key in (
+        calls.append(row["external_id"])
+        result = {key: row.get(key) for key in (
             "id", "external_id", "company", "title", "city", "primary_category",
             "status", "verification_status", "official_url", "opening_date", "closing_date",
             "last_changed_at", "sources",
-        )} | {"tier_code": scores[row["external_id"]], "listing_kind": kinds[row["external_id"]]}
+        )} | {
+            "tier_code": scores[row["external_id"]],
+            "listing_kind": kinds[row["external_id"]],
+            "is_specific_job": kinds[row["external_id"]] != "recruitment_program",
+            "job_score": job_scores[row["external_id"]],
+        }
+        if changed_at[row["external_id"]] is not None:
+            result["last_changed_at"] = changed_at[row["external_id"]]
+        return result
 
     def get(*, filters=None, **kwargs):
         return repository.list_opportunities(
@@ -84,7 +99,7 @@ def priority_pool(pool):
 
     return SimpleNamespace(
         repository=repository, insert_many=insert_many, get=get,
-        prepare=prepare, public_url=pool.public_url,
+        prepare=prepare, public_url=pool.public_url, calls=calls,
     )
 
 
@@ -213,6 +228,161 @@ def test_company_expansion_applies_base_filters_then_priority_and_tier(priority_
     assert secondary["total"] == 1 and secondary["items"][0]["external_id"] == "scope-hit-secondary"
 
 
+def test_balanced_projection_rotates_ten_starfields_and_keeps_full_pool_reversible(priority_pool):
+    p = priority_pool
+    eligible = [
+        {
+            "key": f"balanced-{category_index:02d}-{index:02d}",
+            "tier": "T2", "job_score": 70,
+            "company": f"均衡企业-{category_index:02d}-{index:02d}",
+            "primary_category": category,
+        }
+        for category_index, category in enumerate(PRIMARY_CATEGORY_CODES)
+        for index in range(65)
+    ]
+    secondary = [
+        {
+            "key": f"balanced-secondary-{category_index:02d}",
+            "tier": "不建议投",
+            "company": f"次级企业-{category_index:02d}",
+            "primary_category": category,
+        }
+        for category_index, category in enumerate(PRIMARY_CATEGORY_CODES)
+    ]
+    unclassified = [{
+        "key": "balanced-unclassified", "tier": "T1", "job_score": 80,
+        "company": "未分类但可查看企业", "primary_category": "",
+    }]
+    p.insert_many(eligible + secondary + unclassified)
+
+    complete = p.get(page_size=700)
+    assert complete["total"] == 661
+    assert complete["stats"]["selection_mode"] == "all"
+    assert complete["stats"]["priority_total"] == 651
+    assert complete["stats"]["secondary_total"] == 10
+    assert complete["stats"]["balanced_total"] == 600
+    assert complete["stats"]["balanced_excluded_total"] == 51
+
+    balanced = p.get(page_size=700, filters={"balanced_only": True})
+    assert balanced["total"] == balanced["total_opportunities"] == 600
+    assert balanced["stats"]["selection_mode"] == "balanced"
+    assert balanced["stats"]["visible_category_counts"] == {
+        category: 60 for category in PRIMARY_CATEGORY_CODES
+    }
+    assert balanced["stats"]["category_counts"] == {
+        **{category: 66 for category in PRIMARY_CATEGORY_CODES}, "uncategorized": 1,
+    }
+    assert [item["primary_category"] for item in balanced["items"][:10]] == list(PRIMARY_CATEGORY_CODES)
+    company_page = p.get(page_size=10, filters={"balanced_only": True, "view": "companies"})
+    assert company_page["company_sort"] == "balanced"
+    assert [next(iter(item["category_counts"])) for item in company_page["items"]] == list(PRIMARY_CATEGORY_CODES)
+    assert all(item["tier_bucket"] != "BELOW_PRIORITY" for item in balanced["items"])
+    assert p.get(filters={"priority_only": True})["total"] == 651
+    assert any(
+        item["external_id"] == "balanced-unclassified"
+        for item in p.get(page_size=700, filters={"priority_only": True})["items"]
+    )
+    assert p.get(filters={"tier_code": "BELOW_PRIORITY"})["total"] == 10
+    assert p.get(filters={"balanced_only": True, "tier_code": "BELOW_PRIORITY"})["total"] == 0
+    with p.repository._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM radar_jobs").fetchone()[0] == 661
+    assert len(p.calls) == 661, "balanced/all/tier projections must reuse one scored base pool"
+
+
+def test_balanced_rotates_companies_inside_one_starfield(priority_pool):
+    p = priority_pool
+    p.insert_many([
+        {
+            "key": f"alpha-{index}", "tier": "T0", "job_score": 95 - index,
+            "company": "Alpha", "primary_category": TECH,
+        }
+        for index in range(3)
+    ] + [
+        {
+            "key": f"beta-{index}", "tier": "T1", "job_score": 80 - index,
+            "company": "Beta", "primary_category": TECH,
+        }
+        for index in range(3)
+    ])
+    result = p.get(page_size=20, filters={"balanced_only": True})
+    assert [item["company"] for item in result["items"]] == [
+        "Alpha", "Beta", "Alpha", "Beta", "Alpha", "Beta",
+    ]
+
+
+def test_balanced_rank_uses_stable_id_as_final_tie_breaker():
+    from backend.future_radar.repository import RadarRepository
+
+    common = {
+        "tier_bucket": "T1", "job_score": 80, "verification_status": "verified",
+        "listing_kind": "job", "last_changed_at": "2026-01-01T00:00:00+00:00",
+    }
+    assert RadarRepository._balanced_rank_key({**common, "external_id": "a"}) < \
+        RadarRepository._balanced_rank_key({**common, "external_id": "b"})
+
+
+def test_balanced_company_cap_uses_rank_order_and_expansion_reuses_global_selection(priority_pool):
+    p = priority_pool
+    common = {"company": "中国联通", "primary_category": TELECOM}
+    p.insert_many([
+        {**common, "key": "rank-01-tier", "tier": "T0", "job_score": 1,
+         "listing_kind": "recruitment_program", "changed_at": "2026-01-01T00:00:00+00:00"},
+        {**common, "key": "rank-02-tier", "tier": "T0.5", "job_score": 100,
+         "verification_status": "verified", "source_id": "other-fixture"},
+        {**common, "key": "rank-03-newer", "tier": "T1", "job_score": 90,
+         "verification_status": "verified", "source_id": "other-fixture",
+         "changed_at": "2026-02-01T00:00:00+00:00"},
+        {**common, "key": "rank-04-older", "tier": "T1", "job_score": 90,
+         "verification_status": "verified", "source_id": "other-fixture",
+         "changed_at": "2026-01-01T00:00:00+00:00"},
+        {**common, "key": "rank-05-program", "tier": "T1", "job_score": 90,
+         "verification_status": "verified", "source_id": "other-fixture",
+         "listing_kind": "recruitment_program", "changed_at": "2026-03-01T00:00:00+00:00"},
+        {**common, "key": "rank-06-pending", "tier": "T1", "job_score": 90,
+         "changed_at": "2026-04-01T00:00:00+00:00"},
+        {**common, "key": "rank-07-score", "tier": "T1", "job_score": 80,
+         "verification_status": "verified", "source_id": "other-fixture"},
+        {**common, "key": "rank-08-tier", "tier": "T2", "job_score": 100,
+         "verification_status": "verified", "source_id": "other-fixture"},
+    ])
+
+    balanced = p.get(page_size=20, filters={"balanced_only": True})
+    assert [item["external_id"] for item in balanced["items"]] == [
+        "rank-01-tier", "rank-02-tier", "rank-03-newer", "rank-04-older",
+        "rank-05-program", "rank-06-pending",
+    ]
+    assert balanced["stats"]["balanced_total"] == 6
+    assert balanced["stats"]["balanced_excluded_total"] == 2
+    groups = p.get(filters={"balanced_only": True, "view": "companies"})
+    assert groups["total_companies"] == 1 and groups["items"][0]["opportunity_count"] == 6
+    key = groups["items"][0]["company_key"]
+    expanded = p.get(page_size=20, filters={"balanced_only": True, "company_key": key})
+    assert [item["external_id"] for item in expanded["items"]] == [
+        item["external_id"] for item in balanced["items"]
+    ]
+    assert expanded["stats"]["priority_total"] == 8
+    assert expanded["stats"]["balanced_total"] == 6
+
+
+def test_balanced_company_scope_does_not_receive_a_fresh_category_quota(priority_pool):
+    p = priority_pool
+    p.insert_many([
+        {
+            "key": f"global-{index:02d}", "tier": "T2", "job_score": 70,
+            "company": f"Global Employer {index:02d}", "primary_category": TECH,
+        }
+        for index in range(61)
+    ])
+    all_groups = p.get(page_size=100, filters={"view": "companies"})
+    excluded = next(item for item in all_groups["items"] if item["company_name"] == "Global Employer 60")
+    scoped = p.get(filters={"balanced_only": True, "company_key": excluded["company_key"]})
+    assert scoped["total"] == scoped["total_opportunities"] == 0
+    assert scoped["stats"]["priority_total"] == 1
+    assert scoped["stats"]["balanced_total"] == 0
+    assert scoped["stats"]["balanced_excluded_total"] == 1
+    assert scoped["stats"]["visible_category_counts"] == {}
+
+
 def test_api_priority_bool_defaults_false_and_validates_without_real_auth_or_lifespan(priority_pool, monkeypatch):
     from fastapi import Depends, FastAPI
     from fastapi.params import Query
@@ -235,6 +405,13 @@ def test_api_priority_bool_defaults_false_and_validates_without_real_auth_or_lif
     parameter = signature.parameters["priority_only"]
     default = parameter.default.default if isinstance(parameter.default, Query) else parameter.default
     assert default is False and annotations["priority_only"] is bool
+    balanced_parameter = signature.parameters["balanced_only"]
+    balanced_default = (
+        balanced_parameter.default.default
+        if isinstance(balanced_parameter.default, Query)
+        else balanced_parameter.default
+    )
+    assert balanced_default is False and annotations["balanced_only"] is bool
 
     def synthetic_user():
         return {"id": 0}
@@ -259,5 +436,8 @@ def test_api_priority_bool_defaults_false_and_validates_without_real_auth_or_lif
             assert result["stats"]["priority_total"] == result["stats"]["secondary_total"] == 1
         groups = client.get("/opportunities", params={"priority_only": "true", "view": "companies"}).json()
         assert groups["total_companies"] == groups["total_opportunities"] == 1
+        balanced = client.get("/opportunities", params={"balanced_only": "true"}).json()
+        assert balanced["total"] == 1 and balanced["stats"]["selection_mode"] == "balanced"
         assert client.get("/opportunities", params={"priority_only": "true", "tier_code": "BELOW_PRIORITY"}).json()["total"] == 0
         assert client.get("/opportunities", params={"priority_only": "not-a-boolean"}).status_code == 422
+        assert client.get("/opportunities", params={"balanced_only": "not-a-boolean"}).status_code == 422

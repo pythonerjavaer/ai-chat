@@ -38,7 +38,7 @@ async function localServer(t, handler) {
 }
 
 function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null } = {}) {
-  const state = { token: null, recruitmentTierFilter: "FOCUS", futureRadar: {
+  const state = { token: null, recruitmentTierFilter: "BALANCED", futureRadar: {
     page: 1, pageSize: 50,
     filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "",
       status: DEFAULT_FUTURE_RADAR_STATUS, verification_status: "", source_id: "", event_type: "", sort: "changed",
@@ -96,7 +96,7 @@ test("real builder and API send the active main-pool GET without blank dates or 
   const data = await r.run("api(`/future-radar/opportunities?${futureRadarJobsQuery()}`, {timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS})");
   assert.equal(server.requests.length, 1);
   assert.deepEqual(server.requests[0], {
-    url: "/api/future-radar/opportunities?page=1&page_size=50&status=active&sort=changed&compact=true&priority_only=true",
+    url: "/api/future-radar/opportunities?page=1&page_size=50&status=active&sort=changed&compact=true&balanced_only=true&priority_only=false",
     method: "GET", authorization: undefined,
   });
   assert.equal(data.total, 255);
@@ -121,6 +121,7 @@ test("real HTTP query preserves supported category, fractional T tier and dates"
   assert.equal(params.get("company"), "示例银行");
   assert.equal(params.get("page"), "2");
   assert.equal(params.get("tier_code"), "T0.5");
+  assert.equal(params.get("balanced_only"), "false");
   assert.equal(params.get("priority_only"), "false");
   assert.equal(params.get("verification_status"), "pending");
   assert.equal(params.get("closing_after"), "2026-08-30");

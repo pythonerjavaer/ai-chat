@@ -62,13 +62,14 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   const timers = [];
   const payload = { items: Array.from({ length: 50 }, (_, i) => pendingJob(`pending-${i}`)), total: 255,
     page: 1, page_size: 50, stats: { verification_status: { pending: 255, verified: 0, conflicted: 0 },
-      job_status: { unknown: 255 }, tier_counts: { UNRANKED: 255 }, category_counts: { internet_tech: 255 } } };
+      job_status: { unknown: 255 }, tier_counts: { UNRANKED: 255 }, category_counts: { internet_tech: 255 },
+      balanced_total: 255, priority_total: 255, matching_total: 255, secondary_total: 0 } };
   const oldJobs = Array.from({ length: 6 }, (_, i) => pendingJob(`legacy-${i}`));
-  const state = { token: Symbol("pure-state-session"), music: { enabled: false }, recruitmentJobs: oldJobs, recruitmentWatches: [], recruitmentTierFilter: "FOCUS", futureRadar: {
+  const state = { token: Symbol("pure-state-session"), music: { enabled: false }, recruitmentJobs: oldJobs, recruitmentWatches: [], recruitmentTierFilter: "BALANCED", futureRadar: {
     jobsLoaded: existing, jobsError: "", jobs: existing ? [pendingJob("saved-main")] : [],
     jobsLoading: false, loading: false, jobsRequestId: 0, page: 1, pageSize: 50,
     jobsRequestQuery: "", jobsRequestController: null, jobsRequestPromise: null,
-    jobsAppliedQuery: "", jobsAppliedTier: "FOCUS", jobsAppliedPage: 1,
+    jobsAppliedQuery: "", jobsAppliedTier: "BALANCED", jobsAppliedPage: 1,
     pollOpportunityController: null, snapshotRequestId: 0,
     totalJobs: existing ? 1 : 0,
     opportunityStats: existing ? { tier_counts: { UNRANKED: 1 }, verification_status: { pending: 1 } } : {},
@@ -399,8 +400,10 @@ test("reset and the HTML default use active without widening to closed opportuni
   r.context.loadFutureRadarJobPage = (page) => requested.push({ page, status: r.state.futureRadar.filters.status });
   r.run("resetFutureRadarFilters()");
   assert.deepEqual(requested, [{ page: 1, status: "active" }]);
-  assert.equal(r.state.recruitmentTierFilter, "FOCUS");
-  assert.equal(new URLSearchParams(r.run("futureRadarJobsQuery()")).get("priority_only"), "true");
+  assert.equal(r.state.recruitmentTierFilter, "BALANCED");
+  const resetQuery = new URLSearchParams(r.run("futureRadarJobsQuery()"));
+  assert.equal(resetQuery.get("balanced_only"), "true");
+  assert.equal(resetQuery.get("priority_only"), "false");
   assert.match(html, /id="future-radar-filter-status"><option value="active">全部有效机会（含待核验）/);
   assert.match(html, /value="all">全部（含已关闭）/);
   assert.equal(DEFAULT_FUTURE_RADAR_STATUS, "active");
@@ -920,30 +923,47 @@ test("failed view switch identifies the old snapshot and does not treat companie
   assert.equal(switchers.find((node) => node.dataset.opportunityView === "jobs")["aria-pressed"], "false");
 });
 
-test("focus is the initial applied query and its chip uses full-scope counts rather than page length", async () => {
-  assert.match(source, /recruitmentTierFilter:\s*"FOCUS"/);
-  assert.match(extract('document.querySelectorAll(".recruitment-checks input").forEach', '\n[elements.recruitmentRoles'), /state\.recruitmentTierFilter = "FOCUS"/);
+test("balanced is the initial query and all three pool chips use exact server totals", async () => {
+  assert.match(source, /recruitmentTierFilter:\s*"BALANCED"/);
+  assert.match(extract('document.querySelectorAll(".recruitment-checks input").forEach', '\n[elements.recruitmentRoles'), /state\.recruitmentTierFilter = "BALANCED"/);
   const r = runtime({ fail: false });
   r.payload.stats.tier_counts = { T2: 20, UNRANKED: 255, BELOW_PRIORITY: 2956 };
+  r.payload.stats.balanced_total = 120;
   r.payload.stats.priority_total = 275;
+  r.payload.stats.matching_total = 3231;
   r.payload.stats.secondary_total = 2956;
   await r.run("loadFutureRadarJobPage(1, true)");
   const params = new URLSearchParams(r.calls[0].split("?")[1]);
-  assert.equal(params.get("priority_only"), "true");
+  assert.equal(params.get("balanced_only"), "true");
+  assert.equal(params.get("priority_only"), "false");
   assert.equal(params.has("tier_code"), false);
-  assert.equal(r.state.futureRadar.jobsAppliedTier, "FOCUS");
+  assert.equal(r.state.futureRadar.jobsAppliedTier, "BALANCED");
+  const balanced = descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "BALANCED");
+  assert.equal(balanced["aria-pressed"], "true");
+  assert.match(balanced.textContent, /均衡精选.*120 个/);
   const focus = descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "FOCUS");
-  assert.equal(focus["aria-pressed"], "true");
-  assert.match(focus.textContent, /重点机会.*275 个/);
+  assert.equal(focus["aria-pressed"], "false");
+  assert.match(focus.textContent, /全部重点.*275 个/);
   const all = descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "ALL");
-  assert.match(all.textContent, /全部记录.*3231 个/);
-  delete r.payload.stats.priority_total;
+  assert.match(all.textContent, /全部记录.*3,231 个/);
+  assert.match(r.elements.futureRadarOpportunitySummary.textContent, /均衡精选 120.*全部重点 275.*全部记录 3,231/);
+  assert.match(r.elements.recruitmentJobs.textContent, /默认均衡精选 120 条.*全部重点 275 条.*全部记录 3,231 条/);
+  delete r.payload.stats.balanced_total;
   r.run("renderRecruitmentJobs()");
-  assert.match(descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "FOCUS").textContent, /275 个/);
+  assert.match(descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "BALANCED").textContent, /— 个/);
+  assert.doesNotMatch(descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "BALANCED").textContent, /50 个/);
+  const selectingFocus = r.run("selectRecruitmentTier('FOCUS')");
+  await r.flushSelection();
+  await selectingFocus;
+  const focusParams = new URLSearchParams(r.calls.at(-1).split("?")[1]);
+  assert.equal(focusParams.get("balanced_only"), "false");
+  assert.equal(focusParams.get("priority_only"), "true");
   const selectingAll = r.run("selectRecruitmentTier('ALL')");
   await r.flushSelection();
   await selectingAll;
-  assert.equal(new URLSearchParams(r.calls.at(-1).split("?")[1]).get("priority_only"), "false");
+  const allParams = new URLSearchParams(r.calls.at(-1).split("?")[1]);
+  assert.equal(allParams.get("balanced_only"), "false");
+  assert.equal(allParams.get("priority_only"), "false");
   assert.equal(r.state.futureRadar.jobsAppliedTier, "ALL");
   const selectingSecondary = r.run("selectRecruitmentTier('BELOW_PRIORITY')");
   await r.flushSelection();
@@ -953,7 +973,7 @@ test("focus is the initial applied query and its chip uses full-scope counts rat
   assert.equal(secondaryParams.get("tier_code"), "BELOW_PRIORITY");
 });
 
-test("focus preserves unranked records and defensively excludes secondary rows without deleting them", async () => {
+test("balanced preserves returned unranked records and defensively excludes secondary rows without deleting them", async () => {
   const r = runtime({ fail: false });
   const secondary = { ...pendingJob("below-priority"), tier_code: "不建议投", job_score: 40 };
   r.payload.items = [pendingJob("unranked-kept"), { ...pendingJob("t3-kept"), tier_code: "T3", job_score: 61 }, secondary];
@@ -968,7 +988,7 @@ test("focus preserves unranked records and defensively excludes secondary rows w
   assert.equal(r.cards().length, 3);
 });
 
-test("company expansion and background polling inherit focus priority without introducing a T restriction", async () => {
+test("company expansion and background polling inherit the balanced projection without introducing a T restriction", async () => {
   const r = companyRuntime();
   await r.run("loadFutureRadarJobPage(1, true)");
   const card = r.companyCards()[0];
@@ -979,7 +999,8 @@ test("company expansion and background polling inherit focus priority without in
   assert.ok(queries.some((params) => params.has("company_key")));
   assert.ok(queries.length >= 3);
   queries.forEach((params) => {
-    assert.equal(params.get("priority_only"), "true");
+    assert.equal(params.get("balanced_only"), "true");
+    assert.equal(params.get("priority_only"), "false");
     assert.equal(params.has("tier_code"), false);
   });
 });
@@ -1013,10 +1034,10 @@ test("sidebar counts reflect final company/tier scope and hide stale numbers whi
   assert.equal(badge().textContent, "—");
   assert.equal(badge().dataset.status, "error");
   assert.equal(r.elements.futureRadarOpportunityCount.textContent, "—");
-  assert.match(r.elements.futureRadarOpportunitySummary.textContent, /读取失败.*重点机会快照/);
+  assert.match(r.elements.futureRadarOpportunitySummary.textContent, /读取失败.*均衡精选快照/);
   assert.doesNotMatch(r.elements.futureRadarOpportunitySummary.textContent, /2956|12|官网已确认/);
-  const focus = descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "FOCUS");
-  assert.equal(focus["aria-pressed"], "true");
+  const balanced = descendants(r.elements.recruitmentJobs).find((node) => node.dataset.tier === "BALANCED");
+  assert.equal(balanced["aria-pressed"], "true");
   r.controls.opportunityHandler = () => ({ ...payload, items: [], total: 0, total_companies: 0, total_opportunities: 0,
     stats: { ...payload.stats, total_companies: 0, total_opportunities: 0, visible_category_counts: {}, visible_category_company_counts: {} } });
   const retry = r.run("selectRecruitmentTier('T1')");

@@ -17,10 +17,11 @@ export const DEFAULT_FUTURE_RADAR_STATUS = "active";
 // not a scan interval, run lock or a change to the default API/auth timeout.
 export const FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS = 120_000;
 
-export function futureRadarTierQuery(tier = "FOCUS") {
+export function futureRadarTierQuery(tier = "BALANCED") {
   return {
+    balanced_only: tier === "BALANCED",
     priority_only: tier === "FOCUS",
-    tier_code: ["FOCUS", "ALL"].includes(tier) ? "" : tier,
+    tier_code: ["BALANCED", "FOCUS", "ALL"].includes(tier) ? "" : tier,
   };
 }
 

@@ -29,13 +29,14 @@ import {
   partitionJobsByPriority,
 } from "./recruitment-radar.js";
 
-test("focus is a server query including unranked opportunities, not a page-only T filter", () => {
-  for (const tier of ["FOCUS", "ALL", ...TIER_CODES, "UNRANKED", "BELOW_PRIORITY"]) {
+test("balanced, focus and tier modes are explicit server projections, not page-only filters", () => {
+  for (const tier of ["BALANCED", "FOCUS", "ALL", ...TIER_CODES, "UNRANKED", "BELOW_PRIORITY"]) {
     const params = new URLSearchParams(buildFutureRadarJobsQuery({ filters: futureRadarTierQuery(tier) }));
+    assert.equal(params.get("balanced_only"), String(tier === "BALANCED"));
     assert.equal(params.get("priority_only"), String(tier === "FOCUS"));
-    assert.equal(params.get("tier_code"), ["FOCUS", "ALL"].includes(tier) ? null : tier);
+    assert.equal(params.get("tier_code"), ["BALANCED", "FOCUS", "ALL"].includes(tier) ? null : tier);
   }
-  assert.deepEqual(futureRadarTierQuery(), { priority_only: true, tier_code: "" });
+  assert.deepEqual(futureRadarTierQuery(), { balanced_only: true, priority_only: false, tier_code: "" });
 });
 
 test("category counts use post-filter opportunities and distinct display groups with explicit units", () => {

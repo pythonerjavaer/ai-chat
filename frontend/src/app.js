@@ -122,7 +122,7 @@ const state = {
   spacePreflightTimer: null,
   recruitmentProfile: null,
   recruitmentJobs: [],
-  recruitmentTierFilter: "FOCUS",
+  recruitmentTierFilter: "BALANCED",
   recruitmentWatches: [],
   recruitmentSyncStatus: null,
   futureRadar: {
@@ -145,7 +145,7 @@ const state = {
     jobsRequestController: null,
     jobsRequestPromise: null,
     jobsAppliedQuery: "",
-    jobsAppliedTier: "FOCUS",
+    jobsAppliedTier: "BALANCED",
     jobsAppliedView: "companies",
     jobsAppliedPage: 1,
     jobsAppliedPageSize: 20,
@@ -901,8 +901,8 @@ function endFutureRadarSession(expired = false) {
   state.futureRadar.pollOpportunityController = null;
   state.futureRadar.jobsRequestQuery = "";
   state.futureRadar.jobsAppliedQuery = "";
-  state.recruitmentTierFilter = "FOCUS";
-  state.futureRadar.jobsAppliedTier = "FOCUS";
+  state.recruitmentTierFilter = "BALANCED";
+  state.futureRadar.jobsAppliedTier = "BALANCED";
   state.futureRadar.jobsAppliedView = "companies";
   state.futureRadar.jobsAppliedPage = 1;
   state.futureRadar.jobsAppliedPageSize = 20;
@@ -2963,12 +2963,15 @@ function renderFutureRadarOpportunityOverview() {
   const stats = state.futureRadar.opportunityStats || {};
   const counts = stats.verification_status || {};
   const count = (value) => Math.max(0, Number(value) || 0).toLocaleString("zh-CN");
+  const exactCount = (value) => value == null || value === "" || !Number.isFinite(Number(value)) || Number(value) < 0
+    ? "—" : Math.floor(Number(value)).toLocaleString("zh-CN");
   const pendingSelection = futureRadarSelectionIsPending();
   const statisticsStatus = state.futureRadar.jobsError ? "error"
     : state.futureRadar.jobsLoading || pendingSelection ? "loading"
       : state.futureRadar.jobsLoaded ? "ready" : "unavailable";
   elements.futureRadarOpportunitySummary?.replaceChildren(
     ...(state.futureRadar.totalCompanies == null ? [] : [makeElement("article", "", `企业分组 ${count(state.futureRadar.totalCompanies)} · 机会 ${count(state.futureRadar.totalJobs)}`)]),
+    makeElement("article", "", `均衡精选 ${exactCount(stats.balanced_total)} · 全部重点 ${exactCount(stats.priority_total)} · 全部记录 ${exactCount(stats.matching_total)}`),
     makeElement("article", "verified", `官网已确认 ${count(counts.verified)}`),
     makeElement("article", "pending", `聊天 / 搜索发现 ${count(counts.pending)}`),
     makeElement("article", "conflicted", `信息有差异 ${count(counts.conflicted)}`),
@@ -3330,7 +3333,8 @@ function applyFutureRadarJobsPayload(payload, query = futureRadarJobsQuery()) {
   state.futureRadar.jobsLoaded = true;
   state.futureRadar.jobsError = "";
   state.futureRadar.jobsAppliedQuery = query;
-  state.futureRadar.jobsAppliedTier = params.get("priority_only") === "true" ? "FOCUS" : params.get("tier_code") || "ALL";
+  state.futureRadar.jobsAppliedTier = params.get("balanced_only") === "true"
+    ? "BALANCED" : params.get("priority_only") === "true" ? "FOCUS" : params.get("tier_code") || "ALL";
   state.futureRadar.jobsAppliedView = view;
   if (previousError && elements.futureRadarError?.textContent === previousError) {
     elements.futureRadarError.textContent = "";
@@ -3371,7 +3375,7 @@ function resetFutureRadarCompanyExpansions() {
 }
 
 function futureRadarTierLabel(tier = state.recruitmentTierFilter) {
-  return tier === "FOCUS" ? "重点机会" : tier === "ALL" ? "全部记录" : tier === "UNRANKED" ? "未评分机会" : tier === "BELOW_PRIORITY" ? "次级机会" : `${tier} 机会`;
+  return tier === "BALANCED" ? "均衡精选" : tier === "FOCUS" ? "全部重点" : tier === "ALL" ? "全部记录" : tier === "UNRANKED" ? "未评分机会" : tier === "BELOW_PRIORITY" ? "次级机会" : `${tier} 机会`;
 }
 
 function futureRadarSelectionIsPending() {
@@ -3446,7 +3450,7 @@ function readFutureRadarFilters() {
 function resetFutureRadarFilters() {
   elements.futureRadarFilterForm.reset();
   state.futureRadar.filters = { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" };
-  state.recruitmentTierFilter = "FOCUS";
+  state.recruitmentTierFilter = "BALANCED";
   state.futureRadar.page = 1;
   loadFutureRadarJobPage(1, true);
 }
@@ -3979,7 +3983,7 @@ function recruitmentScoringFactors(job) {
 }
 
 function selectRecruitmentTier(tier) {
-  if (!["FOCUS", "ALL", ...TIER_CODES, "UNRANKED", "BELOW_PRIORITY"].includes(tier)) return false;
+  if (!["BALANCED", "FOCUS", "ALL", ...TIER_CODES, "UNRANKED", "BELOW_PRIORITY"].includes(tier)) return false;
   if (state.recruitmentTierFilter === tier && !state.futureRadar.jobsError
     && (state.futureRadar.jobsLoading || state.futureRadar.jobsLoaded)) {
     return state.futureRadar.jobsRequestPromise || false;
@@ -4009,7 +4013,7 @@ function renderRecruitmentJobs(jobs) {
   }
   const showingSavedSnapshot = Boolean(state.futureRadar.jobsError);
   const selectedTier = showingSavedSnapshot
-    ? state.futureRadar.jobsAppliedTier || "FOCUS" : state.recruitmentTierFilter;
+    ? state.futureRadar.jobsAppliedTier || "BALANCED" : state.recruitmentTierFilter;
   const pendingSelection = futureRadarSelectionIsPending();
   if (showingSavedSnapshot) {
     elements.recruitmentJobs.appendChild(makeElement("p", "radar-load-error", state.futureRadar.jobsError));
@@ -4019,16 +4023,19 @@ function renderRecruitmentJobs(jobs) {
   const starfieldJobs = showingSavedSnapshot || pendingSelection ? sourceJobs : filterRecruitmentByStarfield(sourceJobs);
   const { priorityJobs, belowPriorityJobs, invalidJobs } = partitionJobsByPriority(starfieldJobs);
   const availableJobs = [...priorityJobs, ...invalidJobs.map((job) => ({ ...job, tier_code: null }))];
-  const globalTierCounts = state.futureRadar.opportunityStats?.tier_counts;
-  const tierCount = (tier, fallback) => globalTierCounts && Object.hasOwn(globalTierCounts, tier)
-    ? Math.max(0, Number(globalTierCounts[tier]) || 0) : fallback;
-  const allCount = globalTierCounts
-    ? Object.values(globalTierCounts).reduce((sum, count) => sum + Math.max(0, Number(count) || 0), 0)
-    : availableJobs.length + belowPriorityJobs.length;
-  const secondaryTotal = state.futureRadar.opportunityStats?.secondary_total;
-  const belowCount = secondaryTotal == null ? tierCount("BELOW_PRIORITY", belowPriorityJobs.length) : Math.max(0, Number(secondaryTotal) || 0);
-  const priorityTotal = state.futureRadar.opportunityStats?.priority_total;
-  const focusCount = priorityTotal == null ? Math.max(0, allCount - belowCount) : Math.max(0, Number(priorityTotal) || 0);
+  const opportunityStats = state.futureRadar.opportunityStats || {};
+  const globalTierCounts = opportunityStats.tier_counts;
+  const statCount = (value) => value == null || value === "" || !Number.isFinite(Number(value)) || Number(value) < 0
+    ? null : Math.floor(Number(value));
+  const countCopy = (value) => value == null ? "—" : value.toLocaleString("zh-CN");
+  const tierCount = (tier) => globalTierCounts && Object.hasOwn(globalTierCounts, tier)
+    ? statCount(globalTierCounts[tier]) : null;
+  // These are full-scope server statistics. Never substitute the current page
+  // length, which would make a capped or paginated view look like a pool total.
+  const balancedCount = statCount(opportunityStats.balanced_total);
+  const focusCount = statCount(opportunityStats.priority_total);
+  const allCount = statCount(opportunityStats.matching_total);
+  const belowCount = statCount(opportunityStats.secondary_total);
   const tierDefinitions = [
     ["T0", "终极目标", "90–100"], ["T0.5", "准终极", "85–89"],
     ["T1", "核心主申", "80–84"], ["T1.5", "高质量重点", "75–79"],
@@ -4036,13 +4043,22 @@ function renderRecruitmentJobs(jobs) {
   ];
   const tierOrder = [...TIER_CODES];
   const tierSummary = makeElement("div", "job-tier-summary");
+  const balancedButton = makeElement("button", "job-tier-summary-item BALANCED");
+  balancedButton.type = "button";
+  balancedButton.dataset.tier = "BALANCED";
+  balancedButton.title = "跨星域与企业均衡展示高价值机会；仅调整默认浏览，不删除记录或改变 T 级";
+  balancedButton.setAttribute("aria-pressed", String(selectedTier === "BALANCED"));
+  balancedButton.classList.toggle("active", selectedTier === "BALANCED");
+  balancedButton.append(makeElement("b", "", "均衡精选"), makeElement("small", "", `${countCopy(balancedCount)} 个`));
+  balancedButton.addEventListener("click", () => selectRecruitmentTier("BALANCED"));
+  tierSummary.appendChild(balancedButton);
   const focusButton = makeElement("button", "job-tier-summary-item FOCUS");
   focusButton.type = "button";
   focusButton.dataset.tier = "FOCUS";
-  focusButton.title = "默认展示 T0–T3 与未评分机会；全部记录和次级机会仍可随时查看";
+  focusButton.title = "展示当前条件下全部 T0–T3 与未评分机会，不做行业或企业数量均衡";
   focusButton.setAttribute("aria-pressed", String(selectedTier === "FOCUS"));
   focusButton.classList.toggle("active", selectedTier === "FOCUS");
-  focusButton.append(makeElement("b", "", "重点机会"), makeElement("small", "", `${focusCount} 个`));
+  focusButton.append(makeElement("b", "", "全部重点"), makeElement("small", "", `${countCopy(focusCount)} 个`));
   focusButton.addEventListener("click", () => selectRecruitmentTier("FOCUS"));
   tierSummary.appendChild(focusButton);
   const allButton = makeElement("button", "job-tier-summary-item ALL", "");
@@ -4052,14 +4068,14 @@ function renderRecruitmentJobs(jobs) {
   allButton.classList.toggle("active", selectedTier === "ALL");
   allButton.append(
     makeElement("b", "", "全部记录"),
-    makeElement("small", "", `${allCount} 个`),
+    makeElement("small", "", `${countCopy(allCount)} 个`),
   );
   allButton.addEventListener("click", () => {
     return selectRecruitmentTier("ALL");
   });
   tierSummary.appendChild(allButton);
   tierDefinitions.forEach(([tier, label, range]) => {
-    const count = tierCount(tier, availableJobs.filter((job) => jobTierBucket(job) === tier).length);
+    const count = tierCount(tier);
     const tierClass = tier.replace(".", "-");
     const button = makeElement("button", `job-tier-summary-item ${tierClass}`);
     button.type = "button";
@@ -4068,20 +4084,20 @@ function renderRecruitmentJobs(jobs) {
     button.setAttribute("aria-pressed", String(selectedTier === tier));
     button.setAttribute("aria-busy", String(state.futureRadar.jobsLoading && selectedTier === tier));
     button.classList.toggle("active", selectedTier === tier);
-    button.append(makeElement("b", "", tier), makeElement("small", "", `${label} · ${count}`));
+    button.append(makeElement("b", "", tier), makeElement("small", "", `${label} · ${countCopy(count)}`));
     button.addEventListener("click", () => {
       return selectRecruitmentTier(tier);
     });
     tierSummary.appendChild(button);
   });
-  const unrankedCount = tierCount("UNRANKED", availableJobs.filter((job) => jobTierBucket(job) === "UNRANKED").length);
+  const unrankedCount = tierCount("UNRANKED");
   const unrankedButton = makeElement("button", "job-tier-summary-item UNRANKED");
   unrankedButton.type = "button";
   unrankedButton.dataset.tier = "UNRANKED";
   unrankedButton.title = "机会直接展示，现有信息不足时不强行归为 T3";
   unrankedButton.setAttribute("aria-pressed", String(selectedTier === "UNRANKED"));
   unrankedButton.classList.toggle("active", selectedTier === "UNRANKED");
-  unrankedButton.append(makeElement("b", "", "未评分"), makeElement("small", "", `${unrankedCount} 个`));
+  unrankedButton.append(makeElement("b", "", "未评分"), makeElement("small", "", `${countCopy(unrankedCount)} 个`));
   unrankedButton.addEventListener("click", () => {
     return selectRecruitmentTier("UNRANKED");
   });
@@ -4092,7 +4108,7 @@ function renderRecruitmentJobs(jobs) {
     belowButton.dataset.tier = "BELOW_PRIORITY";
     belowButton.setAttribute("aria-pressed", String(selectedTier === "BELOW_PRIORITY"));
     belowButton.classList.toggle("active", selectedTier === "BELOW_PRIORITY");
-    belowButton.append(makeElement("b", "", "次级机会"), makeElement("small", "", `低于 60 分 · ${belowCount}`));
+    belowButton.append(makeElement("b", "", "次级机会"), makeElement("small", "", `低于 60 分 · ${countCopy(belowCount)}`));
     belowButton.addEventListener("click", () => selectRecruitmentTier("BELOW_PRIORITY"));
     tierSummary.appendChild(belowButton);
   }
@@ -4109,21 +4125,23 @@ function renderRecruitmentJobs(jobs) {
     return;
   }
   elements.recruitmentJobs.appendChild(
-    makeElement("p", "job-tier-legend", "默认重点机会包含 T0–T3 与未评分，次级机会未删除，可随时切换查看。沿用岗位评价规则：T0 ≥90 · T0.5 85–89 · T1 80–84 · T1.5 75–79 · T2 70–74 · T2.5 65–69 · T3 60–64；信息不足列为“未评分”。上方层级数量统计全部符合检索条件的机会，选择 T 级会筛选整个池子，不限当前页。"),
+    makeElement("p", "job-tier-legend", `默认均衡精选 ${countCopy(balancedCount)} 条；全部重点 ${countCopy(focusCount)} 条；全部记录 ${countCopy(allCount)} 条。均衡精选只调整跨星域、跨企业的默认浏览，不删除机会、不改变 T 级；未归类线索可在“全部重点”查看。沿用岗位评价规则：T0 ≥90 · T0.5 85–89 · T1 80–84 · T1.5 75–79 · T2 70–74 · T2.5 65–69 · T3 60–64；信息不足列为“未评分”。`),
   );
   const displayedView = showingSavedSnapshot ? state.futureRadar.jobsAppliedView : state.futureRadar.view;
   if (displayedView === "companies") {
     const companies = state.futureRadar.companies || [];
     elements.recruitmentJobs.append(
       makeElement("p", "job-tier-filter-result", `本页 ${companies.length} 个企业分组 · ${showingSavedSnapshot ? "上次成功快照（原筛选条件）" : "当前筛选"}共 ${state.futureRadar.totalCompanies || 0} 个企业分组 / ${state.futureRadar.totalJobs} 个机会`),
-      makeElement("p", "job-tier-legend", "企业按名称稳定分页；展开只显示符合当前 T 级、星域及搜索条件的机会，岗位沿用所选排序。运营商品牌归组仅用于浏览，不改变实际招聘单位或岗位评分；单位未知的线索分别展示。"),
+      makeElement("p", "job-tier-legend", selectedTier === "BALANCED"
+        ? "企业按星域与企业轮转稳定分页；展开只显示属于同一均衡精选投影的岗位。运营商品牌归组仅用于浏览，不改变实际招聘单位或岗位评分。"
+        : "企业按名称稳定分页；展开只显示符合当前 T 级、星域及搜索条件的机会，岗位沿用所选排序。运营商品牌归组仅用于浏览，不改变实际招聘单位或岗位评分；单位未知的线索分别展示。"),
     );
     if (!companies.length) {
       elements.recruitmentJobs.appendChild(makeElement("div", "empty-list", "当前筛选没有匹配企业。可切换 T 级、星域或搜索条件；所有机会仍保留在池中。"));
     } else companies.forEach((company) => elements.recruitmentJobs.appendChild(createFutureRadarCompanyCard(company)));
     return;
   }
-  const displayedJobs = ["FOCUS", "ALL"].includes(selectedTier)
+  const displayedJobs = ["BALANCED", "FOCUS", "ALL"].includes(selectedTier)
     ? availableJobs
     : selectedTier === "UNRANKED"
       ? availableJobs.filter((job) => jobTierBucket(job) === "UNRANKED")
@@ -5080,7 +5098,7 @@ elements.futureRadarOpportunityRefresh.addEventListener("click", () => {
 elements.futureRadarFilterForm.addEventListener("submit", (event) => {
   event.preventDefault();
   readFutureRadarFilters();
-  state.recruitmentTierFilter = "FOCUS";
+  state.recruitmentTierFilter = "BALANCED";
   state.futureRadar.page = 1;
   loadFutureRadarJobPage(1, true);
 });
@@ -5102,12 +5120,12 @@ elements.recruitmentRefresh.addEventListener("click", refreshRecruitmentSource);
 elements.recruitmentForm.addEventListener("submit", saveRecruitment);
 document.querySelectorAll(".recruitment-checks input").forEach((input) => {
   input.addEventListener("change", () => {
-    state.recruitmentTierFilter = "FOCUS";
+    state.recruitmentTierFilter = "BALANCED";
     renderRecruitmentJobs(state.recruitmentJobs);
     renderFutureRadarOpportunityOverview();
     renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(state.recruitmentJobs));
     const selected = selectedRecruitmentStarfields();
-    setRecruitmentStatus(selected.length ? `已选择：${selected.map(starfieldLabel).join(" · ")}；正在读取重点机会并同步星域坐标…` : "已选择全部信号星域；正在读取重点机会并同步坐标…");
+    setRecruitmentStatus(selected.length ? `已选择：${selected.map(starfieldLabel).join(" · ")}；正在读取均衡精选并同步星域坐标…` : "已选择全部信号星域；正在读取均衡精选并同步坐标…");
     scheduleRecruitmentAutoFilter();
   });
 });

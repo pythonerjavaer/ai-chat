@@ -94,7 +94,7 @@ test("chat and search discoveries appear in the default unified opportunity pool
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
   const renderer = appSource.slice(start, end);
-  assert.match(renderer, /opportunityStats\?\.tier_counts/);
+  assert.match(renderer, /opportunityStats\.tier_counts/);
   assert.match(renderer, /futureRadarOpportunitySource\(job\)/);
   assert.match(renderer, /createFutureRadarOpportunityDetail\(job\)/);
 });

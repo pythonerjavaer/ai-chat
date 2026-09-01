@@ -1273,14 +1273,15 @@ def future_radar_opportunities(
         "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY"
     ] | None = None,
     priority_only: bool = False,
+    balanced_only: bool = False,
     compact: bool = False,
     view: Literal["jobs", "companies"] = "jobs",
     company_key: str | None = Query(default=None, max_length=100),
 ) -> JSONResponse:
-    """Include usable discoveries; optionally focus on T0–T3 and unranked rows.
+    """Include usable discoveries; optionally focus or balance the visible rows.
 
-    The API default remains the complete matching pool. Priority and tier
-    selections affect grouping/pagination, not archived records or scoring.
+    The API default remains the complete matching pool. Priority, balance and
+    tier selections affect grouping/pagination, not stored records or scoring.
     """
     filters = {
         "status": status_filter, "verification_status": verification_status,
@@ -1295,6 +1296,7 @@ def future_radar_opportunities(
         "sort": sort, "active_only": status_filter in {"active", "open"},
         "primary_categories": _validated_future_radar_categories(category),
         "tier_code": tier_code, "priority_only": priority_only,
+        "balanced_only": balanced_only,
         "view": view, "company_key": company_key,
     }
     profile = database.get_recruitment_profile(user["id"])
