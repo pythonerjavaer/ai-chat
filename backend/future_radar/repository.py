@@ -43,8 +43,14 @@ DEEP_SCAN_ADAPTERS = frozenset({
     "openai_web_search", "wechat_public", "wechat_web_search",
 })
 
-BALANCED_CATEGORY_LIMIT = 60
-BALANCED_COMPANY_LIMIT = 6
+# The default projection is deliberately much smaller than the underlying
+# opportunity pool.  A high-volume ATS (most visibly the telecom operators)
+# must not occupy most of the first useful browse surface merely because it
+# publishes one row per city/branch/role.  The same neutral limits apply to
+# every official starfield and every display company: they do not special-case
+# telecom, synthesize missing categories, delete records, or alter T scores.
+BALANCED_CATEGORY_LIMIT = 24
+BALANCED_COMPANY_LIMIT = 3
 BALANCED_TIER_ORDER = {
     code: index for index, code in enumerate(
         ("T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED")
@@ -1972,7 +1978,7 @@ class RadarRepository:
         """Select a diverse reversible view; never mutate or delete the pool.
 
         The ten official starfields take turns, and companies take turns
-        inside each starfield. One display company shares its six places
+        inside each starfield. One display company shares its three places
         across every starfield. Unclassified records remain available in the
         ordinary focused/full projections but do not enter this curated view.
         """

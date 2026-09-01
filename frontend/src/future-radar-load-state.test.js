@@ -1047,6 +1047,66 @@ test("sidebar counts reflect final company/tier scope and hide stale numbers whi
   assert.equal(badge().dataset.status, "ready");
 });
 
+test("switching focus back to balanced rejects projection-mismatched sidebar statistics", async () => {
+  const r = companyRuntime();
+  const badge = attachCategoryBadge(r, "state_tech_telecom");
+  const focus = companyPayload({
+    items: [companyGroup("telecom:china_unicom", "中国联通", 917)],
+    totalCompanies: 21,
+    total: 917,
+  });
+  Object.assign(focus.stats, {
+    selection_mode: "priority",
+    balanced_total: 304,
+    priority_total: 1338,
+    matching_total: 3511,
+    visible_category_counts: { state_tech_telecom: 917 },
+    visible_category_company_counts: { state_tech_telecom: 21 },
+  });
+  const balanced = companyPayload({
+    items: [companyGroup("telecom:china_unicom", "中国联通", 6)],
+    totalCompanies: 210,
+    total: 304,
+  });
+  Object.assign(balanced.stats, {
+    selection_mode: "balanced",
+    balanced_total: 304,
+    priority_total: 1338,
+    matching_total: 3511,
+    visible_category_counts: { state_tech_telecom: 56 },
+    visible_category_company_counts: { state_tech_telecom: 21 },
+  });
+  let returnWrongBalancedProjection = true;
+  r.controls.opportunityHandler = (path) => {
+    const params = new URLSearchParams(path.split("?")[1]);
+    if (params.get("priority_only") === "true") return focus;
+    if (returnWrongBalancedProjection) {
+      returnWrongBalancedProjection = false;
+      return { ...balanced, stats: { ...focus.stats } };
+    }
+    return balanced;
+  };
+
+  const selectingFocus = r.run("selectRecruitmentTier('FOCUS')");
+  await r.flushSelection();
+  assert.equal(await selectingFocus, true);
+  assert.equal(badge().textContent, "21组 · 917条");
+
+  const selectingBalanced = r.run("selectRecruitmentTier('BALANCED')");
+  await r.flushSelection();
+  assert.equal(await selectingBalanced, false);
+  assert.equal(r.state.futureRadar.jobsAppliedTier, "FOCUS");
+  assert.equal(r.state.futureRadar.totalJobs, 917, "cards, totals and stats stay on one owned projection");
+  assert.equal(badge().textContent, "—", "FOCUS counts never appear under a selected BALANCED chip");
+
+  const retry = r.run("selectRecruitmentTier('BALANCED')");
+  await r.flushSelection();
+  assert.equal(await retry, true);
+  assert.equal(r.state.futureRadar.jobsAppliedTier, "BALANCED");
+  assert.equal(r.state.futureRadar.totalJobs, 304);
+  assert.equal(badge().textContent, "21组 · 56条");
+});
+
 test("starfield changes hide the previous category count before the debounced profile-save read", async () => {
   const r = companyRuntime();
   const badge = attachCategoryBadge(r, "state_tech_telecom");

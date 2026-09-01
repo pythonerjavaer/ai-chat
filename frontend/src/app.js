@@ -139,6 +139,7 @@ const state = {
     page: 1,
     pageSize: 20,
     opportunityStats: {},
+    opportunityStatsQuery: "",
     jobsRequestId: 0,
     jobsLoading: false,
     jobsRequestQuery: "",
@@ -920,6 +921,7 @@ function endFutureRadarSession(expired = false) {
   resetFutureRadarCompanyExpansions();
   state.futureRadar.totalJobs = 0;
   state.futureRadar.opportunityStats = {};
+  state.futureRadar.opportunityStatsQuery = "";
   state.futureRadar.activeRunTypes.clear();
   state.futureRadar.jobsError = expired ? futureRadarOpportunityErrorCopy(error) : "";
   if (elements.recruitmentDialog?.open) elements.recruitmentDialog.close();
@@ -2960,7 +2962,9 @@ function renderFutureRadarOpportunityOverview() {
       coverage.appendChild(details);
     }
   }
-  const stats = state.futureRadar.opportunityStats || {};
+  const statsAreCurrent = Boolean(state.futureRadar.jobsAppliedQuery)
+    && state.futureRadar.opportunityStatsQuery === state.futureRadar.jobsAppliedQuery;
+  const stats = statsAreCurrent ? state.futureRadar.opportunityStats || {} : {};
   const counts = stats.verification_status || {};
   const count = (value) => Math.max(0, Number(value) || 0).toLocaleString("zh-CN");
   const exactCount = (value) => value == null || value === "" || !Number.isFinite(Number(value)) || Number(value) < 0
@@ -2968,7 +2972,7 @@ function renderFutureRadarOpportunityOverview() {
   const pendingSelection = futureRadarSelectionIsPending();
   const statisticsStatus = state.futureRadar.jobsError ? "error"
     : state.futureRadar.jobsLoading || pendingSelection ? "loading"
-      : state.futureRadar.jobsLoaded ? "ready" : "unavailable";
+      : state.futureRadar.jobsLoaded && statsAreCurrent ? "ready" : "unavailable";
   elements.futureRadarOpportunitySummary?.replaceChildren(
     ...(state.futureRadar.totalCompanies == null ? [] : [makeElement("article", "", `企业分组 ${count(state.futureRadar.totalCompanies)} · 机会 ${count(state.futureRadar.totalJobs)}`)]),
     makeElement("article", "", `均衡精选 ${exactCount(stats.balanced_total)} · 全部重点 ${exactCount(stats.priority_total)} · 全部记录 ${exactCount(stats.matching_total)}`),
@@ -3323,7 +3327,24 @@ function recordFutureRadarOpportunityFailure(error) {
   return state.futureRadar.jobsError;
 }
 
+function futureRadarQuerySelectionMode(query) {
+  const params = new URLSearchParams(query);
+  if (params.get("balanced_only") === "true") return "balanced";
+  if (params.get("priority_only") === "true") return "priority";
+  if (params.get("tier_code")) return "tier";
+  return "all";
+}
+
+function futureRadarPayloadMatchesQuery(payload, query) {
+  const reportedMode = String(payload?.stats?.selection_mode || "").trim().toLowerCase();
+  // Older compatible servers did not identify their projection. When the
+  // marker is present it is authoritative and must match the request that
+  // owns these cards, totals and sidebar counts.
+  return !reportedMode || reportedMode === futureRadarQuerySelectionMode(query);
+}
+
 function applyFutureRadarJobsPayload(payload, query = futureRadarJobsQuery()) {
+  if (!futureRadarPayloadMatchesQuery(payload, query)) return false;
   const previousError = state.futureRadar.jobsError;
   const params = new URLSearchParams(query);
   const view = (payload.view || params.get("view")) === "companies" ? "companies" : "jobs";
@@ -3353,11 +3374,13 @@ function applyFutureRadarJobsPayload(payload, query = futureRadarJobsQuery()) {
   state.futureRadar.pageSize = radarNumber(payload, ["page_size"], state.futureRadar.pageSize);
   state.futureRadar.jobsAppliedPageSize = state.futureRadar.pageSize;
   state.futureRadar.opportunityStats = payload.stats || {};
+  state.futureRadar.opportunityStatsQuery = query;
   state.futureRadar.searchScope = payload.scope || state.futureRadar.searchScope;
   state.futureRadar.searchCoverage = payload.coverage ?? state.futureRadar.searchCoverage;
   state.futureRadar.searchStatus = payload.search_status || state.futureRadar.searchStatus;
   renderFutureRadarOpportunityOverview();
   renderFutureRadarPagination();
+  return true;
 }
 
 function futureRadarJobsQuery(page = state.futureRadar.page) {
@@ -3495,7 +3518,11 @@ async function loadFutureRadarJobPage(page, force = false, { scroll = true, dela
       });
       if (!current()) return false;
       state.futureRadar.jobsLoading = false;
-      applyFutureRadarJobsPayload(payload, query);
+      if (!applyFutureRadarJobsPayload(payload, query)) {
+        throw Object.assign(new Error("机会池返回了不匹配的筛选结果，请重试。"), {
+          code: "OPPORTUNITY_PROJECTION_MISMATCH",
+        });
+      }
       const displayJobs = futureRadarDisplayJobs(state.recruitmentJobs);
       renderRecruitmentJobs(displayJobs);
       renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(displayJobs));
@@ -3643,8 +3670,8 @@ async function pollFutureRadarEvents() {
       const listChanged = !state.futureRadar.jobsLoaded || Boolean(state.futureRadar.jobsError)
         || JSON.stringify(incomingJobs) !== JSON.stringify(companiesView ? state.futureRadar.companies : state.futureRadar.jobs)
         || JSON.stringify(opportunityPayload.stats || {}) !== JSON.stringify(state.futureRadar.opportunityStats);
-      applyFutureRadarJobsPayload(opportunityPayload, opportunityQuery);
-      if (listChanged) {
+      const applied = applyFutureRadarJobsPayload(opportunityPayload, opportunityQuery);
+      if (applied && listChanged) {
         renderRecruitmentJobs(state.futureRadar.jobs);
         renderRecruitmentDeadlineAlerts(state.futureRadar.jobs);
       }

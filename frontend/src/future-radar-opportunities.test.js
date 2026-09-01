@@ -96,6 +96,7 @@ function pollingContext({ race = false, unchanged = false } = {}) {
     state, document: { hidden: false },
     elements: { recruitmentDialog: { open: true }, futureRadarLiveState: { replaceChildren() {} } },
     futureRadarJobsQuery: () => "page=1&status=open",
+    futureRadarPayloadMatchesQuery: () => true,
     api: async (path) => {
       calls.push(path);
       if (path.startsWith("/future-radar/events")) return { items: [] };
@@ -103,7 +104,7 @@ function pollingContext({ race = false, unchanged = false } = {}) {
       return payload;
     },
     radarCollection: (value) => value?.items || [],
-    applyFutureRadarJobsPayload: () => { result.applied += 1; },
+    applyFutureRadarJobsPayload: () => { result.applied += 1; return true; },
     renderRecruitmentJobs: () => { result.rendered += 1; },
     renderRecruitmentDeadlineAlerts() {},
     eventIdentity: (event) => event.id,

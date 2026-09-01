@@ -28,6 +28,8 @@ ELIGIBLE_TIERS = ("T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", None)
 TELECOM = "state_tech_telecom"
 TECH = "internet_tech"
 FINANCE = "insurance_integrated_finance"
+BANKS = "policy_state_banks"
+BIG_FOUR = "big_four_professional_services"
 
 
 @pytest.fixture
@@ -260,14 +262,14 @@ def test_balanced_projection_rotates_ten_starfields_and_keeps_full_pool_reversib
     assert complete["stats"]["selection_mode"] == "all"
     assert complete["stats"]["priority_total"] == 651
     assert complete["stats"]["secondary_total"] == 10
-    assert complete["stats"]["balanced_total"] == 600
-    assert complete["stats"]["balanced_excluded_total"] == 51
+    assert complete["stats"]["balanced_total"] == 240
+    assert complete["stats"]["balanced_excluded_total"] == 411
 
     balanced = p.get(page_size=700, filters={"balanced_only": True})
-    assert balanced["total"] == balanced["total_opportunities"] == 600
+    assert balanced["total"] == balanced["total_opportunities"] == 240
     assert balanced["stats"]["selection_mode"] == "balanced"
     assert balanced["stats"]["visible_category_counts"] == {
-        category: 60 for category in PRIMARY_CATEGORY_CODES
+        category: 24 for category in PRIMARY_CATEGORY_CODES
     }
     assert balanced["stats"]["category_counts"] == {
         **{category: 66 for category in PRIMARY_CATEGORY_CODES}, "uncategorized": 1,
@@ -348,20 +350,55 @@ def test_balanced_company_cap_uses_rank_order_and_expansion_reuses_global_select
 
     balanced = p.get(page_size=20, filters={"balanced_only": True})
     assert [item["external_id"] for item in balanced["items"]] == [
-        "rank-01-tier", "rank-02-tier", "rank-03-newer", "rank-04-older",
-        "rank-05-program", "rank-06-pending",
+        "rank-01-tier", "rank-02-tier", "rank-03-newer",
     ]
-    assert balanced["stats"]["balanced_total"] == 6
-    assert balanced["stats"]["balanced_excluded_total"] == 2
+    assert balanced["stats"]["balanced_total"] == 3
+    assert balanced["stats"]["balanced_excluded_total"] == 5
     groups = p.get(filters={"balanced_only": True, "view": "companies"})
-    assert groups["total_companies"] == 1 and groups["items"][0]["opportunity_count"] == 6
+    assert groups["total_companies"] == 1 and groups["items"][0]["opportunity_count"] == 3
     key = groups["items"][0]["company_key"]
     expanded = p.get(page_size=20, filters={"balanced_only": True, "company_key": key})
     assert [item["external_id"] for item in expanded["items"]] == [
         item["external_id"] for item in balanced["items"]
     ]
     assert expanded["stats"]["priority_total"] == 8
-    assert expanded["stats"]["balanced_total"] == 6
+    assert expanded["stats"]["balanced_total"] == 3
+
+
+def test_balanced_projection_caps_a_dominant_category_without_padding_sparse_categories(priority_pool):
+    p = priority_pool
+    telecom = [
+        {
+            "key": f"dominant-telecom-{index:03d}", "tier": "T1", "job_score": 80,
+            "company": f"通信招聘主体-{index:03d}", "primary_category": TELECOM,
+        }
+        for index in range(100)
+    ]
+    banks = [
+        {
+            "key": f"sparse-bank-{index:02d}", "tier": "T1.5", "job_score": 75,
+            "company": f"银行招聘主体-{index:02d}", "primary_category": BANKS,
+        }
+        for index in range(7)
+    ]
+    big_four = [
+        {
+            "key": f"sparse-big-four-{index:02d}", "tier": "T2", "job_score": 70,
+            "company": f"四大招聘主体-{index:02d}", "primary_category": BIG_FOUR,
+        }
+        for index in range(2)
+    ]
+    p.insert_many(telecom + banks + big_four)
+
+    balanced = p.get(page_size=200, filters={"balanced_only": True})
+    assert balanced["stats"]["visible_category_counts"] == {
+        TELECOM: 24, BANKS: 7, BIG_FOUR: 2,
+    }
+    assert balanced["total_opportunities"] == 33
+    assert balanced["stats"]["priority_total"] == 109
+    # A sparse starfield contributes every real record it has. It is never
+    # padded to the category limit, and the complete pool remains reversible.
+    assert p.get(page_size=200, filters={"priority_only": True})["total"] == 109
 
 
 def test_balanced_company_scope_does_not_receive_a_fresh_category_quota(priority_pool):
