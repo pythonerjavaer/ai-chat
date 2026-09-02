@@ -784,19 +784,22 @@ function translateError(message) {
 async function enterApp() {
   const pendingLaunch = state.pendingLaunch || await storage.get(STORAGE_KEYS.pendingProduct);
   const resumeProduct = resolveStartupProduct({ queuedProductLaunch, pendingLaunch });
+  const openStartupWorldMap = !resumeProduct && Boolean(state.user?.privacy_accepted);
   queuedProductLaunch = null;
   if (WORKSPACE_ORDER.includes(resumeProduct)) state.workspace = resumeProduct;
   elements.authView.classList.add("hidden");
   elements.appView.classList.remove("hidden");
   applyUser();
+  // Put the normal authenticated destination in the top layer before the
+  // first network await. Otherwise the restored workspace can paint for the
+  // whole loading period and then appear to redirect into the world map.
+  if (openStartupWorldMap) openWorldMap();
   await loadWorkspaces();
   await Promise.all([loadSessions(), loadDocuments(), loadHomeRecruitmentAlerts()]);
   newConversation();
   if (resumeProduct) window.setTimeout(() => launchProduct(resumeProduct), 0);
   if (!state.user.privacy_accepted && !elements.consentDialog.open) {
     elements.consentDialog.showModal();
-  } else if (!resumeProduct) {
-    window.setTimeout(openWorldMap, 80);
   }
 }
 

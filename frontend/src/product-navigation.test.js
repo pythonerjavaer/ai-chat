@@ -67,6 +67,19 @@ test("a previously active product does not bypass the product compass on startup
   assert.equal(resolveStartupProduct({ activeProduct: "recruitment" }), null);
 });
 
+test("authenticated startup opens the world map before loading a restored workspace", () => {
+  const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const start = appSource.indexOf("async function enterApp()");
+  const end = appSource.indexOf("\nasync function loadHomeRecruitmentAlerts", start);
+  const enterAppSource = appSource.slice(start, end);
+  const mapOpen = enterAppSource.indexOf("if (openStartupWorldMap) openWorldMap();");
+  const firstNetworkLoad = enterAppSource.indexOf("await loadWorkspaces();");
+
+  assert.ok(mapOpen >= 0, "normal authenticated startup must open the world map");
+  assert.ok(mapOpen < firstNetworkLoad, "the map must open before the restored workspace can paint");
+  assert.doesNotMatch(enterAppSource, /setTimeout\(openWorldMap/);
+});
+
 test("an explicit product choice made before authentication is resumed", () => {
   assert.equal(resolveStartupProduct({ pendingLaunch: "recruitment" }), "recruitment");
   assert.equal(
