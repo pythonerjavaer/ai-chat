@@ -929,7 +929,15 @@ class OfficialHtmlAdapter:
         campus = bool(page.keyword_hits)
         year = int(config.get("recruitment_year", date.today().year + 1))
         required_markers = self._configured_markers(config, "required_markers")
-        folded_page = page.text.casefold()
+        # Configured markers are normalized by clean_text().  Normalize the
+        # fetched page the same way so literal official titles containing
+        # full-width punctuation (for example Chinese parentheses) still match.
+        folded_page = clean_text(
+            page.text,
+            # Do not let the presentation-oriented default truncate a long
+            # official vacancy list before a configured marker near its end.
+            limit=max(4_000, len(page.text) * 4),
+        ).casefold()
         required_markers_present = all(
             marker.casefold() in folded_page for marker in required_markers
         )
@@ -1232,6 +1240,650 @@ def _operator_result(
 class _NoPublicApiRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise WatchFetchError("Public ATS API redirected; no request was forwarded.")
+
+
+_HOTJOB_SUITE_KEY = re.compile(r"SU[0-9a-f]{24}", re.IGNORECASE)
+_HOTJOB_POST_ID = re.compile(r"[0-9a-f]{24}", re.IGNORECASE)
+
+
+def _hotjob_public_request(
+    suite_key: str,
+    route: str,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    referer: str,
+) -> dict[str, Any]:
+    """Call one fixed, read-only Hotjob public recruitment route.
+
+    The adapter never forwards browser state, cookies or authorization.  Both
+    the tenant key and route are locally constrained before the URL is built,
+    and redirects are rejected so an ATS configuration change cannot turn a
+    scan into a request to an unrelated host.
+    """
+    if not _HOTJOB_SUITE_KEY.fullmatch(suite_key):
+        raise WatchFetchError("Hotjob suite key is invalid.")
+    if route not in {"config/get", "positionInfo/listPosition", "positionInfo/listPositionDetail"}:
+        raise WatchFetchError("Hotjob public route is not allowed.")
+    endpoint = validate_public_https_url(
+        f"https://wecruit.hotjob.cn/wecruit/{route}/{suite_key}"
+        "?iSaJAx=isAjax&request_locale=zh_CN"
+    )
+    request = urllib.request.Request(
+        endpoint,
+        data=urllib.parse.urlencode(payload).encode("utf-8"),
+        headers={
+            "User-Agent": "FrostFire-Recruitment-Watch/1.0",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "Referer": referer,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.build_opener(_NoPublicApiRedirect()).open(
+            request, timeout=timeout,
+        ) as response:
+            final = validate_public_https_url(response.geturl())
+            if final != endpoint or response.headers.get_content_type() != "application/json":
+                raise WatchFetchError("Unexpected Hotjob public ATS response.")
+            raw = response.read(2_000_001)
+            if len(raw) > 2_000_000:
+                raise WatchFetchError("Hotjob public ATS response exceeded the size limit.")
+            result = json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise WatchFetchError(f"Hotjob public ATS returned HTTP {exc.code}.") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise WatchFetchError("Hotjob public ATS response is unavailable or invalid.") from exc
+    if not isinstance(result, dict) or str(result.get("state")) != "200" or not isinstance(result.get("data"), dict):
+        raise WatchFetchError("Hotjob public ATS did not confirm a successful response.")
+    return result["data"]
+
+
+def _hotjob_public_date(value: Any) -> str | None:
+    raw = clean_text(value, limit=40)
+    # Public Hotjob payloads commonly include a time component even though the
+    # product only exposes a calendar deadline.  Parse the leading public date
+    # without interpreting it as an opening timestamp or local-time assertion.
+    match = re.match(r"^(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", raw)
+    candidate = normalize_date("-".join(match.groups())) if match else normalize_date(raw)
+    if not candidate:
+        return None
+    # Hotjob uses 3000-01-01 as an internal no-deadline sentinel.  It is not a
+    # factual application deadline and must never appear in the public pool.
+    if int(candidate[:4]) > 2100:
+        return None
+    return candidate
+
+
+def _hotjob_hiring_entity(root_company: str, unit: Any) -> str:
+    name = _redact_public_text(unit, limit=160)
+    if not name:
+        return root_company
+    # A legal subsidiary remains the actual employer.  An internal department,
+    # branch or committee is qualified by the root brand so downstream hierarchy
+    # scoring can distinguish headquarters, provincial branches and outlets.
+    if re.search(r"(?:股份有限公司|有限责任公司|有限公司)$", name):
+        return name
+    if name.startswith(root_company):
+        return name
+    return clean_text(f"{root_company}{name}", limit=160)
+
+
+def _hotjob_target_cohort(item: dict[str, Any], year: int) -> bool:
+    text = " ".join(clean_text(item.get(key), limit=2_000) for key in (
+        "postName", "projectName", "subject", "workContent",
+    ))
+    return bool(
+        re.search(rf"(?<!\d){year}\s*届(?!\d)", text)
+        or re.search(
+            rf"(?<!\d){year}\s*年(?:度)?\s*(?:校园招聘|校招|应届(?:生|毕业生)?)(?!\d)",
+            text,
+        )
+    )
+
+
+_HOTJOB_PROGRAM_ONLY = re.compile(
+    r"挑战赛|竞赛|大赛|训练营|开放日|宣讲会|"
+    r"\b(?:challenge|competition|contest|open\s+day)\b",
+    re.IGNORECASE,
+)
+
+
+def _hotjob_public_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    raw = clean_text(value, limit=20).casefold()
+    if raw in {"true", "yes", "1", "open", "enabled"}:
+        return True
+    if raw in {"false", "no", "0", "closed", "disabled"}:
+        return False
+    return None
+
+
+def _hotjob_delivery_status(item: dict[str, Any], closing_date: str | None) -> str:
+    signals = [
+        _hotjob_public_bool(item.get("canDelivery")),
+        _hotjob_public_bool(item.get("showDeliverButton")),
+    ]
+    if False in signals or (closing_date and closing_date < date.today().isoformat()):
+        return "closed"
+    if True in signals or (closing_date and closing_date >= date.today().isoformat()):
+        return "open"
+    return "unknown"
+
+
+class HotjobCampusAdapter:
+    """Paginate a configured employer's public Hotjob campus ATS.
+
+    Only rows that explicitly name the configured graduate cohort are emitted.
+    A campus channel or a recent publish timestamp alone is not cohort evidence.
+    Each retained row is re-read from the public detail API and linked to its
+    independent, browser-openable detail page.
+    """
+
+    def scan(self, source: dict[str, Any]) -> AdapterResult:
+        config = source.get("adapter_config", {})
+        suite_key = clean_text(config.get("suite_key"), limit=80)
+        source_url = _public_reference_url(source.get("url"))
+        if not source_url or not _HOTJOB_SUITE_KEY.fullmatch(suite_key):
+            raise DiscoveryLimitedError("A valid public Hotjob campus source is not configured.")
+        parsed = urllib.parse.urlsplit(source_url)
+        if parsed.hostname != "wecruit.hotjob.cn" or not parsed.path.startswith(f"/{suite_key}/"):
+            raise WatchFetchError("Hotjob source URL and configured tenant do not match.")
+
+        company = clean_text(source.get("company"), limit=160)
+        if not company:
+            raise WatchFetchError("Hotjob source company is missing.")
+        aliases = tuple(dict.fromkeys((
+            company,
+            *[
+                clean_text(value, limit=160)
+                for value in config.get("employer_aliases", [])[:20]
+                if clean_text(value, limit=160)
+            ],
+        )))
+        category = normalize_taxonomy_value(
+            config.get("primary_category")
+            or "securities_public_funds_asset_management"
+        )
+        if category not in PRIMARY_CATEGORY_CODES:
+            raise WatchFetchError("Hotjob source category is invalid.")
+        target = EmployerSearchTarget(
+            id=source["id"], canonical_name=company, aliases=aliases,
+            pool_id=clean_text(config.get("pool_id") or "hotjob_public", limit=80),
+            primary_category=category,
+            pool_name=clean_text(config.get("pool_name") or source.get("name"), limit=160),
+            focus="",
+        )
+        timeout = min(25.0, max(2.0, float(config.get("timeout_seconds", 12))))
+        delay = max(0.25, float(config.get("domain_delay_seconds", 1)))
+        cancellation_check = config.get("_cancellation_check")
+
+        DOMAIN_LIMITER.wait("wecruit.hotjob.cn", delay)
+        tenant = _hotjob_public_request(
+            suite_key, "config/get", {}, timeout=timeout, referer=source_url,
+        )
+        tenant_config = tenant.get("config") if isinstance(tenant.get("config"), dict) else {}
+        tenant_company = clean_text(tenant_config.get("companyName"), limit=160)
+        if not tenant_company or not _company_matches_target(tenant_company, target):
+            raise WatchFetchError("Hotjob tenant identity does not match the configured employer.")
+
+        year = int(config.get("recruitment_year", date.today().year + 1))
+        max_pages = min(100, max(1, int(config.get("max_pages", 30))))
+        max_details = min(300, max(1, int(config.get("max_details", 120))))
+        deadline = time.monotonic() + min(
+            600.0, max(20.0, float(config.get("max_scan_seconds", 180)))
+        )
+        page_number = 1
+        pages_scanned = 0
+        expected_pages: int | None = None
+        expected_total: int | None = None
+        observed = 0
+        matched_rows: list[dict[str, Any]] = []
+        seen_post_ids: set[str] = set()
+        complete = True
+        reason = ""
+
+        while page_number <= max_pages:
+            check_discovery_cancellation(cancellation_check)
+            if time.monotonic() >= deadline:
+                complete, reason = False, "Hotjob scan reached its source time budget."
+                break
+            DOMAIN_LIMITER.wait("wecruit.hotjob.cn", delay)
+            data = _hotjob_public_request(
+                suite_key,
+                "positionInfo/listPosition",
+                {"isFrompb": "true", "recruitType": 1, "pageSize": 15, "currentPage": page_number},
+                timeout=min(timeout, max(2.0, deadline - time.monotonic())),
+                referer=source_url,
+            )
+            page_form = data.get("pageForm")
+            if not isinstance(page_form, dict) or not isinstance(page_form.get("pageData"), list):
+                raise WatchFetchError("Hotjob campus list schema changed.")
+            try:
+                total_pages = int(page_form.get("totalPage", 0))
+                current_page = int(page_form.get("currentPage", 0))
+                data_count = int(page_form.get("dataCount", 0))
+            except (TypeError, ValueError) as exc:
+                raise WatchFetchError("Hotjob campus pagination is invalid.") from exc
+            if current_page != page_number:
+                complete, reason = False, "Hotjob campus returned an unexpected page number."
+                break
+            if total_pages < 0 or data_count < 0:
+                complete, reason = False, "Hotjob campus pagination totals are invalid."
+                break
+            if (
+                (expected_pages is not None and expected_pages != total_pages)
+                or (expected_total is not None and expected_total != data_count)
+            ):
+                complete, reason = False, "Hotjob campus list changed during pagination."
+            expected_pages = total_pages
+            expected_total = data_count
+            rows = page_form["pageData"]
+            pages_scanned += 1
+            observed += len(rows)
+            for raw in rows:
+                if not isinstance(raw, dict) or str(raw.get("recruitType")) != "1":
+                    complete = False
+                    reason = reason or "Hotjob campus returned an invalid campus row."
+                    continue
+                post_id = clean_text(raw.get("postId"), limit=80)
+                if not _HOTJOB_POST_ID.fullmatch(post_id) or post_id in seen_post_ids:
+                    complete = False
+                    reason = reason or "Hotjob campus returned an invalid or duplicate position id."
+                    continue
+                seen_post_ids.add(post_id)
+                if not _hotjob_target_cohort(raw, year):
+                    continue
+                matched_rows.append(raw)
+            if total_pages == 0 or page_number >= total_pages:
+                break
+            if not rows:
+                complete, reason = False, "Hotjob pagination stopped before the final page."
+                break
+            page_number += 1
+        else:
+            if expected_pages and page_number <= expected_pages:
+                complete, reason = False, "Hotjob scan reached its page budget."
+
+        if expected_total is not None and (
+            observed != expected_total or len(seen_post_ids) != expected_total
+        ):
+            complete = False
+            reason = reason or "Hotjob campus row count did not match its pagination total."
+
+        jobs: list[dict[str, Any]] = []
+        detail_failures = 0
+        verified_details: list[dict[str, Any]] = []
+        for raw in matched_rows[:max_details]:
+            check_discovery_cancellation(cancellation_check)
+            post_id = clean_text(raw.get("postId"), limit=80)
+            title = _redact_public_text(raw.get("postName"), limit=280)
+            if not _HOTJOB_POST_ID.fullmatch(post_id) or not title:
+                detail_failures += 1
+                continue
+            if time.monotonic() >= deadline:
+                complete, reason = False, "Hotjob scan reached its detail time budget."
+                break
+            try:
+                DOMAIN_LIMITER.wait("wecruit.hotjob.cn", delay)
+                detail = _hotjob_public_request(
+                    suite_key,
+                    "positionInfo/listPositionDetail",
+                    {"postId": post_id},
+                    timeout=min(timeout, max(2.0, deadline - time.monotonic())),
+                    referer=source_url,
+                )
+            except WatchFetchError:
+                detail_failures += 1
+                continue
+            detail_title = _redact_public_text(detail.get("postName"), limit=280)
+            if (
+                clean_text(detail.get("postId"), limit=80) != post_id
+                or str(detail.get("recruitType")) != "1"
+                or detail_title != title
+                or not _hotjob_target_cohort(detail, year)
+            ):
+                detail_failures += 1
+                continue
+
+            closing_date = _hotjob_public_date(detail.get("endDate"))
+            status = _hotjob_delivery_status(detail, closing_date)
+            detail_url = canonicalize_url(
+                f"https://wecruit.hotjob.cn/{suite_key}/pb/posDetail.html?"
+                + urllib.parse.urlencode({"postId": post_id}),
+                allow_empty=False,
+            )
+            department = _redact_public_text(detail.get("department"), limit=160)
+            education = _redact_public_text(detail.get("education"), limit=160)
+            subject = _redact_public_text(detail.get("subject"), limit=2_000)
+            requirements = "；".join(value for value in (education, subject) if value)
+            if department:
+                requirements = clean_text(f"招聘部门：{department}。{requirements}", limit=8_000)
+            semantic_detail = {
+                "external_id": f"hotjob-{suite_key.casefold()}-{post_id.casefold()}",
+                "company": _hotjob_hiring_entity(company, detail.get("company")),
+                "title": title,
+                "city": _redact_public_text(detail.get("workPlaceStr"), limit=160),
+                "region": "中国",
+                "employer_type": clean_text(
+                    config.get("employer_type") or "券商/公募/资管", limit=80,
+                ),
+                "industry": clean_text(config.get("industry") or "证券", limit=120),
+                "primary_category": category,
+                "official_url": detail_url,
+                "application_url": detail_url,
+                # publishDate is publication metadata, not an asserted opening date.
+                "opening_date": None,
+                "closing_date": closing_date,
+                "status": status,
+                "verification_status": "verified",
+                "confidence_score": 0.98,
+                "description": _redact_public_text(detail.get("serviceCondition"), limit=8_000),
+                "responsibilities": _redact_public_text(detail.get("workContent"), limit=8_000),
+                "requirements": requirements,
+                "tags": ["校园招聘", str(year), "官方 ATS", "确定性解析"],
+                "evidence": [f"官方 ATS 当前校招列表与详情均明确标注 {year} 届及该岗位名称。"],
+            }
+            verified_details.append(semantic_detail)
+            # Recruitment contests and open days are valid campaign signals,
+            # but they are not employment vacancies and must not manufacture
+            # high-tier jobs in the public opportunity pool.
+            if not _HOTJOB_PROGRAM_ONLY.search(
+                f"{detail_title} {clean_text(detail.get('projectName'), limit=300)}"
+            ):
+                jobs.append(semantic_detail)
+
+        if len(matched_rows) > max_details:
+            complete, reason = False, "Hotjob scan reached its detail-item budget."
+        if detail_failures:
+            complete = False
+            reason = reason or f"{detail_failures} Hotjob detail rows could not be verified."
+
+        programs = []
+        if verified_details:
+            detail_statuses = {item["status"] for item in verified_details}
+            complete_detail_snapshot = bool(
+                complete
+                and not detail_failures
+                and len(verified_details) == len(matched_rows)
+            )
+            program_status = (
+                "open" if "open" in detail_statuses
+                else "closed" if complete_detail_snapshot and detail_statuses == {"closed"}
+                else "unknown"
+            )
+            detail_deadlines = [
+                item["closing_date"] for item in verified_details if item.get("closing_date")
+            ]
+            program_deadline = (
+                max(detail_deadlines)
+                if complete_detail_snapshot and len(detail_deadlines) == len(verified_details)
+                else None
+            )
+            programs.append({
+                "external_id": f"hotjob-{suite_key.casefold()}-{year}-campus",
+                "company": company,
+                "program_name": clean_text(config.get("program_name") or f"{year} 届校园招聘"),
+                "recruitment_year": year,
+                "recruitment_type": "campus",
+                "region": "中国",
+                "opening_date": None,
+                "closing_date": program_deadline,
+                "official_url": source_url,
+                "status": program_status,
+                "verification_status": "verified",
+                "confidence_score": 0.98,
+                "evidence": [f"官方 ATS 校招列表存在明确标注 {year} 届的岗位。"],
+            })
+            program_external_id = programs[0]["external_id"]
+            for job in jobs:
+                job["program_external_id"] = program_external_id
+
+        normalized = json.dumps({
+            "tenant": tenant_company,
+            "year": year,
+            # Only validated, already-redacted public fields enter snapshots.
+            # Include detail semantics so a responsibility/location/delivery
+            # change invalidates the source hash even when the list is stable.
+            "programs": programs,
+            "jobs": jobs,
+            "verified_detail_ids": [item["external_id"] for item in verified_details],
+        }, ensure_ascii=False, sort_keys=True)
+        return AdapterResult(
+            programs=programs,
+            jobs=jobs,
+            content_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+            normalized_content=normalized,
+            snapshot_complete=complete,
+            status="healthy" if complete else "partial",
+            message=reason,
+            coverage={
+                "pages_scanned": pages_scanned,
+                "rows_observed": observed,
+                "target_year_rows": len(matched_rows),
+                "verified_jobs": len(jobs),
+                "program_only_rows": len(verified_details) - len(jobs),
+                "detail_failures": detail_failures,
+                "reported_total": expected_total,
+            },
+        )
+
+
+_CITICS_API_ENDPOINT = "https://global-kong.citics.com/api/v1/recruit/getPositionList"
+_CITICS_PUBLIC_PAGE = "https://careers.citics.com/campus/headquarters/"
+_CITICS_POSITION_ID = re.compile(r"\d{1,12}")
+
+
+def _citics_public_positions(page_number: int, page_size: int, timeout: float) -> dict[str, Any]:
+    """Read one fixed page of CITIC Securities' public campus API.
+
+    The request is deliberately independent of browser state: it contains no
+    Cookie, authorization header or configurable destination.  Redirects are
+    rejected before any request can be forwarded to another host.
+    """
+    if page_number < 1 or page_number > 4 or page_size != 50:
+        raise WatchFetchError("CITIC Securities pagination is outside its safety bounds.")
+    endpoint = validate_public_https_url(_CITICS_API_ENDPOINT)
+    payload = {
+        "sysNo": "CSE001", "recruitType": "08", "deptype": "Headquarter",
+        "batchId": "63", "practice": "0", "pageSize": str(page_size),
+        "pageNo": str(page_number),
+    }
+    request = urllib.request.Request(
+        endpoint,
+        data=urllib.parse.urlencode(payload).encode("utf-8"),
+        headers={
+            "User-Agent": "FrostFire-Recruitment-Watch/1.0",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "Referer": _CITICS_PUBLIC_PAGE,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.build_opener(_NoPublicApiRedirect()).open(
+            request, timeout=timeout,
+        ) as response:
+            final = validate_public_https_url(response.geturl())
+            if final != endpoint or response.headers.get_content_type() != "application/json":
+                raise WatchFetchError("Unexpected CITIC Securities public API response.")
+            raw = response.read(2_000_001)
+            if len(raw) > 2_000_000:
+                raise WatchFetchError("CITIC Securities response exceeded the size limit.")
+            result = json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise WatchFetchError(
+            f"CITIC Securities public API returned HTTP {exc.code}."
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise WatchFetchError("CITIC Securities public API is unavailable or invalid.") from exc
+    if (
+        not isinstance(result, dict)
+        or result.get("errorCode") != 0
+        or not isinstance(result.get("positionList"), list)
+    ):
+        raise WatchFetchError("CITIC Securities public API did not confirm success.")
+    return result
+
+
+def _citics_heading_key(value: Any) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", clean_text(value, limit=160).casefold())
+
+
+def _citics_selected_responsibilities(position_name: str, value: Any) -> str:
+    """Keep only the named direction from a compound department description."""
+    raw = _redact_public_text(value, limit=30_000)
+    headings = list(re.finditer(
+        r"<b>\s*(?:\d+\s*[.、．]\s*)?([^<]{1,100}?)\s*</b>", raw,
+        flags=re.IGNORECASE,
+    ))
+    if headings:
+        target = _citics_heading_key(position_name)
+        for index, match in enumerate(headings):
+            if _citics_heading_key(match.group(1)) != target:
+                continue
+            end = headings[index + 1].start() if index + 1 < len(headings) else len(raw)
+            selected = re.sub(r"<[^>]{1,80}>", " ", raw[match.end():end])
+            selected = re.sub(r"^[\s:：;；、.-]+", "", selected)
+            return clean_text(f"{position_name}：{selected}", limit=8_000)
+        # A structured compound description without the requested heading is
+        # ambiguous.  Do not leak the other directions into this job's score.
+        return ""
+    plain = clean_text(re.sub(r"<[^>]{1,80}>", " ", raw), limit=8_000)
+    lines = plain.splitlines()
+    if len(lines) > 1 and re.search(r"岗位.{0,20}方向", lines[0]):
+        plain = clean_text(" ".join(lines[1:]), limit=8_000)
+    return plain
+
+
+def _citics_hiring_entity(responsibilities: str) -> str:
+    """Use an explicitly named CITIC legal subsidiary as the real employer."""
+    match = re.search(
+        r"(中信[0-9A-Za-z\u4e00-\u9fff()（）]{1,45}(?:股份有限公司|有限责任公司|有限公司))岗位",
+        responsibilities,
+    )
+    return clean_text(match.group(1), limit=160) if match else "中信证券总部"
+
+
+class CiticsHeadquartersCampusAdapter:
+    """Deterministically import the official 2027 headquarters vacancy list."""
+
+    def scan(self, source: dict[str, Any]) -> AdapterResult:
+        config = source.get("adapter_config", {})
+        if clean_text(source.get("company"), limit=160) != "中信证券":
+            raise WatchFetchError("CITIC Securities source employer is invalid.")
+        if _public_reference_url(source.get("url")) != canonicalize_url(
+            _CITICS_PUBLIC_PAGE, allow_empty=False,
+        ):
+            raise WatchFetchError("CITIC Securities source page is invalid.")
+        if int(config.get("recruitment_year", 0)) != 2027:
+            raise WatchFetchError("CITIC Securities recruitment cohort is invalid.")
+        timeout = min(25.0, max(2.0, float(config.get("timeout_seconds", 12))))
+        page_size = 50
+        expected_total: int | None = None
+        pages = 0
+        rows: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for page_number in range(1, 5):
+            check_discovery_cancellation(config.get("_cancellation_check"))
+            DOMAIN_LIMITER.wait("global-kong.citics.com", max(
+                0.25, float(config.get("domain_delay_seconds", 0.5)),
+            ))
+            response = _citics_public_positions(page_number, page_size, timeout)
+            try:
+                total = int(response.get("count"))
+            except (TypeError, ValueError) as exc:
+                raise WatchFetchError("CITIC Securities result count is invalid.") from exc
+            if total < 0 or total > 200 or (expected_total is not None and total != expected_total):
+                raise WatchFetchError("CITIC Securities result count changed or exceeded bounds.")
+            expected_total = total
+            page_rows = response["positionList"]
+            pages += 1
+            for item in page_rows:
+                if not isinstance(item, dict):
+                    raise WatchFetchError("CITIC Securities returned an invalid vacancy row.")
+                position_id = clean_text(item.get("positionNo"), limit=32)
+                title = _redact_public_text(item.get("positionName"), limit=160)
+                department = _redact_public_text(item.get("deptName"), limit=160)
+                if (
+                    not _CITICS_POSITION_ID.fullmatch(position_id)
+                    or position_id in seen_ids
+                    or item.get("batchId") != 63
+                    or not title
+                    or not department
+                ):
+                    raise WatchFetchError("CITIC Securities vacancy identity is invalid.")
+                seen_ids.add(position_id)
+                rows.append(item)
+            if len(rows) >= total:
+                break
+            if not page_rows:
+                raise WatchFetchError("CITIC Securities pagination ended early.")
+        if expected_total is None or len(rows) != expected_total:
+            raise WatchFetchError("CITIC Securities vacancy count did not match pagination.")
+
+        program_id = "citics-headquarters-campus-2027"
+        jobs = []
+        for item in rows:
+            position_id = clean_text(item["positionNo"], limit=32)
+            department = _redact_public_text(item["deptName"], limit=160)
+            position_name = _redact_public_text(item["positionName"], limit=160)
+            responsibilities = _citics_selected_responsibilities(
+                position_name, item.get("positionDesc"),
+            )
+            jobs.append({
+                "external_id": f"citics-headquarters-2027-{position_id}",
+                "program_external_id": program_id,
+                "company": _citics_hiring_entity(responsibilities),
+                "title": f"{department}｜{position_name}",
+                "city": _redact_public_text(item.get("workplace"), limit=160),
+                "region": "中国",
+                "employer_type": "券商/公募/资管",
+                "industry": "证券",
+                "primary_category": "securities_public_funds_asset_management",
+                "official_url": _CITICS_PUBLIC_PAGE,
+                "application_url": _CITICS_PUBLIC_PAGE,
+                "opening_date": None,
+                "closing_date": None,
+                "status": "open",
+                "verification_status": "verified",
+                "confidence_score": 0.99,
+                "responsibilities": responsibilities,
+                "requirements": _redact_public_text(item.get("qualification"), limit=8_000),
+                "tags": ["校园招聘", "2027", "总部", "官方 API", "确定性解析"],
+                "evidence": ["中信证券官方 2027 总部校园招聘接口当前列出该部门与岗位方向。"],
+            })
+        programs = [{
+            "external_id": program_id,
+            "company": "中信证券总部",
+            "program_name": "中信证券 2027 总部校园招聘",
+            "recruitment_year": 2027,
+            "recruitment_type": "campus",
+            "region": "中国",
+            "opening_date": None,
+            "closing_date": None,
+            "official_url": _CITICS_PUBLIC_PAGE,
+            "status": "open",
+            "verification_status": "verified",
+            "confidence_score": 0.99,
+            "evidence": ["中信证券官方招聘网站当前公开 2027 总部岗位列表。"],
+        }]
+        normalized = json.dumps(
+            {"programs": programs, "jobs": jobs}, ensure_ascii=False, sort_keys=True,
+        )
+        return AdapterResult(
+            programs=programs,
+            jobs=jobs,
+            content_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+            normalized_content=normalized,
+            snapshot_complete=True,
+            status="healthy",
+            coverage={"pages_scanned": pages, "rows_observed": len(rows), "verified_jobs": len(jobs)},
+        )
 
 
 def _unicom_public_jobs_page(page_number: int, page_size: int, timeout: float) -> dict[str, Any]:
@@ -1920,6 +2572,10 @@ def adapter_for_source(
             return ChinaMobileNoticeAdapter(OfficialHtmlAdapter(
                 repository=repository, api_key=openai_api_key, ai_model=ai_model
             ))
+        if provider == "hotjob_campus":
+            return HotjobCampusAdapter()
+        if provider == "citics_headquarters_campus":
+            return CiticsHeadquartersCampusAdapter()
         return OfficialJsonApiAdapter()
     if adapter_name == "public_feed":
         return PublicFeedAdapter()

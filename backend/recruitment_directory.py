@@ -65,12 +65,18 @@ PERSONAL_MONITOR_POOLS = [
         "id": "securities_funds_asset",
         "primary_category": "securities_public_funds_asset_management",
         "name": "券商、公募与资管",
-        "focus": "头部券商、公募基金、传统大型资产管理机构与 AMC 的研究、投行、风控、产品和金融科技岗位",
+        "focus": (
+            "头部及强二线券商、公募基金、传统大型资产管理机构与 AMC 的研究、投行、"
+            "FICC、资管投研、机构业务、风险、产品、金融科技与战略岗位；分支机构纯经纪"
+            "销售、开户获客和客户经理岗位不是优先覆盖方向"
+        ),
         "employers": [
             "中信证券", "中金公司", "华泰证券", "国泰海通", "中信建投", "招商证券",
             "广发证券", "申万宏源", "银河证券", "光大证券", "东方证券", "长城证券", "中信期货",
+            "兴业证券", "国金证券", "中泰证券", "浙商证券", "财通证券", "长江证券",
+            "方正证券", "国联民生证券", "平安证券", "中银证券", "东吴证券", "国元证券",
             "中信资产", "东方资产", "中国华融", "易方达", "华夏基金", "嘉实基金",
-            "南方基金", "汇添富", "富国基金", "博时基金", "广发基金", "招商基金",
+            "南方基金", "汇添富", "富国基金", "博时基金", "广发基金", "招商基金", "中欧基金",
             "兴证全球基金", "景顺长城基金", "鹏华基金", "国投证券", "国信证券",
         ],
     },
@@ -148,6 +154,40 @@ EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "中证信用": ("中证信用增进股份有限公司",),
     "华为终端云": ("华为终端云服务有限公司",),
     "平安科技": ("平安科技（深圳）有限公司",),
+    # Securities firms publish under a mixture of short brands, legal names and
+    # long-lived English brands.  These aliases improve company-level discovery;
+    # they do not merge an unlisted subsidiary into its parent or bypass the
+    # separate official-page verification gate.
+    "中信证券": ("中信证券股份有限公司", "CITIC Securities", "CITICS"),
+    "中金公司": ("中国国际金融股份有限公司", "China International Capital Corporation", "CICC"),
+    "华泰证券": ("华泰证券股份有限公司", "Huatai Securities", "HTSC"),
+    "国泰海通": (
+        "国泰海通证券", "国泰海通证券股份有限公司", "Guotai Haitong Securities",
+        "国泰君安证券", "海通证券",
+    ),
+    "中信建投": ("中信建投证券", "中信建投证券股份有限公司"),
+    "招商证券": ("招商证券股份有限公司",),
+    "广发证券": ("广发证券股份有限公司",),
+    "申万宏源": ("申万宏源证券", "申万宏源证券有限公司"),
+    "银河证券": ("中国银河证券", "中国银河证券股份有限公司"),
+    "光大证券": ("光大证券股份有限公司",),
+    "东方证券": ("东方证券股份有限公司",),
+    "长城证券": ("长城证券股份有限公司",),
+    "国投证券": ("国投证券股份有限公司", "安信证券"),
+    "国信证券": ("国信证券股份有限公司",),
+    "兴业证券": ("兴业证券股份有限公司",),
+    "国金证券": ("国金证券股份有限公司",),
+    "中泰证券": ("中泰证券股份有限公司",),
+    "浙商证券": ("浙商证券股份有限公司",),
+    "财通证券": ("财通证券股份有限公司",),
+    "长江证券": ("长江证券股份有限公司",),
+    "方正证券": ("方正证券股份有限公司",),
+    "国联民生证券": ("国联民生证券股份有限公司",),
+    "平安证券": ("平安证券股份有限公司",),
+    "中银证券": ("中银国际证券", "中银国际证券股份有限公司"),
+    "东吴证券": ("东吴证券股份有限公司",),
+    "国元证券": ("国元证券股份有限公司",),
+    "中欧基金": ("中欧基金管理有限公司",),
     # The sidebar uses familiar short names; official notices commonly use
     # these legal/brand names.  Alias matching selects a discovery target only,
     # and never bypasses the separate official-page evidence gate.

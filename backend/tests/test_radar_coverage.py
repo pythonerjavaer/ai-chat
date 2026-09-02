@@ -220,8 +220,8 @@ def test_search_update_api_exposes_scope_and_only_safe_coverage_metadata(service
     assert response.status_code == 200
     payload = response.json()
     assert payload["scope"]["category_count"] == 10
-    assert payload["scope"]["list_entry_count"] == 218
-    assert payload["scope"]["target_count"] == 205
+    assert payload["scope"]["list_entry_count"] == 231
+    assert payload["scope"]["target_count"] == 218
     assert payload["scope"]["batch_count"] >= 26
     assert payload["coverage"]["target_count"] == 205
     assert payload["coverage"]["searched_count"] == 200

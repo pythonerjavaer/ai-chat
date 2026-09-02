@@ -44,12 +44,17 @@ DEEP_SCAN_ADAPTERS = frozenset({
 })
 
 # The default projection is deliberately much smaller than the underlying
-# opportunity pool.  A high-volume ATS (most visibly the telecom operators)
-# must not occupy most of the first useful browse surface merely because it
-# publishes one row per city/branch/role.  The same neutral limits apply to
-# every official starfield and every display company: they do not special-case
-# telecom, synthesize missing categories, delete records, or alter T scores.
+# opportunity pool. A high-volume ATS must not occupy most of the first useful
+# browse surface merely because it publishes one row per city/branch/role.
+# Quotas affect browsing only: they never delete records or alter T scores.
+# Telecom has three nationwide operators with extremely granular regional
+# inventories, so its browse quota is narrower. Securities/funds cover many
+# independent employers and receive the released slots.
 BALANCED_CATEGORY_LIMIT = 24
+BALANCED_CATEGORY_LIMITS = {
+    "state_tech_telecom": 12,
+    "securities_public_funds_asset_management": 36,
+}
 BALANCED_COMPANY_LIMIT = 3
 BALANCED_TIER_ORDER = {
     code: index for index, code in enumerate(
@@ -2013,7 +2018,10 @@ class RadarRepository:
         while order:
             next_order: list[str] = []
             for category in order:
-                if selected_per_category[category] >= BALANCED_CATEGORY_LIMIT:
+                category_limit = BALANCED_CATEGORY_LIMITS.get(
+                    category, BALANCED_CATEGORY_LIMIT,
+                )
+                if selected_per_category[category] >= category_limit:
                     continue
                 chosen = None
                 queue = company_queues[category]
@@ -2040,7 +2048,7 @@ class RadarRepository:
                 company_key = str(chosen["display_company_key"])
                 selected_per_company[company_key] = selected_per_company.get(company_key, 0) + 1
                 if (
-                    selected_per_category[category] < BALANCED_CATEGORY_LIMIT
+                    selected_per_category[category] < category_limit
                     and queue
                 ):
                     next_order.append(category)

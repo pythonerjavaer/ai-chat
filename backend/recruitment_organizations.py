@@ -159,6 +159,13 @@ _DIRECTORY_AFFILIATES = {
     }
     for operator, names in _OPERATOR_BRANDS.items()
 }
+# Official employer-specific vacancy feeds occasionally name an incorporated
+# hiring entity without the literal word “子公司”.  Keep this small public
+# identity directory separate from platform/T-tier calibration: it establishes
+# only that the entity is not the parent headquarters.
+_INDEPENDENT_SUBSIDIARY_NAMES = frozenset({
+    normalized_key("中信中证投资服务有限责任公司"),
+})
 
 _LABELS = {
     "group_headquarters": "集团总部/总行",
@@ -284,6 +291,8 @@ def _assess_entity(text: str, source: str, *, subsidiary: bool = False) -> _Asse
         return _Assessment("branch_unspecified", source, text)
     if subsidiary or _SUBSIDIARY.search(text):
         return _Assessment("subsidiary", source, text)
+    if normalized_key(text) in _INDEPENDENT_SUBSIDIARY_NAMES:
+        return _Assessment("subsidiary", f"{source}.单位目录", text, "inferred")
     affiliate_level = _directory_affiliate(text)
     if affiliate_level:
         return _Assessment(affiliate_level, f"{source}.单位目录", text, "inferred")

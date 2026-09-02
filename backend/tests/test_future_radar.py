@@ -892,6 +892,8 @@ def test_official_registry_uses_exact_public_markers_and_never_generic_jobs(
         "official-haier-campus-2027",
         "official-xiaomi-campus-2027",
         "official-xiaomi-top-talent-2027",
+        "official-zofund-campus-2027",
+        "official-citics-headquarters-campus-2027",
     }.issubset(source_ids)
     for source_id in source_ids:
         if not source_id.startswith("official-"):
@@ -904,6 +906,8 @@ def test_official_registry_uses_exact_public_markers_and_never_generic_jobs(
                 "official-china-unicom-campus-2027": "china_unicom_campus",
                 "official-china-telecom-campus-jobs-2027": "china_telecom_campus",
                 "official-china-mobile-campus-notices": "china_mobile_notices",
+                "official-citics-headquarters-campus-2027": "citics_headquarters_campus",
+                "official-gf-securities-campus-2027": "hotjob_campus",
             }.get(source_id) == config.get("provider")
             assert source["url"].startswith("https://")
             assert config["ai_extract"] is False
@@ -2218,6 +2222,8 @@ def test_user_manual_scan_always_bridges_current_verified_legacy_pool(
                 "official-china-unicom-campus-2027": "china_unicom_campus",
                 "official-china-telecom-campus-jobs-2027": "china_telecom_campus",
                 "official-china-mobile-campus-notices": "china_mobile_notices",
+                "official-citics-headquarters-campus-2027": "citics_headquarters_campus",
+                "official-gf-securities-campus-2027": "hotjob_campus",
             }.get(source["id"]) == source.get("adapter_config", {}).get("provider")
         )
         for source in radar_service.repository.user_scannable_sources()

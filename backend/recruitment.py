@@ -130,7 +130,7 @@ SCORING_WEIGHTS = {
     "career_value": 20,
     "job_conditions": 23,
 }
-SCORING_VERSION = "future-radar-job-ranking-v4-original-eleven-dimensions"
+SCORING_VERSION = "future-radar-job-ranking-v4.1-securities-identity"
 
 TIER_TARGET_SCORES = {
     "T0": 92,
@@ -701,7 +701,23 @@ def _organization_assessment(job: dict[str, Any]) -> dict[str, Any]:
         organization_job, base_platform_points=8, platform_band="平台识别探针",
     )
     scoring_company = str(probe.get("entity_name") or company).casefold()
-    institution_tier, _ = _institution_identity_calibration(scoring_company)
+    institution_identity = _institution_identity_for_hiring_unit(scoring_company)
+    if (
+        not institution_identity
+        and str(probe.get("level") or "") in {
+            "provincial_branch", "city_branch", "local_branch", "branch_unspecified",
+        }
+        and str(probe.get("entity_source") or "") != "company"
+        and _EXPLICIT_BRANCH_UNIT.search(scoring_company)
+        and not _UNSAFE_PARENT_INHERITANCE.search(scoring_company)
+    ):
+        # Some ATS feeds keep the parent in ``company`` but write only
+        # ``山东分公司数字化发展部`` in the structured hiring-unit field.  Keep
+        # that lower unit as the organization being scored, while using the
+        # exact maintained parent identity solely for its institution baseline.
+        institution_identity = canonical_employer_identity(company)
+    calibration_company = institution_identity or scoring_company
+    institution_tier, _ = _institution_identity_calibration(calibration_company)
     if institution_tier in {"T0", "T0.5", "T1"}:
         points, band = 14, "头部平台基准"
     elif institution_tier == "T1.5":
@@ -725,6 +741,7 @@ def _organization_assessment(job: dict[str, Any]) -> dict[str, Any]:
     return {
         **assessment,
         "employer_identity": scoring_company,
+        "institution_identity": calibration_company,
         "base_platform_score": round(assessment["base_platform_points"] / 16 * 100),
         "platform_score": round(assessment["platform_points"] / 16 * 100),
     }
@@ -793,6 +810,61 @@ def _identity_text(value: Any) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").casefold())
 
 
+_EXPLICIT_BRANCH_UNIT = re.compile(
+    r"分公司|分行|支行|支公司|分部|营业部|办事处|"
+    r"\bbranch(?:\s+office)?\b",
+    re.IGNORECASE,
+)
+_UNSAFE_PARENT_INHERITANCE = re.compile(
+    r"协会|学会|商会|交易商|银行业|银行间|银行保险信息|移动互联网|"
+    r"合作伙伴|供应商|服务商|代理商|外包|劳务|派遣|"
+    r"\b(?:association|partner|supplier|vendor|contractor|outsourc\w*|staffing)\b",
+    re.IGNORECASE,
+)
+_BOUNDED_BRANCH_UNIT_SUFFIX = re.compile(
+    r"[0-9a-z\u4e00-\u9fff]{0,32}"
+    r"(?:分公司|分行|支行|支公司|分部|营业部|办事处|branch(?:office)?)"
+    r"[0-9a-z\u4e00-\u9fff]{0,48}",
+    re.IGNORECASE,
+)
+
+
+def _institution_identity_for_hiring_unit(value: Any) -> str:
+    """Resolve a maintained parent without erasing a lower hiring unit.
+
+    The public directory intentionally rejects arbitrary prefix continuations.
+    That is the correct general identity boundary, but an ATS can append both
+    an explicit branch and its internal department, for example
+    ``中信证券山东分公司数字化发展部``.  Resolve only when a prefix is itself an
+    exact maintained identity and the remaining suffix contains an explicit
+    branch noun.  The organization assessment still retains the branch level,
+    so this cannot manufacture a headquarters score.
+    """
+    raw = str(value or "").strip()
+    if not raw or len(raw) > 500 or _UNSAFE_PARENT_INHERITANCE.search(raw):
+        return ""
+    direct = canonical_employer_identity(raw)
+    if direct:
+        return direct
+    if not _EXPLICIT_BRANCH_UNIT.search(raw):
+        return ""
+
+    compact = _identity_text(raw)
+    branch = _EXPLICIT_BRANCH_UNIT.search(compact)
+    if not branch:
+        return ""
+    # Prefer the longest exact maintained prefix.  This preserves a full legal
+    # employer name when present and avoids choosing a shorter lexical prefix.
+    for end in range(branch.start(), 1, -1):
+        suffix = compact[end:]
+        if not _BOUNDED_BRANCH_UNIT_SUFFIX.fullmatch(suffix):
+            continue
+        parent = canonical_employer_identity(compact[:end])
+        if parent:
+            return parent
+    return ""
+
+
 _TIER_ORDER = tuple(definition["code"] for definition in TIER_DEFINITIONS)
 
 
@@ -836,7 +908,10 @@ def _institution_baseline(
     rule without pretending that a provincial headquarters is group HQ.
     """
     company = str(
-        organization.get("employer_identity") or job.get("company") or ""
+        organization.get("institution_identity")
+        or organization.get("employer_identity")
+        or job.get("company")
+        or ""
     ).casefold()
     tier, band = _institution_identity_calibration(company)
     if tier is None:

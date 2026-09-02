@@ -92,6 +92,17 @@ OFFICIAL_RECRUITMENT_DOMAINS_BY_EMPLOYER = {
     "国家开发银行": ("cdb.com.cn",),
     "中国进出口银行": ("eximbank.gov.cn",),
     "中国农业发展银行": ("adbc.com.cn",),
+    # Employer-owned or employer-branded recruitment hosts confirmed from the
+    # firms' public recruitment pages.  Generic ATS roots remain separately
+    # constrained by KNOWN_AUTHORIZED_ATS_DOMAINS below.
+    "中信证券": ("careers.citics.com",),
+    "中金公司": ("cicc.zhiye.com",),
+    "中信建投": ("csc108.com", "csc108.zhiye.com"),
+    "招商证券": ("cms.hotjob.cn", "newone.com.cn"),
+    "广发证券": ("job.gf.com.cn", "gf.hotjob.cn"),
+    "银河证券": ("chinastock.com.cn", "chinastock.zhiye.com"),
+    "华泰证券": ("job.htsc.com.cn",),
+    "中欧基金": ("zofund.zhiye.com",),
 }
 
 KNOWN_AUTHORIZED_ATS_DOMAINS = {
@@ -388,6 +399,9 @@ def _search_prompt(batch: EmployerSearchBatch) -> str:
 
 本批次目标：
 {targets}
+
+重点岗位方向：{pool.get('focus') or '以企业官方校园招聘岗位为准'}
+该方向用于帮助发现高信号岗位，不得因此漏掉同一目标雇主其他明确开放的校园岗位。
 
 category 固定填写：{category}
 

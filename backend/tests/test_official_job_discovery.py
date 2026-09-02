@@ -279,10 +279,16 @@ def test_official_discovery_does_not_promote_other_employer_or_wrong_cohort(monk
 
 def test_all_existing_non_operator_official_seeds_opt_in_without_removing_configured_roles():
     sources = [source for source in VERIFIED_OFFICIAL_SOURCES if source["source_type"] == "official_html" and not source["company"].startswith("中国电信")]
-    assert len(sources) == 6
-    assert all(source["adapter_config"].get("discover_job_links") for source in sources)
+    assert len(sources) == 7
+    linked_sources = [
+        source for source in sources
+        if source["id"] != "official-zofund-campus-2027"
+    ]
+    assert all(source["adapter_config"].get("discover_job_links") for source in linked_sources)
     honor = next(source for source in sources if source["company"] == "荣耀")
     assert len(honor["adapter_config"]["configured_jobs"]) == 3
+    zofund = next(source for source in sources if source["company"] == "中欧基金")
+    assert len(zofund["adapter_config"]["configured_jobs"]) == 10
 
 
 def test_company_search_follows_official_citation_when_model_has_no_jobs(monkeypatch):

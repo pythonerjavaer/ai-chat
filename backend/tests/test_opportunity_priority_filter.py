@@ -30,6 +30,7 @@ TECH = "internet_tech"
 FINANCE = "insurance_integrated_finance"
 BANKS = "policy_state_banks"
 BIG_FOUR = "big_four_professional_services"
+SECURITIES = "securities_public_funds_asset_management"
 
 
 @pytest.fixture
@@ -269,7 +270,9 @@ def test_balanced_projection_rotates_ten_starfields_and_keeps_full_pool_reversib
     assert balanced["total"] == balanced["total_opportunities"] == 240
     assert balanced["stats"]["selection_mode"] == "balanced"
     assert balanced["stats"]["visible_category_counts"] == {
-        category: 24 for category in PRIMARY_CATEGORY_CODES
+        **{category: 24 for category in PRIMARY_CATEGORY_CODES},
+        TELECOM: 12,
+        SECURITIES: 36,
     }
     assert balanced["stats"]["category_counts"] == {
         **{category: 66 for category in PRIMARY_CATEGORY_CODES}, "uncategorized": 1,
@@ -392,9 +395,9 @@ def test_balanced_projection_caps_a_dominant_category_without_padding_sparse_cat
 
     balanced = p.get(page_size=200, filters={"balanced_only": True})
     assert balanced["stats"]["visible_category_counts"] == {
-        TELECOM: 24, BANKS: 7, BIG_FOUR: 2,
+        TELECOM: 12, BANKS: 7, BIG_FOUR: 2,
     }
-    assert balanced["total_opportunities"] == 33
+    assert balanced["total_opportunities"] == 21
     assert balanced["stats"]["priority_total"] == 109
     # A sparse starfield contributes every real record it has. It is never
     # padded to the category limit, and the complete pool remains reversible.
