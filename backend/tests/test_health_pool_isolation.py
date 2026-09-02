@@ -125,6 +125,11 @@ def test_slow_scan_preflight_does_not_block_event_loop(monkeypatch):
     monkeypatch.setattr(main, "future_radar_service", SimpleNamespace(
         repository=SimpleNamespace(get_source=get_source, manual_scan_sources=select), run=run,
     ))
+    monkeypatch.setattr(
+        main,
+        "_reverify_pending_recruitment_candidates_safely",
+        lambda **_kwargs: {"status": "success", "claimed": 0},
+    )
     monkeypatch.setattr(main, "_public_radar_run", lambda result: result)
 
     async def scenario():

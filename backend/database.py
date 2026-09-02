@@ -15,6 +15,24 @@ SPACE_RUN_HISTORY_LIMIT = 100
 API_USAGE_RETENTION_DAYS = 30
 API_USAGE_SQLITE_TIMEOUT_SECONDS = 0.05
 
+# These values are server-authored decision codes, never source-provided text.
+# Aggregating only this allowlist makes it safe to expose counts without
+# leaking candidate content, URLs, or provider error details.
+SAFE_RECRUITMENT_VERIFICATION_REASONS = frozenset({
+    "invalid_official_url",
+    "not_campus",
+    "location_outside_scope",
+    "official_page_non_campus",
+    "official_page_fetch_failed",
+    "official_page_unreadable",
+    "page_missing_official_domain_evidence",
+    "page_missing_company_evidence",
+    "page_missing_current_cohort_evidence",
+    "page_missing_title_evidence",
+    "page_missing_open_application_evidence",
+    "location_unconfirmed",
+})
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -244,6 +262,11 @@ def init_db(*, connection_factory: Callable[[], Any] | None = None) -> None:
                 last_seen_at TEXT NOT NULL,
                 verified_at TEXT,
                 rejected_at TEXT,
+                verification_attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_verification_attempt_at TEXT,
+                next_verification_at TEXT,
+                verification_claim_token TEXT,
+                verification_claimed_at TEXT,
                 FOREIGN KEY (promoted_job_id) REFERENCES recruitment_jobs(id) ON DELETE SET NULL
             );
 
@@ -418,6 +441,24 @@ def init_db(*, connection_factory: Callable[[], Any] | None = None) -> None:
             "recruitment_ingest_candidates",
             "verified_closing_date",
             "TEXT",
+        )
+        for column, declaration in (
+            ("verification_attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_verification_attempt_at", "TEXT"),
+            ("next_verification_at", "TEXT"),
+            ("verification_claim_token", "TEXT"),
+            ("verification_claimed_at", "TEXT"),
+        ):
+            _ensure_column(
+                connection,
+                "recruitment_ingest_candidates",
+                column,
+                declaration,
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recruitment_ingest_candidates_verification_due "
+            "ON recruitment_ingest_candidates(verification_status, next_verification_at, "
+            "verification_claimed_at)"
         )
         for column, declaration in (
             ("education_level", "TEXT NOT NULL DEFAULT ''"),
@@ -1767,7 +1808,10 @@ def _update_existing_recruitment_ingest_candidate(
             city=?, industry=?, official_url=?, canonical_url=?, source=?,
             opening_date=?, closing_date=?, requirements=?, tags=?, evidence=?,
             incoming_status=?, payload_hash=?, verification_status='pending',
-            verification_reason=NULL, rejected_at=NULL, last_seen_at=?
+            verification_reason=NULL, rejected_at=NULL,
+            verification_attempt_count=0, last_verification_attempt_at=NULL,
+            next_verification_at=NULL, verification_claim_token=NULL,
+            verification_claimed_at=NULL, last_seen_at=?
         WHERE id=?
         """,
         (
@@ -1788,9 +1832,17 @@ def _update_existing_recruitment_ingest_candidate(
     return "updated"
 
 
-def upsert_recruitment_ingest_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-    """Persist an isolated candidate and recover safely from concurrent inserts."""
+def upsert_recruitment_ingest_candidate(
+    candidate: dict[str, Any],
+    *,
+    claim_for_verification: bool = False,
+    claim_ttl_seconds: int = 600,
+) -> dict[str, Any]:
+    """Persist a candidate and optionally lease it in the same transaction."""
+    if claim_ttl_seconds < 30 or claim_ttl_seconds > 86_400:
+        raise ValueError("claim_ttl_seconds must be between 30 and 86400.")
     now = utc_now()
+    claimed_verification_token: str | None = None
     with connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
         existing = connection.execute(
@@ -1850,12 +1902,35 @@ def upsert_recruitment_ingest_candidate(candidate: dict[str, Any]) -> dict[str, 
             disposition = _update_existing_recruitment_ingest_candidate(
                 connection, existing, candidate, now
             )
+        if claim_for_verification and disposition != "stale":
+            claim_token = str(uuid.uuid4())
+            stale_before = (
+                datetime.now(timezone.utc) - timedelta(seconds=claim_ttl_seconds)
+            ).isoformat()
+            claimed = connection.execute(
+                """
+                UPDATE recruitment_ingest_candidates
+                SET verification_claim_token=?, verification_claimed_at=?,
+                    last_verification_attempt_at=?,
+                    verification_attempt_count=verification_attempt_count + 1
+                WHERE dedupe_key=?
+                  AND verification_status IN ('pending', 'verified', 'rejected')
+                  AND (
+                        verification_claimed_at IS NULL
+                        OR verification_claimed_at <= ?
+                  )
+                """,
+                (claim_token, now, now, candidate["dedupe_key"], stale_before),
+            )
+            if claimed.rowcount:
+                claimed_verification_token = claim_token
         row = connection.execute(
             "SELECT * FROM recruitment_ingest_candidates WHERE dedupe_key = ?",
             (candidate["dedupe_key"],),
         ).fetchone()
     result = _decode_recruitment_ingest_candidate(row)
     result["disposition"] = disposition
+    result["claimed_verification_token"] = claimed_verification_token
     return result
 
 
@@ -1866,24 +1941,28 @@ def set_recruitment_ingest_candidate_verification(
     promoted_job_id: str | None = None,
     verified_opening_date: str | None = None,
     verified_closing_date: str | None = None,
+    next_verification_at: str | None = None,
+    claim_token: str | None = None,
 ) -> dict[str, Any] | None:
     now = utc_now()
     verified_at = now if verification_status == "verified" else None
     rejected_at = now if verification_status == "rejected" else None
     with connect() as connection:
-        connection.execute(
+        result = connection.execute(
             """
             UPDATE recruitment_ingest_candidates
             SET verification_status=?, verification_reason=?,
                 promoted_job_id=COALESCE(?, promoted_job_id),
                 verified_at=COALESCE(?, verified_at),
                 rejected_at=?,
+                next_verification_at=?, verification_claim_token=NULL,
+                verification_claimed_at=NULL,
                 verified_opening_date=CASE WHEN ? = 'verified' THEN ?
                                            ELSE verified_opening_date END,
                 verified_closing_date=CASE WHEN ? = 'verified' THEN ?
                                            ELSE verified_closing_date END,
                 last_seen_at=last_seen_at
-            WHERE id=?
+            WHERE id=? AND (? IS NULL OR verification_claim_token=?)
             """,
             (
                 verification_status,
@@ -1891,18 +1970,376 @@ def set_recruitment_ingest_candidate_verification(
                 promoted_job_id,
                 verified_at,
                 rejected_at,
+                next_verification_at if verification_status == "pending" else None,
                 verification_status,
                 verified_opening_date,
                 verification_status,
                 verified_closing_date,
                 candidate_id,
+                claim_token,
+                claim_token,
             ),
         )
+        if claim_token is not None and not result.rowcount:
+            return None
         row = connection.execute(
             "SELECT * FROM recruitment_ingest_candidates WHERE id = ?",
             (candidate_id,),
         ).fetchone()
     return _decode_recruitment_ingest_candidate(row) if row else None
+
+
+def claim_recruitment_ingest_candidate(
+    candidate_id: str,
+    *,
+    claim_ttl_seconds: int = 600,
+    now: datetime | None = None,
+    recheck_terminal: bool = False,
+    ignore_retry_time: bool = False,
+) -> tuple[str, dict[str, Any]] | None:
+    """Atomically lease one due candidate before an ingest-time page fetch.
+
+    Returning ``None`` means another worker owns a live lease or the candidate
+    is not eligible. Normal workers only claim due pending rows. An explicit
+    source replay may request ``recheck_terminal`` and ``ignore_retry_time`` so
+    a previously verified/rejected page can be checked again without allowing
+    two workers to own it. A changed ingest payload clears the old lease in
+    :func:`upsert_recruitment_ingest_candidate`, invalidating the old worker;
+    this function then issues the replacement lease.
+    """
+    if claim_ttl_seconds < 30 or claim_ttl_seconds > 86_400:
+        raise ValueError("claim_ttl_seconds must be between 30 and 86400.")
+    attempt_time = now or datetime.now(timezone.utc)
+    if attempt_time.tzinfo is None:
+        attempt_time = attempt_time.replace(tzinfo=timezone.utc)
+    attempt_time = attempt_time.astimezone(timezone.utc)
+    now_value = attempt_time.isoformat()
+    stale_before = (
+        attempt_time - timedelta(seconds=claim_ttl_seconds)
+    ).isoformat()
+    claim_token = str(uuid.uuid4())
+    with connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        result = connection.execute(
+            """
+            UPDATE recruitment_ingest_candidates
+            SET verification_claim_token=?, verification_claimed_at=?,
+                last_verification_attempt_at=?,
+                verification_attempt_count=verification_attempt_count + 1
+            WHERE id=?
+              AND (
+                    verification_status='pending'
+                    OR (?=1 AND verification_status IN ('verified', 'rejected'))
+              )
+              AND (?=1 OR next_verification_at IS NULL OR next_verification_at <= ?)
+              AND (verification_claimed_at IS NULL OR verification_claimed_at <= ?)
+            """,
+            (
+                claim_token,
+                now_value,
+                now_value,
+                candidate_id,
+                int(bool(recheck_terminal)),
+                int(bool(ignore_retry_time)),
+                now_value,
+                stale_before,
+            ),
+        )
+        if not result.rowcount:
+            return None
+        row = connection.execute(
+            """
+            SELECT * FROM recruitment_ingest_candidates
+            WHERE id=? AND verification_claim_token=?
+            """,
+            (candidate_id, claim_token),
+        ).fetchone()
+    if row is None:
+        return None
+    return claim_token, _decode_recruitment_ingest_candidate(row)
+
+
+def _upsert_recruitment_job_on_connection(
+    connection: Any,
+    job: dict[str, Any],
+) -> None:
+    tags = job.get("tags", [])
+    encoded_tags = (
+        tags if isinstance(tags, str)
+        else json.dumps(tags, ensure_ascii=False)
+    )
+    connection.execute(
+        """
+        INSERT INTO recruitment_jobs
+            (id, company, employer_type, title, city, industry, url, source,
+             opening_date, closing_date, requirements, tags, historical_applicants,
+             historical_offers, last_verified_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            company=excluded.company, employer_type=excluded.employer_type,
+            title=excluded.title, city=excluded.city, industry=excluded.industry,
+            url=excluded.url, source=excluded.source,
+            opening_date=excluded.opening_date, closing_date=excluded.closing_date,
+            requirements=excluded.requirements, tags=excluded.tags,
+            historical_applicants=excluded.historical_applicants,
+            historical_offers=excluded.historical_offers,
+            last_verified_at=excluded.last_verified_at, status=excluded.status
+        """,
+        (
+            job["id"], job["company"], job.get("employer_type", "公开岗位源"),
+            job["title"], job.get("city", ""), job.get("industry", ""),
+            job.get("url", ""), job.get("source", ""), job.get("opening_date"),
+            job.get("closing_date"), job.get("requirements", ""), encoded_tags,
+            job.get("historical_applicants"), job.get("historical_offers"),
+            job.get("last_verified_at", utc_now()), job.get("status", "open"),
+        ),
+    )
+
+
+def finalize_recruitment_ingest_candidate_verification(
+    candidate_id: str,
+    verification_status: str,
+    reason: str | None,
+    *,
+    claim_token: str,
+    promoted_job: dict[str, Any] | None = None,
+    promoted_job_id: str | None = None,
+    verified_opening_date: str | None = None,
+    verified_closing_date: str | None = None,
+    next_verification_at: str | None = None,
+) -> dict[str, Any] | None:
+    """CAS-finalize a verification lease and its public job atomically.
+
+    A stale or missing lease returns ``None`` without touching either table.
+    Verification upserts the promoted job in the same transaction.  Rejection
+    or closure only closes a previously promoted job when no other verified
+    candidate still backs that job id *or* the same canonical recruitment URL.
+    """
+    if verification_status not in {"pending", "verified", "rejected", "closed"}:
+        raise ValueError("Invalid recruitment verification status.")
+    if not isinstance(claim_token, str) or not claim_token.strip():
+        raise ValueError("claim_token is required.")
+    if verification_status == "verified" and promoted_job is None:
+        raise ValueError("promoted_job is required for verified candidates.")
+    if promoted_job is not None:
+        job_id = str(promoted_job.get("id") or "").strip()
+        if not job_id:
+            raise ValueError("promoted_job.id is required.")
+        if promoted_job_id is not None and promoted_job_id != job_id:
+            raise ValueError("promoted_job_id does not match promoted_job.id.")
+        promoted_job_id = job_id
+
+    now = utc_now()
+    verified_at = now if verification_status == "verified" else None
+    rejected_at = now if verification_status == "rejected" else None
+    with connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        # This UPDATE is both the CAS and the row lock.  It must happen before
+        # the job upsert so an expired worker can never modify public inventory.
+        owned = connection.execute(
+            """
+            UPDATE recruitment_ingest_candidates
+            SET verification_claimed_at=verification_claimed_at
+            WHERE id=? AND verification_claim_token=?
+            """,
+            (candidate_id, claim_token),
+        )
+        if not owned.rowcount:
+            return None
+        current = connection.execute(
+            "SELECT * FROM recruitment_ingest_candidates WHERE id=?",
+            (candidate_id,),
+        ).fetchone()
+        if current is None:
+            return None
+
+        if verification_status == "verified":
+            _upsert_recruitment_job_on_connection(connection, promoted_job or {})
+
+        effective_job_id = promoted_job_id or current["promoted_job_id"]
+        connection.execute(
+            """
+            UPDATE recruitment_ingest_candidates
+            SET verification_status=?, verification_reason=?, promoted_job_id=?,
+                verified_at=CASE WHEN ?='verified' THEN ? ELSE verified_at END,
+                rejected_at=?, next_verification_at=?,
+                verification_claim_token=NULL, verification_claimed_at=NULL,
+                verified_opening_date=CASE WHEN ?='verified' THEN ?
+                                           ELSE verified_opening_date END,
+                verified_closing_date=CASE WHEN ?='verified' THEN ?
+                                           ELSE verified_closing_date END
+            WHERE id=? AND verification_claim_token=?
+            """,
+            (
+                verification_status,
+                reason,
+                effective_job_id,
+                verification_status,
+                verified_at,
+                rejected_at,
+                next_verification_at if verification_status == "pending" else None,
+                verification_status,
+                verified_opening_date,
+                verification_status,
+                verified_closing_date,
+                candidate_id,
+                claim_token,
+            ),
+        )
+
+        closed_job_count = 0
+        if verification_status in {"rejected", "closed"} and effective_job_id:
+            canonical_url = str(current["canonical_url"] or "")
+            backing = connection.execute(
+                """
+                SELECT id
+                FROM recruitment_ingest_candidates
+                WHERE id<>?
+                  AND (
+                        verification_status='verified'
+                        OR (
+                            verification_status='pending'
+                            AND verified_at IS NOT NULL
+                            AND promoted_job_id IS NOT NULL
+                        )
+                  )
+                  AND (
+                        promoted_job_id=?
+                        OR (?<>'' AND canonical_url=?)
+                  )
+                LIMIT 1
+                """,
+                (
+                    candidate_id,
+                    effective_job_id,
+                    canonical_url,
+                    canonical_url,
+                ),
+            ).fetchone()
+            if backing is None:
+                job_ids = {str(effective_job_id)}
+                if canonical_url:
+                    canonical_rows = connection.execute(
+                        """
+                        SELECT DISTINCT promoted_job_id
+                        FROM recruitment_ingest_candidates
+                        WHERE canonical_url=? AND promoted_job_id IS NOT NULL
+                        """,
+                        (canonical_url,),
+                    ).fetchall()
+                    job_ids.update(str(item["promoted_job_id"]) for item in canonical_rows)
+                for job_id in job_ids:
+                    closed = connection.execute(
+                        """
+                        UPDATE recruitment_jobs
+                        SET status='closed', last_verified_at=?
+                        WHERE id=? AND status<>'closed'
+                        """,
+                        (now, job_id),
+                    )
+                    closed_job_count += max(0, int(closed.rowcount or 0))
+
+        row = connection.execute(
+            "SELECT * FROM recruitment_ingest_candidates WHERE id=?",
+            (candidate_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    result = _decode_recruitment_ingest_candidate(row)
+    result["job_closed"] = bool(closed_job_count)
+    result["closed_job_count"] = closed_job_count
+    return result
+
+
+def claim_pending_recruitment_ingest_candidates(
+    *,
+    limit: int = 20,
+    claim_ttl_seconds: int = 600,
+    now: datetime | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Atomically lease a bounded batch of due pending candidates.
+
+    The claim makes periodic and manual verification safe to run at the same
+    time.  A crashed worker does not strand rows forever: its lease becomes
+    eligible again after ``claim_ttl_seconds``.
+    """
+    if limit < 1 or limit > 100:
+        raise ValueError("limit must be between 1 and 100.")
+    if claim_ttl_seconds < 30 or claim_ttl_seconds > 86_400:
+        raise ValueError("claim_ttl_seconds must be between 30 and 86400.")
+    attempt_time = now or datetime.now(timezone.utc)
+    if attempt_time.tzinfo is None:
+        attempt_time = attempt_time.replace(tzinfo=timezone.utc)
+    attempt_time = attempt_time.astimezone(timezone.utc)
+    now_value = attempt_time.isoformat()
+    stale_before = (
+        attempt_time - timedelta(seconds=claim_ttl_seconds)
+    ).isoformat()
+    claim_token = str(uuid.uuid4())
+    with connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        eligible = connection.execute(
+            """
+            SELECT id
+            FROM recruitment_ingest_candidates
+            WHERE verification_status = 'pending'
+              AND (next_verification_at IS NULL OR next_verification_at <= ?)
+              AND (verification_claimed_at IS NULL OR verification_claimed_at <= ?)
+            ORDER BY COALESCE(next_verification_at, first_seen_at), first_seen_at, id
+            LIMIT ?
+            """,
+            (now_value, stale_before, limit),
+        ).fetchall()
+        candidate_ids = [str(row["id"]) for row in eligible]
+        for candidate_id in candidate_ids:
+            connection.execute(
+                """
+                UPDATE recruitment_ingest_candidates
+                SET verification_claim_token=?, verification_claimed_at=?,
+                    last_verification_attempt_at=?,
+                    verification_attempt_count=verification_attempt_count + 1
+                WHERE id=? AND verification_status='pending'
+                  AND (next_verification_at IS NULL OR next_verification_at <= ?)
+                  AND (verification_claimed_at IS NULL OR verification_claimed_at <= ?)
+                """,
+                (
+                    claim_token,
+                    now_value,
+                    now_value,
+                    candidate_id,
+                    now_value,
+                    stale_before,
+                ),
+            )
+        rows = connection.execute(
+            """
+            SELECT * FROM recruitment_ingest_candidates
+            WHERE verification_claim_token=?
+            ORDER BY COALESCE(next_verification_at, first_seen_at), first_seen_at, id
+            """,
+            (claim_token,),
+        ).fetchall()
+    return claim_token, [_decode_recruitment_ingest_candidate(row) for row in rows]
+
+
+def release_recruitment_ingest_candidate_verification_claim(
+    candidate_id: str,
+    claim_token: str,
+    *,
+    next_verification_at: str | None = None,
+) -> bool:
+    """Release a verification lease without overwriting its review result."""
+    with connect() as connection:
+        result = connection.execute(
+            """
+            UPDATE recruitment_ingest_candidates
+            SET verification_claim_token=NULL, verification_claimed_at=NULL,
+                next_verification_at=?
+            WHERE id=? AND verification_claim_token=?
+            """,
+            (next_verification_at, candidate_id, claim_token),
+        )
+    return bool(result.rowcount)
 
 
 def record_recruitment_ingest_event(
@@ -1971,6 +2408,41 @@ def record_recruitment_ingest_event(
             ),
         )
     return event_id
+
+
+def recruitment_ingest_verification_reason_counts(
+    *, source_ids: list[str] | tuple[str, ...] | None = None
+) -> dict[str, dict[str, int]]:
+    """Return privacy-safe pending/rejected inventory grouped by reason code."""
+    normalized_source_ids = list(dict.fromkeys(
+        str(value).strip() for value in (source_ids or ()) if str(value).strip()
+    ))
+    if len(normalized_source_ids) > 100:
+        raise ValueError("source_ids must contain at most 100 values.")
+    query = """
+        SELECT verification_status, verification_reason, COUNT(*) AS total
+        FROM recruitment_ingest_candidates
+        WHERE verification_status IN ('pending', 'rejected')
+    """
+    parameters: list[Any] = []
+    if normalized_source_ids:
+        placeholders = ",".join("?" for _ in normalized_source_ids)
+        query += f" AND source_id IN ({placeholders})"
+        parameters.extend(normalized_source_ids)
+    query += " GROUP BY verification_status, verification_reason"
+    with connect() as connection:
+        rows = connection.execute(query, tuple(parameters)).fetchall()
+    counts: dict[str, dict[str, int]] = {"pending": {}, "rejected": {}}
+    for row in rows:
+        status = str(row["verification_status"])
+        raw_reason = str(row["verification_reason"] or "unspecified")
+        reason = (
+            raw_reason
+            if raw_reason in SAFE_RECRUITMENT_VERIFICATION_REASONS
+            else "other"
+        )
+        counts[status][reason] = counts[status].get(reason, 0) + int(row["total"] or 0)
+    return counts
 
 
 def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]:

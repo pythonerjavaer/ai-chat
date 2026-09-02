@@ -9,7 +9,8 @@ import sqlite3
 import threading
 import time
 import urllib.parse
-from collections import deque
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -128,6 +129,7 @@ _model_global_units: deque[tuple[float, int]] = deque()
 _registration_rate_guard = threading.Lock()
 _registration_requests: deque[float] = deque()
 _recruitment_source_refresh_lock = threading.Lock()
+_recruitment_verification_retry_lock = threading.Lock()
 _recruitment_source_refresh_state_guard = threading.Lock()
 _recruitment_source_last_refresh = 0.0
 _recruitment_source_last_count = 0
@@ -437,6 +439,21 @@ async def future_radar_refresh_loop(
             logger.info("Future Radar scheduled run skipped because another run is active")
         except Exception:
             logger.exception("Future Radar scheduled run failed")
+        # Candidate verification is an independent, best-effort queue. A
+        # broken official page or database lease must never cancel the Radar
+        # source run above or prevent the scheduler from reaching its sleep.
+        verification = await asyncio.to_thread(
+            _reverify_pending_recruitment_candidates_safely,
+            limit=100,
+        )
+        if verification["status"] == "success":
+            logger.info(
+                "Pending recruitment verification completed: claimed=%s checked=%s "
+                "verified=%s pending=%s rejected=%s closed=%s",
+                verification["claimed"], verification["checked"],
+                verification["verified"], verification["pending"],
+                verification["rejected"], verification["closed"],
+            )
         await asyncio.sleep(settings.future_radar_default_interval_minutes * 60)
 
 
@@ -1576,6 +1593,14 @@ async def run_future_radar(
             source_ids=source_ids,
             force=payload.force,
         )
+        # Run the independent verification queue only after the Radar service
+        # acquired and released its authoritative run/source locks. A busy
+        # Radar request therefore performs no external candidate fetches.
+        verification_retry = await asyncio.to_thread(
+            _reverify_pending_recruitment_candidates_safely,
+            limit=100 if scan_type == "deep" else 40,
+        )
+        result["verification_retry"] = verification_retry
         return _public_radar_run(result) or {}
     except RadarRunBusy as exc:
         raise HTTPException(
@@ -1725,32 +1750,55 @@ def public_chatgpt_sync_status() -> dict:
     inventory_accepted = sum(int(source.get("inventory_accepted", 0)) for source in sources)
     inventory_pending = sum(int(source.get("inventory_pending", 0)) for source in sources)
     inventory_rejected = sum(int(source.get("inventory_rejected", 0)) for source in sources)
+    reason_counts = database.recruitment_ingest_verification_reason_counts(
+        source_ids=tuple(EXPECTED_CHATGPT_SOURCE_IDS)
+    )
     last_synced_at = max(
         (source["last_seen_at"] for source in sources if source.get("last_seen_at")),
         default=None,
     )
+    transport_error = any(
+        source.get("status") == "error"
+        # A batch whose candidates were all deterministically rejected was
+        # historically stored as source ``error``. That is review inventory,
+        # not a transport failure. Preserve genuine source errors, which have
+        # no rejection decision attached to their latest event.
+        and int(source.get("latest_rejected", 0) or 0) == 0
+        for source in sources
+    )
     if connected == 0:
-        sync_state = "pending"
-    elif any(source.get("status") == "error" for source in sources):
-        sync_state = "error"
-    elif (
-        connected < len(EXPECTED_CHATGPT_RADAR_SOURCES)
-        or any(source.get("status") == "partial" for source in sources)
-    ):
-        sync_state = "partial"
+        transport_state = "pending"
+    elif transport_error:
+        transport_state = "error"
+    elif connected < len(EXPECTED_CHATGPT_RADAR_SOURCES):
+        transport_state = "partial"
     else:
-        sync_state = "synced"
+        transport_state = "synced"
+    if inventory_pending:
+        verification_state = "pending"
+    elif inventory_rejected:
+        verification_state = "complete_with_rejections"
+    else:
+        verification_state = "complete"
     return {
-        "status": sync_state,
+        "status": transport_state,
+        "transport_state": transport_state,
+        "verification_state": verification_state,
         "expected_source_count": len(EXPECTED_CHATGPT_RADAR_SOURCES),
         "connected_source_count": connected,
         "last_synced_at": last_synced_at,
-        "accepted": latest_accepted,
-        "pending": latest_pending,
-        "rejected": latest_rejected,
+        # Keep event-scoped review counts separate so clients do not mistake a
+        # normal rejected candidate for a broken source connection.
+        "latest_verification_counts": {
+            "accepted": latest_accepted,
+            "pending": latest_pending,
+            "rejected": latest_rejected,
+        },
         "inventory_accepted": inventory_accepted,
         "inventory_pending": inventory_pending,
         "inventory_rejected": inventory_rejected,
+        "inventory_total": inventory_accepted + inventory_pending + inventory_rejected,
+        "reason_counts": reason_counts,
     }
 
 
@@ -2248,9 +2296,9 @@ def _normalized_identity(value: str) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
 
 
-def _verify_ingest_candidate(
+def _precheck_ingest_candidate(
     candidate: dict,
-) -> tuple[str, str | None, dict[str, str | None]]:
+) -> tuple[str, str, dict[str, str | None]] | None:
     verified_dates = {"opening_date": None, "closing_date": None}
     actionable = {
         "company": candidate["company"],
@@ -2270,14 +2318,19 @@ def _verify_ingest_candidate(
         and not any(marker in city for marker in CORE_LOCATION_MARKERS)
     ):
         return "rejected", "location_outside_scope", verified_dates
-    try:
-        page = fetch_watch_page(candidate["canonical_url"], (), timeout_seconds=5)
-    except WatchFetchError:
-        return "pending", "official_page_fetch_failed", verified_dates
-    except Exception:
-        logger.exception("Unexpected recruitment candidate verification failure")
-        return "pending", "official_page_fetch_failed", verified_dates
-    page_text = str(page.text or "")
+    return None
+
+
+def _verify_ingest_candidate_page(
+    candidate: dict,
+    page: object,
+) -> tuple[str, str | None, dict[str, str | None]]:
+    """Evaluate one already-fetched page against one candidate assertion."""
+    verified_dates = {"opening_date": None, "closing_date": None}
+    city = str(candidate.get("city") or "")
+    location_text = f"{city} {candidate['title']}"
+    location_confirmed = any(marker in location_text for marker in CORE_LOCATION_MARKERS)
+    page_text = str(getattr(page, "text", "") or "")
     final_url = str(
         getattr(page, "final_url", "") or candidate["canonical_url"]
     )
@@ -2299,6 +2352,16 @@ def _verify_ingest_candidate(
     job_excerpt = (
         page_identity[max(0, title_offset - 30):title_offset + len(title_identity) + 140]
         if title_offset >= 0 else ""
+    )
+    # A number of ATS/detail URLs carry the city beside the exact role while
+    # the discovery feed leaves its city column blank.  Once the official
+    # page, employer, cohort and exact title have all been identified below,
+    # that nearby location is stronger evidence than an empty transport
+    # field.  Restrict the lookup to the role excerpt so an office-list footer
+    # cannot turn an otherwise location-less campaign into a verified job.
+    location_confirmed = location_confirmed or any(
+        _normalized_identity(marker) in job_excerpt
+        for marker in CORE_LOCATION_MARKERS
     )
     if _EXPLICIT_NON_CAMPUS_PAGE_PATTERN.search(job_excerpt):
         return "rejected", "official_page_non_campus", verified_dates
@@ -2330,6 +2393,26 @@ def _verify_ingest_candidate(
         ):
             verified_dates[field] = submitted_date
     return "verified", None, verified_dates
+
+
+def _verify_ingest_candidate(
+    candidate: dict,
+) -> tuple[str, str | None, dict[str, str | None]]:
+    precheck = _precheck_ingest_candidate(candidate)
+    if precheck is not None:
+        return precheck
+    try:
+        page = fetch_watch_page(candidate["canonical_url"], (), timeout_seconds=5)
+    except WatchFetchError:
+        return "pending", "official_page_fetch_failed", {
+            "opening_date": None, "closing_date": None,
+        }
+    except Exception:
+        logger.exception("Unexpected recruitment candidate verification failure")
+        return "pending", "official_page_fetch_failed", {
+            "opening_date": None, "closing_date": None,
+        }
+    return _verify_ingest_candidate_page(candidate, page)
 
 
 def _restore_verified_snapshot_job(job: dict) -> str:
@@ -2561,13 +2644,266 @@ def _promoted_job(candidate: dict) -> dict:
     }
 
 
+_VERIFICATION_RETRY_DELAYS = {
+    "official_page_fetch_failed": timedelta(minutes=30),
+    "official_page_unreadable": timedelta(hours=1),
+    "page_missing_official_domain_evidence": timedelta(hours=6),
+    "page_missing_company_evidence": timedelta(hours=6),
+    "page_missing_current_cohort_evidence": timedelta(hours=6),
+    "page_missing_title_evidence": timedelta(hours=6),
+    "page_missing_open_application_evidence": timedelta(hours=3),
+    "location_unconfirmed": timedelta(hours=6),
+}
+
+
+def _pending_verification_retry_at(reason: str | None) -> str:
+    """Return a source-level retry time; this is not a global Radar cooldown."""
+    delay = _VERIFICATION_RETRY_DELAYS.get(
+        str(reason or ""), timedelta(hours=1)
+    )
+    return (datetime.now(timezone.utc) + delay).isoformat()
+
+
+def _fetch_candidate_page_group(
+    canonical_url: str,
+    candidates: list[dict],
+) -> list[tuple[dict, str, str | None, dict[str, str | None]]]:
+    """Fetch one URL once, then evaluate every source assertion for that page."""
+    try:
+        page = fetch_watch_page(canonical_url, (), timeout_seconds=5)
+    except (WatchFetchError, OSError, ValueError):
+        dates = {"opening_date": None, "closing_date": None}
+        return [
+            (candidate, "pending", "official_page_fetch_failed", dict(dates))
+            for candidate in candidates
+        ]
+    except Exception:
+        logger.exception("Unexpected recruitment candidate retry fetch failure")
+        dates = {"opening_date": None, "closing_date": None}
+        return [
+            (candidate, "pending", "official_page_fetch_failed", dict(dates))
+            for candidate in candidates
+        ]
+    decisions = []
+    for candidate in candidates:
+        try:
+            status_name, reason, dates = _verify_ingest_candidate_page(candidate, page)
+        except Exception:
+            logger.exception("Unexpected recruitment candidate retry evaluation failure")
+            status_name, reason = "pending", "official_page_unreadable"
+            dates = {"opening_date": None, "closing_date": None}
+        decisions.append((candidate, status_name, reason, dates))
+    return decisions
+
+
+def _reverify_pending_recruitment_candidates_unlocked(*, limit: int = 40) -> dict:
+    """Advance a durable pending queue without duplicating concurrent checks.
+
+    Claims are database-backed, so another web process, a scheduled pass, or a
+    repeated button click cannot verify the same row concurrently. Candidates
+    sharing a canonical page are evaluated from one deterministic fetch.
+    """
+    claim_token, claimed = database.claim_pending_recruitment_ingest_candidates(
+        limit=limit,
+    )
+    summary = {
+        "claimed": len(claimed),
+        "checked": 0,
+        "verified": 0,
+        "pending": 0,
+        "rejected": 0,
+        "closed": 0,
+        "fetches": 0,
+        "reason_counts": {},
+    }
+    if not claimed:
+        return summary
+
+    decisions: list[tuple[dict, str, str | None, dict[str, str | None]]] = []
+    page_groups: dict[str, list[dict]] = defaultdict(list)
+    empty_dates = {"opening_date": None, "closing_date": None}
+    for candidate in claimed:
+        precheck = _precheck_ingest_candidate(candidate)
+        if precheck is not None:
+            status_name, reason, dates = precheck
+            decisions.append((candidate, status_name, reason, dates))
+        else:
+            page_groups[str(candidate["canonical_url"])].append(candidate)
+
+    summary["fetches"] = len(page_groups)
+    if page_groups:
+        with ThreadPoolExecutor(max_workers=min(6, len(page_groups))) as executor:
+            futures = {
+                executor.submit(_fetch_candidate_page_group, url, group): url
+                for url, group in page_groups.items()
+            }
+            for future in as_completed(futures):
+                try:
+                    decisions.extend(future.result())
+                except Exception:
+                    logger.exception("Recruitment candidate retry group failed")
+                    decisions.extend(
+                        (
+                            candidate,
+                            "pending",
+                            "official_page_fetch_failed",
+                            dict(empty_dates),
+                        )
+                        for candidate in page_groups[futures[future]]
+                    )
+
+    for candidate, status_name, reason, verified_dates in decisions:
+        try:
+            promoted_job_id = candidate.get("promoted_job_id")
+            if status_name == "verified":
+                candidate["verified_opening_date"] = verified_dates["opening_date"]
+                candidate["verified_closing_date"] = verified_dates["closing_date"]
+                job = _promoted_job(candidate)
+                promoted_job_id = job["id"]
+                stored = database.finalize_recruitment_ingest_candidate_verification(
+                    candidate["id"],
+                    "verified",
+                    None,
+                    claim_token=claim_token,
+                    promoted_job=job,
+                    verified_opening_date=verified_dates["opening_date"],
+                    verified_closing_date=verified_dates["closing_date"],
+                )
+            elif status_name == "closed":
+                stored = database.finalize_recruitment_ingest_candidate_verification(
+                    candidate["id"], "closed", reason,
+                    claim_token=claim_token,
+                    promoted_job_id=promoted_job_id,
+                )
+            elif status_name == "rejected":
+                stored = database.finalize_recruitment_ingest_candidate_verification(
+                    candidate["id"], "rejected", reason,
+                    claim_token=claim_token,
+                    promoted_job_id=promoted_job_id,
+                )
+            else:
+                status_name = "pending"
+                stored = database.finalize_recruitment_ingest_candidate_verification(
+                    candidate["id"],
+                    "pending",
+                    reason,
+                    claim_token=claim_token,
+                    promoted_job_id=promoted_job_id,
+                    next_verification_at=_pending_verification_retry_at(reason),
+                )
+            # A newer worker may have reclaimed an expired lease. It owns the
+            # row now, so this worker must not count or overwrite its result.
+            if stored is None:
+                continue
+            summary["checked"] += 1
+            summary[status_name] += 1
+            if reason:
+                safe_reason = (
+                    reason
+                    if reason in database.SAFE_RECRUITMENT_VERIFICATION_REASONS
+                    else "other"
+                )
+                counts = summary["reason_counts"]
+                counts[safe_reason] = counts.get(safe_reason, 0) + 1
+        except Exception:
+            logger.exception("Recruitment candidate retry persistence failed")
+            database.release_recruitment_ingest_candidate_verification_claim(
+                candidate["id"],
+                claim_token,
+                next_verification_at=_pending_verification_retry_at(
+                    "official_page_fetch_failed"
+                ),
+            )
+    return summary
+
+
+def reverify_pending_recruitment_candidates(*, limit: int = 40) -> dict:
+    """Run one bounded retry worker per web process; DB leases remain authoritative."""
+    if not _recruitment_verification_retry_lock.acquire(blocking=False):
+        return {
+            "busy": True,
+            "claimed": 0,
+            "checked": 0,
+            "verified": 0,
+            "pending": 0,
+            "rejected": 0,
+            "closed": 0,
+            "fetches": 0,
+            "reason_counts": {},
+        }
+    try:
+        return {
+            "busy": False,
+            **_reverify_pending_recruitment_candidates_unlocked(limit=limit),
+        }
+    finally:
+        _recruitment_verification_retry_lock.release()
+
+
+def _reverify_pending_recruitment_candidates_safely(*, limit: int) -> dict:
+    """Keep verification failures separate from the authoritative Radar run."""
+    try:
+        return {
+            "status": "success",
+            **reverify_pending_recruitment_candidates(limit=limit),
+        }
+    except Exception:
+        logger.exception("Pending recruitment verification retry failed")
+        return {
+            "status": "error",
+            "claimed": 0,
+            "checked": 0,
+            "verified": 0,
+            "pending": 0,
+            "rejected": 0,
+            "closed": 0,
+            "fetches": 0,
+            "reason_counts": {},
+            "busy": False,
+        }
+
+
 @app.get("/api/recruitment/sync/status")
 def recruitment_sync_status(
     _: Annotated[None, Depends(require_recruitment_ingest_token)],
 ) -> dict:
-    return database.recruitment_sync_status(
+    status = database.recruitment_sync_status(
         expected_source_count=len(EXPECTED_CHATGPT_RADAR_SOURCES)
     )
+    status["reason_counts"] = database.recruitment_ingest_verification_reason_counts()
+    return status
+
+
+@app.post("/api/recruitment/verification/retry")
+def retry_recruitment_verification(
+    _: Annotated[None, Depends(require_recruitment_ingest_token)],
+    limit: int = Query(default=100, ge=1, le=100),
+) -> dict:
+    """Operationally drain one safe retry batch without exposing candidate data."""
+    result = reverify_pending_recruitment_candidates(limit=limit)
+    projection = "unchanged"
+    if result["checked"]:
+        try:
+            bridge = future_radar_service.run(
+                trigger_type="verification_retry_bridge",
+                scan_type="quick",
+                source_ids=["legacy-search-discovery"],
+            )
+            projection = (
+                "updated"
+                if bridge.get("status") in {"success", "partial_success"}
+                else "deferred"
+            )
+        except RadarRunBusy:
+            projection = "deferred"
+        except Exception:
+            logger.exception("Recruitment verification projection failed")
+            projection = "deferred"
+    return {
+        **result,
+        "projection": projection,
+        "inventory": database.recruitment_ingest_verification_reason_counts(),
+    }
 
 
 @app.post("/api/recruitment/ingest")
@@ -2634,11 +2970,15 @@ def ingest_recruitment_jobs(
             candidate.get("source_updated_at"),
         )
 
-        stored = database.upsert_recruitment_ingest_candidate(candidate)
+        stored = database.upsert_recruitment_ingest_candidate(
+            candidate,
+            claim_for_verification=True,
+        )
         # Include replays/stale/closed/rejected observations as well as new
         # rows. The bridge reads their committed state without rescanning the
         # entire historical pool for every ten-item ingest batch.
         bridge_candidate_ids.append(stored["id"])
+        claim_token = stored.pop("claimed_verification_token", None)
         disposition = stored.pop("disposition")
         if disposition == "stale":
             totals["duplicates"] += 1
@@ -2646,18 +2986,7 @@ def ingest_recruitment_jobs(
             group["counts"]["duplicates"] += 1
             group["counts"]["stale"] += 1
             existing_status = stored.get("verification_status")
-            verified_deadline = stored.get("verified_closing_date")
-            if verified_deadline and str(verified_deadline) <= today.isoformat():
-                promoted_job_id = stored.get("promoted_job_id")
-                if promoted_job_id:
-                    database.close_recruitment_job(promoted_job_id)
-                database.set_recruitment_ingest_candidate_verification(
-                    stored["id"], "closed", "expired", promoted_job_id
-                )
-                totals["closed"] += 1
-                group["counts"]["closed"] += 1
-                skipped.append({"title": item.title, "reason": "expired"})
-            elif existing_status == "verified":
+            if existing_status == "verified":
                 totals["accepted"] += 1
                 group["counts"]["accepted"] += 1
             elif existing_status == "rejected":
@@ -2678,18 +3007,51 @@ def ingest_recruitment_jobs(
             totals[disposition] += 1
             group["counts"][disposition] += 1
 
+        # A closed replay stays closed. Verified/rejected rows are intentionally
+        # rechecked when their source reports them again: the official page may
+        # have closed or gained the missing evidence since the prior pass.
+        existing_status = str(stored.get("verification_status") or "pending")
+        if existing_status == "closed":
+            totals["closed"] += 1
+            group["counts"]["closed"] += 1
+            skipped.append({
+                "title": item.title,
+                "reason": stored.get("verification_reason") or "closed",
+            })
+            continue
+
+        if claim_token is None:
+            # Another ingest/retry worker owns this exact candidate, or the
+            # candidate has a configured retry time in the future. Never fetch
+            # it concurrently and never overwrite its eventual decision.
+            result_key = (
+                "accepted" if existing_status == "verified"
+                else existing_status if existing_status in {"rejected", "closed"}
+                else "pending"
+            )
+            totals[result_key] += 1
+            group["counts"][result_key] += 1
+            skipped.append({
+                "title": item.title,
+                "reason": stored.get("verification_reason") or "verification_in_progress",
+            })
+            continue
+
         incoming_closed = item.status == "closed"
         incoming_expired = bool(item.closing_date and item.closing_date <= today)
         if incoming_closed or incoming_expired:
-            promoted_job_id = stored.get("promoted_job_id")
-            if promoted_job_id:
-                database.close_recruitment_job(promoted_job_id)
-            database.set_recruitment_ingest_candidate_verification(
+            finalized = database.finalize_recruitment_ingest_candidate_verification(
                 stored["id"],
                 "closed",
                 "closed" if incoming_closed else "expired",
-                promoted_job_id,
+                claim_token=claim_token,
+                promoted_job_id=stored.get("promoted_job_id"),
             )
+            if finalized is None:
+                totals["pending"] += 1
+                group["counts"]["pending"] += 1
+                skipped.append({"title": item.title, "reason": "verification_superseded"})
+                continue
             totals["closed"] += 1
             group["counts"]["closed"] += 1
             skipped.append({
@@ -2700,12 +3062,16 @@ def ingest_recruitment_jobs(
 
         verified_deadline = stored.get("verified_closing_date")
         if verified_deadline and str(verified_deadline) <= today.isoformat():
-            promoted_job_id = stored.get("promoted_job_id")
-            if promoted_job_id:
-                database.close_recruitment_job(promoted_job_id)
-            database.set_recruitment_ingest_candidate_verification(
-                stored["id"], "closed", "expired", promoted_job_id
+            finalized = database.finalize_recruitment_ingest_candidate_verification(
+                stored["id"], "closed", "expired",
+                claim_token=claim_token,
+                promoted_job_id=stored.get("promoted_job_id"),
             )
+            if finalized is None:
+                totals["pending"] += 1
+                group["counts"]["pending"] += 1
+                skipped.append({"title": item.title, "reason": "verification_superseded"})
+                continue
             totals["closed"] += 1
             group["counts"]["closed"] += 1
             skipped.append({"title": item.title, "reason": "expired"})
@@ -2720,34 +3086,51 @@ def ingest_recruitment_jobs(
             stored["verified_opening_date"] = verified_dates["opening_date"]
             stored["verified_closing_date"] = verified_dates["closing_date"]
             job = _promoted_job(stored)
-            database.upsert_recruitment_jobs([job])
-            database.set_recruitment_ingest_candidate_verification(
+            finalized = database.finalize_recruitment_ingest_candidate_verification(
                 stored["id"],
                 "verified",
                 None,
-                job["id"],
-                verified_dates["opening_date"],
-                verified_dates["closing_date"],
+                claim_token=claim_token,
+                promoted_job=job,
+                verified_opening_date=verified_dates["opening_date"],
+                verified_closing_date=verified_dates["closing_date"],
             )
+            if finalized is None:
+                totals["pending"] += 1
+                group["counts"]["pending"] += 1
+                skipped.append({"title": item.title, "reason": "verification_superseded"})
+                continue
             totals["accepted"] += 1
             group["counts"]["accepted"] += 1
         elif verification_status == "closed":
-            promoted_job_id = stored.get("promoted_job_id")
-            if promoted_job_id:
-                database.close_recruitment_job(promoted_job_id)
-            database.set_recruitment_ingest_candidate_verification(
-                stored["id"], "closed", reason, promoted_job_id
+            finalized = database.finalize_recruitment_ingest_candidate_verification(
+                stored["id"], "closed", reason,
+                claim_token=claim_token,
+                promoted_job_id=stored.get("promoted_job_id"),
             )
+            if finalized is None:
+                totals["pending"] += 1
+                group["counts"]["pending"] += 1
+                skipped.append({"title": item.title, "reason": "verification_superseded"})
+                continue
             totals["closed"] += 1
             group["counts"]["closed"] += 1
             skipped.append({"title": item.title, "reason": reason})
         else:
-            promoted_job_id = stored.get("promoted_job_id")
-            if verification_status == "rejected" and promoted_job_id:
-                database.close_recruitment_job(promoted_job_id)
-            database.set_recruitment_ingest_candidate_verification(
-                stored["id"], verification_status, reason
+            finalized = database.finalize_recruitment_ingest_candidate_verification(
+                stored["id"], verification_status, reason,
+                claim_token=claim_token,
+                promoted_job_id=stored.get("promoted_job_id"),
+                next_verification_at=(
+                    _pending_verification_retry_at(reason)
+                    if verification_status == "pending" else None
+                ),
             )
+            if finalized is None:
+                totals["pending"] += 1
+                group["counts"]["pending"] += 1
+                skipped.append({"title": item.title, "reason": "verification_superseded"})
+                continue
             totals[verification_status] += 1
             group["counts"][verification_status] += 1
             skipped.append({"title": item.title, "reason": reason})

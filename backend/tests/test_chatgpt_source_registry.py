@@ -98,6 +98,8 @@ def test_seeding_sixth_source_keeps_old_five_sources_and_pending_candidates(sync
     assert public["expected_source_count"] == 6
     assert public["connected_source_count"] == 5
     assert public["status"] == "partial"
+    assert public["inventory_total"] == 1
+    assert public["reason_counts"] == {"pending": {"other": 1}, "rejected": {}}
 
 
 def test_sixth_source_heartbeat_is_required_before_all_sources_report_synced(sync_db):
@@ -129,6 +131,69 @@ def test_sixth_source_heartbeat_is_required_before_all_sources_report_synced(syn
     assert main.public_chatgpt_sync_status()["status"] == "synced"
     assert client.get("/api/recruitment/sync/status").status_code == 401
     client.close()
+
+
+def test_review_backlog_is_separate_from_transport_state(sync_db):
+    database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
+    for source in main.EXPECTED_CHATGPT_RADAR_SOURCES:
+        record_heartbeat(source)
+    pending = database.upsert_recruitment_ingest_candidate(
+        candidate("chatgpt-radar-01")
+    )
+
+    status = main.public_chatgpt_sync_status()
+
+    assert status["status"] == status["transport_state"] == "synced"
+    assert status["verification_state"] == "pending"
+    assert status["inventory_pending"] == 1
+    assert status["latest_verification_counts"] == {
+        "accepted": 0, "pending": 0, "rejected": 0,
+    }
+    assert "pending" not in status and "rejected" not in status
+    assert pending["verification_status"] == "pending"
+
+
+def test_normal_rejection_does_not_become_transport_error(sync_db):
+    database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
+    for source in main.EXPECTED_CHATGPT_RADAR_SOURCES:
+        record_heartbeat(source)
+    stored = database.upsert_recruitment_ingest_candidate(
+        candidate("chatgpt-radar-01")
+    )
+    database.set_recruitment_ingest_candidate_verification(
+        stored["id"], "rejected", "not_campus"
+    )
+    database.record_recruitment_ingest_event(
+        source_id="chatgpt-radar-01",
+        source_thread_id=None,
+        title="ChatGPT 监控 1",
+        counts={"received": 1, "rejected": 1},
+        last_item_id="shared-campus-analyst",
+        last_source_updated_at="2026-09-03T00:00:00+00:00",
+    )
+
+    status = main.public_chatgpt_sync_status()
+
+    assert status["status"] == status["transport_state"] == "synced"
+    assert status["verification_state"] == "complete_with_rejections"
+    assert status["latest_verification_counts"]["rejected"] == 1
+    assert status["inventory_rejected"] == 1
+
+
+def test_recent_source_error_remains_a_transport_error(sync_db):
+    database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
+    for source in main.EXPECTED_CHATGPT_RADAR_SOURCES:
+        record_heartbeat(source)
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE recruitment_ingest_sources SET status='error' "
+            "WHERE source_id='chatgpt-radar-03'"
+        )
+
+    status = main.public_chatgpt_sync_status()
+
+    assert status["status"] == status["transport_state"] == "error"
+    assert status["verification_state"] == "complete"
 
 
 def test_sixth_source_discards_thread_compatibility_field_and_keeps_pending_isolated(sync_db, monkeypatch):

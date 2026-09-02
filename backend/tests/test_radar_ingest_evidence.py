@@ -44,6 +44,34 @@ def test_unknown_location_is_pending_not_rejected_or_falsely_verified(monkeypatc
     assert dates == {"opening_date": None, "closing_date": None}
 
 
+def test_exact_official_role_excerpt_can_confirm_location_missing_from_feed(monkeypatch):
+    title = "2027 校园招聘数据分析岗"
+    mock_page(
+        monkeypatch,
+        f"示例科技 {title} 工作地点上海 面向应届毕业生 立即申请",
+    )
+
+    status, reason, _ = main._verify_ingest_candidate(
+        candidate(title=title, city="地点待公告确认")
+    )
+
+    assert (status, reason) == ("verified", None)
+
+
+def test_unrelated_office_footer_does_not_confirm_missing_role_location(monkeypatch):
+    title = "2027 校园招聘数据分析岗"
+    mock_page(
+        monkeypatch,
+        f"示例科技 {title} 面向应届毕业生 立即申请 " + "岗位说明 " * 80 + "上海办公室",
+    )
+
+    status, reason, _ = main._verify_ingest_candidate(
+        candidate(title=title, city="地点待公告确认")
+    )
+
+    assert (status, reason) == ("pending", "location_unconfirmed")
+
+
 @pytest.mark.parametrize("city", ["新加坡", "Singapore", "伦敦", "London", "悉尼", "New York"])
 def test_explicit_overseas_locations_remain_rejected(monkeypatch, city):
     def no_fetch(*_args, **_kwargs):

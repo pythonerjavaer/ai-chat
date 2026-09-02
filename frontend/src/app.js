@@ -2504,14 +2504,14 @@ function ensureRecruitmentSyncPanel() {
   const description = makeElement(
     "p",
     "recruitment-sync-description",
-    "由受控同步桥读取指定监控对话，只向冰焰提交结构化机会信号；这不是 ChatGPT API 直连。",
+    "由受控同步桥读取指定监控对话，只向冰焰提交结构化机会信号；数字是各来源当前保留的信号记录，不是去重后的岗位数。",
   );
   const metrics = makeElement("div", "recruitment-sync-metrics");
   [
     ["最后同步", "last-sync", "等待首次同步"],
-    ["已核验", "accepted", "—"],
-    ["待核验", "pending", "—"],
-    ["已拒绝", "rejected", "—"],
+    ["已核验信号", "accepted", "—"],
+    ["待官网核验信号", "pending", "—"],
+    ["未通过核验信号", "rejected", "—"],
   ].forEach(([label, key, value]) => {
     const metric = document.createElement("article");
     metric.dataset.syncMetric = key;
@@ -2520,7 +2520,7 @@ function ensureRecruitmentSyncPanel() {
   });
   const footer = makeElement("footer", "recruitment-sync-footer");
   footer.append(
-    makeElement("span", "", "受控桥接 · 非 ChatGPT API 直连"),
+    makeElement("span", "", "待核验＝官网证据暂不完整 · 未通过＝明确不符合规则或链接无效"),
     makeElement("b", "", "状态待后端回报"),
   );
   panel.append(header, description, metrics, footer);
@@ -2544,17 +2544,19 @@ function renderRecruitmentSyncStatus(rawStatus) {
     "last_synced_at", "last_sync_at", "last_completed_at", "completed_at", "updated_at",
   ]);
   const latestAccepted = syncCount(status, [
-    "accepted", "verified", "accepted_count", "verified_count", "counts.accepted", "counts.verified",
+    "latest_verification_counts.accepted", "accepted", "verified", "accepted_count",
+    "verified_count", "counts.accepted", "counts.verified",
   ], [], []);
   const latestPending = syncCount(status, [
-    "pending", "pending_count", "pending_verification", "pending_verification_count", "counts.pending",
+    "latest_verification_counts.pending", "pending", "pending_count", "pending_verification",
+    "pending_verification_count", "counts.pending",
   ], [], []);
   const latestRejected = syncCount(status, [
-    "rejected", "skipped", "rejected_count", "skipped_count", "counts.rejected", "counts.skipped",
+    "latest_verification_counts.rejected", "rejected", "rejected_count", "counts.rejected",
   ], [], []);
   const sourceAccepted = syncCount(null, [], sources, ["accepted", "verified", "accepted_count", "verified_count"]);
   const sourcePending = syncCount(null, [], sources, ["pending", "pending_count", "pending_verification"]);
-  const sourceRejected = syncCount(null, [], sources, ["rejected", "skipped", "rejected_count", "skipped_count"]);
+  const sourceRejected = syncCount(null, [], sources, ["rejected", "rejected_count"]);
   const inventoryAccepted = syncCount(status, ["inventory_accepted", "counts.inventory_accepted"], [], [])
     ?? latestAccepted
     ?? sourceAccepted;
@@ -2564,18 +2566,17 @@ function renderRecruitmentSyncStatus(rawStatus) {
   const inventoryRejected = syncCount(status, ["inventory_rejected", "counts.inventory_rejected"], [], [])
     ?? latestRejected
     ?? sourceRejected;
-  const rawState = String(valueAtPaths(status, ["status", "state", "bridge_status"]) || "").toLowerCase();
+  const rawState = String(valueAtPaths(status, [
+    "transport_state", "status", "state", "bridge_status",
+  ]) || "").toLowerCase();
+  const verificationState = String(valueAtPaths(status, ["verification_state"]) || "").toLowerCase();
   const isRunning = /running|syncing|in_progress/.test(rawState);
   const isError = /error|failed|unavailable/.test(rawState);
   const isDisabled = /disabled|paused|inactive/.test(rawState);
   const allSourcesConnected = connected != null && connected >= expected;
-  const noReviewBacklog = (latestPending == null || latestPending === 0)
-    && (latestRejected == null || latestRejected === 0);
-  const isSynced = rawState === "synced" && allSourcesConnected && Boolean(lastSyncedAt) && noReviewBacklog;
+  const isSynced = rawState === "synced" && allSourcesConnected && Boolean(lastSyncedAt);
   const isPartial = rawState === "partial"
-    || (connected != null && connected > 0 && !isSynced)
-    || (latestPending != null && latestPending > 0)
-    || (latestRejected != null && latestRejected > 0);
+    || (connected != null && connected > 0 && !isSynced);
   const visualState = isRunning
     ? "running"
     : isError
@@ -2595,12 +2596,17 @@ function renderRecruitmentSyncStatus(rawStatus) {
     partial: "部分同步",
     pending: "等待同步",
   }[visualState];
+  const resolvedBadgeCopy = visualState === "synced" && verificationState === "pending"
+    ? "回传完成 · 待核验"
+    : visualState === "synced" && verificationState === "complete_with_rejections"
+      ? "同步完成 · 含未通过信号"
+      : badgeCopy;
 
   panel.dataset.state = visualState;
   panel.querySelector("[data-sync-title]").textContent = `${expected} 个 ChatGPT 监控源`;
   const badge = panel.querySelector("[data-sync-badge]");
   badge.className = `recruitment-sync-badge ${visualState}`;
-  badge.textContent = badgeCopy;
+  badge.textContent = resolvedBadgeCopy;
   const metricValues = {
     "last-sync": formatSyncTime(lastSyncedAt),
     accepted: inventoryAccepted == null ? "—" : Number(inventoryAccepted).toLocaleString("zh-CN"),
