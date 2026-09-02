@@ -2871,6 +2871,9 @@ def recruitment_sync_status(
         expected_source_count=len(EXPECTED_CHATGPT_RADAR_SOURCES)
     )
     status["reason_counts"] = database.recruitment_ingest_verification_reason_counts()
+    status["verification_host_counts"] = (
+        database.recruitment_ingest_verification_host_counts()
+    )
     return status
 
 

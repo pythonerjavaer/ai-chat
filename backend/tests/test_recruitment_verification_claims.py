@@ -101,6 +101,39 @@ def test_claim_selects_only_due_pending_candidates_and_is_bounded(claim_db):
     assert rows[0]["last_verification_attempt_at"] == "2026-09-03T11:00:00+00:00"
 
 
+def test_verification_host_counts_are_bounded_and_omit_candidate_details(claim_db):
+    first = database.upsert_recruitment_ingest_candidate(candidate(0))
+    second = database.upsert_recruitment_ingest_candidate(candidate(
+        1, canonical_url="https://www.careers.example.com/private/path?token=secret",
+    ))
+    database.set_recruitment_ingest_candidate_verification(
+        first["id"], "pending", "page_missing_official_domain_evidence",
+    )
+    database.set_recruitment_ingest_candidate_verification(
+        second["id"], "rejected", "not_campus",
+    )
+
+    rows = database.recruitment_ingest_verification_host_counts(limit=10)
+
+    assert rows == [
+        {
+            "status": "pending",
+            "reason": "page_missing_official_domain_evidence",
+            "hostname": "careers.example.com",
+            "count": 1,
+        },
+        {
+            "status": "rejected",
+            "reason": "not_campus",
+            "hostname": "careers.example.com",
+            "count": 1,
+        },
+    ]
+    serialized = str(rows)
+    assert "private/path" not in serialized
+    assert "核验测试集团" not in serialized
+
+
 def test_active_claim_is_not_duplicated_and_expired_claim_is_recoverable(claim_db):
     database.upsert_recruitment_ingest_candidate(candidate(0))
     started = datetime(2026, 9, 3, 11, 0, tzinfo=timezone.utc)

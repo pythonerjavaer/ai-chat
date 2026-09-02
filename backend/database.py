@@ -1,6 +1,7 @@
 import json
 import math
 import sqlite3
+import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -2443,6 +2444,50 @@ def recruitment_ingest_verification_reason_counts(
         )
         counts[status][reason] = counts[status].get(reason, 0) + int(row["total"] or 0)
     return counts
+
+
+def recruitment_ingest_verification_host_counts(
+    *, limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Return bounded, privacy-safe verification inventory by public host.
+
+    This intentionally omits companies, titles, paths, query strings, source
+    identifiers and evidence.  It is used by the token-protected operations
+    endpoint to identify missing official-domain/ATS coverage without exposing
+    the underlying monitored conversations or candidate payloads.
+    """
+    if limit < 1 or limit > 100:
+        raise ValueError("limit must be between 1 and 100.")
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT verification_status, verification_reason, canonical_url
+            FROM recruitment_ingest_candidates
+            WHERE verification_status IN ('pending', 'rejected')
+            """
+        ).fetchall()
+    grouped: dict[tuple[str, str, str], int] = {}
+    for row in rows:
+        status = str(row["verification_status"])
+        raw_reason = str(row["verification_reason"] or "unspecified")
+        reason = (
+            raw_reason
+            if raw_reason in SAFE_RECRUITMENT_VERIFICATION_REASONS
+            else "other"
+        )
+        hostname = (
+            urllib.parse.urlsplit(str(row["canonical_url"] or "")).hostname or "invalid"
+        ).casefold().removeprefix("www.")
+        key = (status, reason, hostname[:253])
+        grouped[key] = grouped.get(key, 0) + 1
+    ordered = sorted(
+        grouped.items(),
+        key=lambda item: (-item[1], item[0][0], item[0][1], item[0][2]),
+    )
+    return [
+        {"status": key[0], "reason": key[1], "hostname": key[2], "count": count}
+        for key, count in ordered[:limit]
+    ]
 
 
 def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]:
