@@ -2485,6 +2485,50 @@ def test_candidate_page_requires_employer_identity_even_on_known_ats(monkeypatch
     assert evidence.title_confirmed is False
 
 
+def test_candidate_page_uses_exact_maintained_brand_alias_without_parent_leakage():
+    target_year = date.today().year + (1 if date.today().month >= 6 else 0)
+    title = f"{target_year}届校园招聘投资分析师"
+    ats_url = "https://cicc.zhiye.com/campus/jobs/123"
+    page = f"CICC {title} 上海 立即申请"
+
+    evidence = recruitment_search._evaluate_official_candidate_page(
+        {
+            "url": ats_url,
+            "company": "中国国际金融股份有限公司",
+            "title": title,
+        },
+        page,
+        ats_url,
+    )
+    branch_evidence = recruitment_search._evaluate_official_candidate_page(
+        {
+            "url": ats_url,
+            "company": "中国国际金融股份有限公司上海分公司",
+            "title": title,
+        },
+        page,
+        ats_url,
+    )
+
+    assert evidence.domain_confirmed is True
+    assert evidence.employer_confirmed is True
+    assert evidence.title_confirmed is True
+    assert branch_evidence.employer_confirmed is False
+    assert branch_evidence.title_confirmed is False
+
+
+def test_every_verified_registry_source_has_a_recognized_exact_host():
+    from backend.future_radar.seeds import VERIFIED_OFFICIAL_SOURCES
+
+    for source in VERIFIED_OFFICIAL_SOURCES:
+        company = source.get("company", "")
+        assert recruitment_search._official_domain_confirmed(
+            company,
+            source.get("url", ""),
+            recruitment_search._maintained_employer_aliases(company),
+        ), source["id"]
+
+
 def test_recruitment_dates_require_application_semantics():
     application_date = "2099-09-10"
 

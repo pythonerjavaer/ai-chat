@@ -2402,7 +2402,7 @@ def _verify_ingest_candidate(
     if precheck is not None:
         return precheck
     try:
-        page = fetch_watch_page(candidate["canonical_url"], (), timeout_seconds=5)
+        page = fetch_watch_page(candidate["canonical_url"], ())
     except WatchFetchError:
         return "pending", "official_page_fetch_failed", {
             "opening_date": None, "closing_date": None,
@@ -2670,7 +2670,7 @@ def _fetch_candidate_page_group(
 ) -> list[tuple[dict, str, str | None, dict[str, str | None]]]:
     """Fetch one URL once, then evaluate every source assertion for that page."""
     try:
-        page = fetch_watch_page(canonical_url, (), timeout_seconds=5)
+        page = fetch_watch_page(canonical_url, ())
     except (WatchFetchError, OSError, ValueError):
         dates = {"opening_date": None, "closing_date": None}
         return [
@@ -2696,7 +2696,9 @@ def _fetch_candidate_page_group(
     return decisions
 
 
-def _reverify_pending_recruitment_candidates_unlocked(*, limit: int = 40) -> dict:
+def _reverify_pending_recruitment_candidates_unlocked(
+    *, limit: int = 40, ignore_retry_time: bool = False,
+) -> dict:
     """Advance a durable pending queue without duplicating concurrent checks.
 
     Claims are database-backed, so another web process, a scheduled pass, or a
@@ -2705,6 +2707,7 @@ def _reverify_pending_recruitment_candidates_unlocked(*, limit: int = 40) -> dic
     """
     claim_token, claimed = database.claim_pending_recruitment_ingest_candidates(
         limit=limit,
+        ignore_retry_time=ignore_retry_time,
     )
     summary = {
         "claimed": len(claimed),
@@ -2817,7 +2820,9 @@ def _reverify_pending_recruitment_candidates_unlocked(*, limit: int = 40) -> dic
     return summary
 
 
-def reverify_pending_recruitment_candidates(*, limit: int = 40) -> dict:
+def reverify_pending_recruitment_candidates(
+    *, limit: int = 40, ignore_retry_time: bool = False,
+) -> dict:
     """Run one bounded retry worker per web process; DB leases remain authoritative."""
     if not _recruitment_verification_retry_lock.acquire(blocking=False):
         return {
@@ -2834,7 +2839,9 @@ def reverify_pending_recruitment_candidates(*, limit: int = 40) -> dict:
     try:
         return {
             "busy": False,
-            **_reverify_pending_recruitment_candidates_unlocked(limit=limit),
+            **_reverify_pending_recruitment_candidates_unlocked(
+                limit=limit, ignore_retry_time=ignore_retry_time,
+            ),
         }
     finally:
         _recruitment_verification_retry_lock.release()
@@ -2881,9 +2888,12 @@ def recruitment_sync_status(
 def retry_recruitment_verification(
     _: Annotated[None, Depends(require_recruitment_ingest_token)],
     limit: int = Query(default=100, ge=1, le=100),
+    force: bool = Query(default=False),
 ) -> dict:
     """Operationally drain one safe retry batch without exposing candidate data."""
-    result = reverify_pending_recruitment_candidates(limit=limit)
+    result = reverify_pending_recruitment_candidates(
+        limit=limit, ignore_retry_time=force,
+    )
     projection = "unchanged"
     if result["checked"]:
         try:

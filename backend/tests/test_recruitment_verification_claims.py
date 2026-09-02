@@ -101,6 +101,23 @@ def test_claim_selects_only_due_pending_candidates_and_is_bounded(claim_db):
     assert rows[0]["last_verification_attempt_at"] == "2026-09-03T11:00:00+00:00"
 
 
+def test_force_claim_ignores_retry_time_but_not_an_active_lease(claim_db):
+    stored = database.upsert_recruitment_ingest_candidate(candidate(0))
+    database.set_recruitment_ingest_candidate_verification(
+        stored["id"], "pending", "official_page_fetch_failed",
+        next_verification_at="2099-09-03T12:00:00+00:00",
+    )
+
+    assert database.claim_pending_recruitment_ingest_candidates(limit=10)[1] == []
+    _, forced = database.claim_pending_recruitment_ingest_candidates(
+        limit=10, ignore_retry_time=True,
+    )
+    assert [row["id"] for row in forced] == [stored["id"]]
+    assert database.claim_pending_recruitment_ingest_candidates(
+        limit=10, ignore_retry_time=True,
+    )[1] == []
+
+
 def test_verification_host_counts_are_bounded_and_omit_candidate_details(claim_db):
     first = database.upsert_recruitment_ingest_candidate(candidate(0))
     second = database.upsert_recruitment_ingest_candidate(candidate(

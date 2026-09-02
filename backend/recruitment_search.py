@@ -62,11 +62,15 @@ OFFICIAL_RECRUITMENT_DOMAINS_BY_EMPLOYER = {
     "大疆": ("careers.dji.com",),
     "荣耀": ("honor.com",),
     "中国电信": ("chinatelecom.com.cn",),
+    "中国移动": ("job.10086.cn",),
+    # Zhaopin is not trusted globally. This exact tenant is the official
+    # China Unicom campus host registered by the verified source registry.
+    "中国联通": ("zglt.zhaopin.com",),
     "海尔": ("haier.net",),
-    "小米": ("xiaomi.com",),
+    "小米": ("xiaomi.com", "xiaomi.jobs.f.mioffice.cn"),
     "腾讯": ("join.qq.com", "careers.tencent.com"),
     "阿里巴巴": ("talent.alibaba.com", "job.alibaba.com"),
-    "字节跳动": ("jobs.bytedance.com",),
+    "字节跳动": ("jobs.bytedance.com", "joinbytedance.com"),
     "美团": ("zhaopin.meituan.com",),
     "京东": ("campus.jd.com", "zhaopin.jd.com"),
     "华为": ("career.huawei.com",),
@@ -92,6 +96,15 @@ OFFICIAL_RECRUITMENT_DOMAINS_BY_EMPLOYER = {
     "国家开发银行": ("cdb.com.cn",),
     "中国进出口银行": ("eximbank.gov.cn",),
     "中国农业发展银行": ("adbc.com.cn",),
+    "招商银行": ("career.cmbchina.com",),
+    "中信银行": ("job.citicbank.com",),
+    "中国平安": ("campus.pingan.com",),
+    "平安银行": ("campus.pingan.com",),
+    "中国建筑第八工程局": ("job.cscec8b.com.cn",),
+    "中建八局": ("job.cscec8b.com.cn",),
+    "中国航天科工": ("casicjob.iguopin.com",),
+    "中国能建": ("ceec.iguopin.com",),
+    "中国电建": ("zhaopin.powerchina.cn",),
     # Employer-owned or employer-branded recruitment hosts confirmed from the
     # firms' public recruitment pages.  Generic ATS roots remain separately
     # constrained by KNOWN_AUTHORIZED_ATS_DOMAINS below.
@@ -103,6 +116,19 @@ OFFICIAL_RECRUITMENT_DOMAINS_BY_EMPLOYER = {
     "银河证券": ("chinastock.com.cn", "chinastock.zhiye.com"),
     "华泰证券": ("job.htsc.com.cn",),
     "中欧基金": ("zofund.zhiye.com",),
+    "亚马逊 / AWS": ("amazon.jobs",),
+    "Amazon": ("amazon.jobs",),
+    "AWS": ("amazon.jobs",),
+    "毕马威": ("kpmg.com",),
+    "KPMG": ("kpmg.com",),
+    "UBS": ("jobs.ubs.com",),
+    "蚂蚁集团": ("talent.antgroup.com",),
+    "粉笔": ("fenbi.com",),
+    "Midas Technologies": ("midas-technologies.com",),
+    "满帮": ("campus.fulltruckalliance.com",),
+    "吉利": ("campus.geely.com",),
+    "国泰海通": ("hr.gtht.com",),
+    "法国兴业银行": ("careers.societegenerale.com",),
 }
 
 KNOWN_AUTHORIZED_ATS_DOMAINS = {
@@ -117,6 +143,10 @@ KNOWN_AUTHORIZED_ATS_DOMAINS = {
     "oraclecloud.com",
     "jobs.feishu.cn",
     "zhiye.com",
+    "boards.greenhouse.io",
+    "job-boards.greenhouse.io",
+    "jobs.smartrecruiters.com",
+    "jobs.lever.co",
 }
 
 EMPLOYER_TYPE_BY_POOL = {
@@ -706,6 +736,42 @@ def _company_evidence_aliases(company: str) -> set[str]:
     return aliases
 
 
+def _maintained_employer_aliases(company: str) -> tuple[str, ...]:
+    """Return aliases only for an exact maintained brand/legal identity.
+
+    Legal company suffixes may differ between a feed and an official page, but
+    a branch, subsidiary or free-form prefix must not inherit its parent
+    group's identity. This keeps CICC/中金公司 and PICC/中国人保 usable without
+    allowing a provincial branch to pass on the parent brand alone.
+    """
+    legal_suffixes = (
+        "集团股份有限公司", "股份有限公司", "集团有限公司",
+        "有限责任公司", "有限公司", "集团", "公司",
+    )
+
+    def legal_key(value: str) -> str:
+        key = _evidence_key(value)
+        changed = True
+        while key and changed:
+            changed = False
+            for suffix in legal_suffixes:
+                suffix_key = _evidence_key(suffix)
+                if key.endswith(suffix_key) and len(key) > len(suffix_key):
+                    key = key[: -len(suffix_key)]
+                    changed = True
+                    break
+        return key
+
+    company_key = legal_key(company)
+    if not company_key:
+        return ()
+    for canonical, configured in EMPLOYER_ALIAS_GROUPS.items():
+        aliases = tuple(dict.fromkeys((canonical, *configured)))
+        if company_key in {legal_key(alias) for alias in aliases}:
+            return aliases
+    return ()
+
+
 def _official_domain_confirmed(
     company: str,
     url: str,
@@ -754,9 +820,10 @@ def _evaluate_official_candidate_page(
     page_key = _evidence_key(page_text)
     final_url = str(final_url or job.get("url", ""))
     company = str(job.get("company", ""))
-    configured_aliases = tuple(
-        str(value) for value in job.get("_employer_aliases", []) if value
-    )
+    configured_aliases = tuple(dict.fromkeys((
+        *(str(value) for value in job.get("_employer_aliases", []) if value),
+        *_maintained_employer_aliases(company),
+    )))
     company_aliases = _company_evidence_aliases(company)
     for alias in configured_aliases:
         company_aliases.update(_company_evidence_aliases(alias))

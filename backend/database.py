@@ -2257,6 +2257,7 @@ def claim_pending_recruitment_ingest_candidates(
     limit: int = 20,
     claim_ttl_seconds: int = 600,
     now: datetime | None = None,
+    ignore_retry_time: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Atomically lease a bounded batch of due pending candidates.
 
@@ -2279,38 +2280,45 @@ def claim_pending_recruitment_ingest_candidates(
     claim_token = str(uuid.uuid4())
     with connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        retry_clause = (
+            "" if ignore_retry_time
+            else "AND (next_verification_at IS NULL OR next_verification_at <= ?)"
+        )
+        eligible_parameters: list[Any] = []
+        if not ignore_retry_time:
+            eligible_parameters.append(now_value)
+        eligible_parameters.extend((stale_before, limit))
         eligible = connection.execute(
-            """
+            f"""
             SELECT id
             FROM recruitment_ingest_candidates
             WHERE verification_status = 'pending'
-              AND (next_verification_at IS NULL OR next_verification_at <= ?)
+              {retry_clause}
               AND (verification_claimed_at IS NULL OR verification_claimed_at <= ?)
             ORDER BY COALESCE(next_verification_at, first_seen_at), first_seen_at, id
             LIMIT ?
             """,
-            (now_value, stale_before, limit),
+            tuple(eligible_parameters),
         ).fetchall()
         candidate_ids = [str(row["id"]) for row in eligible]
         for candidate_id in candidate_ids:
+            update_parameters: list[Any] = [
+                claim_token, now_value, now_value, candidate_id,
+            ]
+            if not ignore_retry_time:
+                update_parameters.append(now_value)
+            update_parameters.append(stale_before)
             connection.execute(
-                """
+                f"""
                 UPDATE recruitment_ingest_candidates
                 SET verification_claim_token=?, verification_claimed_at=?,
                     last_verification_attempt_at=?,
                     verification_attempt_count=verification_attempt_count + 1
                 WHERE id=? AND verification_status='pending'
-                  AND (next_verification_at IS NULL OR next_verification_at <= ?)
+                  {retry_clause}
                   AND (verification_claimed_at IS NULL OR verification_claimed_at <= ?)
                 """,
-                (
-                    claim_token,
-                    now_value,
-                    now_value,
-                    candidate_id,
-                    now_value,
-                    stale_before,
-                ),
+                tuple(update_parameters),
             )
         rows = connection.execute(
             """
