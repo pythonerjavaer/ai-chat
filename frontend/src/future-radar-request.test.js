@@ -102,7 +102,7 @@ test("real builder and API send the active main-pool GET without blank dates or 
   });
   assert.equal(data.total, 255);
   assert.equal(data.items[0].verification_status, "pending");
-  assert.equal(r.timers[0].delay, 120_000);
+  assert.equal(r.timers[0].delay, 180_000);
   assert.equal(r.timers[0].cleared, true);
 });
 
@@ -180,7 +180,7 @@ test("list and detail survive a 72.64-second cold read; status and authenticatio
       assert.equal(r.timers[0].cleared, false, "the cold read is not aborted at the old 45-second deadline");
       respond();
       assert.equal((await request).total, 3218);
-      assert.equal(r.timers[0].delay, 120_000);
+      assert.equal(r.timers[0].delay, 180_000);
     });
   }
   const server = await localServer(t, (_request, response) => {
@@ -200,14 +200,14 @@ test("a delayed real HTTP response aborts at the main-pool deadline with a disti
   const request = r.run("api(`/future-radar/opportunities?${futureRadarJobsQuery()}`, {timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS})");
   const checked = assert.rejects(request, (error) => {
     assert.equal(error.code, "REQUEST_TIMEOUT");
-    assert.equal(error.timeoutMs, 120_000);
+    assert.equal(error.timeoutMs, 180_000);
     assert.match(futureRadarOpportunityErrorCopy(error), /读取超时/);
     assert.doesNotMatch(futureRadarOpportunityErrorCopy(error), /HTTP/);
     return true;
   });
   await server.firstRequest;
-  assert.equal(r.timers[0].delay, 120_000);
-  await r.advance(119_999);
+  assert.equal(r.timers[0].delay, 180_000);
+  await r.advance(179_999);
   assert.equal(r.timers[0].cleared, false);
   await r.advance(1);
   await checked;
