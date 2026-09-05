@@ -748,7 +748,12 @@ class LegacyDiscoveryDatabaseAdapter:
         # explicitly pending state in the new pool.
         tags = [tag for tag in tags if tag not in {"链接已验证", "标题已验证"}]
         verification = str(item.get("verification_status") or "pending")
-        if verification == "source_screened" and not item.get("controlled_chatgpt"):
+        # A personal operator may explicitly promote a reviewed public lead.
+        # It is still not presented as an official attestation, but it must be
+        # visible in that user's opportunity pool just like a controlled-chat
+        # screening result.
+        manually_added = "你已手动加入机会池" in tags
+        if verification == "source_screened" and not (item.get("controlled_chatgpt") or manually_added):
             verification = "pending"
         elif verification not in {"rejected", "conflicted", "source_screened"}:
             verification = "pending"

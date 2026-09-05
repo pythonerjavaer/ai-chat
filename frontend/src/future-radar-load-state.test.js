@@ -347,29 +347,29 @@ test("company references and differing original ratings stay separate from the d
   assert.match(card.textContent, /聊天线索/);
 });
 
-test("NEW and DISCOVERED metrics are keyboard-native buttons filtering the unified pool", async () => {
+test("every dashboard metric is keyboard-native and routes to an actionable pool view", async () => {
   const r = runtime({ fail: false });
   await r.run("loadFutureRadarSnapshot()");
   const buttons = descendants(r.elements.futureRadarDashboard).filter((element) => element.tag === "button");
-  assert.equal(buttons.length, 3);
+  assert.equal(buttons.length, 7);
   const discovered = buttons.find((button) => button.className.includes("metric-discovered"));
   assert.equal(discovered.type, "button");
-  await discovered.listeners.click();
-  let query = new URLSearchParams(r.calls.at(-1).split("?")[1]);
-  assert.equal(query.get("verification_status"), "pending");
-  assert.equal(query.get("status"), "active");
-  assert.equal(query.has("event_type"), false);
-  assert.equal(r.elements.futureRadarFilterVerification.value, "pending");
-  assert.equal(r.state.futureRadar.activeTab, "jobs");
+  assert.match(discovered.title, /公司、岗位和公开链接/);
+  assert.match(buttons.find((button) => button.className.includes("metric-closing-soon")).title, /即将截止/);
+  assert.match(buttons.find((button) => button.className.includes("metric-closed")).title, /已关闭/);
   const fresh = buttons.find((button) => button.className.includes("metric-new"));
   assert.match(fresh.textContent, /近7天新增记录/);
-  assert.match(fresh.title, /来源记录.*去重/);
-  assert.match(html, /机会池会合并重复并按条件筛选，与指标数量可能不同/);
+  assert.match(fresh.title, /公司、岗位和公开链接/);
   await fresh.listeners.click();
-  query = new URLSearchParams(r.calls.at(-1).split("?")[1]);
+  const query = new URLSearchParams(r.calls.at(-1).split("?")[1]);
   assert.equal(query.get("event_type"), "NEW");
   assert.equal(query.has("verification_status"), false);
   assert.equal(query.get("status"), "active");
+  /* The candidate-review desk uses a separate API and does not mutate the
+     unified opportunity query until the user explicitly adds an item. */
+  assert.equal(r.elements.futureRadarFilterVerification.value, "");
+  assert.equal(r.state.futureRadar.activeTab, "jobs");
+  assert.match(html, /机会池会合并重复并按条件筛选，与指标数量可能不同/);
 });
 
 test("pending cards open the unified detail API and expose safe ordinary source anchors", async () => {

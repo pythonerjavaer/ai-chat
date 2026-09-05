@@ -3,7 +3,7 @@ import math
 import sqlite3
 import urllib.parse
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from .config import settings
@@ -2393,6 +2393,79 @@ def unprojected_chatgpt_screened_candidates(*, limit: int = 100) -> list[str]:
             if len(result) >= limit:
                 break
     return result
+
+
+def list_recruitment_ingest_review_candidates(
+    *,
+    statuses: tuple[str, ...] = ("pending", "rejected"),
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return a bounded, operator-facing review list without source secrets.
+
+    The caller is responsible for public-field redaction.  Conversation IDs and
+    source credentials deliberately stay out of this query's public projection.
+    """
+    if not statuses or any(item not in {"pending", "rejected"} for item in statuses):
+        raise ValueError("statuses must only contain pending or rejected.")
+    if not 1 <= limit <= 200:
+        raise ValueError("limit must be between 1 and 200.")
+    placeholders = ",".join("?" for _ in statuses)
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT * FROM recruitment_ingest_candidates
+            WHERE verification_status IN ({placeholders})
+              AND incoming_status <> 'closed'
+            ORDER BY last_seen_at DESC, id DESC
+            LIMIT ?
+            """,
+            (*statuses, limit),
+        ).fetchall()
+    return [_decode_recruitment_ingest_candidate(row) for row in rows]
+
+
+def add_recruitment_ingest_candidate_to_pool(candidate_id: str) -> dict[str, Any] | None:
+    """Promote one still-open candidate by the user's explicit decision.
+
+    This is intentionally *not* an official-verification override: the record
+    remains source-screened and the original review reason is retained in the
+    candidate tags for the eventual opportunity detail.
+    """
+    now = utc_now()
+    with connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT * FROM recruitment_ingest_candidates WHERE id=?", (candidate_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        current = _decode_recruitment_ingest_candidate(row)
+        if current.get("incoming_status") == "closed" or current.get("verification_status") == "closed":
+            return None
+        deadline = current.get("verified_closing_date") or current.get("closing_date")
+        if deadline and str(deadline) <= date.today().isoformat():
+            return None
+        original_reason = str(current.get("verification_reason") or "").strip()
+        tags = [item for item in current.get("tags", []) if isinstance(item, str)]
+        if "你已手动加入机会池" not in tags:
+            tags.append("你已手动加入机会池")
+        if original_reason:
+            tags.append(f"原审核原因:{original_reason[:80]}")
+        connection.execute(
+            """
+            UPDATE recruitment_ingest_candidates
+            SET verification_status='source_screened',
+                verification_reason='user_added_to_pool',
+                tags=?, last_seen_at=?, next_verification_at=NULL,
+                verification_claim_token=NULL, verification_claimed_at=NULL
+            WHERE id=?
+            """,
+            (json.dumps(list(dict.fromkeys(tags)), ensure_ascii=False), now, candidate_id),
+        )
+        updated = connection.execute(
+            "SELECT * FROM recruitment_ingest_candidates WHERE id=?", (candidate_id,)
+        ).fetchone()
+    return _decode_recruitment_ingest_candidate(updated) if updated else None
 
 
 def claim_pending_recruitment_ingest_candidates(

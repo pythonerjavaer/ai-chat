@@ -563,6 +563,8 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .recruitment-deadline-alerts strong { color: #ffd19b; font-size: 11px; }
 .recruitment-deadline-alerts div { display: grid; gap: 5px; }
 .recruitment-deadline-alerts a { color: #fff0dc; font-size: 10px; line-height: 1.45; }
+.deadline-reveal-button { justify-self: start; min-height: 30px; padding: 6px 10px; border: 1px solid rgba(255,201,139,.42); border-radius: 8px; background: rgba(255,170,91,.12); color: #ffe0bc; font-size: 10px; cursor: pointer; }
+.deadline-reveal-button:hover { border-color: rgba(255,220,174,.8); background: rgba(255,170,91,.2); }
 .recruitment-jobs { display: grid; gap: 10px; }
 .radar-opportunity-view-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 3px 0 6px; }
 .radar-opportunity-view-switch button { min-height: 36px; padding: 8px 13px; border: 1px solid rgba(116,198,212,.2); border-radius: 9px; background: rgba(45,138,157,.06); color: #9bbbc8; font-size: 11px; cursor: pointer; }

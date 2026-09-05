@@ -2908,13 +2908,11 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   ];
   elements.futureRadarDashboard.replaceChildren();
   metrics.forEach(([code, label, paths]) => {
-    const clickable = ["NEW", "DISCOVERED", "VERIFIED"].includes(code);
+    const clickable = true;
     const card = makeElement(clickable ? "button" : "article", `radar-metric metric-${code.toLowerCase().replaceAll(" ", "-")}`);
     if (clickable) {
       card.type = "button";
-      card.title = code === "NEW"
-        ? "指标统计近7天新增来源记录；点击查看当前条件下的 NEW 机会（去重且不含已关闭）"
-        : `指标统计${label}；点击查看当前条件下的对应机会（去重且不含已关闭）`;
+      card.title = `点击查看${label}对应的公司、岗位和公开链接`;
       card.setAttribute("aria-label", card.title);
       card.addEventListener("click", () => showFutureRadarMetric(code));
     }
@@ -2955,17 +2953,77 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   );
 }
 
+async function showFutureRadarCandidateReview() {
+  activateFutureRadarTab("jobs");
+  elements.recruitmentJobs.replaceChildren(makeElement("div", "empty-list", "正在读取待核验与未通过信号…"));
+  try {
+    const payload = await api("/future-radar/review-candidates?review_status=all&limit=200");
+    const items = payload.items || [];
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(makeElement("div", "recruitment-disclaimer", payload.notice || "可查看公开链接并手动加入机会池。"));
+    if (!items.length) fragment.appendChild(makeElement("div", "empty-list", "目前没有需要你人工决定的公开候选。"));
+    items.forEach((item) => {
+      const card = makeElement("article", "job-card radar-review-candidate");
+      const meta = [item.city, item.industry, item.closing_date ? `截止 ${item.closing_date}` : "截止时间待确认"].filter(Boolean).join(" · ");
+      card.append(
+        makeElement("h4", "", `${item.company || "招聘机构"}｜${item.title || "岗位待确认"}`),
+        makeElement("p", "job-meta", meta),
+        makeElement("p", "", `${item.review_status_label || "待处理"}：${item.review_reason || "需要你查看公开链接后决定"}`),
+      );
+      if (item.official_url) {
+        const link = makeElement("a", "radar-official-link", "打开公开招聘链接 ↗");
+        link.href = item.official_url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        card.appendChild(link);
+      }
+      const add = makeElement("button", "job-watch-button", "加入机会池");
+      add.type = "button";
+      add.addEventListener("click", async () => {
+        add.disabled = true;
+        add.textContent = "正在加入…";
+        try {
+          const result = await api(`/future-radar/review-candidates/${encodeURIComponent(item.id)}/add-to-pool`, { method: "POST" });
+          showToast(result.notice || "已加入机会池。", 4500);
+          await loadFutureRadarJobPage(1, true, { scroll: false });
+          await showFutureRadarCandidateReview();
+        } catch (error) {
+          add.disabled = false;
+          add.textContent = "加入机会池";
+          showToast(translateError(error.message), 4500);
+        }
+      });
+      card.appendChild(add);
+      fragment.appendChild(card);
+    });
+    elements.recruitmentJobs.replaceChildren(fragment);
+  } catch (error) {
+    elements.recruitmentJobs.replaceChildren(makeElement("div", "empty-list", `候选清单暂时无法读取：${translateError(error.message)}`));
+  }
+}
+
 function showFutureRadarMetric(code) {
-  if (!["NEW", "DISCOVERED", "VERIFIED"].includes(code)) return;
+  if (!["NEW", "UPDATED", "CLOSED", "PROGRAMS", "CLOSING SOON", "DISCOVERED", "VERIFIED"].includes(code)) return;
+  if (code === "DISCOVERED") return showFutureRadarCandidateReview();
+  if (code === "PROGRAMS") return activateFutureRadarTab("programs");
+  const now = new Date();
+  const iso = (value) => value.toISOString().slice(0, 10);
+  const closingBefore = new Date(now);
+  closingBefore.setDate(closingBefore.getDate() + 7);
   const updates = {
-    status: DEFAULT_FUTURE_RADAR_STATUS,
-    event_type: code === "NEW" ? "NEW" : "",
-    verification_status: code === "DISCOVERED" ? "pending" : code === "VERIFIED" ? "verified" : "",
+    status: code === "CLOSED" ? "closed" : DEFAULT_FUTURE_RADAR_STATUS,
+    event_type: code === "NEW" ? "NEW" : code === "UPDATED" ? "UPDATED" : "",
+    verification_status: code === "VERIFIED" ? "verified" : "",
+    closing_after: code === "CLOSING SOON" ? iso(now) : "",
+    closing_before: code === "CLOSING SOON" ? iso(closingBefore) : "",
+    sort: code === "CLOSING SOON" ? "closing" : "changed",
   };
   Object.assign(state.futureRadar.filters, updates);
   if (elements.futureRadarFilterStatus) elements.futureRadarFilterStatus.value = updates.status;
   if (elements.futureRadarFilterEvent) elements.futureRadarFilterEvent.value = updates.event_type;
   if (elements.futureRadarFilterVerification) elements.futureRadarFilterVerification.value = updates.verification_status;
+  if (elements.futureRadarFilterClosingAfter) elements.futureRadarFilterClosingAfter.value = updates.closing_after;
+  if (elements.futureRadarFilterClosingBefore) elements.futureRadarFilterClosingBefore.value = updates.closing_before;
   state.recruitmentTierFilter = "ALL";
   activateFutureRadarTab("jobs");
   return loadFutureRadarJobPage(1, true);
@@ -3979,7 +4037,18 @@ function renderRecruitmentDeadlineAlerts(jobs) {
     item.textContent = `${job.company}｜${job.title}｜${job.days_left === 0 ? "今天截止" : `${job.days_left} 天后截止`}`;
     list.appendChild(item);
   });
-  elements.recruitmentDeadlineAlerts.append(heading, list);
+  if (urgent.length) {
+    const reveal = makeElement("button", "deadline-reveal-button", `查看即将截止的 ${urgent.length} 个机会`);
+    reveal.type = "button";
+    list.hidden = true;
+    reveal.addEventListener("click", () => {
+      list.hidden = !list.hidden;
+      reveal.textContent = list.hidden ? `查看即将截止的 ${urgent.length} 个机会` : "收起即将截止机会";
+    });
+    elements.recruitmentDeadlineAlerts.append(heading, reveal, list);
+  } else {
+    elements.recruitmentDeadlineAlerts.append(heading, list);
+  }
   if (reviewJobs.length) {
     const note = document.createElement("small");
     note.className = "recruitment-review-note";

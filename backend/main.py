@@ -1052,6 +1052,24 @@ _SEARCH_UPDATE_LABELS = {
     "rejected": "未通过核验",
 }
 
+_REVIEW_REASON_LABELS = {
+    "not_campus": "未识别到明确的校园招聘信息",
+    "location_outside_scope": "地点不在当前求职范围内",
+    "official_page_non_campus": "公开页面未显示校园招聘",
+    "official_page_unreadable": "公开页面暂时无法读取",
+    "page_missing_official_domain_evidence": "未能确认官方招聘页面",
+    "page_missing_company_evidence": "页面未能确认招聘主体",
+    "page_missing_current_cohort_evidence": "页面未能确认当前届次",
+    "page_missing_title_evidence": "页面未能确认岗位名称",
+    "page_missing_open_application_evidence": "页面未能确认当前可投递",
+    "location_unconfirmed": "地点信息暂未确认",
+    "official_page_fetch_failed": "官方页面暂时无法访问",
+    "invalid_official_url": "链接不满足公开招聘链接要求",
+    "expired": "来源标注的截止日期已过",
+    "closed": "来源已标记为关闭",
+    "user_added_to_pool": "你已手动加入机会池",
+}
+
 
 def _public_search_update(job: dict) -> dict:
     """Expose a normalized discovery candidate without presenting it as fact."""
@@ -1126,6 +1144,33 @@ def _public_search_update(job: dict) -> dict:
         (item["officially_verified"] or item["source_screened"]) and still_open
     )
     item["is_candidate"] = not (item["officially_verified"] or item["source_screened"])
+    return item
+
+
+def _public_review_candidate(candidate: dict) -> dict:
+    """Safe, actionable candidate projection for the personal review desk."""
+    allowed = (
+        "id", "company", "employer_type", "title", "city", "industry",
+        "official_url", "canonical_url", "opening_date", "closing_date",
+        "requirements", "tags", "evidence", "verification_status",
+        "verification_reason", "first_seen_at", "last_seen_at",
+    )
+    item = {key: candidate.get(key) for key in allowed}
+    item["official_url"] = _public_reference_url(item.get("official_url") or item.get("canonical_url"))
+    item.pop("canonical_url", None)
+    for field in ("company", "employer_type", "title", "city", "industry", "requirements"):
+        item[field] = _redact_public_text(str(item.get(field) or ""), limit=1_200)
+    item["tags"] = [_redact_public_text(str(value), limit=100) for value in list(item.get("tags") or [])][:30]
+    item["evidence"] = [
+        _redact_public_text(str(value), limit=280)
+        for value in list(item.get("evidence") or [])
+        if isinstance(value, str)
+    ][:3]
+    reason = str(item.get("verification_reason") or "")
+    item["review_reason"] = _REVIEW_REASON_LABELS.get(reason, "需要你查看公开链接后决定")
+    item["review_status_label"] = _SEARCH_UPDATE_LABELS.get(
+        str(item.get("verification_status") or "pending"), "等待处理"
+    )
     return item
 
 
@@ -1329,6 +1374,65 @@ def future_radar_search_update(job_id: str, user: User) -> dict:
     ):
         raise HTTPException(status_code=404, detail="Search update not found.")
     return _public_search_update(job)
+
+
+@app.get("/api/future-radar/review-candidates")
+def future_radar_review_candidates(
+    user: User,
+    review_status: Literal["pending", "rejected", "all"] = Query(default="all"),
+    limit: int = Query(default=100, ge=1, le=200),
+) -> dict:
+    """List candidates that did not enter the public pool automatically.
+
+    The list contains only public job fields and a concise, user-facing reason;
+    it never reveals private ChatGPT/source identifiers or diagnostic payloads.
+    """
+    del user
+    statuses = ("pending", "rejected") if review_status == "all" else (review_status,)
+    items = [
+        _public_review_candidate(item)
+        for item in database.list_recruitment_ingest_review_candidates(
+            statuses=statuses, limit=limit,
+        )
+    ]
+    return {
+        "items": items,
+        "total": len(items),
+        "notice": "这些是未自动进入机会池的公开招聘候选。你可打开公开链接后手动加入；手动加入不会伪装成官网核验。",
+    }
+
+
+@app.post("/api/future-radar/review-candidates/{candidate_id}/add-to-pool")
+def future_radar_add_review_candidate_to_pool(candidate_id: str, user: User) -> dict:
+    del user
+    if not re.fullmatch(r"candidate-[0-9a-f]{32}", candidate_id):
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    candidate = database.add_recruitment_ingest_candidate_to_pool(candidate_id)
+    if candidate is None:
+        raise HTTPException(
+            status_code=409,
+            detail="该候选不存在、已关闭，或其截止日期已经过去。",
+        )
+    bridge_status = "queued"
+    try:
+        bridge = future_radar_service.run(
+            trigger_type="user_candidate_pool_add",
+            scan_type="quick",
+            source_ids=["legacy-search-discovery"],
+            bridge_candidate_ids=[candidate_id],
+        )
+        bridge_status = "projected" if bridge.get("status") == "success" else "queued"
+    except RadarRunBusy:
+        # The durable candidate is already source-screened; the next ordinary
+        # local bridge will project it without asking the user to repeat this.
+        bridge_status = "queued"
+    except Exception:
+        logger.warning("Manual candidate bridge deferred", exc_info=True)
+    return {
+        "item": _public_review_candidate(candidate),
+        "pool_status": bridge_status,
+        "notice": "已加入你的机会池；来源状态保留为你手动确认，不会标记为官网核验。",
+    }
 
 
 @app.get("/api/future-radar/opportunities")
