@@ -107,9 +107,12 @@ TIER_DEFINITIONS: tuple[dict[str, Any], ...] = (
 )
 
 BREAKDOWN_LIMITS = {
-    "platform": 16,
+    # Platform is the durable base of a role's option value.  Composite
+    # background is useful evidence of fit, but it must not make an ordinary
+    # employer outrank a strong platform/core-role opening by itself.
+    "platform": 22,
     "job_quality": 15,
-    "background_utilization": 14,
+    "background_utilization": 8,
     "career_fit": 12,
     "career_ceiling": 12,
     "mobility": 8,
@@ -126,12 +129,12 @@ BREAKDOWN_LIMITS = {
 # which silently changed platform influence from 16% to 35% and caused the
 # product owner's calibrated T tiers to drift in both directions.
 SCORING_WEIGHTS = {
-    "employer_platform": 16,
-    "role_function": 41,
+    "employer_platform": 22,
+    "role_function": 35,
     "career_value": 20,
     "job_conditions": 23,
 }
-SCORING_VERSION = "future-radar-job-ranking-v4.2-explicit-source-rating"
+SCORING_VERSION = "future-radar-job-ranking-v4.3-platform-first-fit-bounded"
 
 TIER_TARGET_SCORES = {
     "T0": 92,
@@ -749,7 +752,10 @@ def _organization_assessment(job: dict[str, Any]) -> dict[str, Any]:
         "employer_identity": scoring_company,
         "institution_identity": calibration_company,
         "base_platform_score": round(assessment["base_platform_points"] / 16 * 100),
-        "platform_score": round(assessment["platform_points"] / 16 * 100),
+        "platform_score": round(
+            round(assessment["platform_points"] / 16 * BREAKDOWN_LIMITS["platform"])
+            / BREAKDOWN_LIMITS["platform"] * 100
+        ),
     }
 
 
@@ -1280,7 +1286,11 @@ def _score_dimensions(
     negatives: list[str] = []
     fit_tags: list[str] = []
 
-    platform = organization["platform_points"]
+    # The organization assessor deliberately keeps its conservative 0–16
+    # evidence scale.  Convert it only at final scoring, so hierarchy checks
+    # still use the same calibrated company/headquarters evidence.
+    platform_evidence = organization["platform_points"]
+    platform = round(platform_evidence / 16 * BREAKDOWN_LIMITS["platform"])
     is_headquarters = organization["is_group_headquarters"]
     if is_headquarters:
         positives.append("招聘单位明确为集团总部或总行；未将地区本部当作集团总部")
@@ -1290,7 +1300,7 @@ def _score_dimensions(
         fit_tags.append(organization["label"])
     elif organization["confidence"] == "unknown":
         negatives.append("招聘单位层级资料不足，未计入总部或核心子机构加分")
-    if platform >= 13:
+    if platform_evidence >= 13:
         positives.append("实际招聘平台具有较强资源；平台基准不直接决定岗位 T 级")
 
     high_value_role = bool(role_tag_set.intersection(HIGH_VALUE_ROLE_TAGS))
@@ -1334,9 +1344,9 @@ def _score_dimensions(
         for terms in (FINANCE_TERMS, TECH_TERMS, PRODUCT_MANAGEMENT_TERMS)
         if _contains_any(role_text, set(terms))
     )
-    background_utilization = {0: 3, 1: 6, 2: 11, 3: 14}[background_groups]
+    background_utilization = {0: 2, 1: 4, 2: 7, 3: 8}[background_groups]
     if routine_title or low_value_role:
-        background_utilization = min(background_utilization, 8)
+        background_utilization = min(background_utilization, 5)
     if background_groups >= 2:
         positives.append("岗位同时利用至少两类复合背景")
         fit_tags.append("复合背景")
@@ -1373,7 +1383,7 @@ def _score_dimensions(
     if routine_title or low_value_role:
         career_fit = min(career_fit, 6)
 
-    career_ceiling = 6 + (2 if platform >= 13 else 1 if platform >= 11 else 0)
+    career_ceiling = 6 + (2 if platform_evidence >= 13 else 1 if platform_evidence >= 11 else 0)
     if high_value_role:
         career_ceiling += 2
     if is_headquarters:
@@ -1554,11 +1564,22 @@ def _calibrated_job_score(
         ceiling = min(ceiling, 64)
         reasons.append("纯销售、客服、重复运营或普通支持岗位不高于 T3")
 
+    # A broker headquarters is valuable, but an ordinary accounting/support
+    # vacancy is not a core investment, research, risk or strategy role.  This
+    # keeps the platform-first rebalance from turning a logo into a T1 offer.
+    ordinary_finance_role = _contains_any(
+        str(job.get("title") or "").casefold(),
+        {"财务", "会计", "税务", "核算", "finance accounting"},
+    ) and not bool(role_tag_set.intersection(HIGH_VALUE_ROLE_TAGS))
+    if ordinary_finance_role and institution.get("tier_code") in {"T0", "T0.5", "T1"}:
+        ceiling = min(ceiling, 74)
+        reasons.append("普通财务/会计岗位不因平台名称进入高优先级")
+
     # T0 is a scarcity gate: a T0 institution alone is not enough.  The
     # concrete role must use at least two parts of the composite background and
     # belong to the core product/risk/data/investment/strategy family.
     if institution.get("tier_code") == "T0" and candidate_score >= 90:
-        composite = dimensions["background_utilization"] >= 11
+        composite = dimensions["background_utilization"] >= 7
         structured_trainee = (
             "management_trainee" in role_tag_set
             and _contains_any(role_text, {"轮岗", "导师", "定岗", "rotational", "mentorship"})

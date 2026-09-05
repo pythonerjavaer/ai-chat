@@ -204,11 +204,13 @@ def test_original_eleven_dimension_score_stays_exact_and_invalidates_old_cache()
     row = score_job(opportunity("中国电信河北省分公司"), {})
     assert SCORING_VERSION != "future-radar-job-ranking-v2"
     assert SCORING_WEIGHTS == {
-        "employer_platform": 16, "role_function": 41,
+        "employer_platform": 22, "role_function": 35,
         "career_value": 20, "job_conditions": 23,
     }
     assert row["raw_job_score"] == sum(row["score_breakdown"].values())
     assert row["job_score"] == row["raw_job_score"] + row["calibration_adjustment"]
     assert row["raw_job_score"] == sum(row["dimension_scores"].values())
-    assert row["employer_score"] == round(row["organization_assessment"]["platform_points"] / 16 * 100)
+    assert row["employer_score"] == round(
+        row["dimension_scores"]["platform"] / 22 * 100
+    )
     assert row["employer_score"] == row["organization_assessment"]["platform_score"]
