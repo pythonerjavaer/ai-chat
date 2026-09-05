@@ -502,14 +502,32 @@ def restore_chatgpt_screened_opportunities() -> dict:
     return {"adopted": adopted, "projected": projected, "status": "success"}
 
 
+async def restore_chatgpt_screened_opportunities_in_background() -> None:
+    """Restore durable leads without delaying the web service health check.
+
+    A large historical candidate set can take longer than Render's port scan
+    window.  The source rows are already durable, so serving the application
+    first is safe; the idempotent projection continues after startup.
+    """
+    try:
+        result = await asyncio.to_thread(restore_chatgpt_screened_opportunities)
+        logger.info(
+            "ChatGPT-screened opportunity restore completed: adopted=%s projected=%s status=%s",
+            result.get("adopted", 0), result.get("projected", 0), result.get("status", "unknown"),
+        )
+    except Exception:
+        logger.exception("ChatGPT-screened opportunity restore failed; deferred to the next startup")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.init_db()
     future_radar_service.seed_registry()
     database.ensure_recruitment_ingest_sources(EXPECTED_CHATGPT_RADAR_SOURCES)
-    await asyncio.to_thread(restore_chatgpt_screened_opportunities)
     database.purge_legacy_recruitment_samples()
-    tasks: list[asyncio.Task] = []
+    tasks: list[asyncio.Task] = [asyncio.create_task(
+        restore_chatgpt_screened_opportunities_in_background()
+    )]
     first_refresh_complete = asyncio.Event()
     if settings.recruitment_refresh_minutes > 0:
         tasks.append(asyncio.create_task(
