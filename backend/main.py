@@ -2171,6 +2171,48 @@ def acknowledge_recruitment_watch(
     return watch
 
 
+def _project_recruitment_sources_to_opportunity_pool() -> dict:
+    """Best-effort projection of durable local recruitment data into Radar.
+
+    This deliberately runs only the two local database adapters. It never
+    invokes OpenAI, broad web discovery, or private ChatGPT/WeChat sources.
+    The Radar run lock and per-source locks remain authoritative, so a refresh
+    request cannot create duplicate concurrent work.
+    """
+    try:
+        run = future_radar_service.run(
+            trigger_type="manual_candidate_source_sync",
+            scan_type="quick",
+            source_ids=[
+                "legacy-recruitment-pipeline",
+                "legacy-search-discovery",
+            ],
+        )
+    except RadarRunBusy:
+        return {"status": "deferred", "reason": "radar_run_active"}
+    except Exception:
+        logger.exception("Recruitment source opportunity projection failed")
+        return {"status": "deferred", "reason": "projection_unavailable"}
+
+    succeeded = int(run.get("sources_succeeded") or 0)
+    expected = 2
+    run_status = str(run.get("status") or "")
+    if run_status == "success" and succeeded == expected:
+        projection_status = "updated"
+    elif succeeded:
+        projection_status = "partial"
+    else:
+        projection_status = "deferred"
+    return {
+        "status": projection_status,
+        "sources_succeeded": succeeded,
+        "sources_expected": expected,
+        "new_jobs": int(run.get("new_jobs") or 0),
+        "updated_jobs": int(run.get("updated_jobs") or 0),
+        "closed_jobs": int(run.get("closed_jobs") or 0),
+    }
+
+
 @app.post("/api/recruitment/refresh")
 def refresh_recruitment(
     user: ConsentedUser,
@@ -2198,6 +2240,7 @@ def refresh_recruitment(
         and age < RECRUITMENT_SOURCE_COOLDOWN_SECONDS
         and not run_deep_search
     ):
+        pool_projection = _project_recruitment_sources_to_opportunity_pool()
         return {
             "source": "公开机会页面 + 低频 AI 补漏 + 已配置 API",
             "count": cached_count,
@@ -2210,6 +2253,7 @@ def refresh_recruitment(
                 if settings.recruitment_web_search_enabled else None
             ),
             "web_search": web_state_before,
+            "opportunity_pool_projection": pool_projection,
         }
     try:
         count = refresh_recruitment_sources(
@@ -2235,6 +2279,7 @@ def refresh_recruitment(
     )
     if run_deep_search and not web_search_ran:
         skip_reason = "web_search_not_started"
+    pool_projection = _project_recruitment_sources_to_opportunity_pool()
     return {
         "source": "公开机会页面 + 低频 AI 补漏 + 已配置 API",
         "count": count,
@@ -2247,6 +2292,7 @@ def refresh_recruitment(
             if settings.recruitment_web_search_enabled else None
         ),
         "web_search": web_state_after,
+        "opportunity_pool_projection": pool_projection,
     }
 
 

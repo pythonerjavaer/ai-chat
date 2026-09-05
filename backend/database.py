@@ -2676,7 +2676,13 @@ def list_recruitment_jobs() -> list[dict[str, Any]]:
 
 
 def purge_legacy_recruitment_samples() -> None:
-    """Remove prototype vacancies and known unsupported role claims."""
+    """Remove explicit prototype vacancies and known unsupported role claims.
+
+    Search-derived rows are durable evidence.  A missing verification tag is
+    not proof that a real opportunity is invalid, so startup must never delete
+    those rows wholesale.  They remain marked for review and can be hidden by
+    the normal expiry/closure projection.
+    """
     with connect() as connection:
         connection.execute(
             """
@@ -2691,14 +2697,6 @@ def purge_legacy_recruitment_samples() -> None:
                OR source IN ('示例岗位，等待接入官方源', '示例数据')
                OR company LIKE '九坤%'
                OR source LIKE '九坤%'
-               OR (
-                    source = 'OpenAI 网页搜索'
-                    AND (
-                        tags NOT LIKE '%链接已验证%'
-                        OR tags LIKE '%待官方核验%'
-                        OR tags LIKE '%待打开核对%'
-                    )
-               )
                OR (
                     source = 'OpenAI 网页搜索'
                     AND company IN ('中国人民银行', '人行', '中国农业发展银行', '农发行')
@@ -2790,16 +2788,18 @@ def upsert_recruitment_jobs(jobs: list[dict[str, Any]]) -> None:
 
 
 def replace_recruitment_source_jobs(source: str, jobs: list[dict[str, Any]]) -> None:
-    """Atomically replace one crawler snapshot while retaining closed rows for audit."""
+    """Merge an incomplete discovery batch without closing unseen old rows.
+
+    Discovery/search responses are not authoritative full snapshots.  Absence
+    from one batch therefore cannot mean that a previously stored opportunity
+    closed.  Explicit expiry, official closure checks, and Future Radar's
+    confirmed complete-snapshot policy remain the only closure mechanisms.
+    """
     if not jobs:
         return
     now = utc_now()
     with connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
-        connection.execute(
-            "UPDATE recruitment_jobs SET status = 'closed', last_verified_at = ? WHERE source = ?",
-            (now, source),
-        )
         for job in jobs:
             connection.execute(
                 """

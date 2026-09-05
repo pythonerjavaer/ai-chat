@@ -314,7 +314,7 @@ const elements = {
 
 if (elements.recruitmentRefresh) {
   elements.recruitmentRefresh.textContent = RECRUITMENT_REFRESH_LABEL;
-  elements.recruitmentRefresh.title = "同步已有候选源与官网哨站；如需寻找新入口，请单独启动 Deep Scan。";
+  elements.recruitmentRefresh.title = "同步现有公开候选源与已建立的官网哨站；不执行 Deep Scan，也不主动读取 ChatGPT 对话。";
   elements.recruitmentRefresh.setAttribute("aria-label", "同步已有候选源与官网哨站");
 }
 
@@ -4711,6 +4711,14 @@ async function refreshRecruitmentSource() {
         ? "公开源：沿用 60 秒内的缓存结果"
         : `公开源：返回 ${Number(sourceResult.count || 0).toLocaleString()} 条候选（非新增数）`
       : "公开源：本次未完成";
+    const projectionStatus = sourceResult?.opportunity_pool_projection?.status;
+    const poolProjectionCopy = projectionStatus === "updated"
+      ? "统一机会池：已同步"
+      : projectionStatus === "partial"
+        ? "统一机会池：已同步可用来源，其余来源稍后自动补齐"
+        : projectionStatus === "deferred"
+          ? "统一机会池：后台扫描占用中，现有数据已保留并将在下一轮补齐"
+          : "统一机会池：等待下一轮 Quick Scan 投影";
     const webSearchCopy = "Deep Discovery：本次未请求；可使用 Deep Scan 按需启动";
     const watchResult = watchesOk ? results[1].value : null;
     const checkedWatches = Number(watchResult?.checked ?? watchResult?.count ?? watchResult?.refreshed);
@@ -4720,8 +4728,9 @@ async function refreshRecruitmentSource() {
     const bridgeCopy = refreshedData
       ? "已读取受控桥当前状态，未将历史 AI 结果计作本轮"
       : "受控桥状态本次未能重新读取，未将历史 AI 结果计作本轮";
-    const refreshCopy = `${sourceCopy}；${watchCopy}；${webSearchCopy}。${bridgeCopy}。`;
-    const partial = results.some((result) => result.status === "rejected") || !refreshedData;
+    const refreshCopy = `${sourceCopy}；${poolProjectionCopy}；${watchCopy}；${webSearchCopy}。${bridgeCopy}。`;
+    const partial = results.some((result) => result.status === "rejected")
+      || !refreshedData || ["partial", "deferred"].includes(projectionStatus);
     setFutureRadarActionStatus(refreshCopy, partial ? "warning" : "healthy");
     showToast(refreshCopy, 7000);
   } catch (error) {
@@ -4769,7 +4778,7 @@ async function saveRecruitment(event, { silent = false } = {}) {
   if (saveButton && !silent) saveButton.disabled = true;
   if (saveLabel && !silent) saveLabel.textContent = "匹配中…";
   elements.recruitmentError.textContent = "";
-  setRecruitmentStatus("正在校准坐标并匹配机会信号…");
+  setRecruitmentStatus("正在保存坐标并重新匹配机会信号…");
   const employerTypes = [...document.querySelectorAll(".recruitment-checks input:checked")].map((input) => input.value);
   try {
     const profile = await api("/recruitment/profile", {
@@ -4794,13 +4803,13 @@ async function saveRecruitment(event, { silent = false } = {}) {
     renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
     renderRecruitmentMonitors(data.monitor_pools || []);
     renderFutureRadarOpportunityStatus();
-    if (!silent) showToast("坐标已保存，Radar 正在按新画像重算。", 3500);
+    if (!silent) showToast("坐标已保存，机会池正在按新画像重新匹配。", 3500);
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
     renderFutureRadarOpportunityStatus();
   } finally {
     if (saveButton && !silent) saveButton.disabled = false;
-    if (saveLabel && !silent) saveLabel.textContent = "保存坐标并重新扫描";
+    if (saveLabel && !silent) saveLabel.textContent = "保存坐标并重新匹配";
   }
 }
 

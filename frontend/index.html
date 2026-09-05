@@ -370,7 +370,7 @@
               <label class="field compact-field"><span>行业偏好</span><input id="recruitment-industries" placeholder="互联网，金融科技，新能源" /></label>
               <label class="field compact-field"><span>城市偏好（可多选或手动填写）</span><input id="recruitment-locations" placeholder="北京，上海，深圳，香港，可远程" /></label>
               <div class="recruitment-checks"><span>信号星域（可多选，点击立即筛选）</span><label><input type="checkbox" value="state_energy_resources" />央企能源/资源</label><label><input type="checkbox" value="state_tech_telecom" />央企科技/通信</label><label><input type="checkbox" value="tobacco_monopoly" />烟草/专卖体系</label><label><input type="checkbox" value="policy_state_banks" />政策行/国有大行</label><label><input type="checkbox" value="securities_public_funds_asset_management" />券商/公募/资管</label><label><input type="checkbox" value="insurance_integrated_finance" />保险/综合金融</label><label><input type="checkbox" value="internet_tech" />互联网大厂/中厂</label><label><input type="checkbox" value="consumer_foreign_consulting" />快消/外企/咨询</label><label><input type="checkbox" value="quant_private_hedge" />量化/私募/对冲</label><label><input type="checkbox" value="big_four_professional_services" />四大/专业服务</label></div>
-              <button id="recruitment-save" class="primary-button" type="submit"><span>保存坐标并重新扫描</span><b>↗</b></button>
+              <button id="recruitment-save" class="primary-button" type="submit" title="保存你的岗位、行业、城市与信号星域偏好，并用现有机会池重新匹配；不会启动外部扫描。"><span>保存坐标并重新匹配</span><b>↗</b></button>
               <p id="recruitment-error" class="form-error" role="alert"></p>
             </form>
             <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>企业信号哨站</strong><small>只需输入企业名称。系统会追踪机会池中的新增信号、截止时间窗与公告变化；此过程不调用 AI。</small></div></div>
@@ -387,7 +387,7 @@
             <div class="recruitment-results-heading">
               <div><span class="overline">RECRUITMENT INTELLIGENCE SYSTEM</span><h3>未来招聘情报中枢</h3><small id="recruitment-source-status" class="recruitment-source-copy" role="status" aria-live="polite">主机会池尚未读取；待核验线索与官网确认机会在同一池展示。</small></div>
               <div class="radar-heading-actions">
-                <button id="recruitment-refresh" class="source-status" type="button">刷新信号 ↻</button>
+                <button id="recruitment-refresh" class="source-status" type="button" title="同步现有公开候选源与已建立的官网哨站；不执行 Deep Scan，也不主动读取 ChatGPT 对话。">同步候选源 ↻</button>
                 <button id="future-radar-run" class="radar-scan-now" type="button" data-scan-type="quick" title="优先核对已知官网、ATS、API 与招聘页面，不主动运行 AI 发现。">
                   <span class="radar-scan-label"><strong id="future-radar-run-label">立即扫描</strong><small>QUICK SCAN</small></span><b>◎</b>
                 </button>

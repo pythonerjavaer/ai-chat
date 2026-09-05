@@ -47,6 +47,25 @@ test("manual Quick and Deep scans use per-type run state and a short completion 
   assert.match(functionSource, /Number\(error\.status\) === 409/);
 });
 
+test("profile matching and source synchronization labels describe their real side effects", () => {
+  assert.match(indexSource, /id="recruitment-save"[\s\S]*保存坐标并重新匹配/);
+  assert.doesNotMatch(indexSource, /保存坐标并重新扫描/);
+  assert.match(indexSource, /id="recruitment-refresh"[\s\S]*同步候选源/);
+
+  const saveStart = appSource.indexOf("async function saveRecruitment(");
+  const saveEnd = appSource.indexOf("\nfunction scheduleRecruitmentAutoFilter", saveStart);
+  assert.notEqual(saveStart, -1);
+  assert.notEqual(saveEnd, -1);
+  const saveSource = appSource.slice(saveStart, saveEnd);
+
+  assert.match(saveSource, /保存坐标并重新匹配/);
+  assert.doesNotMatch(saveSource, /保存坐标并重新扫描/);
+  assert.doesNotMatch(saveSource, /api\("\/future-radar\/run"/);
+  assert.match(appSource, /不执行 Deep Scan，也不主动读取 ChatGPT 对话/);
+  assert.match(appSource, /统一机会池：已同步/);
+  assert.match(appSource, /opportunity_pool_projection/);
+});
+
 test("dashboard run locks restore each scan button independently after refresh", () => {
   const start = appSource.indexOf("function renderFutureRadarRunAvailability(");
   const end = appSource.indexOf("\nfunction startFutureRadarRunDelay", start);

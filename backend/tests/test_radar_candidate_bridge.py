@@ -204,6 +204,47 @@ def test_bridge_removes_closed_candidates_and_never_exposes_expired_jobs(service
     assert service.repository.list_jobs(filters={"discovery_source_only": True})["total"] == 0
 
 
+def test_incomplete_discovery_batch_preserves_unseen_durable_rows(service):
+    old_job = insert_web_job("durable-old-search-role")
+    new_job = {
+        **old_job,
+        "id": "durable-new-search-role",
+        "title": "2027 校园招聘产品岗",
+        "url": "https://careers.example.com/campus/durable-new-search-role",
+    }
+
+    database.replace_recruitment_source_jobs(WEB_SEARCH_SOURCE, [new_job])
+
+    with database.connect() as connection:
+        rows = connection.execute(
+            "SELECT id, status FROM recruitment_jobs WHERE id IN (?, ?) ORDER BY id",
+            (old_job["id"], new_job["id"]),
+        ).fetchall()
+    assert [(row["id"], row["status"]) for row in rows] == [
+        ("durable-new-search-role", "open"),
+        ("durable-old-search-role", "open"),
+    ]
+
+
+def test_startup_cleanup_preserves_real_unverified_search_candidates(service):
+    insert_web_job(
+        "durable-unverified-search-role",
+        company="持久化测试集团",
+        tags=["校园招聘", "AI网页搜索", "待官方核验"],
+    )
+
+    database.purge_legacy_recruitment_samples()
+
+    with database.connect() as connection:
+        row = connection.execute(
+            "SELECT status, tags FROM recruitment_jobs WHERE id = ?",
+            ("durable-unverified-search-role",),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "open"
+    assert "待官方核验" in json.loads(row["tags"])
+
+
 def test_bridge_redacts_sensitive_text_and_drops_private_or_credential_urls(service):
     marker = "-".join(("12345678", "1234", "4123", "8123", "123456789abc"))
     secret = "sk" + "-proj-" + "NOT_A_REAL_KEY_TEST_VALUE_123456"

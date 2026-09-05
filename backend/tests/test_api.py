@@ -1654,6 +1654,11 @@ def test_recruitment_deep_search_is_explicit_and_can_repeat_after_completion(mon
             "get_system_state",
             lambda _key: state["value"],
         )
+        monkeypatch.setattr(
+            main,
+            "_project_recruitment_sources_to_opportunity_pool",
+            lambda: {"status": "updated", "sources_succeeded": 2},
+        )
         monkeypatch.setattr(main, "_recruitment_source_last_refresh", 0.0)
 
         deep = client.post(
@@ -1663,6 +1668,7 @@ def test_recruitment_deep_search_is_explicit_and_can_repeat_after_completion(mon
         assert deep.json()["web_search_ran"] is True
         assert deep.json()["skip_reason"] is None
         assert deep.json()["next_due_at"] is None
+        assert deep.json()["opportunity_pool_projection"]["status"] == "updated"
         assert calls[-1] == (True, True)
 
         repeated = client.post(
@@ -1672,6 +1678,82 @@ def test_recruitment_deep_search_is_explicit_and_can_repeat_after_completion(mon
         assert repeated.json()["web_search_ran"] is True
         assert repeated.json()["skip_reason"] is None
         assert calls[-1] == (True, True)
+
+
+def test_recruitment_source_projection_runs_only_durable_local_bridges(monkeypatch):
+    calls = []
+
+    def fake_run(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "success",
+            "sources_succeeded": 2,
+            "new_jobs": 4,
+            "updated_jobs": 3,
+            "closed_jobs": 0,
+        }
+
+    monkeypatch.setattr(main.future_radar_service, "run", fake_run)
+    result = main._project_recruitment_sources_to_opportunity_pool()
+
+    assert result == {
+        "status": "updated",
+        "sources_succeeded": 2,
+        "sources_expected": 2,
+        "new_jobs": 4,
+        "updated_jobs": 3,
+        "closed_jobs": 0,
+    }
+    assert calls == [{
+        "trigger_type": "manual_candidate_source_sync",
+        "scan_type": "quick",
+        "source_ids": [
+            "legacy-recruitment-pipeline",
+            "legacy-search-discovery",
+        ],
+    }]
+
+
+def test_recruitment_source_projection_defers_behind_authoritative_run_lock(monkeypatch):
+    def busy_run(**_kwargs):
+        raise main.RadarRunBusy("already running", scan_type="quick")
+
+    monkeypatch.setattr(main.future_radar_service, "run", busy_run)
+    assert main._project_recruitment_sources_to_opportunity_pool() == {
+        "status": "deferred",
+        "reason": "radar_run_active",
+    }
+
+
+def test_cached_recruitment_source_refresh_still_projects_the_durable_pool(monkeypatch):
+    with TestClient(main.app) as client:
+        token, _ = register(client, "cached-source-projection-user")
+        monkeypatch.setattr(
+            main,
+            "settings",
+            SimpleNamespace(recruitment_web_search_enabled=False),
+        )
+        monkeypatch.setattr(database, "get_system_state", lambda _key: None)
+        monkeypatch.setattr(main, "_recruitment_source_last_count", 17)
+        monkeypatch.setattr(
+            main, "_recruitment_source_last_refresh", main.time.monotonic(),
+        )
+        projections = []
+
+        def project():
+            projections.append(True)
+            return {"status": "updated", "sources_succeeded": 2}
+
+        monkeypatch.setattr(
+            main, "_project_recruitment_sources_to_opportunity_pool", project,
+        )
+        response = client.post("/api/recruitment/refresh", headers=auth(token))
+
+    assert response.status_code == 200
+    assert response.json()["cached"] is True
+    assert response.json()["count"] == 17
+    assert response.json()["opportunity_pool_projection"]["status"] == "updated"
+    assert projections == [True]
 
 
 def test_recruitment_watch_fetch_is_offline_deterministic_and_safe(monkeypatch):
