@@ -21,6 +21,11 @@ WECHAT_SOURCE_NAMES = (
     ("wechat-jiutian-recruitment", "中移九天招聘"),
 )
 
+# Public article discovery is deliberately independent from the official ATS
+# schedule.  These sources search only public, already-indexed material and
+# never authenticate to a personal WeChat account.
+WECHAT_DISCOVERY_INTERVAL_MINUTES = 30
+
 EXISTING_PUBLIC_SOURCES = (
     (
         "public-iguopin-campus",
@@ -514,7 +519,7 @@ def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
             "enabled": True,
             "priority": 70,
             "trust_level": "discovery",
-            "interval_minutes": 360,
+            "interval_minutes": WECHAT_DISCOVERY_INTERVAL_MINUTES,
             "adapter_config": {"adapter": discovery_adapter},
             "query_config": {"recruitment_year": 2027, "scope": "campus"},
             "region_config": {"timezone": "Asia/Shanghai", "regions": ["中国大陆", "香港"]},
