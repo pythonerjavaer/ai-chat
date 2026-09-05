@@ -37,6 +37,11 @@ test("the bridge defaults to seven sources and uses the server count for its tit
   assert.equal(nodes.get(".recruitment-sync-footer b").textContent, "7 / 7 已同步");
   assert.equal(panel.dataset.state, "synced");
   assert.equal(orbit.children.length, 7);
+  vm.runInContext('renderRecruitmentSyncStatus({ expected_source_count: 7, connected_source_count: 7, transport_state: "synced", verification_state: "source_screened", last_synced_at: "2026-09-05T00:00:00Z", inventory_source_screened: 493, inventory_accepted: 10, inventory_pending: 3, inventory_rejected: 35 })', context);
+  assert.equal(nodes.get('[data-sync-metric="source_screened"] strong').textContent, "493");
+  assert.equal(nodes.get('[data-sync-metric="accepted"] strong').textContent, "10");
+  assert.equal(nodes.get('[data-sync-metric="pending"] strong').textContent, "3");
+  assert.equal(nodes.get('[data-sync-badge]').textContent, "同步完成");
 });
 
 test("the bridge labels inventory as source signals and never treats skipped or closed as rejected", () => {
@@ -48,12 +53,12 @@ test("the bridge labels inventory as source signals and never treats skipped or 
 
   assert.match(renderer, /数字是各来源当前保留的信号记录，不是去重后的岗位数/);
   assert.match(renderer, /\["已核验信号", "accepted"/);
-  assert.match(renderer, /\["待官网核验信号", "pending"/);
+  assert.match(renderer, /\["尚未入池信号", "pending"/);
   assert.match(renderer, /\["未通过核验信号", "rejected"/);
-  assert.match(renderer, /待核验＝官网证据暂不完整 · 未通过＝明确不符合规则或链接无效/);
+  assert.match(renderer, /ChatGPT 已筛选的机会直接入池；官网核验是独立信息/);
   assert.match(renderer, /"transport_state", "status", "state", "bridge_status"/);
   assert.match(renderer, /visualState === "synced" && verificationState === "pending"/);
-  assert.match(renderer, /回传完成 · 待核验/);
+  assert.match(renderer, /回传完成 · 部分未入池/);
   assert.match(renderer, /同步完成 · 含未通过信号/);
   assert.doesNotMatch(renderer, /"rejected", "skipped"/);
   assert.doesNotMatch(renderer, /"rejected_count", "skipped_count"/);

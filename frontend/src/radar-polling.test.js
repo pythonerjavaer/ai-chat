@@ -45,7 +45,20 @@ test("five consecutive failed attempts suspend automated retries across tabs and
 test("explicit retry still respects Retry-After and no account data is persisted", () => {
   const f = fixture(); f.gate.failure({ status: 429, retryAfter: "180" }); f.gate.resume();
   assert.throws(() => f.gate.assertAllowed(), { code: "RADAR_POLL_DEFERRED" });
-  assert.deepEqual(Object.keys(f.persisted()).sort(), ["failures", "retryAt", "suspended"]);
+  assert.deepEqual(Object.keys(f.persisted()).sort(), ["failures", "retryAt", "serverRetryAt", "suspended"]);
+});
+
+test("manual opportunity recovery clears automatic backoff while honoring explicit server Retry-After", () => {
+  const f = fixture();
+  f.gate.failure({ status: 503 });
+  f.gate.resume({ allowImmediate: true });
+  f.gate.assertAllowed();
+  f.gate.failure({ status: 429, retryAfter: "90" });
+  f.gate.resume({ allowImmediate: true });
+  assert.equal(f.gate.delay(), 90_000);
+  assert.throws(() => f.gate.assertAllowed(), { code: "RADAR_POLL_DEFERRED" });
+  f.advance(90_000);
+  f.gate.assertAllowed();
 });
 
 test("dashboard cache never crosses sessions; unavailable storage has bounded memory fallback", async () => {

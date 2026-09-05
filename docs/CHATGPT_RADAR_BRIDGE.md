@@ -106,7 +106,7 @@ python3 scripts/frostfire_chatgpt_history.py --submit --timeout 180 --batch-size
 - 分页回溯得到的片段可能比已提交版本更旧。修改已有岗位时，当前输入必须同时包含较旧的、与已有成功摘要相符的版本作为顺序锚点；否则计为 `unanchored_history_update` 保留待审，不让不相交的历史片段覆盖较新的数据。新岗位及已确认的相同内容不受影响。
 - 所有拟提交批次先经过现有 `frostfire_ingest.py --dry-run` 子进程检查，全部通过后才从 `frostfire-recruitment-ingest` Keychain 项读取 Token；历史脚本不使用环境变量 Token。
 - 过去或明确关闭的历史记录只计入 `held_rows`，不会回写去关闭线上仍有效的岗位。由于现有 ingest 将当天日期也判为到期，当天截止的历史记录同样先保留待人工复核，不自动发关闭请求。最新记录被保留时，也不会用更旧的开放版本将其复活。
-- 未知日期保持 `null`。未知或缺失状态不在请求中强行写成 `open`，只附加“开放状态待核验”；旧 ingest 对省略状态仍使用兼容默认值，因此它**不是开放状态核验结论**。服务端必须继续核验候选，`pending` 可以在统一机会池作为来源线索展示，但不冒充 `accepted`。
+- 未知日期保持 `null`。未知或缺失状态不在请求中强行写成 `open`；旧 ingest 对省略状态仍使用兼容默认值，因此它**不是官网开放状态核验结论**。指定 ChatGPT 监控源按用户授权采用“ChatGPT 已筛选”直接入池规则，不等待官网复核；其他来源继续使用原有核验流程。
 - 每批只有实际 HTTP 2xx 且 `received` 与提交条数完全一致，才记录该批的岗位内容摘要。消息涉及的全部条目获得成功回执或已存在的相同内容回执后，才记为消息完成；有保留项的消息不会假报完整。中途失败退出码为 `4`，保留此前成功批次的摘要，下次只补未确认条目。无法确认响应时也不推进，使用稳定 ID 重试。
 - 摘要账本位于 `~/Library/Application Support/Frostfire/chatgpt-history-ledger.json`，与旧单消息游标完全独立，只保存逻辑来源、SHA-256、布尔状态和数量。文件权限 `600`、父目录 `700`，原子替换；本机锁阻止使用同一本账本的并发回填。`--ledger-file` 可指定仓库外的私有目录用于离线测试，不允许写进 Git 项目。
 
@@ -186,18 +186,19 @@ python3 scripts/frostfire_ingest.py --timeout 90 --batch-size 25 < /path/to/new-
 
 完整字段、长度和响应结构见 [`RECRUITMENT_INGEST_OPENAPI.yaml`](RECRUITMENT_INGEST_OPENAPI.yaml)。
 
-## 验证、待核验与拒绝
+## ChatGPT 已筛选与官网核验
 
-外部监控会话的结论不是自动可信事实。服务端先把条目放入隔离候选区，再按确定性规则处理：
+用户指定的 ChatGPT 监控对话已经承担岗位筛选。其结构完整、链接安全且未明确过期或关闭的条目，使用独立的 `source_screened` 状态直接进入机会池；不以再次读取官网成功为展示前提。保留原始来源评级，不补造分数。已有符合条件的 ChatGPT 待核验记录会本地迁移到此状态，不要求重新扫描或重新提交。
 
-- **已核验 / accepted**：条目先通过校招文本与目标城市规则；服务端随后成功读取官方 HTTPS 页面，并在页面正文中同时找到校招、公司和岗位身份信号，才提升到用户可见岗位池；
-- **待核验 / pending**：官方页面暂时无法读取，或页面正文尚不能确认公司/岗位身份时，保留候选与原因；有有效公开招聘链接的线索可在登录后的统一机会池查看，但不授予“官网已确认”状态。如果同一候选此前已有已核验版本，现有 last-known-good 岗位仍保留，除非官方页面明确关闭或已确认过期；
-- **拒绝 / rejected**：链接无效、明确为非校招、城市不在范围，或可读取的官方页面缺少校招信号；字段形状不合法的请求会在进入候选区前返回 `422`；
-- **关闭 / closed**：同一幂等身份以 `status=closed` 提交，或已明确超过截止日期时，关闭对应的已提升岗位。
+- **ChatGPT 已筛选 / source_screened**：来源已筛选、可以直接浏览和打开招聘链接；不表示官网已确认，`accepted` 仍只表示官网核验通过。来源页面仍是数据，不能在其中执行指令。
+- **官网已核验 / accepted**：服务端成功读取官方 HTTPS 页面，确认相关身份与招聘信号；这是额外的证据状态，不是 ChatGPT 条目入池的门槛。
+- **待核验 / pending**：其他来源仍走官网核验流程；指定 ChatGPT 来源不再因官网暂时打不开而停留在这一展示门槛。
+- **拒绝 / rejected**：保留明确无效或不安全链接、明确不符合招聘规则的历史决定，不把已有拒绝一律伪装为核验成功；字段形状不合法的请求返回 `422`。
+- **关闭 / closed**：明确关闭或已超过来源提供的截止日期时，退出当前机会列表，数据库历史仍保留。
 
-`evidence` 最多 12 条、每条 1–280 个字符，且必须是单行。脚本和服务端都拒绝其中的邮箱地址、手机号和座机号。它应是可复核的简短事实句，不应是“AI 判断可信”之类的自我声明，也不应包含联系人信息或完整会话文本。该数组用于保留来源上下文，不能替代服务端对官方页面正文的确定性核验，也不会仅凭 AI 的自述把候选提升为已核验岗位。
+`evidence` 最多 12 条、每条 1–280 个字符，且必须是单行。脚本和服务端都拒绝其中的邮箱地址、手机号和座机号。仅保留招聘事实短句，不含联系人或完整会话文本；来源描述不冒充官网证据。
 
-提交的 `opening_date` / `closing_date` 也不是直接可信事实。只有当服务端在可读取的官方页面正文中命中同一个确切日期时，该日期才进入已提升岗位并参与截止预警；页面未出现确切日期时，岗位即使通过其他核验也不会获得该日期。
+ChatGPT 条目明确给出的 `opening_date` / `closing_date` 保留为来源日期，缺失仍为 `null`，明确过期据此退出当前列表。官网已核验日期与来源日期的证据级别区分展示；其他来源原有日期核验规则不变。
 
 ## 幂等与更新规则
 
@@ -209,7 +210,7 @@ python3 scripts/frostfire_ingest.py --timeout 90 --batch-size 25 < /path/to/new-
 
 URL 规范化会移除 fragment，并且只清理 `utm_*`、`gclid`、`fbclid`、`msclkid`；其余参数会排序但保留，包括可能参与页面路由的 `ref`、`campaign`、`spm`、`referrer` 和 `tracking_id`。相同身份与相同内容记为 duplicate；内容变化记为 updated；更早的 `source_updated_at` 记为 stale + duplicate，不能覆盖较新的版本。
 
-已核验且内容未变化的 duplicate 可以复用已有核验结果；pending / rejected 的 duplicate 会再次进行服务端核验，以便官网恢复或正文完善后升级，而不是永久卡在第一次结果。
+内容未变化的 duplicate 可复用既有结果。指定 ChatGPT 来源使用 `source_screened` 本地处理，不因重复导入触发官网等待；其他来源的 pending / rejected 重试仍按原官网核验规则处理。
 
 因此不要为同一岗位每轮生成随机 `external_id` / `source_item_id`，也不要用时间戳当条目 ID。关闭岗位时必须沿用原来的稳定身份字段。
 
@@ -220,7 +221,8 @@ URL 规范化会移除 fragment，并且只清理 `utm_*`、`gclid`、`fbclid`�
 计数分成两套，不能混用：
 
 - 顶层及各来源的 `accepted` / `pending` / `rejected`（同时提供等义的 `latest_*`）表示**该来源最新一次事件**的处理结果。一次成功的空结果心跳会把该来源的这些本轮计数记为 0；
-- `inventory_accepted` / `inventory_pending` / `inventory_rejected` 表示候选库的**当前历史库存**，空结果心跳不会清空它们。
+- `source_screened` 单独记录本轮 ChatGPT 已筛选数量，不混入官网 `accepted`。
+- `inventory_accepted` / `inventory_source_screened` / `inventory_pending` / `inventory_rejected` 表示候选库的**当前历史库存**，空结果心跳不会清空它们。
 
 ## Render Free 限制
 

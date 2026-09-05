@@ -95,6 +95,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   const context = {
     AbortController, URLSearchParams,
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
+    radarOpportunityPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     resumeFutureRadarRunStatusPolling() {},
     state, elements, DEFAULT_FUTURE_RADAR_STATUS, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, TIER_CODES, buildFutureRadarJobsQuery,
     buildFutureRadarCompanyJobsQuery, starfieldLabel,
@@ -214,6 +215,37 @@ test("first main-pool failure never renders six legacy rows and explicitly offer
   assert.equal(r.state.futureRadar.jobsError, "");
   assert.equal(r.cards().length, 50);
   assert.match(r.elements.recruitmentStatus.textContent, /当前筛选 255 个机会/);
+});
+
+test("the visible empty-pool retry resumes a persisted suspension without resuming metadata or creating duplicate reads", async () => {
+  const r = runtime();
+  await r.run("loadFutureRadarJobPage(1, true)");
+  let opportunityTransport = JSON.stringify({ suspended: true, failures: 5, retryAt: Date.now() + 240_000 });
+  r.context.radarOpportunityPollingGate = createRadarPollingGate({
+    read: () => opportunityTransport, write: (value) => { opportunityTransport = value; }, locks: () => null,
+  });
+  r.context.radarPollingGate.failure({ status: 503 });
+  let finish;
+  r.controls.fail = false;
+  r.controls.opportunityHandler = () => {
+    r.context.radarOpportunityPollingGate.assertAllowed();
+    return new Promise((resolve) => { finish = resolve; });
+  };
+  const retry = descendants(r.elements.recruitmentJobs).find((el) => el.tag === "button");
+  assert.equal(retry.className, "radar-pool-retry");
+  assert.notEqual(retry.disabled, true);
+  const before = r.calls.length;
+  const first = retry.listeners.click();
+  const second = retry.listeners.click();
+  await new Promise(setImmediate);
+  assert.equal(r.calls.length, before + 1);
+  finish(r.payload);
+  assert.equal(await first, true);
+  assert.equal(await second, true);
+  assert.equal(r.state.futureRadar.jobsError, "");
+  assert.equal(r.cards().length, 50);
+  assert.throws(() => r.context.radarPollingGate.assertAllowed(), { code: "RADAR_POLL_DEFERRED" });
+  assert.equal(JSON.parse(opportunityTransport).suspended, false);
 });
 
 test("a partial dashboard snapshot is not successful when opportunities failed", async () => {

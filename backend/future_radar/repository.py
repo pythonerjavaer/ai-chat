@@ -21,7 +21,8 @@ from .normalization import (
 )
 from .opportunity_cache import (
     BoundedScoringCache, CACHE_FORMAT_VERSION, RevisionChanged,
-    date_boundary, opaque_digest, read_opportunity_revision,
+    OPPORTUNITY_FRESHNESS_FIELDS, date_boundary, opaque_digest,
+    opportunity_scoring_input, read_opportunity_revision,
 )
 
 
@@ -112,6 +113,13 @@ class RadarRepository:
         # freshness: active tier browsing need not rebuild thousands of scores
         # every five minutes. New/closed jobs still invalidate immediately.
         self._opportunity_cache = BoundedScoringCache(
+            ttl_seconds=30 * 60, refresh_on_hit=True,
+        )
+        # A new source observation invalidates the pool projection, but its
+        # thousands of unchanged jobs need not all be scored again. Retain
+        # only sanitized results under opaque database/user/input digests.
+        self._opportunity_record_cache = BoundedScoringCache(
+            max_entries=12_000, max_bytes=64 * 1024 * 1024,
             ttl_seconds=30 * 60, refresh_on_hit=True,
         )
 
@@ -1511,7 +1519,7 @@ class RadarRepository:
             ).fetchone()[0])
 
         verification_counts = {
-            key: 0 for key in ("pending", "verified", "conflicted", "rejected")
+            key: 0 for key in ("pending", "source_screened", "verified", "conflicted", "rejected")
         }
         verification_counts.update({
             str(row["verification_status"]): int(row["count"])
@@ -1689,7 +1697,7 @@ class RadarRepository:
         query_filters = {**filters, "status": "all", "active_only": False, "source_id": None}
         match_clause, match_params = self._job_filter_clause(query_filters)
         clause = (
-            "j.verification_status IN ('verified','pending','conflicted')"
+            "j.verification_status IN ('verified','source_screened','pending','conflicted')"
             " AND (j.verification_status='verified' OR EXISTS ("
             "SELECT 1 FROM job_sources os JOIN monitor_sources oms ON oms.id=os.source_id "
             "WHERE os.job_id=j.id AND oms.trust_level='discovery'))"
@@ -1770,6 +1778,7 @@ class RadarRepository:
             for members in cohorts.values():
                 winner = max(members, key=lambda item: (
                     item.get("verification_status") == "verified",
+                    item.get("verification_status") == "source_screened",
                     str(item.get("last_changed_at") or ""),
                     item.get("verification_status") == "pending",
                     str(item["id"]),
@@ -1821,24 +1830,77 @@ class RadarRepository:
     def _opportunity_cache_prefix(
         self, *, cache_scope: str, public_url: Callable[[Any], str | None],
         company_aliases: dict[str, str],
+        input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> tuple[Any, ...] | None:
         revision = self._opportunity_revision()
         if revision is None:
             return None
         return (CACHE_FORMAT_VERSION, revision, date_boundary(), cache_scope,
-                opaque_digest(company_aliases), id(public_url))
+                opaque_digest(company_aliases), id(public_url), id(input_sanitizer))
+
+    @staticmethod
+    def _record_cache_scope(prefix: tuple[Any, ...] | None) -> tuple[Any, ...] | None:
+        # Namespace and epoch isolate databases/restores. The revision is
+        # deliberately absent: every row has its own complete input digest.
+        if prefix is None:
+            return None
+        return (prefix[0], prefix[1][:2], *prefix[2:])
+
+    def _prepare_opportunity_record(
+        self, row: dict[str, Any], *,
+        prepare: Callable[[dict[str, Any]], dict[str, Any]],
+        input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None,
+        record_cache_scope: tuple[Any, ...] | None,
+    ) -> dict[str, Any]:
+        if input_sanitizer is None or record_cache_scope is None:
+            return prepare(row)
+        public_input = input_sanitizer(row)
+        key = (*record_cache_scope, opaque_digest({
+            "job": opportunity_scoring_input(public_input),
+            # The public presenter also distinguishes complete recruitment
+            # programs using the raw listing; retain that decision explicitly.
+            "program_listing": is_recruitment_program_listing(row),
+        }))
+        def compute():
+            prepared = prepare(row)
+            # Store only derived scoring/presentation fields. Repeating each
+            # row's JD and provenance here would consume the cache budget
+            # again even though the live pool already owns those fields.
+            return {
+                "overrides": {
+                    field: value for field, value in prepared.items()
+                    if field not in OPPORTUNITY_FRESHNESS_FIELDS
+                    and (field not in public_input or value != public_input[field])
+                },
+                "removed": tuple(field for field in public_input if field not in prepared
+                                 and field not in OPPORTUNITY_FRESHNESS_FIELDS),
+            }
+
+        cached = self._opportunity_record_cache.get_or_compute(key, compute)
+        # Pool assembly assigns grouping/tier buckets, and callers can mutate
+        # responses. Neither may mutate the shared per-record cache value.
+        item = deepcopy(public_input)
+        item.update(deepcopy(cached["overrides"]))
+        for field in cached["removed"]:
+            item.pop(field, None)
+        return item
 
     def _prepare_opportunity_pool(
         self, *, filters: dict[str, Any],
         public_url: Callable[[Any], str | None], prepare: Callable[[dict[str, Any]], dict[str, Any]],
         company_aliases: dict[str, str],
+        input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        record_cache_scope: tuple[Any, ...] | None = None,
     ) -> _PreparedOpportunityPool:
         rows = self._opportunity_rows(
             filters=filters, public_url=public_url, company_aliases=company_aliases,
         )
         # Scoring is profile dependent. Score the complete deduplicated match
         # set before tier filtering/pagination, never only the first 50 rows.
-        items = tuple(prepare(row) for row in rows)
+        items = tuple(self._prepare_opportunity_record(
+            row, prepare=prepare, input_sanitizer=input_sanitizer,
+            record_cache_scope=record_cache_scope,
+        ) for row in rows)
         tier_counts = {key: 0 for key in (
             "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY",
         )}
@@ -1938,7 +2000,8 @@ class RadarRepository:
                 "hiring_unit_count": len(companies), "hiring_units": companies[:12],
                 "city_count": len(cities), "cities": cities[:8],
                 "verified_count": sum(item.get("verification_status") == "verified" for item in members),
-                "discovered_count": sum(item.get("verification_status") != "verified" for item in members),
+                "source_screened_count": sum(item.get("verification_status") == "source_screened" for item in members),
+                "discovered_count": sum(item.get("verification_status") in {"pending", "conflicted"} for item in members),
                 "earliest_closing_date": closing[0] if closing else None,
                 "latest_changed_at": max((str(item.get("last_changed_at") or "") for item in members), default="") or None,
             })
@@ -2064,16 +2127,18 @@ class RadarRepository:
         self, *, filters: dict[str, Any], public_url: Callable[[Any], str | None],
         prepare: Callable[[dict[str, Any]], dict[str, Any]],
         company_aliases: dict[str, str], cache_scope: str | None,
+        input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> _PreparedOpportunityPool:
         # Priority/tier/view/company/page changes project the same complete
         # scored set; switching browse scope must not rerun full-pool scoring.
         base_filters = {key: value for key, value in filters.items()
                         if key not in {"priority_only", "balanced_only", "tier_code", "view", "company_key", "page", "page_size"}}
 
-        def build() -> _PreparedOpportunityPool:
+        def build(record_cache_scope=None) -> _PreparedOpportunityPool:
             return self._prepare_opportunity_pool(
                 filters=base_filters, public_url=public_url,
                 prepare=prepare, company_aliases=company_aliases,
+                input_sanitizer=input_sanitizer, record_cache_scope=record_cache_scope,
             )
 
         if cache_scope is None:
@@ -2083,13 +2148,13 @@ class RadarRepository:
         for _attempt in range(2):
             prefix = self._opportunity_cache_prefix(
                 cache_scope=cache_scope, public_url=public_url,
-                company_aliases=company_aliases,
+                company_aliases=company_aliases, input_sanitizer=input_sanitizer,
             )
             if prefix is None:
                 return build()
 
             def stable_build() -> _PreparedOpportunityPool:
-                pool = build()
+                pool = build(self._record_cache_scope(prefix))
                 # Writers (including other workers/direct SQL) increment the
                 # revision in their own transaction. Do not publish a cache
                 # entry assembled across two different committed revisions.
@@ -2105,17 +2170,19 @@ class RadarRepository:
                 continue
         # Under a continuous stream of writes, retain the ordinary live read
         # behavior but never cache an unstable result or block every user.
-        return build()
+        return build(self._record_cache_scope(prefix))
 
     def list_opportunities(
         self, *, page: int = 1, page_size: int = 50, filters: dict[str, Any] | None = None,
         public_url: Callable[[Any], str | None], prepare: Callable[[dict[str, Any]], dict[str, Any]],
         company_aliases: dict[str, str] | None = None, cache_scope: str | None = None,
+        input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         filters = filters or {}
         pool = self._prepared_opportunities(
             filters=filters, public_url=public_url, prepare=prepare,
             company_aliases=company_aliases or {}, cache_scope=cache_scope,
+            input_sanitizer=input_sanitizer,
         )
         all_items = pool.items
         balanced_items = self._balanced_opportunities(all_items)
@@ -2153,7 +2220,7 @@ class RadarRepository:
             items = tuple(item for item in items if item["tier_bucket"] != "BELOW_PRIORITY")
         if filters.get("tier_code"):
             items = [item for item in items if item["tier_bucket"] == filters["tier_code"]]
-        verification = {key: 0 for key in ("pending", "verified", "conflicted", "rejected")}
+        verification = {key: 0 for key in ("pending", "source_screened", "verified", "conflicted", "rejected")}
         statuses = {key: 0 for key in ("open", "closed", "unknown")}
         visible_category_counts: dict[str, int] = {}
         visible_category_companies: dict[str, set[str]] = {}
@@ -2194,6 +2261,7 @@ class RadarRepository:
                 "known_company_count": len(companies) - unknown_companies,
                 "unknown_company_count": unknown_companies,
                 "verified_count": verification["verified"],
+                "source_screened_count": verification["source_screened"],
                 "discovered_count": verification["pending"] + verification["conflicted"],
                 "verification_status": verification, "job_status": statuses,
                 "tier_counts": tier_counts, "category_counts": category_counts,
@@ -2225,11 +2293,13 @@ class RadarRepository:
         self, job_id: str, *, public_url: Callable[[Any], str | None],
         prepare: Callable[[dict[str, Any]], dict[str, Any]], cache_scope: str,
         company_aliases: dict[str, str] | None = None,
+        input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         """Reuse a cached visible winner, including its discovery ID aliases."""
         company_aliases = company_aliases or {}
         prefix = self._opportunity_cache_prefix(
             cache_scope=cache_scope, public_url=public_url, company_aliases=company_aliases,
+            input_sanitizer=input_sanitizer,
         )
         if prefix is not None:
             def match(key: Any, pool: _PreparedOpportunityPool) -> dict[str, Any] | None:
@@ -2247,7 +2317,10 @@ class RadarRepository:
         row = self.get_opportunity(
             job_id, public_url=public_url, company_aliases=company_aliases,
         )
-        return prepare(row) if row is not None else None
+        return self._prepare_opportunity_record(
+            row, prepare=prepare, input_sanitizer=input_sanitizer,
+            record_cache_scope=self._record_cache_scope(prefix),
+        ) if row is not None else None
 
     def get_opportunity(
         self, job_id: str, *, public_url: Callable[[Any], str | None],

@@ -51,6 +51,7 @@ function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null 
   const context = {
     state, API_BASE: base, Headers, FormData, AbortController,
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
+    radarOpportunityPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     FUTURE_RADAR_REQUEST_CONTROLLERS: new Set(),
     FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, buildFutureRadarJobsQuery, futureRadarTierQuery,
     selectedRecruitmentStarfields: () => categories,
@@ -75,7 +76,7 @@ function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null 
     extract("async function api(", "\nfunction showToast"),
     extract("function futureRadarJobsQuery(", "\nfunction syncFutureRadarSourceFilter"),
   ].join("\n"), context);
-  return { state, timers, run: (expression) => vm.runInContext(expression, context),
+  return { state, timers, context, run: (expression) => vm.runInContext(expression, context),
     advance: async (ms) => {
       elapsed += ms;
       timers.filter((timer) => !timer.cleared && timer.deadline <= elapsed).forEach((timer) => {
@@ -103,6 +104,25 @@ test("real builder and API send the active main-pool GET without blank dates or 
   assert.equal(data.items[0].verification_status, "pending");
   assert.equal(r.timers[0].delay, 120_000);
   assert.equal(r.timers[0].cleared, true);
+});
+
+test("a timed-out compatibility read cannot suppress the first real opportunity request", async (t) => {
+  const server = await localServer(t, (request, response) => {
+    if (request.url === "/api/recruitment/jobs") return;
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end('{"items":[{"id":"existing-pool-record"}],"total":432}');
+  });
+  const r = runtime(server.base);
+  const slowMetadata = r.run('api("/recruitment/jobs")');
+  const timedOut = assert.rejects(slowMetadata, { code: "REQUEST_TIMEOUT" });
+  await server.firstRequest;
+  await r.advance(15_000);
+  await timedOut;
+  assert.throws(() => r.context.radarPollingGate.assertAllowed(), { code: "RADAR_POLL_DEFERRED" });
+  const pool = await r.run("api(`/future-radar/opportunities?${futureRadarJobsQuery()}`, {timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS})");
+  assert.equal(server.requests.length, 2);
+  assert.equal(pool.total, 432);
+  assert.equal(pool.items[0].id, "existing-pool-record");
 });
 
 test("real HTTP query preserves supported category, fractional T tier and dates", async (t) => {

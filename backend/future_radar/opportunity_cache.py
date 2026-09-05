@@ -239,6 +239,31 @@ def date_boundary() -> tuple[str, str]:
     return date.today().isoformat(), datetime.now(timezone.utc).date().isoformat()
 
 
+# Observation clocks and event previews do not participate in the scorer.
+# Keep source identity/trust/active state in the digest, and refresh the full
+# sanitized provenance lists on every read so their clocks never become stale.
+OPPORTUNITY_FRESHNESS_FIELDS = (
+    "last_seen_at", "last_changed_at", "latest_event_type", "latest_event_at",
+    "sources", "discovered_by", "verified_by",
+)
+_SOURCE_COLLECTION_FIELDS = frozenset({"sources", "discovered_by", "verified_by"})
+
+
+def opportunity_scoring_input(public_item: dict[str, Any]) -> dict[str, Any]:
+    """Hash-only scoring inputs; callers must supply their public sanitizer."""
+    stable = {
+        key: value for key, value in public_item.items()
+        if key not in OPPORTUNITY_FRESHNESS_FIELDS
+    }
+    for field in _SOURCE_COLLECTION_FIELDS:
+        if field in public_item:
+            stable[field] = [
+                {key: value for key, value in source.items() if key != "last_seen_at"}
+                for source in public_item[field]
+            ]
+    return stable
+
+
 def _retained_size(value: Any) -> int:
     """Count retained Python objects once, including nested texts and indexes."""
     seen: set[int] = set()
@@ -292,6 +317,17 @@ class BoundedScoringCache:
 
     def _expire(self) -> None:
         now = self._clock()
+        if self.refresh_on_hit:
+            # Refresh-on-hit keeps LRU order in expiration order. Removing
+            # only the expired prefix avoids an O(n) sweep for each of the
+            # thousands of individual records in a pool rebuild.
+            while self._entries:
+                key, (expires, size, _) = next(iter(self._entries.items()))
+                if expires > now:
+                    break
+                del self._entries[key]
+                self._bytes -= size
+            return
         for key, (expires, size, _) in list(self._entries.items()):
             if expires <= now:
                 del self._entries[key]

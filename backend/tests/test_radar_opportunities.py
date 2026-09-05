@@ -448,14 +448,16 @@ def test_program_ingest_preserves_company_url_and_bridges_it_without_official_pa
         }],
     })
     assert result.status_code == 200
-    assert result.json()["pending"] == 1
+    assert result.json()["pending"] == 0
+    assert result.json()["source_screened"] == 1
     assert result.json()["rejected"] == 0
     assert result.json()["search_updates_refresh"] == {"status": "success"}
     pool = get_pool(harness)
     assert pool["total"] == 1
     assert pool["items"][0]["company"] == "招银网络科技"
     assert pool["items"][0]["listing_kind"] == "recruitment_program"
-    assert pool["items"][0]["verification_status"] == "pending"
+    assert pool["items"][0]["verification_status"] == "source_screened"
+    assert pool["items"][0]["officially_verified"] is False
 
 
 def test_specific_role_with_campus_suffix_is_not_downgraded_to_a_program(harness):

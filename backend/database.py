@@ -10,6 +10,8 @@ from .config import settings
 from .workspaces import DEFAULT_WORKSPACE, validate_workspace
 from .future_radar.schema import migrate as migrate_future_radar
 from .future_radar.opportunity_cache import install_opportunity_revision
+from .chatgpt_screening import SOURCE_SCREENED, chatgpt_screening_eligible
+from .chatgpt_sources import KNOWN_CHATGPT_SOURCE_IDS
 
 
 SPACE_RUN_HISTORY_LIMIT = 100
@@ -439,6 +441,8 @@ def init_db(*, connection_factory: Callable[[], Any] | None = None) -> None:
         )
         for rating_table in ("recruitment_jobs", "recruitment_ingest_candidates"):
             _ensure_column(connection, rating_table, "source_rating", "TEXT")
+        _ensure_column(connection, "recruitment_ingest_events", "source_screened_count",
+                       "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(
             connection,
             "recruitment_ingest_candidates",
@@ -1974,7 +1978,7 @@ def upsert_recruitment_ingest_candidate(
                     last_verification_attempt_at=?,
                     verification_attempt_count=verification_attempt_count + 1
                 WHERE dedupe_key=?
-                  AND verification_status IN ('pending', 'verified', 'rejected')
+                  AND verification_status IN ('pending', 'verified', 'rejected', 'source_screened')
                   AND (
                         verification_claimed_at IS NULL
                         OR verification_claimed_at <= ?
@@ -2178,7 +2182,7 @@ def finalize_recruitment_ingest_candidate_verification(
     or closure only closes a previously promoted job when no other verified
     candidate still backs that job id *or* the same canonical recruitment URL.
     """
-    if verification_status not in {"pending", "verified", "rejected", "closed"}:
+    if verification_status not in {"pending", "verified", "rejected", "closed", SOURCE_SCREENED}:
         raise ValueError("Invalid recruitment verification status.")
     if not isinstance(claim_token, str) or not claim_token.strip():
         raise ValueError("claim_token is required.")
@@ -2311,6 +2315,83 @@ def finalize_recruitment_ingest_candidate_verification(
     result = _decode_recruitment_ingest_candidate(row)
     result["job_closed"] = bool(closed_job_count)
     result["closed_job_count"] = closed_job_count
+    return result
+
+
+def adopt_chatgpt_screened_candidates(*, batch_size: int = 100) -> int:
+    """Idempotently adopt historical safe ChatGPT leads without HTTP requests.
+
+    Each transaction is bounded. Public projections already in Radar receive
+    the same explicit source-screened status, preserving IDs, dates, ratings,
+    official verification, and rejection/closure history. Missing projections
+    remain durable candidates for the ordinary local discovery bridge.
+    """
+    from .future_radar.adapters import LegacyDiscoveryDatabaseAdapter
+
+    if not 1 <= batch_size <= 100:
+        raise ValueError("batch_size must be between 1 and 100.")
+    adopted = 0
+    after_id = ""
+    stale_before = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    placeholders = ",".join("?" for _ in KNOWN_CHATGPT_SOURCE_IDS)
+    while True:
+        with connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM recruitment_ingest_candidates WHERE verification_status='pending' "
+                f"AND source_id IN ({placeholders}) AND id>? "
+                "AND (verification_claim_token IS NULL OR verification_claimed_at<=?) ORDER BY id LIMIT ?",
+                (*sorted(KNOWN_CHATGPT_SOURCE_IDS), after_id, stale_before, batch_size),
+            ).fetchall()
+        if not rows:
+            break
+        after_id = rows[-1]["id"]
+        eligible = [dict(row) for row in rows if chatgpt_screening_eligible(dict(row))]
+        if not eligible:
+            continue
+        with connect() as connection:
+            for candidate in eligible:
+                changed = connection.execute(
+                    "UPDATE recruitment_ingest_candidates SET verification_status='source_screened', "
+                    "verification_reason='chatgpt_source_screened', next_verification_at=NULL, "
+                    "verification_claim_token=NULL, verification_claimed_at=NULL "
+                    "WHERE id=? AND verification_status='pending' "
+                    "AND (verification_claim_token IS NULL OR verification_claimed_at<=?)",
+                    (candidate["id"], stale_before),
+                )
+                if not changed.rowcount:
+                    continue
+                adopted += 1
+                candidate["controlled_chatgpt"] = True
+                external_id = LegacyDiscoveryDatabaseAdapter._ingest_external_id(candidate)
+                connection.execute(
+                    "UPDATE radar_jobs SET verification_status='source_screened' "
+                    "WHERE external_id=? AND verification_status='pending' AND status<>'closed'",
+                    (external_id,),
+                )
+    return adopted
+
+
+def unprojected_chatgpt_screened_candidates(*, limit: int = 100) -> list[str]:
+    """Read a bounded missing local projection worklist; never rescan employers."""
+    from .future_radar.adapters import LegacyDiscoveryDatabaseAdapter
+
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100.")
+    with connect() as connection:
+        external_ids = {row["external_id"] for row in connection.execute(
+            "SELECT external_id FROM radar_jobs"
+        ).fetchall()}
+        rows = connection.execute(
+            "SELECT id, dedupe_key, external_id, promoted_job_id, company "
+            "FROM recruitment_ingest_candidates WHERE verification_status='source_screened' ORDER BY id"
+        ).fetchall()
+    result = []
+    for row in rows:
+        candidate = {**dict(row), "controlled_chatgpt": True}
+        if LegacyDiscoveryDatabaseAdapter._ingest_external_id(candidate) not in external_ids:
+            result.append(candidate["id"])
+            if len(result) >= limit:
+                break
     return result
 
 
@@ -2467,15 +2548,15 @@ def record_recruitment_ingest_event(
             INSERT INTO recruitment_ingest_events
                 (id, source_key, source_id, source_thread_id, received, accepted,
                  new_count, updated_count, duplicate_count, stale_count, pending_count,
-                 rejected_count, closed_count, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 rejected_count, closed_count, source_screened_count, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_id, source_key, source_id, source_thread_id, received,
                 int(counts.get("accepted", 0)), int(counts.get("new", 0)),
                 int(counts.get("updated", 0)), int(counts.get("duplicates", 0)),
                 int(counts.get("stale", 0)), pending, rejected,
-                int(counts.get("closed", 0)), event_status, now,
+                int(counts.get("closed", 0)), int(counts.get("source_screened", 0)), event_status, now,
             ),
         )
     return event_id
@@ -2567,6 +2648,7 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
             """
             SELECT sources.*,
                    events.accepted AS latest_accepted,
+                   events.source_screened_count AS latest_source_screened,
                    events.pending_count AS latest_pending,
                    events.rejected_count AS latest_rejected,
                    events.closed_count AS latest_closed
@@ -2582,6 +2664,7 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
             """
             SELECT source_key,
                    SUM(CASE WHEN verification_status = 'verified' THEN 1 ELSE 0 END) accepted,
+                   SUM(CASE WHEN verification_status = 'source_screened' THEN 1 ELSE 0 END) source_screened,
                    SUM(CASE WHEN verification_status = 'pending' THEN 1 ELSE 0 END) pending,
                    SUM(CASE WHEN verification_status = 'rejected' THEN 1 ELSE 0 END) rejected
             FROM recruitment_ingest_candidates
@@ -2592,7 +2675,7 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
             """
             SELECT id, source_id, source_thread_id, received, accepted,
                    new_count, updated_count, duplicate_count, stale_count, pending_count,
-                   rejected_count, closed_count, status, created_at
+                   rejected_count, closed_count, source_screened_count, status, created_at
             FROM recruitment_ingest_events
             ORDER BY created_at DESC
             LIMIT 20
@@ -2601,6 +2684,7 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
     counts_by_source = {
         row["source_key"]: {
             "accepted": int(row["accepted"] or 0),
+            "source_screened": int(row["source_screened"] or 0),
             "pending": int(row["pending"] or 0),
             "rejected": int(row["rejected"] or 0),
         }
@@ -2609,10 +2693,11 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
     sources: list[dict[str, Any]] = []
     for row in source_rows:
         counts = counts_by_source.get(
-            row["source_key"], {"accepted": 0, "pending": 0, "rejected": 0}
+            row["source_key"], {"accepted": 0, "source_screened": 0, "pending": 0, "rejected": 0}
         )
         latest_counts = {
             "accepted": int(row["latest_accepted"] or 0),
+            "source_screened": int(row["latest_source_screened"] or 0),
             "pending": int(row["latest_pending"] or 0),
             "rejected": int(row["latest_rejected"] or 0),
             "closed": int(row["latest_closed"] or 0),
@@ -2627,10 +2712,12 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
             "last_item_id": row["last_item_id"],
             **latest_counts,
             "latest_accepted": latest_counts["accepted"],
+            "latest_source_screened": latest_counts["source_screened"],
             "latest_pending": latest_counts["pending"],
             "latest_rejected": latest_counts["rejected"],
             "latest_closed": latest_counts["closed"],
             "inventory_accepted": counts["accepted"],
+            "inventory_source_screened": counts["source_screened"],
             "inventory_pending": counts["pending"],
             "inventory_rejected": counts["rejected"],
         })
@@ -2644,9 +2731,11 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
         "connected_source_count": sum(source["last_seen_at"] is not None for source in sources),
         "last_synced_at": last_synced_at,
         "accepted": sum(source["latest_accepted"] for source in sources),
+        "source_screened": sum(source["latest_source_screened"] for source in sources),
         "pending": sum(source["latest_pending"] for source in sources),
         "rejected": sum(source["latest_rejected"] for source in sources),
         "inventory_accepted": sum(source["inventory_accepted"] for source in sources),
+        "inventory_source_screened": sum(source["inventory_source_screened"] for source in sources),
         "inventory_pending": sum(source["inventory_pending"] for source in sources),
         "inventory_rejected": sum(source["inventory_rejected"] for source in sources),
         "sources": sources,

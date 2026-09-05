@@ -5,7 +5,7 @@ from datetime import date
 from functools import lru_cache
 from typing import Any
 
-from .recruitment_organizations import assess_organization
+from .recruitment_organizations import assess_organization, collect_organization_evidence
 from .recruitment_rating import resolve_source_ratings
 from .recruitment_directory import (
     canonical_employer_identity,
@@ -698,8 +698,12 @@ def _organization_assessment(job: dict[str, Any]) -> dict[str, Any]:
             # is the actual platform being scored, even when ``company`` holds
             # only the parent group used by the source campaign.
             organization_job = {**organization_job, "subsidiary": structured_core}
+    # Both passes use the same public hiring-entity evidence. The platform
+    # baseline changes after identity lookup; parsing the JD again cannot.
+    organization_evidence = collect_organization_evidence(organization_job)
     probe = assess_organization(
         organization_job, base_platform_points=8, platform_band="平台识别探针",
+        evidence=organization_evidence,
     )
     scoring_company = str(probe.get("entity_name") or company).casefold()
     institution_identity = _institution_identity_for_hiring_unit(scoring_company)
@@ -736,6 +740,7 @@ def _organization_assessment(job: dict[str, Any]) -> dict[str, Any]:
         points, band = 8, "平台资料有限；行业分类不参与机构定级"
     assessment = assess_organization(
         organization_job, base_platform_points=points, platform_band=band,
+        evidence=organization_evidence,
     )
     # Publish the same rounded dimension used by the direct 100-point score.
     # Consumers must not re-round 62.5 differently in JavaScript.
@@ -804,6 +809,15 @@ def _company_matches_marker(company: str, marker: str) -> bool:
 
 
 def _company_matches_any(company: str, markers: tuple[str, ...] | set[str]) -> bool:
+    # Only public name/maintained marker comparisons are shared. Profiles,
+    # mutable job payloads and computed scores never enter this cache.
+    if len(company) <= 500:
+        return _cached_company_matches_any(company, frozenset(markers))
+    return any(_company_matches_marker(company, marker) for marker in markers)
+
+
+@lru_cache(maxsize=4096)
+def _cached_company_matches_any(company: str, markers: frozenset[str]) -> bool:
     return any(_company_matches_marker(company, marker) for marker in markers)
 
 

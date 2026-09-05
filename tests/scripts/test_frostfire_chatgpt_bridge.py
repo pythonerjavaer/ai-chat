@@ -72,7 +72,8 @@ def test_builds_discovery_only_sync_without_message_metadata():
     assert len(payload["jobs"]) == 1
     assert payload["jobs"][0]["verification_status"] == "pending"
     assert payload["jobs"][0]["confidence_score"] == 0.55
-    assert "待官方核验" in payload["jobs"][0]["tags"]
+    assert "ChatGPT 已筛选" in payload["jobs"][0]["tags"]
+    assert "待官方核验" not in payload["jobs"][0]["tags"]
     assert "官方已核验" not in payload["jobs"][0]["tags"]
     assert "链接已验证" not in payload["jobs"][0]["tags"]
     assert raw_message_id not in serialized

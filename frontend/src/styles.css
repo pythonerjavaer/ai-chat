@@ -551,7 +551,7 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .recruitment-sync-badge.disabled { color: #b5a3bd; border-color: rgba(187,145,197,.2); background: rgba(124,84,133,.08); }
 @keyframes bridgeBadgePulse { 50% { opacity: .58; } }
 .recruitment-sync-description { position: relative; z-index: 1; margin: 0; color: #8da9b2; font-size: 8px; line-height: 1.55; }
-.recruitment-sync-metrics { position: relative; z-index: 1; display: grid; grid-template-columns: 1.4fr repeat(3, minmax(0, .72fr)); gap: 7px; }
+.recruitment-sync-metrics { position: relative; z-index: 1; display: grid; grid-template-columns: 1.4fr repeat(4, minmax(0, .72fr)); gap: 7px; }
 .recruitment-sync-metrics article { min-width: 0; display: grid; gap: 4px; padding: 8px 9px; border: 1px solid rgba(126,216,224,.1); border-radius: 9px; background: rgba(3,14,22,.24); }
 .recruitment-sync-metrics small { color: #6f8b96; font-size: 7px; }
 .recruitment-sync-metrics strong { overflow: hidden; color: #daf8f7; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
@@ -655,6 +655,8 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .job-watch-button { min-height: 32px; padding: 0 10px; color: #bff9e8; border: 1px solid rgba(99,222,184,.22); border-radius: 8px; background: rgba(48,177,139,.08); cursor: pointer; font-size: 9px; font-weight: 700; }
 .job-watch-button:hover { border-color: rgba(99,222,184,.42); background: rgba(48,177,139,.14); }
 .job-watch-button:disabled { cursor: wait; opacity: .55; }
+.radar-pool-retry { min-height: 44px; padding: 10px 20px; margin-top: 12px; border: 1px solid rgba(116,224,245,.58); border-radius: 12px; color: #e1fbff; background: rgba(39,142,166,.26); font: inherit; font-weight: 700; cursor: pointer; }
+.radar-pool-retry:hover, .radar-pool-retry:focus-visible { outline: 2px solid rgba(135,233,253,.6); outline-offset: 3px; background: rgba(39,142,166,.42); }
 .network-status b { font-weight: 500; }
 .network-status.offline i { background: var(--danger); box-shadow: 0 0 12px var(--danger); }
 .profile-button { display: flex; align-items: center; gap: 9px; height: 38px; padding: 3px 10px 3px 4px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.035); cursor: pointer; }

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from .future_radar.normalization import (
@@ -248,6 +249,19 @@ def _employment_relationship(text: str) -> bool:
 
 
 def _directory_affiliate(text: str) -> str | None:
+    # Cache only short, already-public organization names. Long statements or
+    # contact-bearing text still follow the identical uncached classifier.
+    if len(text) <= 160 and _public_evidence(text) == text:
+        return _cached_directory_affiliate(text)
+    return _find_directory_affiliate(text)
+
+
+@lru_cache(maxsize=4096)
+def _cached_directory_affiliate(text: str) -> str | None:
+    return _find_directory_affiliate(text)
+
+
+def _find_directory_affiliate(text: str) -> str | None:
     # A subsidiary's own 总部/本部 is still that subsidiary, not its parent HQ.
     variants = (text, _HEADQUARTERS.split(text, maxsplit=1)[0], text.split("本部", 1)[0])
     for name in variants:
@@ -371,7 +385,11 @@ def _candidates(job: dict[str, Any]) -> list[_Assessment]:
 
 def _entity_identity(text: str) -> str:
     """Compare declared entities, not their headlines or corporate suffixes."""
-    name = _public_evidence(text)
+    return _cached_entity_identity(_public_evidence(text))
+
+
+@lru_cache(maxsize=4096)
+def _cached_entity_identity(name: str) -> str:
     headquarters = _HEADQUARTERS.search(name)
     if headquarters:
         name = name[:headquarters.start()] + ("集团" if headquarters[0] == "集团总部" else "")
@@ -442,8 +460,14 @@ def _platform_points(level: str, base: int) -> int:
     return min(base, ceiling, max(floor, base - reduction))
 
 
+def collect_organization_evidence(job: dict[str, Any]) -> tuple[_Assessment, ...]:
+    """Resolve public hiring statements once; retain no job/profile cache."""
+    return tuple(_candidates(job))
+
+
 def assess_organization(
     job: dict[str, Any], *, base_platform_points: int, platform_band: str,
+    evidence: tuple[_Assessment, ...] | None = None,
 ) -> dict[str, Any]:
     """Assess public hiring-unit hierarchy; confidence describes text evidence.
 
@@ -452,7 +476,7 @@ def assess_organization(
     deterministic and has no network, persistence, profile or scoring imports.
     """
     base = max(0, min(16, int(base_platform_points)))
-    candidates = _candidates(job)
+    candidates = collect_organization_evidence(job) if evidence is None else evidence
     assessment = max(
         candidates,
         key=lambda item: (_SPECIFICITY[item.level], item.confidence == "explicit"),

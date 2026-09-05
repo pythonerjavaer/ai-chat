@@ -203,7 +203,7 @@ def test_recent_source_error_remains_a_transport_error(sync_db):
     assert status["verification_state"] == "complete"
 
 
-def test_sixth_source_discards_thread_compatibility_field_and_keeps_pending_isolated(sync_db, monkeypatch):
+def test_sixth_source_discards_thread_compatibility_field_and_marks_source_screened(sync_db, monkeypatch):
     database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
     monkeypatch.setattr(
         main,
@@ -223,7 +223,7 @@ def test_sixth_source_discards_thread_compatibility_field_and_keeps_pending_isol
         official_url="https://careers.example.com/jobs/sixth-pending-job",
     )])
     result = main.ingest_recruitment_jobs(request, None)
-    assert result["pending"] == 1
+    assert result["source_screened"] == 1
     assert result["accepted"] == 0
     with database.connect() as connection:
         stored = connection.execute(
@@ -231,7 +231,7 @@ def test_sixth_source_discards_thread_compatibility_field_and_keeps_pending_isol
             "FROM recruitment_ingest_candidates WHERE source_id = ?",
             ("chatgpt-radar-06",),
         ).fetchone()
-        assert tuple(stored) == (None, "pending", None)
+        assert tuple(stored) == (None, "source_screened", None)
         assert connection.execute("SELECT COUNT(*) FROM recruitment_jobs").fetchone()[0] == 0
     detailed = database.recruitment_sync_status(expected_source_count=6)
     assert private_placeholder not in str(detailed)

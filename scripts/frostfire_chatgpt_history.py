@@ -74,7 +74,7 @@ MESSAGE_FIELDS = frozenset({"message_digest", "rows"})
 SOURCE_LEDGER_FIELDS = frozenset({
     "messages", "items", "history_complete", "last_history_digest", "last_message_count",
 })
-RESULT_COUNTERS = ("received", "accepted", "pending", "rejected", "closed", "new", "updated", "duplicates", "stale")
+RESULT_COUNTERS = ("received", "accepted", "source_screened", "pending", "rejected", "closed", "new", "updated", "duplicates", "stale")
 
 
 class HistoryError(ValueError):

@@ -670,6 +670,15 @@ class FutureRadarService:
             for raw in result.jobs[offset:offset + RESULT_WRITE_BATCH_SIZE]:
                 try:
                     item = normalize_job(raw)
+                    if item["verification_status"] == "source_screened" and not (
+                        source.get("id") == "legacy-search-discovery"
+                        and source.get("adapter_config", {}).get("adapter") == "legacy_database"
+                        and source.get("adapter_config", {}).get("discovery_only")
+                    ):
+                        # The user-approved screening decision belongs only to
+                        # authenticated ChatGPT ingest, never an external page's
+                        # self-declared verification flag.
+                        item["verification_status"] = "pending"
                     role = verification_role
                     if (source.get("adapter_config", {}).get("discover_job_links")
                             and item.get("verification_status") != "verified"):

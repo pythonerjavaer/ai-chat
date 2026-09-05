@@ -1123,7 +1123,7 @@ def test_recruitment_ingest_is_idempotent_allows_shared_pages_and_hides_thread_i
             json={"jobs": jobs_payload},
         )
         assert first.status_code == 200
-        assert first.json()["accepted"] == 2
+        assert first.json()["source_screened"] == 2
         assert first.json()["new"] == 2
         assert first.json()["duplicates"] == 0
 
@@ -1133,15 +1133,18 @@ def test_recruitment_ingest_is_idempotent_allows_shared_pages_and_hides_thread_i
             json={"jobs": jobs_payload},
         )
         assert repeated.status_code == 200
-        assert repeated.json()["accepted"] == 2
+        assert repeated.json()["source_screened"] == 2
         assert repeated.json()["duplicates"] == 2
 
         token, _ = register(client, "bridge-idempotency-user")
         jobs_response = client.get(
             "/api/recruitment/jobs", headers=auth(token)
         ).json()
+        opportunity_response = client.get(
+            "/api/future-radar/opportunities", headers=auth(token)
+        ).json()
         bridged = [
-            job for job in jobs_response["jobs"]
+            job for job in opportunity_response["items"]
             if job["company"] == "桥接测试集团"
         ]
         assert {job["title"] for job in bridged} == {
@@ -1191,7 +1194,7 @@ def test_repeated_ingest_rechecks_official_page_and_closes_removed_job(monkeypat
         "title": title,
         "city": "北京",
         "official_url": f"{TEST_AUTHORIZED_ATS}/campus/recheck-role",
-        "source_id": "chatgpt-radar-03",
+        "source_id": "official-monitor-03",
         "external_id": "recheck-role",
     }
     headers = {"X-Recruitment-Token": "test-recruitment-ingest-token"}
@@ -1234,7 +1237,7 @@ def test_recruitment_ingest_quarantines_unverifiable_and_rejects_noncampus_pages
                 "title": pending_title,
                 "city": "上海",
                 "official_url": f"{TEST_AUTHORIZED_ATS}/unreachable",
-                "source_id": "chatgpt-radar-02",
+                "source_id": "official-monitor-02",
                 "external_id": "pending-role",
             },
             {
@@ -1242,7 +1245,7 @@ def test_recruitment_ingest_quarantines_unverifiable_and_rejects_noncampus_pages
                 "title": noncampus_title,
                 "city": "上海",
                 "official_url": f"{TEST_AUTHORIZED_ATS}/no-campus-signal",
-                "source_id": "chatgpt-radar-02",
+                "source_id": "official-monitor-02",
                 "external_id": "rejected-role",
                 "tags": ["应届"],
             },
@@ -1297,7 +1300,7 @@ def test_recruitment_ingest_requires_complete_official_page_evidence(monkeypatch
             "title": current_title,
             "city": "北京",
             "official_url": "https://example.com/unknown-domain",
-            "source_id": "chatgpt-radar-01",
+            "source_id": "official-monitor-01",
             "external_id": "unknown-domain-evidence",
         },
         {
@@ -1305,7 +1308,7 @@ def test_recruitment_ingest_requires_complete_official_page_evidence(monkeypatch
             "title": current_title,
             "city": "北京",
             "official_url": f"{TEST_AUTHORIZED_ATS}/missing-open",
-            "source_id": "chatgpt-radar-02",
+            "source_id": "official-monitor-02",
             "external_id": "missing-open-evidence",
         },
         {
@@ -1313,7 +1316,7 @@ def test_recruitment_ingest_requires_complete_official_page_evidence(monkeypatch
             "title": generic_title,
             "city": "北京",
             "official_url": f"{TEST_AUTHORIZED_ATS}/wrong-cohort",
-            "source_id": "chatgpt-radar-03",
+            "source_id": "official-monitor-03",
             "external_id": "wrong-cohort-evidence",
         },
         {
@@ -1323,7 +1326,7 @@ def test_recruitment_ingest_requires_complete_official_page_evidence(monkeypatch
             "official_url": f"{TEST_AUTHORIZED_ATS}/complete-evidence",
             "opening_date": "2099-09-10",
             "closing_date": "2099-09-10",
-            "source_id": "chatgpt-radar-04",
+            "source_id": "official-monitor-04",
             "external_id": "complete-evidence",
         },
     ]
@@ -1365,7 +1368,7 @@ def test_recruitment_ingest_ignores_stale_source_updates(monkeypatch):
         "title": title,
         "city": "深圳",
         "official_url": f"{TEST_AUTHORIZED_ATS}/campus/timeline",
-        "source_id": "chatgpt-radar-03",
+        "source_id": "official-monitor-03",
         "external_id": "timeline-role",
         "source_updated_at": "2099-08-20T10:00:00Z",
     }
@@ -1413,7 +1416,7 @@ def test_recruitment_ingest_requires_strict_title_and_preserves_last_known_good(
         "city": "北京",
         "official_url": f"{TEST_AUTHORIZED_ATS}/campus/last-known-good",
         "closing_date": "2099-10-31",
-        "source_id": "chatgpt-radar-04",
+        "source_id": "official-monitor-04",
         "external_id": "last-known-good-role",
         "source_updated_at": "2099-08-20T10:00:00Z",
     }
@@ -1496,7 +1499,7 @@ def test_recruitment_ingest_heartbeat_uses_latest_event_and_monotonic_timestamp(
         "title": "2099届校园招聘研究岗",
         "city": "上海",
         "official_url": "https://example.com/campus/heartbeat",
-        "source_id": "chatgpt-radar-05",
+        "source_id": "official-monitor-05",
         "external_id": "heartbeat-pending-role",
         "source_updated_at": "2099-08-20T10:00:00Z",
     }
@@ -1512,7 +1515,7 @@ def test_recruitment_ingest_heartbeat_uses_latest_event_and_monotonic_timestamp(
             headers=headers,
             json={
                 "jobs": [],
-                "source_id": "chatgpt-radar-05",
+                "source_id": "official-monitor-05",
                 "source_updated_at": "2099-08-22T10:00:00Z",
             },
         )
@@ -1521,7 +1524,7 @@ def test_recruitment_ingest_heartbeat_uses_latest_event_and_monotonic_timestamp(
         status = client.get("/api/recruitment/sync/status", headers=headers).json()
         source = next(
             item for item in status["sources"]
-            if item["source_id"] == "chatgpt-radar-05"
+            if item["source_id"] == "official-monitor-05"
         )
         assert source["status"] == "synced"
         assert source["latest_pending"] == 0
@@ -1533,7 +1536,7 @@ def test_recruitment_ingest_heartbeat_uses_latest_event_and_monotonic_timestamp(
             headers=headers,
             json={
                 "jobs": [],
-                "source_id": "chatgpt-radar-05",
+                "source_id": "official-monitor-05",
                 "source_updated_at": "2099-08-21T10:00:00Z",
             },
         )
@@ -1541,7 +1544,7 @@ def test_recruitment_ingest_heartbeat_uses_latest_event_and_monotonic_timestamp(
         status = client.get("/api/recruitment/sync/status", headers=headers).json()
         source = next(
             item for item in status["sources"]
-            if item["source_id"] == "chatgpt-radar-05"
+            if item["source_id"] == "official-monitor-05"
         )
         assert source["last_source_updated_at"] == "2099-08-22T10:00:00+00:00"
 
@@ -1588,7 +1591,7 @@ def test_recruitment_ingest_schema_canonicalization_and_cross_source_merge(monke
             json={"jobs": [{**common, "source_id": "chatgpt-radar-05"}]},
         )
         assert first.status_code == second.status_code == 200
-        assert first.json()["accepted"] == second.json()["accepted"] == 1
+        assert first.json()["source_screened"] == second.json()["source_screened"] == 1
         with database.connect() as connection:
             formal_count = connection.execute(
                 "SELECT COUNT(*) FROM recruitment_jobs WHERE company = ?",
@@ -1598,7 +1601,11 @@ def test_recruitment_ingest_schema_canonicalization_and_cross_source_merge(monke
                 "SELECT COUNT(*) FROM recruitment_ingest_candidates WHERE company = ?",
                 ("跨源合并集团",),
             ).fetchone()[0]
-        assert formal_count == 1
+            opportunity_count = connection.execute(
+                "SELECT COUNT(*) FROM radar_jobs WHERE company = ?", ("跨源合并集团",)
+            ).fetchone()[0]
+        assert formal_count == 0
+        assert opportunity_count == 1
         assert candidate_count == 2
 
         private_evidence = client.post(

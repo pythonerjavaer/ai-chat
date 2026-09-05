@@ -142,7 +142,7 @@ Source Registry 目前包含以下公开入口。聚合频道仅作为 discovery
 
 七个活动逻辑来源为 `chatgpt-radar-01`、`02`、`03`、`06`、`07`、`08`、`09`。退役 `04`、`05` 不再接收新监控输入，但历史游标、事件、候选与来源记录保留；私有页面映射只留在本机配置。
 
-桥接脚本立即摘要化消息游标，本机状态文件只保存逻辑来源和不可逆摘要；`--batch-size` 默认每次 HTTP 请求 25 条，可设置为 1–100 条，持续向 `/api/recruitment/ingest` 提交全部更新，没有每轮总条数配额。单个输入页最多 10,000 行且受字节安全边界约束，更多内容分页续传；未读完来源时保持 `history_complete=false`。历史账本逐批保存确认回执，中断后仅补未确认条目，重试可调整请求大小。服务端重新读取企业官方 HTTPS 页面，核对公司、校招、岗位、日期与关闭状态；已核验兼容接口只返回确认记录，有有效公开链接的待核验线索仍可在登录后的统一机会池查看并保留真实标记。这个本机流程依赖 Mac、Codex、网络和浏览器登录会话持续可用；它不是 Render 内的 24/7 云直连。
+桥接脚本立即摘要化消息游标，本机状态文件只保存逻辑来源和不可逆摘要；`--batch-size` 默认每次 HTTP 请求 25 条，可设置为 1–100 条，持续向 `/api/recruitment/ingest` 提交全部更新，没有每轮总条数配额。单个输入页最多 10,000 行且受字节安全边界约束，更多内容分页续传；未读完来源时保持 `history_complete=false`。历史账本逐批保存确认回执，中断后仅补未确认条目，重试可调整请求大小。指定 ChatGPT 监控源按用户授权直接以 `source_screened`（ChatGPT 已筛选）进入统一机会池，不等待官网再次读取成功；已有符合条件的 pending 记录本地迁移，来源日期与原始评级保留。官网 `verified` 仍是独立证据状态，明确过期或关闭的记录退出当前列表，其他来源核验规则不变。这个本机流程依赖 Mac、Codex、网络和浏览器登录会话持续可用；它不是 Render 内的 24/7 云直连。
 
 可选 `source_rating` 保留来源明确给出的 T 级、数值评分、理由与 `job`／`company` 作用范围。岗位评级只应用于对应岗位，公司评级保留为参考；没有明确 T 级时不根据 P 类优先级补造，来源冲突保留待核对。评级及其修正参与内容哈希和增量更新，与官网核验相互独立，不能将待核验记录提升为已确认。
 
@@ -242,7 +242,7 @@ Content-Type: application/json
 | `GET` | `/api/future-radar/runs/{run_id}` | JWT | 单次运行结果与错误 |
 | `GET` | `/api/future-radar/sources` | JWT | 来源公开健康状态；支持 `enabled` 筛选 |
 | `POST` | `/api/future-radar/run` | JWT + 当前隐私同意 | `scan_type=quick`（默认）核对确定性官网、ATS、公开 API、Feed 与旧岗位池，不调用 AI；`scan_type=deep` 运行已配置的 OpenAI Web Search、公众号及新入口发现来源。手动请求不修改也不受 Scheduler 的来源间隔影响；同类型运行冲突返回 409，完成后后端可立即重跑。`source_ids` 只能缩小到对应模式的安全来源集合。`force=true` 还需要 `X-Admin-Token`，可忽略 due time 与 AI 内容缓存，但不能激活禁用来源或绕过并发锁、来源锁、外站限速和安全校验 |
-| `POST` | `/api/recruitment/ingest` | Ingest | 接收本机 ChatGPT 桥接的结构化候选；先隔离并重新核验官方 HTTPS 页面，未核验候选不公开 |
+| `POST` | `/api/recruitment/ingest` | Ingest | 指定 ChatGPT 监控源以“ChatGPT 已筛选”直接入池；其他来源保留官网核验流程 |
 | `POST` | `/api/future-radar/sync` | Ingest | 严格接收 `FROSTFIRE_SYNC_V1` 结构化批次 |
 | `POST` | `/api/future-radar/sources` | Admin | 创建来源 |
 | `PATCH` | `/api/future-radar/sources/{source_id}` | Admin | 更新来源运行配置 |

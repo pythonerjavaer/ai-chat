@@ -2,7 +2,7 @@
 
 import pytest
 
-from backend.recruitment_organizations import assess_organization
+from backend.recruitment_organizations import assess_organization, collect_organization_evidence
 
 
 def assess(company="示例集团", **fields):
@@ -475,3 +475,27 @@ def test_points_remain_bounded_and_non_headquarters_never_gain_from_floors(base)
         assert 0 <= result["base_platform_points"] <= 16
         if not result["is_group_headquarters"]:
             assert result["platform_adjustment"] <= 0
+
+
+def test_reused_evidence_keeps_platform_calculation_and_mutable_outputs_independent():
+    job = {"company": "中国电信集团总部", "title": "数据产品经理",
+           "hiring_unit": "中国电信河北省分公司"}
+    evidence = collect_organization_evidence(job)
+    low = assess_organization(job, base_platform_points=8, platform_band="probe", evidence=evidence)
+    expected = assess_organization(job, base_platform_points=14, platform_band="top")
+    actual = assess_organization(job, base_platform_points=14, platform_band="top", evidence=evidence)
+    assert actual == expected
+    assert actual["platform_points"] != low["platform_points"]
+    actual["evidence"].append("caller-owned modification")
+    actual["level"] = "group_headquarters"
+    assert assess_organization(job, base_platform_points=14, platform_band="top", evidence=evidence) == expected
+
+
+def test_public_directory_lookup_cache_does_not_share_mutable_assessment_outputs():
+    first = assess("天翼云科技有限公司")
+    first["evidence"].clear()
+    first["platform_points"] = 16
+    second = assess("天翼云科技有限公司")
+    assert second["evidence"]
+    assert second["platform_points"] == 10
+    assert second["level"] == "subsidiary"

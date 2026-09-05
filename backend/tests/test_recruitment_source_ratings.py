@@ -46,9 +46,9 @@ def pool(harness, **params):
 
 
 @pytest.mark.parametrize("tier", ["T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3"])
-def test_explicit_tier_preserves_no_invented_score_and_pending_verification(harness, tier):
+def test_explicit_tier_preserves_no_invented_score_and_source_screening(harness, tier):
     request = rated_payload({"scope": "job", "tier_code": tier, "reason": "原始岗位评价"})
-    assert submit(harness, request)["pending"] == 1
+    assert submit(harness, request)["source_screened"] == 1
     item = pool(harness, tier_code=tier)["items"][0]
     assert (item["tier_code"], item["tier_bucket"]) == (tier, tier)
     assert item["job_score"] is None and item["match_score"] is None
@@ -56,8 +56,8 @@ def test_explicit_tier_preserves_no_invented_score_and_pending_verification(harn
     assert "score" not in item["source_rating"]
     assert item["source_rating"]["source_id"] == "chatgpt-radar-01"
     assert item["rating_source"] == "chatgpt" and item["rating_status"] == "applied"
-    assert item["verification_status"] == "pending" and not item["officially_verified"]
-    assert not item["published_as_active_job"]
+    assert item["verification_status"] == "source_screened" and not item["officially_verified"]
+    assert item["published_as_active_job"]
     assert "rating_key" not in item["source_rating"] and "observed_at" not in item["source_rating"]
     with database.connect() as connection:
         original = json.loads(connection.execute("SELECT source_rating FROM recruitment_ingest_candidates").fetchone()[0])
@@ -147,7 +147,7 @@ def test_verified_promotion_and_later_closed_status_do_not_lose_or_reopen_rating
     monkeypatch.setattr(main, "_verify_ingest_candidate", lambda _item: (
         "verified", None, {"opening_date": "2026-08-01", "closing_date": "2099-09-01"},
     ))
-    request = rated_payload({"scope": "job", "tier_code": "T0.5", "score": 89})
+    request = rated_payload({"scope": "job", "tier_code": "T0.5", "score": 89}, source_id="official-monitor-fixture")
     assert submit(harness, request)["accepted"] == 1
     legacy = database.list_recruitment_jobs()[0]
     assert legacy["source_rating"]["score"] == 89
@@ -165,11 +165,11 @@ def test_adding_original_rating_preserves_existing_official_verification_without
         return "verified", None, {"opening_date": "2026-08-01", "closing_date": "2099-09-01"}
 
     monkeypatch.setattr(main, "_verify_ingest_candidate", verify)
-    submit(harness, rated_payload(None, stamp="2026-08-20T00:00:00Z"))
+    submit(harness, rated_payload(None, stamp="2026-08-20T00:00:00Z", source_id="official-monitor-fixture"))
     with database.connect() as connection:
         before = dict(connection.execute("SELECT * FROM recruitment_ingest_candidates").fetchone())
     legacy_before = database.list_recruitment_jobs()[0]
-    request = rated_payload({"scope": "job", "tier_code": "T0.5", "score": 88.5}, stamp="2026-08-21T00:00:00Z")
+    request = rated_payload({"scope": "job", "tier_code": "T0.5", "score": 88.5}, stamp="2026-08-21T00:00:00Z", source_id="official-monitor-fixture")
     request["jobs"][0]["source_item_id"] = "corrected-rating-message"
     result = submit(harness, request)
     assert result["updated"] == result["accepted"] == 1
@@ -190,8 +190,9 @@ def test_later_unrated_observation_preserves_explicit_durable_rating(harness, mo
     ))
     submit(harness, rated_payload(
         {"scope": "job", "tier_code": "T1.5", "score": 77.5}, stamp="2026-08-20T00:00:00Z",
+        source_id="official-monitor-fixture",
     ))
-    later = rated_payload(None, stamp="2026-08-21T00:00:00Z")
+    later = rated_payload(None, stamp="2026-08-21T00:00:00Z", source_id="official-monitor-fixture")
     later["jobs"][0].pop("source_rating")
     later["jobs"][0]["requirements"] += "要求熟练使用数据分析工具。"
     submit(harness, later)
@@ -216,7 +217,7 @@ def test_rating_change_with_material_job_change_still_reverifies(harness, monkey
     monkeypatch.setattr(main, "_verify_ingest_candidate", lambda _item: (
         "verified", None, {"opening_date": "2026-08-01", "closing_date": "2099-09-01"},
     ))
-    submit(harness, rated_payload(None))
+    submit(harness, rated_payload(None, source_id="official-monitor-fixture"))
     calls = []
 
     def pending(candidate):
@@ -224,7 +225,7 @@ def test_rating_change_with_material_job_change_still_reverifies(harness, monkey
         return "pending", "official_page_fetch_failed", {"opening_date": None, "closing_date": None}
 
     monkeypatch.setattr(main, "_verify_ingest_candidate", pending)
-    request = rated_payload({"scope": "job", "tier_code": "T1", "score": 82})
+    request = rated_payload({"scope": "job", "tier_code": "T1", "score": 82}, source_id="official-monitor-fixture")
     request["jobs"][0][field] = value
     result = submit(harness, request)
     assert result["pending"] == 1 and len(calls) == 1

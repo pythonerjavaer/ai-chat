@@ -309,15 +309,17 @@ def test_original_rating_and_pool_survive_postgres_restart_and_relogin(persisten
     ingest_headers = {"X-Recruitment-Token": "local-rating-fixture"}
     with TestClient(app.main.app) as client:
         headers, _ = register(client, "rating-postgres-user")
-        assert client.post("/api/recruitment/ingest", headers=ingest_headers, json=request).json()["accepted"] == 1
+        assert client.post("/api/recruitment/ingest", headers=ingest_headers, json=request).json()["source_screened"] == 1
         request["jobs"][0]["source_rating"] = {"scope": "job", "tier_code": "T1.5", "score": 79.25}
         request["source_updated_at"] = "2026-08-21T00:00:00Z"
         rated = client.post("/api/recruitment/ingest", headers=ingest_headers, json=request)
-        assert rated.status_code == 200 and rated.json()["updated"] == rated.json()["accepted"] == 1
-        assert len(checks) == 1, "Adding a rating must preserve an existing official verification"
+        assert rated.status_code == 200 and rated.json()["updated"] == rated.json()["source_screened"] == 1
+        assert len(checks) == 0, "ChatGPT-screened jobs must not require employer-page verification"
         selected = client.get("/api/future-radar/opportunities?tier_code=T1.5", headers=headers)
         assert selected.status_code == 200 and selected.json()["total"] == 1
         assert selected.json()["items"][0]["job_score"] == 79.25
+        assert selected.json()["items"][0]["officially_verified"] is False
+        assert app.database.list_recruitment_jobs() == []
     close_postgres_pools()
 
     restart_directory = os.environ.get("FROSTFIRE_TEST_POSTGRES_RESTART_DATA")
@@ -347,12 +349,12 @@ def test_original_rating_and_pool_survive_postgres_restart_and_relogin(persisten
         "import json; from backend import database; c=database.connect(); "
         "ratings=[json.loads(c.execute('SELECT '+field+' FROM '+table).fetchone()[0]) "
         "for table,field in [('recruitment_ingest_candidates','source_rating'), "
-        "('recruitment_jobs','source_rating'),('radar_jobs','source_ratings')]]; "
+        "('radar_jobs','source_ratings')]]; "
         "c.close(); database.close_database_pools(); print(json.dumps(ratings))",
     ], env=environment, cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=20)
     assert persisted.returncode == 0, "Separate-process rating persistence check failed"
-    candidate, legacy, radar = json.loads(persisted.stdout)
-    for rating in (candidate, legacy, radar[0]):
+    candidate, radar = json.loads(persisted.stdout)
+    for rating in (candidate, radar[0]):
         assert rating["scope"] == "job" and rating["tier_code"] == "T1.5" and rating["score"] == 79.25
 
     with TestClient(app.main.app) as restarted:
@@ -364,3 +366,34 @@ def test_original_rating_and_pool_survive_postgres_restart_and_relogin(persisten
         selected = restarted.get("/api/future-radar/opportunities?tier_code=T1.5", headers=headers)
         assert selected.status_code == 200 and selected.json()["total"] == 1
         assert selected.json()["items"][0]["source_rating"]["score"] == 79.25
+        assert selected.json()["items"][0]["verification_status"] == "source_screened"
+
+
+def test_postgres_adopts_existing_chatgpt_candidates_without_network(persistent_app, monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.future_radar.adapters import LegacyDatabaseAdapter
+
+    app = persistent_app
+    monkeypatch.setattr(app.service, "adapter_factory", lambda _source: LegacyDatabaseAdapter())
+    with TestClient(app.main.app):
+        request = app.main.RecruitmentIngestJob(
+            source_id="chatgpt-radar-01", external_id="pg-adoption-fixture",
+            company="示例企业", title="2027 校园招聘分析师", city="上海",
+            official_url="https://careers.example.com/jobs/pg-adoption-fixture",
+        )
+        candidate, error = app.main._candidate_from_ingest_item(request)
+        assert error is None
+        stored = app.database.upsert_recruitment_ingest_candidate(candidate)
+        assert stored["verification_status"] == "pending"
+    # A fresh application startup restores the source-screened row and its
+    # missing projection without requiring an API-triggered scan.
+    with TestClient(app.main.app):
+        with app.database.connect() as connection:
+            assert connection.execute(
+                "SELECT verification_status FROM recruitment_ingest_candidates WHERE id=?", (stored["id"],)
+            ).fetchone()[0] == "source_screened"
+            projected = connection.execute("SELECT verification_status FROM radar_jobs").fetchall()
+            assert len(projected) == 1 and projected[0][0] == "source_screened"
+        assert app.main.restore_chatgpt_screened_opportunities() == {
+            "adopted": 0, "projected": 0, "status": "success",
+        }

@@ -71,7 +71,9 @@ def harness(tmp_path, monkeypatch):
 
 def payload(key="pending-role"):
     return {
-        "source_id": "chatgpt-radar-01",
+        # Generic monitors keep the employer-verification contract. The
+        # user-approved ChatGPT path has a separate source-screened suite.
+        "source_id": "external-fixture-monitor",
         "jobs": [{
             "external_id": key,
             "company": "示例科技",
@@ -274,7 +276,7 @@ def test_full_hundred_job_chunk_and_following_chunk_are_both_fully_projected(har
             "source_id": "chatgpt-radar-01", "jobs": jobs,
         })
         assert response.status_code == 200, response.text
-        assert response.json()["received"] == response.json()["pending"] == count
+        assert response.json()["received"] == response.json()["source_screened"] == count
         assert response.json()["search_updates_refresh"] == {"status": "success"}
         assert len(harness.scan_scopes[-1]) == count
     assert len(candidate_rows()) == 113

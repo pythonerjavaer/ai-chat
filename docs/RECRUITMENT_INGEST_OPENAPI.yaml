@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Frostfire Future Radar Bridge
-  version: 2.0.0
+  version: 2.1.0
   description: |
     Push normalized campus opportunities from authorized external monitors into
     Future Radar and inspect aggregate bridge health. This contract does not
@@ -21,7 +21,11 @@ paths:
         array with a logical source_id is a heartbeat and records source health
         without inventing a vacancy. Send only information the source monitor
         is authorized to export. Stable source and item identifiers may be
-        retried safely.
+        retried safely. User-designated ChatGPT monitors are admitted directly
+        as source_screened after structural and link-safety checks, without
+        waiting for a successful official-site fetch. This does not mean
+        officially verified. Explicitly expired or closed items stay out of
+        the current opportunity list; historical records are retained.
       security:
         - recruitmentToken: []
       requestBody:
@@ -268,6 +272,11 @@ components:
         accepted:
           type: integer
           minimum: 0
+          description: Officially verified items; excludes source_screened.
+        source_screened:
+          type: integer
+          minimum: 0
+          description: ChatGPT-screened items admitted without an official verification gate.
         new:
           type: integer
           minimum: 0
@@ -339,6 +348,10 @@ components:
           type: integer
           minimum: 0
           description: Accepted count in this source's latest event.
+        source_screened:
+          type: integer
+          minimum: 0
+          description: ChatGPT-screened count in this source's latest event.
         pending:
           type: integer
           minimum: 0
@@ -354,6 +367,9 @@ components:
         latest_accepted:
           type: integer
           minimum: 0
+        latest_source_screened:
+          type: integer
+          minimum: 0
         latest_pending:
           type: integer
           minimum: 0
@@ -364,6 +380,9 @@ components:
           type: integer
           minimum: 0
         inventory_accepted:
+          type: integer
+          minimum: 0
+        inventory_source_screened:
           type: integer
           minimum: 0
         inventory_pending:
@@ -396,6 +415,8 @@ components:
           type: integer
         pending_count:
           type: integer
+        source_screened_count:
+          type: integer
         rejected_count:
           type: integer
         closed_count:
@@ -427,7 +448,7 @@ components:
           minimum: 0
         expected_source_count:
           type: integer
-          const: 6
+          const: 7
         connected_source_count:
           type: integer
           minimum: 0
@@ -438,6 +459,10 @@ components:
           type: integer
           minimum: 0
           description: Sum of accepted counts from each source's latest event, not historical inventory.
+        source_screened:
+          type: integer
+          minimum: 0
+          description: Sum of source-screened counts from each source's latest event.
         pending:
           type: integer
           minimum: 0
@@ -450,6 +475,10 @@ components:
           type: integer
           minimum: 0
           description: Current historical candidate inventory whose verification status is verified.
+        inventory_source_screened:
+          type: integer
+          minimum: 0
+          description: Historical inventory admitted as ChatGPT-screened; not officially verified.
         inventory_pending:
           type: integer
           minimum: 0

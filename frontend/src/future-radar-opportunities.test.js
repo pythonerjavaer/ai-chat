@@ -41,6 +41,18 @@ test("unconfirmed source dates are not presented as verified deadlines", () => {
   assert.equal(futureRadarOpportunityDateCopy({}).closing, "截止日期未标注");
 });
 
+test("ChatGPT-screened opportunities appear with original source dates and a distinct screening label", () => {
+  const job = { verification_status: "source_screened", source_id: "chatgpt-radar-07",
+    title: "2027 数据分析师", closing_date: "2027-09-08", official_url: "https://careers.example.com/job/42" };
+  const origin = futureRadarOpportunitySource(job);
+  assert.equal(origin.label, "ChatGPT 已筛选");
+  assert.equal(origin.tone, "healthy");
+  assert.match(origin.description, /可直接查看与申请/);
+  assert.doesNotMatch(origin.description, /等待|尚未|官网已确认/);
+  assert.equal(futureRadarOpportunityDateCopy(job).closing, "来源标注截止 2027-09-08");
+  assert.equal(futureRadarPublicOpportunityUrl(job), job.official_url);
+});
+
 test("recruitment programs stay visible without pretending to be scored individual jobs", () => {
   assert.equal(jobTierBucket({ listing_kind: "recruitment_program", tier_code: "T0", job_score: 95 }), "UNRANKED");
   assert.equal(jobTierBucket({ scoring_status: "unscored_program_listing", tier_code: null }), "UNRANKED");
@@ -92,6 +104,7 @@ function pollingContext({ race = false, unchanged = false } = {}) {
   const context = {
     AbortController,
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
+    radarOpportunityPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
     state, document: { hidden: false },
     elements: { recruitmentDialog: { open: true }, futureRadarLiveState: { replaceChildren() {} } },
@@ -120,6 +133,23 @@ test("a newly imported chat lead appears in the main list without a verified eve
   assert.equal(fixture.result.applied, 1);
   assert.equal(fixture.result.rendered, 1);
   assert.equal(fixture.state.futureRadar.polling, false);
+});
+
+test("metadata backoff does not stop automatic opportunity recovery", async () => {
+  const fixture = pollingContext();
+  fixture.context.radarPollingGate.failure({ status: 503 });
+  await vm.runInNewContext(`${functionSource("async function pollFutureRadarEvents(", "\nfunction stopFutureRadarPolling")}\npollFutureRadarEvents();`, fixture.context);
+  assert.deepEqual(fixture.calls, ["/future-radar/opportunities?page=1&status=open"]);
+  assert.equal(fixture.result.applied, 1);
+  assert.equal(fixture.result.rendered, 1);
+});
+
+test("opportunity Retry-After pauses only pool polling while metadata remains readable", async () => {
+  const fixture = pollingContext();
+  fixture.context.radarOpportunityPollingGate.failure({ status: 429, retryAfter: "120" });
+  await vm.runInNewContext(`${functionSource("async function pollFutureRadarEvents(", "\nfunction stopFutureRadarPolling")}\npollFutureRadarEvents();`, fixture.context);
+  assert.deepEqual(fixture.calls, ["/future-radar/events?limit=50"]);
+  assert.equal(fixture.result.applied, 0);
 });
 
 test("a newer filter or navigation request wins over an older background poll", async () => {

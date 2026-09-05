@@ -346,7 +346,7 @@ def normalize_job(item: dict[str, Any]) -> dict[str, Any]:
     }
     if normalized["status"] not in {"open", "closed", "unknown"}:
         normalized["status"] = "unknown"
-    if normalized["verification_status"] not in {"pending", "verified", "conflicted", "rejected"}:
+    if normalized["verification_status"] not in {"pending", "verified", "conflicted", "rejected", "source_screened"}:
         normalized["verification_status"] = "pending"
     normalized["external_id"] = stable_job_external_id({**item, **normalized})
     normalized["content_hash"] = semantic_hash(normalized, SEMANTIC_JOB_FIELDS)

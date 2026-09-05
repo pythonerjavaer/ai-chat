@@ -736,7 +736,7 @@ class LegacyDiscoveryDatabaseAdapter:
         title = _redact_public_text(item.get("title"), limit=280)
         if not company or not title:
             return None
-        closing_date = normalize_date(item.get("closing_date"))
+        closing_date = normalize_date(item.get("verified_closing_date")) or normalize_date(item.get("closing_date"))
         if (
             item.get("status") == "closed"
             or item.get("verification_status") == "closed"
@@ -748,7 +748,9 @@ class LegacyDiscoveryDatabaseAdapter:
         # explicitly pending state in the new pool.
         tags = [tag for tag in tags if tag not in {"链接已验证", "标题已验证"}]
         verification = str(item.get("verification_status") or "pending")
-        if verification not in {"rejected", "conflicted"}:
+        if verification == "source_screened" and not item.get("controlled_chatgpt"):
+            verification = "pending"
+        elif verification not in {"rejected", "conflicted", "source_screened"}:
             verification = "pending"
         url = _public_reference_url(item.get("canonical_url") or item.get("url"))
         url = url or _public_reference_url(item.get("official_url"))
@@ -773,7 +775,8 @@ class LegacyDiscoveryDatabaseAdapter:
             "confidence_score": 0.5,
             "requirements": _redact_public_text(item.get("requirements"), limit=1_200),
             "source_ratings": merge_source_ratings(rating),
-            "tags": list(dict.fromkeys([*tags, "历史搜索发现"])),
+            "tags": list(dict.fromkeys([*tags, "历史搜索发现",
+                                        *(["ChatGPT 已筛选"] if verification == "source_screened" else [])])),
         }
 
     def scan(self, source: dict[str, Any]) -> AdapterResult:
@@ -816,7 +819,7 @@ class LegacyDiscoveryDatabaseAdapter:
                 SELECT id, dedupe_key, external_id, promoted_job_id,
                        CASE WHEN source_id IN ({source_slots}) THEN 1 ELSE 0 END AS controlled_chatgpt,
                        company, employer_type, title, city, industry,
-                       official_url, canonical_url, opening_date, closing_date,
+                       official_url, canonical_url, opening_date, closing_date, verified_closing_date,
                        requirements, tags, source_rating, incoming_status AS status,
                        verification_status, source_updated_at, last_seen_at
                 FROM recruitment_ingest_candidates
@@ -839,7 +842,7 @@ class LegacyDiscoveryDatabaseAdapter:
                     self._ingest_external_id(item)
                     if is_ingest else self._safe_external_id(item["id"])
                 )
-                deadline = normalize_date(item.get("closing_date"))
+                deadline = normalize_date(item.get("verified_closing_date")) or normalize_date(item.get("closing_date"))
                 explicitly_retired = scoped and is_ingest and (
                     item.get("status") == "closed"
                     or item.get("verification_status") in {"closed", "rejected"}

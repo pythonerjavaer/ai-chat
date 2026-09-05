@@ -38,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from . import database
 from .chatgpt_sources import ACTIVE_CHATGPT_SOURCE_IDS, KNOWN_CHATGPT_SOURCE_IDS
+from .chatgpt_screening import SOURCE_SCREENED, chatgpt_screening_eligible
 from .recruitment_rating import SourceRating, merge_source_ratings
 from .recruitment_limits import MAX_MONITOR_BATCH_ITEMS
 from .ai_service import (
@@ -478,11 +479,35 @@ async def refresh_all_recruitment_watches() -> dict[str, int]:
     }
 
 
+def restore_chatgpt_screened_opportunities() -> dict:
+    """Restore durable approved leads through only the local database adapter."""
+    adopted = database.adopt_chatgpt_screened_candidates()
+    projected = 0
+    while candidate_ids := database.unprojected_chatgpt_screened_candidates():
+        try:
+            result = future_radar_service.run(
+                trigger_type="source_screened_restore", scan_type="quick",
+                source_ids=["legacy-search-discovery"],
+                bridge_candidate_ids=candidate_ids,
+            )
+        except RadarRunBusy:
+            return {"adopted": adopted, "projected": projected, "status": "deferred"}
+        if result.get("status") != "success" or not result.get("sources_succeeded"):
+            return {"adopted": adopted, "projected": projected, "status": "deferred"}
+        projected += len(candidate_ids)
+        # A malformed/expired historical row must not create an infinite boot
+        # loop if its local adapter deliberately declines to materialize it.
+        if database.unprojected_chatgpt_screened_candidates() == candidate_ids:
+            return {"adopted": adopted, "projected": projected, "status": "deferred"}
+    return {"adopted": adopted, "projected": projected, "status": "success"}
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.init_db()
     future_radar_service.seed_registry()
     database.ensure_recruitment_ingest_sources(EXPECTED_CHATGPT_RADAR_SOURCES)
+    await asyncio.to_thread(restore_chatgpt_screened_opportunities)
     database.purge_legacy_recruitment_samples()
     tasks: list[asyncio.Task] = []
     first_refresh_complete = asyncio.Event()
@@ -1002,6 +1027,7 @@ def _public_radar_source(source: dict) -> dict:
 
 
 _SEARCH_UPDATE_LABELS = {
+    "source_screened": "ChatGPT 已筛选",
     "pending": "待官网核验",
     "verified": "已官网核验",
     "conflicted": "核验信息冲突",
@@ -1073,14 +1099,15 @@ def _public_search_update(job: dict) -> dict:
         verification_status, "核验状态未知"
     )
     item["officially_verified"] = verification_status == "verified"
+    item["source_screened"] = verification_status == SOURCE_SCREENED
     closing_date = str(item.get("closing_date") or "")
     still_open = item.get("status") == "open" and (
         not closing_date or closing_date > date.today().isoformat()
     )
     item["published_as_active_job"] = bool(
-        item["officially_verified"] and still_open
+        (item["officially_verified"] or item["source_screened"]) and still_open
     )
-    item["is_candidate"] = not item["officially_verified"]
+    item["is_candidate"] = not (item["officially_verified"] or item["source_screened"])
     return item
 
 
@@ -1141,7 +1168,10 @@ def _public_radar_opportunity(job: dict, profile: dict) -> dict:
         item["quant_barrier"] = False
         item["manual_override"] = False
     item["employer_categories"] = sorted(semantic_employer_categories(item))
-    item["opportunity_kind"] = "verified" if item["officially_verified"] else "discovered"
+    item["opportunity_kind"] = (
+        "verified" if item["officially_verified"] else
+        "source_screened" if item["source_screened"] else "discovered"
+    )
     item["available_in_main_pool"] = True
     tier = item.get("tier_code")
     item["tier_bucket"] = (
@@ -1233,7 +1263,7 @@ def future_radar_search_updates(
         default="open", alias="status"
     ),
     verification_status: Literal[
-        "pending", "verified", "conflicted", "rejected"
+        "pending", "verified", "conflicted", "rejected", "source_screened"
     ] | None = None,
     source_id: str | None = Query(default=None, max_length=64),
     company: str | None = Query(default=None, max_length=160),
@@ -1289,7 +1319,7 @@ def future_radar_opportunities(
     page: int = Query(default=1, ge=1, le=100_000),
     page_size: int = Query(default=50, ge=1, le=100),
     status_filter: Literal["active", "open", "closed", "unknown", "all"] = Query(default="active", alias="status"),
-    verification_status: Literal["pending", "verified", "conflicted", "rejected"] | None = None,
+    verification_status: Literal["pending", "verified", "conflicted", "rejected", "source_screened"] | None = None,
     company: str | None = Query(default=None, max_length=160),
     city: str | None = Query(default=None, max_length=160),
     region: str | None = Query(default=None, max_length=160),
@@ -1340,6 +1370,7 @@ def future_radar_opportunities(
         page=page, page_size=page_size, filters=filters,
         public_url=_public_reference_url,
         prepare=lambda job: _public_radar_opportunity(job, profile),
+        input_sanitizer=_public_search_update,
         company_aliases=_radar_company_aliases(),
         cache_scope=_radar_scoring_scope(user["id"], profile),
     )
@@ -1365,6 +1396,7 @@ def future_radar_opportunity(job_id: str, user: User) -> dict:
     job = future_radar_service.repository.get_prepared_opportunity(
         job_id, public_url=_public_reference_url, company_aliases=_radar_company_aliases(),
         prepare=lambda item: _public_radar_opportunity(item, profile),
+        input_sanitizer=_public_search_update,
         cache_scope=_radar_scoring_scope(user["id"], profile),
     )
     if not job:
@@ -1378,7 +1410,7 @@ def future_radar_jobs(
     page: int = Query(default=1, ge=1, le=100_000),
     page_size: int = Query(default=50, ge=1, le=100),
     status_filter: Literal["open", "closed", "unknown", "all"] = Query(default="open", alias="status"),
-    verification_status: Literal["pending", "verified", "conflicted", "rejected"] | None = None,
+    verification_status: Literal["pending", "verified", "conflicted", "rejected", "source_screened"] | None = None,
     company: str | None = Query(default=None, max_length=160),
     city: str | None = Query(default=None, max_length=160),
     region: str | None = Query(default=None, max_length=160),
@@ -1764,6 +1796,7 @@ def public_chatgpt_sync_status() -> dict:
     latest_pending = sum(int(source.get("latest_pending", 0)) for source in sources)
     latest_rejected = sum(int(source.get("latest_rejected", 0)) for source in sources)
     inventory_accepted = sum(int(source.get("inventory_accepted", 0)) for source in sources)
+    inventory_source_screened = sum(int(source.get("inventory_source_screened", 0)) for source in sources)
     inventory_pending = sum(int(source.get("inventory_pending", 0)) for source in sources)
     inventory_rejected = sum(int(source.get("inventory_rejected", 0)) for source in sources)
     reason_counts = database.recruitment_ingest_verification_reason_counts(
@@ -1811,9 +1844,10 @@ def public_chatgpt_sync_status() -> dict:
             "rejected": latest_rejected,
         },
         "inventory_accepted": inventory_accepted,
+        "inventory_source_screened": inventory_source_screened,
         "inventory_pending": inventory_pending,
         "inventory_rejected": inventory_rejected,
-        "inventory_total": inventory_accepted + inventory_pending + inventory_rejected,
+        "inventory_total": inventory_accepted + inventory_source_screened + inventory_pending + inventory_rejected,
         "reason_counts": reason_counts,
     }
 
@@ -2995,10 +3029,11 @@ def ingest_recruitment_jobs(
     request: RecruitmentIngestRequest,
     _: Annotated[None, Depends(require_recruitment_ingest_token)],
 ) -> dict:
-    """Quarantine, verify, and promote jobs from an authorized external monitor."""
+    """Adopt user-screened ChatGPT jobs; verify other authorized monitors."""
     totals = {
         "received": len(request.jobs),
         "accepted": 0,
+        "source_screened": 0,
         "new": 0,
         "updated": 0,
         "duplicates": 0,
@@ -3073,6 +3108,9 @@ def ingest_recruitment_jobs(
             if existing_status == "verified":
                 totals["accepted"] += 1
                 group["counts"]["accepted"] += 1
+            elif existing_status == SOURCE_SCREENED:
+                totals[SOURCE_SCREENED] += 1
+                group["counts"][SOURCE_SCREENED] += 1
             elif existing_status == "rejected":
                 totals["rejected"] += 1
                 group["counts"]["rejected"] += 1
@@ -3117,7 +3155,7 @@ def ingest_recruitment_jobs(
             # it concurrently and never overwrite its eventual decision.
             result_key = (
                 "accepted" if existing_status == "verified"
-                else existing_status if existing_status in {"rejected", "closed"}
+                else existing_status if existing_status in {"rejected", "closed", SOURCE_SCREENED}
                 else "pending"
             )
             totals[result_key] += 1
@@ -3170,6 +3208,20 @@ def ingest_recruitment_jobs(
 
         if url_error:
             verification_status, reason = "rejected", url_error
+            verified_dates = {"opening_date": None, "closing_date": None}
+        elif stored.get("source_id") in KNOWN_CHATGPT_SOURCE_IDS:
+            # The authenticated bridge carries recommendations already screened
+            # for this user. Employer-page attestation is optional enrichment,
+            # not a prerequisite or a synchronous external fetch on this path.
+            # Replays cannot undo an established rejection or official proof.
+            if existing_status in {"verified", "rejected"}:
+                database.release_recruitment_ingest_candidate_verification_claim(stored["id"], claim_token)
+                key = "accepted" if existing_status == "verified" else "rejected"
+                totals[key] += 1
+                group["counts"][key] += 1
+                continue
+            verification_status = SOURCE_SCREENED if chatgpt_screening_eligible(stored) else "rejected"
+            reason = "chatgpt_source_screened" if verification_status == SOURCE_SCREENED else "invalid_official_url"
             verified_dates = {"opening_date": None, "closing_date": None}
         else:
             verification_status, reason, verified_dates = _verify_ingest_candidate(stored)

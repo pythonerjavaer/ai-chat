@@ -12,9 +12,10 @@ export function retryAfterMilliseconds(value, now = Date.now()) {
 }
 
 export function createRadarPollingGate({
+  storageKey = KEY,
   now = () => Date.now(),
-  read = () => globalThis.localStorage?.getItem(KEY),
-  write = (value) => globalThis.localStorage?.setItem(KEY, value),
+  read = () => globalThis.localStorage?.getItem(storageKey),
+  write = (value) => globalThis.localStorage?.setItem(storageKey, value),
   locks = () => globalThis.navigator?.locks,
 } = {}) {
   let memory = {}, dashboardPromise = null, dashboardScope = null, cached = null, cachedAt = 0, generation = 0;
@@ -49,11 +50,13 @@ export function createRadarPollingGate({
       const retry = retryAfterMilliseconds(error.retryAfter, now());
       // Concurrent failures from one snapshot count as one failed attempt.
       if (Number(value.retryAt || 0) > now()) {
-        if (retry) save({ ...value, retryAt: Math.max(value.retryAt, now() + retry) });
+        if (retry) save({ ...value, retryAt: Math.max(value.retryAt, now() + retry),
+          serverRetryAt: Math.max(Number(value.serverRetryAt || 0), now() + retry) });
         return;
       }
       const failures = Math.min(MAX_FAILURES, Number(value.failures || 0) + 1);
       save({ ...value, failures, suspended: failures >= MAX_FAILURES,
+        ...(retry ? { serverRetryAt: Math.max(Number(value.serverRetryAt || 0), now() + retry) } : {}),
         retryAt: now() + Math.max(retry, Math.min(240_000, RADAR_STATUS_INTERVAL_MS * 2 ** failures)) });
     },
     success() {
@@ -63,10 +66,12 @@ export function createRadarPollingGate({
         save({ ...value, failures: 0, retryAt: 0 });
       }
     },
-    resume() {
+    resume({ allowImmediate = false } = {}) {
       const value = load();
-      // Explicit user retry may reset the finite budget, not Retry-After.
-      save({ ...value, failures: 0, suspended: false });
+      // Manual reads can clear automatic backoff, never an explicit server
+      // Retry-After. Other channels retain their independent retry budgets.
+      save({ ...value, failures: 0, suspended: false,
+        ...(allowImmediate ? { retryAt: Math.max(0, Number(value.serverRetryAt || 0)) } : {}) });
     },
     invalidateDashboard() {
       generation += 1;
@@ -115,3 +120,6 @@ export function createRadarPollingGate({
 }
 
 export const radarPollingGate = createRadarPollingGate();
+// A slow dashboard/profile request must not suppress the opportunity pool.
+// These persisted values contain transport timestamps/counters only.
+export const radarOpportunityPollingGate = createRadarPollingGate({ storageKey: "frostfire_radar_opportunity_transport_v1" });

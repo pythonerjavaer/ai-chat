@@ -342,6 +342,7 @@ export function futureRadarCandidateVerification(candidate = {}) {
       ?? "pending",
   ).trim().toLowerCase();
   if (["verified", "accepted", "approved"].includes(raw)) return "verified";
+  if (raw === "source_screened") return "source_screened";
   if (["rejected", "invalid", "failed"].includes(raw)) return "rejected";
   if (["closed", "expired"].includes(raw)) return "closed";
   if (["conflicted", "conflict"].includes(raw)) return "conflicted";
@@ -352,6 +353,9 @@ export function futureRadarOpportunitySource(job = {}) {
   const verification = futureRadarCandidateVerification(job);
   if (verification === "verified") {
     return { label: "官网已确认", tone: "healthy", description: "该机会已由官方招聘来源确认；具体申请条件以原文为准。" };
+  }
+  if (verification === "source_screened") {
+    return { label: "ChatGPT 已筛选", tone: "healthy", description: "该机会已按 ChatGPT 来源筛选结果进入机会池，可直接查看与申请；日期及条件以招聘原文为准。" };
   }
   const sourceValues = [job.source_id, job.source, job.source_name, job.discovery_source,
     ...listValues(job.sources), ...listValues(job.discovered_by), ...listValues(job.discovery_sources)];
@@ -454,7 +458,10 @@ export function futureRadarOpportunityErrorCopy(error, hasSnapshot = false) {
   const http = Number.isInteger(status) && status >= 400 && status <= 599 ? `（HTTP ${status}）` : "";
   const timedOut = error?.code === "REQUEST_TIMEOUT" || error?.name === "AbortError"
     || /^请求超时/.test(String(error?.message || ""));
-  const reason = http || (timedOut ? "（读取超时，服务暂未返回）" : "");
+  const retrySeconds = Math.max(0, Math.ceil(Number(error?.retryAfter) || 0));
+  const deferred = error?.code === "RADAR_POLL_DEFERRED" && retrySeconds
+    ? `（服务暂忙，请在 ${retrySeconds} 秒后重试）` : "";
+  const reason = http || deferred || (timedOut ? "（读取超时，服务暂未返回）" : "");
   return hasSnapshot
     ? `主机会池刷新失败${reason}。当前保留上次成功的主池数据，请点击“刷新机会”重试。`
     : `主机会池加载失败${reason}。请点击“刷新机会”重试。`;

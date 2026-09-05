@@ -289,9 +289,9 @@ def _normalize_row(row: Any, source_id: str) -> dict[str, Any]:
     tags = [
         tag
         for tag in _string_list(row, "tags", max_items=28, limit=80)
-        if tag not in {"链接已验证", "标题已验证", "官方已核验"}
+        if tag not in {"链接已验证", "标题已验证", "官方已核验", "待官方核验"}
     ]
-    tags = list(dict.fromkeys([*tags, "受控结构化导入", "待官方核验"]))
+    tags = list(dict.fromkeys([*tags, "受控结构化导入", "ChatGPT 已筛选"]))
     normalized: dict[str, Any] = {
         "external_id": external,
         "company": company,
@@ -312,8 +312,8 @@ def _normalize_row(row: Any, source_id: str) -> dict[str, Any]:
         "opening_date": _date_value(row, "opening_date"),
         "closing_date": _date_value(row, "closing_date"),
         "status": status,
-        # Browser/ChatGPT extraction is discovery evidence.  Only the server's
-        # official-page verifier may promote this value later.
+        # The authenticated server selects source_screened for designated
+        # monitors; a browser-supplied status cannot assert official proof.
         "verification_status": "pending",
         "confidence_score": 0.55,
         "description": _optional_string(row, "description", limit=2_000),
@@ -386,13 +386,11 @@ def build_batches(
 
 
 def _legacy_ingest_batch(batch: dict[str, Any]) -> dict[str, Any]:
-    """Route browser candidates through the server's quarantine verifier.
+    """Submit to the authenticated ingest policy, retaining V1 interchange.
 
-    ``/api/future-radar/sync`` stores discovery rows but intentionally cannot
-    verify them.  The existing recruitment ingest endpoint opens the official
-    page, checks company/title/campus/closed state, and only then promotes the
-    row to the public pool.  Keep V1 as the local interchange shape while using
-    that stronger production path for submission.
+    Designated ChatGPT monitors enter as source_screened without waiting for
+    official-site verification. Other sources retain their verification path.
+    The client cannot confer either status by supplying its own marker.
     """
     jobs = []
     for item in batch.get("jobs", []):
@@ -441,7 +439,7 @@ def _safe_response(value: Any) -> dict[str, Any]:
     # detail or a test fixture field that could contain a token.
     allowed = {
         "http_status", "received", "accepted", "new", "updated",
-        "duplicates", "stale", "pending", "rejected", "closed", "event_id",
+        "duplicates", "stale", "source_screened", "pending", "rejected", "closed", "event_id",
     }
     return {key: value[key] for key in allowed if key in value}
 

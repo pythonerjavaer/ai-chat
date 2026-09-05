@@ -40,7 +40,7 @@ import {
   starfieldLabel,
 } from "./recruitment-radar.js";
 import "./styles.css";
-import { radarPollingGate, RADAR_STATUS_INTERVAL_MS } from "./radar-polling.js";
+import { radarPollingGate, radarOpportunityPollingGate, RADAR_STATUS_INTERVAL_MS } from "./radar-polling.js";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -641,7 +641,8 @@ async function api(path, options = {}) {
   const { preserveAuthOn401 = false, signal: externalSignal, timeoutMs = 15000, ...requestOptions } = options;
   const isRadarRead = (path.startsWith("/future-radar/") || path.startsWith("/recruitment/"))
     && (!options.method || options.method === "GET");
-  if (isRadarRead) radarPollingGate.assertAllowed();
+  const readGate = path.startsWith("/future-radar/opportunities") ? radarOpportunityPollingGate : radarPollingGate;
+  if (isRadarRead) readGate.assertAllowed();
   const headers = new Headers(options.headers || {});
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
@@ -664,14 +665,14 @@ async function api(path, options = {}) {
       throw requestError;
     }
     const result = response.status === 204 ? null : await response.json();
-    if (isRadarRead) radarPollingGate.success();
+    if (isRadarRead) readGate.success();
     return result;
   } catch (error) {
     if (controller.signal.aborted && controller.signal.reason?.code === "AUTH_REQUIRED") throw controller.signal.reason;
     // A superseded selection is cancellation, not a network timeout or a reason
     // to replace the latest selection with an error from the previous request.
     if (externalSignal?.aborted) throw externalSignal.reason || error;
-    if (isRadarRead) radarPollingGate.failure(error);
+    if (isRadarRead) readGate.failure(error);
     if (error.name === "AbortError") {
       const requestError = new Error("请求超时，请检查服务是否已启动或稍后重试。");
       requestError.code = "REQUEST_TIMEOUT";
@@ -881,6 +882,7 @@ function applyUser() {
 
 function endFutureRadarSession(expired = false) {
   radarPollingGate.clearSession();
+  radarOpportunityPollingGate.clearSession();
   stopFutureRadarPolling();
   FUTURE_RADAR_SCAN_TYPES.forEach((scanType) => {
     stopFutureRadarRunStatusPolling(scanType);
@@ -2432,7 +2434,7 @@ function renderFutureRadarOpportunityStatus() {
     setRecruitmentStatus("主机会池尚未读取；待核验线索与官网确认机会在同一池展示。");
   } else {
     const counts = radar.opportunityStats?.verification_status || {};
-    setRecruitmentStatus(`主机会池 · 当前筛选 ${count(radar.totalJobs)} 个机会${radar.totalCompanies == null ? "" : ` · ${count(radar.totalCompanies)} 个企业分组`} · 官网已确认 ${count(counts.verified)} · 待核验 ${count(counts.pending)} · 信息有差异 ${count(counts.conflicted)}`);
+    setRecruitmentStatus(`主机会池 · 当前筛选 ${count(radar.totalJobs)} 个机会${radar.totalCompanies == null ? "" : ` · ${count(radar.totalCompanies)} 个企业分组`} · ChatGPT 已筛选 ${count(counts.source_screened)} · 官网已确认 ${count(counts.verified)} · 待核验 ${count(counts.pending)} · 信息有差异 ${count(counts.conflicted)}`);
   }
 }
 
@@ -2512,13 +2514,14 @@ function ensureRecruitmentSyncPanel() {
   const description = makeElement(
     "p",
     "recruitment-sync-description",
-    "ChatGPT 对话由本机定时同步桥读取，不是点击扫描按钮直接读取；只提交结构化招聘信息。数字是各来源保留的信号记录，不是去重后的岗位数。",
+    "ChatGPT 对话由本机定时同步桥读取，不是点击扫描按钮直接读取；只提交结构化招聘信息。数字是各来源当前保留的信号记录，不是去重后的岗位数。",
   );
   const metrics = makeElement("div", "recruitment-sync-metrics");
   [
     ["最后同步", "last-sync", "等待首次同步"],
+    ["ChatGPT 已筛选", "source_screened", "—"],
     ["已核验信号", "accepted", "—"],
-    ["待官网核验信号", "pending", "—"],
+    ["尚未入池信号", "pending", "—"],
     ["未通过核验信号", "rejected", "—"],
   ].forEach(([label, key, value]) => {
     const metric = document.createElement("article");
@@ -2528,7 +2531,7 @@ function ensureRecruitmentSyncPanel() {
   });
   const footer = makeElement("footer", "recruitment-sync-footer");
   footer.append(
-    makeElement("span", "", "待核验＝官网证据暂不完整 · 未通过＝明确不符合规则或链接无效"),
+    makeElement("span", "", "ChatGPT 已筛选的机会直接入池；官网核验是独立信息，过期或确认关闭的机会退出当前列表。"),
     makeElement("b", "", "状态待后端回报"),
   );
   panel.append(header, description, metrics, footer);
@@ -2565,6 +2568,8 @@ function renderRecruitmentSyncStatus(rawStatus) {
   const sourceAccepted = syncCount(null, [], sources, ["accepted", "verified", "accepted_count", "verified_count"]);
   const sourcePending = syncCount(null, [], sources, ["pending", "pending_count", "pending_verification"]);
   const sourceRejected = syncCount(null, [], sources, ["rejected", "rejected_count"]);
+  const inventoryScreened = syncCount(status, ["inventory_source_screened", "source_screened", "counts.source_screened"], [], [])
+    ?? syncCount(null, [], sources, ["source_screened", "source_screened_count"]);
   const inventoryAccepted = syncCount(status, ["inventory_accepted", "counts.inventory_accepted"], [], [])
     ?? latestAccepted
     ?? sourceAccepted;
@@ -2605,7 +2610,7 @@ function renderRecruitmentSyncStatus(rawStatus) {
     pending: "等待同步",
   }[visualState];
   const resolvedBadgeCopy = visualState === "synced" && verificationState === "pending"
-    ? "回传完成 · 待核验"
+    ? "回传完成 · 部分未入池"
     : visualState === "synced" && verificationState === "complete_with_rejections"
       ? "同步完成 · 含未通过信号"
       : badgeCopy;
@@ -2617,6 +2622,7 @@ function renderRecruitmentSyncStatus(rawStatus) {
   badge.textContent = resolvedBadgeCopy;
   const metricValues = {
     "last-sync": formatSyncTime(lastSyncedAt),
+    source_screened: inventoryScreened == null ? "—" : Number(inventoryScreened).toLocaleString("zh-CN"),
     accepted: inventoryAccepted == null ? "—" : Number(inventoryAccepted).toLocaleString("zh-CN"),
     pending: inventoryPending == null ? "—" : Number(inventoryPending).toLocaleString("zh-CN"),
     rejected: inventoryRejected == null ? "—" : Number(inventoryRejected).toLocaleString("zh-CN"),
@@ -2680,7 +2686,7 @@ function radarStatusCopy(value) {
   return {
     open: "开放中", closed: "已关闭", reopened: "重新开放", running: "扫描中",
     success: "正常", succeeded: "正常", completed: "已完成", partial_success: "部分完成",
-    partial: "部分完成", pending: "待核验", verified: "已核验", conflicted: "存在冲突",
+    partial: "部分完成", pending: "待核验", verified: "已核验", source_screened: "ChatGPT 已筛选", conflicted: "存在冲突",
     rejected: "未通过核验", invalid: "无效信号", failed: "失败", error: "异常", skipped: "已跳过", disabled: "已停用", healthy: "健康",
     discovery_limited: "发现受限", access_restricted: "访问受限", unknown: "未知",
   }[raw] || String(value || "未知");
@@ -2688,7 +2694,7 @@ function radarStatusCopy(value) {
 
 function radarStatusClass(value) {
   const raw = String(value || "unknown").toLowerCase();
-  if (/verified|success|succeeded|completed|healthy|open|synced|new|discovered|reopened|official_source_found/.test(raw)) return "healthy";
+  if (/verified|source_screened|success|succeeded|completed|healthy|open|synced|new|discovered|reopened|official_source_found/.test(raw)) return "healthy";
   if (/running|progress|syncing|updated/.test(raw)) return "running";
   if (/error|fail|conflict|restricted|reject|invalid/.test(raw)) return "error";
   if (/partial|pending|warning|limited|skipped/.test(raw)) return "warning";
@@ -2996,6 +3002,7 @@ function renderFutureRadarOpportunityOverview() {
     ...(state.futureRadar.totalCompanies == null ? [] : [makeElement("article", "", `企业分组 ${count(state.futureRadar.totalCompanies)} · 机会 ${count(state.futureRadar.totalJobs)}`)]),
     makeElement("article", "", `均衡精选 ${exactCount(stats.balanced_total)} · 全部重点 ${exactCount(stats.priority_total)} · 全部记录 ${exactCount(stats.matching_total)}`),
     makeElement("article", "verified", `官网已确认 ${count(counts.verified)}`),
+    makeElement("article", "verified", `ChatGPT 已筛选 ${count(counts.source_screened)}`),
     makeElement("article", "pending", `聊天 / 搜索发现 ${count(counts.pending)}`),
     makeElement("article", "conflicted", `信息有差异 ${count(counts.conflicted)}`),
   );
@@ -3098,7 +3105,7 @@ function createFutureRadarOpportunityDetail(job) {
       body.replaceChildren(makeElement("p", "", `详情暂时无法读取：${translateError(error.message)}`));
       const retry = makeElement("button", "job-watch-button", "重试详情");
       retry.type = "button";
-      retry.addEventListener("click", load);
+      retry.addEventListener("click", () => retryFutureRadarOpportunities(load));
       body.appendChild(retry);
     } finally {
       loading = false;
@@ -3497,6 +3504,11 @@ function resetFutureRadarFilters() {
   loadFutureRadarJobPage(1, true);
 }
 
+function retryFutureRadarOpportunities(read = null) {
+  radarOpportunityPollingGate.resume({ allowImmediate: true });
+  return read ? read() : loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false });
+}
+
 async function loadFutureRadarJobPage(page, force = false, { scroll = true, delayMs = 0 } = {}) {
   if (!state.token) return false;
   const total = state.futureRadar.view === "companies" ? state.futureRadar.totalCompanies : state.futureRadar.totalJobs;
@@ -3651,9 +3663,12 @@ async function loadFutureRadarSnapshot() {
 
 async function pollFutureRadarEvents() {
   if (!state.token || state.futureRadar.polling || !elements.recruitmentDialog?.open || document.hidden) return;
-  if (radarPollingGate.suspended() || radarPollingGate.delay() > 0) return;
+  const metadataAllowed = !radarPollingGate.suspended() && radarPollingGate.delay() <= 0;
+  const opportunitiesAllowed = !state.futureRadar.jobsLoading
+    && !radarOpportunityPollingGate.suspended() && radarOpportunityPollingGate.delay() <= 0;
+  if (!metadataAllowed && !opportunitiesAllowed) return;
   const sessionToken = state.token;
-  const controller = state.futureRadar.jobsLoading ? null : new AbortController();
+  const controller = opportunitiesAllowed ? new AbortController() : null;
   state.futureRadar.pollOpportunityController = controller;
   state.futureRadar.polling = true;
   try {
@@ -3663,13 +3678,13 @@ async function pollFutureRadarEvents() {
     const jobsRequestId = state.futureRadar.jobsRequestId;
     let opportunityError = null;
     const [payload, dashboard, opportunityPayload] = await Promise.all([
-      api(`/future-radar/events${query}`).catch(() => null),
-      state.futureRadar.activeRunTypes.size
+      metadataAllowed ? api(`/future-radar/events${query}`).catch(() => null) : Promise.resolve(null),
+      metadataAllowed && state.futureRadar.activeRunTypes.size
         ? readFutureRadarDashboard().catch(() => null)
         : Promise.resolve(null),
       // Chat and search leads must refresh even when there is no verified-only
       // public change event. The unified API owns filtering, ranking and totals.
-      state.futureRadar.jobsLoading
+      !opportunitiesAllowed
         ? Promise.resolve(null)
         : api(`/future-radar/opportunities?${opportunityQuery}`, {
           timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
@@ -4049,9 +4064,9 @@ function renderRecruitmentJobs(jobs) {
       makeElement("p", "", state.futureRadar.jobsError || `正在读取聊天线索、搜索发现与官网确认的机会。${futureRadarOpportunityReadHint()}`),
     );
     if (state.futureRadar.jobsError) {
-      const retry = makeElement("button", "", "重试加载主机会池");
+      const retry = makeElement("button", "radar-pool-retry", "重试加载主机会池");
       retry.type = "button";
-      retry.addEventListener("click", () => loadFutureRadarJobPage(1, true, { scroll: false }));
+      retry.addEventListener("click", () => retryFutureRadarOpportunities());
       notice.appendChild(retry);
     }
     elements.recruitmentJobs.appendChild(notice);
@@ -4357,7 +4372,7 @@ function createFutureRadarCompanyCard(company) {
   const cities = company.cities || [];
   meta.appendChild(makeElement("span", "", cities.length
     ? `${cities.join(" / ")}${company.city_count > cities.length ? ` 等 ${company.city_count} 个地点` : ""}` : "工作地点待确认"));
-  meta.appendChild(makeElement("span", "", `官网确认 ${company.verified_count || 0} · 待核验 ${company.discovered_count || 0}${company.program_count ? ` · 含 ${company.program_count} 个招聘项目入口` : ""}`));
+  meta.appendChild(makeElement("span", "", `官网确认 ${company.verified_count || 0} · ChatGPT 已筛选 ${company.source_screened_count || 0} · 其他线索 ${company.discovered_count || 0}${company.program_count ? ` · 含 ${company.program_count} 个招聘项目入口` : ""}`));
   const tiers = makeElement("div", "radar-company-tiers");
   tiers.setAttribute("aria-label", "匹配岗位的 T 级分布，不是企业评级");
   [...TIER_CODES, "UNRANKED", "BELOW_PRIORITY"].forEach((tier) => {
@@ -4400,7 +4415,7 @@ function renderFutureRadarCompanyJobs(entry) {
     body.appendChild(makeElement("p", "radar-load-error", "主机会池本次读取失败，此处是上次成功的企业快照。请先重试主机会池，再展开当前筛选的岗位。"));
     const retry = makeElement("button", "job-watch-button", "重试主机会池");
     retry.type = "button";
-    retry.addEventListener("click", () => loadFutureRadarJobPage(1, true, { scroll: false }));
+    retry.addEventListener("click", () => retryFutureRadarOpportunities());
     body.appendChild(retry);
     return;
   }
@@ -4412,7 +4427,7 @@ function renderFutureRadarCompanyJobs(entry) {
     body.appendChild(makeElement("p", "radar-load-error", entry.error));
     const retry = makeElement("button", "job-watch-button", "重试读取企业岗位");
     retry.type = "button";
-    retry.addEventListener("click", () => loadFutureRadarCompanyJobs(entry.company.company_key, entry.page));
+    retry.addEventListener("click", () => retryFutureRadarOpportunities(() => loadFutureRadarCompanyJobs(entry.company.company_key, entry.page)));
     body.appendChild(retry);
     return;
   }
@@ -5196,9 +5211,7 @@ elements.futureRadarDeepRun.addEventListener("click", () => runFutureRadarNow("d
 elements.futureRadarPagePrev.addEventListener("click", () => loadFutureRadarJobPage(state.futureRadar.page - 1));
 elements.futureRadarPageNext.addEventListener("click", () => loadFutureRadarJobPage(state.futureRadar.page + 1));
 elements.futureRadarOpportunityRefresh.addEventListener("click", () => {
-  radarPollingGate.resume();
-  resumeFutureRadarRunStatusPolling();
-  loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false });
+  retryFutureRadarOpportunities();
 });
 elements.futureRadarFilterForm.addEventListener("submit", (event) => {
   event.preventDefault();
