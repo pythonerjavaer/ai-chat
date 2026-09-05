@@ -1167,7 +1167,7 @@ def test_recruitment_ingest_is_idempotent_allows_shared_pages_and_hides_thread_i
         )
         assert sync.status_code == 200
         sync_payload = sync.json()
-        assert sync_payload["expected_source_count"] == 6
+        assert sync_payload["expected_source_count"] == 7
         source = next(
             item for item in sync_payload["sources"]
             if item["source_id"] == "chatgpt-radar-01"
@@ -1622,7 +1622,7 @@ def test_recruitment_ingest_schema_canonicalization_and_cross_source_merge(monke
         too_many = client.post(
             "/api/recruitment/ingest",
             headers=headers,
-            json={"jobs": [common] * 11},
+            json={"jobs": [common] * 101},
         )
         assert too_many.status_code == 422
 

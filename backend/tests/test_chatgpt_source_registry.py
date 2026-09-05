@@ -1,4 +1,4 @@
-"""Six-source bridge registration without any private conversation mapping."""
+"""Active bridge registration preserves retired sources without private mappings."""
 
 import os
 from types import SimpleNamespace
@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from backend import database, main
 from scripts import frostfire_chatgpt_bridge as bridge
+from scripts.frostfire_chatgpt_sources import ACTIVE_CHATGPT_SOURCE_IDS as SCRIPT_SOURCES
 
 
 @pytest.fixture
@@ -59,35 +60,41 @@ def record_heartbeat(source: dict) -> None:
     )
 
 
-def test_sixth_source_is_a_logical_slot_without_private_metadata():
+def test_seven_active_sources_are_logical_slots_without_private_metadata():
     sources = main.EXPECTED_CHATGPT_RADAR_SOURCES
     assert [source["source_id"] for source in sources] == [
-        f"chatgpt-radar-{index:02d}" for index in range(1, 7)
+        f"chatgpt-radar-{index:02d}" for index in (1, 2, 3, 6, 7, 8, 9)
     ]
     assert all(source["source_thread_id"] is None for source in sources)
     assert all(set(source) == {"source_id", "source_thread_id", "title"} for source in sources)
+    assert tuple(source["source_id"] for source in sources) == SCRIPT_SOURCES
 
 
-def test_seeding_sixth_source_keeps_old_five_sources_and_pending_candidates(sync_db):
-    old_sources = main.EXPECTED_CHATGPT_RADAR_SOURCES[:5]
+def test_seeding_active_seven_keeps_retired_sources_and_pending_candidates(sync_db):
+    old_sources = [
+        {"source_id": f"chatgpt-radar-{index:02d}", "source_thread_id": None,
+         "title": f"ChatGPT 监控 {index}"}
+        for index in range(1, 7)
+    ]
     database.ensure_recruitment_ingest_sources(old_sources)
     for source in old_sources:
         record_heartbeat(source)
     stored = database.upsert_recruitment_ingest_candidate(candidate("chatgpt-radar-05"))
-    before = database.recruitment_sync_status(expected_source_count=5)
+    before = database.recruitment_sync_status(expected_source_count=6)
 
     database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
     database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
-    after = database.recruitment_sync_status(expected_source_count=6)
+    after = database.recruitment_sync_status(expected_source_count=7)
 
-    assert after["source_count"] == after["expected_source_count"] == 6
-    assert after["connected_source_count"] == 5
+    assert after["source_count"] == 9  # Retired history is not erased.
+    assert after["expected_source_count"] == 7
+    assert after["connected_source_count"] == 6
     old_by_id = {source["source_id"]: source for source in before["sources"]}
     new_by_id = {source["source_id"]: source for source in after["sources"]}
     assert all(new_by_id[source_id] == source for source_id, source in old_by_id.items())
-    assert new_by_id["chatgpt-radar-06"]["status"] == "pending"
-    assert new_by_id["chatgpt-radar-06"]["last_seen_at"] is None
-    assert new_by_id["chatgpt-radar-06"]["source_ref"] is None
+    assert new_by_id["chatgpt-radar-09"]["status"] == "pending"
+    assert new_by_id["chatgpt-radar-09"]["last_seen_at"] is None
+    assert new_by_id["chatgpt-radar-09"]["source_ref"] is None
     assert before["recent_events"] == after["recent_events"]
     with database.connect() as connection:
         assert connection.execute(
@@ -95,16 +102,16 @@ def test_seeding_sixth_source_keeps_old_five_sources_and_pending_candidates(sync
             (stored["id"],),
         ).fetchone()[0] == 1
     public = main.public_chatgpt_sync_status()
-    assert public["expected_source_count"] == 6
-    assert public["connected_source_count"] == 5
+    assert public["expected_source_count"] == 7
+    assert public["connected_source_count"] == 4
     assert public["status"] == "partial"
-    assert public["inventory_total"] == 1
-    assert public["reason_counts"] == {"pending": {"other": 1}, "rejected": {}}
+    assert public["inventory_total"] == 0  # Inactive history does not inflate active transport.
+    assert public["reason_counts"] == {"pending": {}, "rejected": {}}
 
 
-def test_sixth_source_heartbeat_is_required_before_all_sources_report_synced(sync_db):
+def test_new_seventh_active_source_heartbeat_is_required_before_all_report_synced(sync_db):
     database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
-    for source in main.EXPECTED_CHATGPT_RADAR_SOURCES[:5]:
+    for source in main.EXPECTED_CHATGPT_RADAR_SOURCES[:-1]:
         record_heartbeat(source)
     assert main.public_chatgpt_sync_status()["status"] == "partial"
 
@@ -115,7 +122,7 @@ def test_sixth_source_heartbeat_is_required_before_all_sources_report_synced(syn
         headers=headers,
         json={
             "jobs": [],
-            "source_id": "chatgpt-radar-06",
+            "source_id": "chatgpt-radar-09",
             "source_updated_at": "2026-08-30T01:00:00Z",
         },
     )
@@ -123,9 +130,9 @@ def test_sixth_source_heartbeat_is_required_before_all_sources_report_synced(syn
     assert response.json()["received"] == 0
     assert response.json()["accepted"] == 0
     status = client.get("/api/recruitment/sync/status", headers=headers).json()
-    assert status["expected_source_count"] == status["connected_source_count"] == 6
-    sixth = next(source for source in status["sources"] if source["source_id"] == "chatgpt-radar-06")
-    assert sixth["title"] == "ChatGPT 监控 6"
+    assert status["expected_source_count"] == status["connected_source_count"] == 7
+    sixth = next(source for source in status["sources"] if source["source_id"] == "chatgpt-radar-09")
+    assert sixth["title"] == "ChatGPT 监控 9"
     assert sixth["last_source_updated_at"] == "2026-08-30T01:00:00+00:00"
     assert sixth["source_ref"] is None
     assert main.public_chatgpt_sync_status()["status"] == "synced"
@@ -246,6 +253,6 @@ def test_browser_bridge_accepts_sixth_source_and_uses_an_independent_digest():
     assert source_id == "chatgpt-radar-06"
     assert batches[0]["source_id"] == "chatgpt-radar-06"
     assert batches[0]["jobs"] == []
-    old_digest = bridge.parse_browser_message({**message, "source_id": "chatgpt-radar-05"})[1]
+    old_digest = bridge.parse_browser_message({**message, "source_id": "chatgpt-radar-01"})[1]
     assert digest != old_digest
     assert "logical-message-1" not in str(batches)

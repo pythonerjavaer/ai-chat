@@ -294,8 +294,8 @@ def scoped_source(service, ids):
     return {**source, "adapter_config": {**source["adapter_config"], "candidate_ids": ids}}
 
 
-def test_scoped_bridge_reads_only_ten_candidates_and_never_the_legacy_table(service, monkeypatch):
-    rows = [insert_ingest(f"batch-role-{index}") for index in range(12)]
+def test_scoped_bridge_reads_only_requested_candidates_beyond_ten_and_never_legacy(service, monkeypatch):
+    rows = [insert_ingest(f"batch-role-{index}") for index in range(32)]
     insert_web_job("unrelated-web-role")
     statements = []
     original_connect = database.connect
@@ -305,25 +305,25 @@ def test_scoped_bridge_reads_only_ten_candidates_and_never_the_legacy_table(serv
         connection.set_trace_callback(statements.append)
         return connection
 
-    source = scoped_source(service, [row["id"] for row in rows[:10]])
+    source = scoped_source(service, [row["id"] for row in rows[:30]])
     monkeypatch.setattr(database, "connect", traced_connect)
     result = LegacyDatabaseAdapter().scan(source)
     reads = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
-    assert len(result.jobs) == 10
+    assert len(result.jobs) == 30
     assert result.snapshot_complete is False
     assert len(reads) == 1
     assert "FROM recruitment_ingest_candidates" in reads[0]
     assert "WHERE id IN (" in reads[0]
     assert "FROM recruitment_jobs" not in reads[0]
     assert {job["official_url"] for job in result.jobs} == {
-        f"https://careers.example.com/campus/batch-role-{index}" for index in range(10)
+        f"https://careers.example.com/campus/batch-role-{index}" for index in range(30)
     }
 
 
 @pytest.mark.parametrize("ids", [
     None, "", "candidate-" + "a" * 32, {}, [None], [True], [3],
     ["candidate-bad"], ["candidate-" + "A" * 32], ["' OR 1=1 --"],
-    ["candidate-" + format(index, "032x") for index in range(11)],
+    ["candidate-" + format(index, "032x") for index in range(101)],
 ])
 def test_invalid_scoped_ids_never_fall_back_to_full_pool(service, monkeypatch, ids):
     source = scoped_source(service, ids)

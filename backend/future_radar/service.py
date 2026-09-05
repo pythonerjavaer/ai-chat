@@ -15,6 +15,9 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from ..recruitment_rating import merge_source_ratings
+from ..recruitment_limits import MAX_MONITOR_BATCH_ITEMS
+
 from .adapters import (
     AdapterResult,
     DiscoveryLimitedError,
@@ -262,11 +265,11 @@ class FutureRadarService:
         if normalized_scan_type not in {"scheduled", "quick", "deep"}:
             raise ValueError("scan_type must be 'scheduled', 'quick', or 'deep'.")
         if bridge_candidate_ids is not None and (
-            not isinstance(bridge_candidate_ids, list) or len(bridge_candidate_ids) > 10
+            not isinstance(bridge_candidate_ids, list) or len(bridge_candidate_ids) > MAX_MONITOR_BATCH_ITEMS
             or any(not isinstance(value, str) or not re.fullmatch(r"candidate-[0-9a-f]{32}", value)
                    for value in bridge_candidate_ids)
         ):
-            raise ValueError("bridge_candidate_ids must contain at most ten candidate IDs.")
+            raise ValueError(f"bridge_candidate_ids must contain at most {MAX_MONITOR_BATCH_ITEMS} candidate IDs.")
         owner = str(uuid.uuid4())
         run_lock_name = f"future-radar-run:{normalized_scan_type}"
         if not self.repository.acquire_lock(
@@ -980,6 +983,9 @@ class FutureRadarService:
         incoming_role: str = "discovery",
     ) -> dict[str, Any]:
         merged = dict(incoming)
+        merged["source_ratings"] = merge_source_ratings(
+            existing.get("source_ratings"), incoming.get("source_ratings"),
+        )
         existing_verified = existing.get("verification_status") == "verified"
         if existing_verified and incoming.get("verification_status") != "verified":
             merged["verification_status"] = "verified"
@@ -1110,9 +1116,21 @@ class FutureRadarService:
         run = self.repository.create_run(
             "sync", [source_id], scan_type="sync", force=False
         )
+        jobs = []
+        for raw in list(payload.get("jobs") or []):
+            item = dict(raw)
+            if item.get("source_rating"):
+                job_key = normalize_job(item)["external_id"]
+                digest = hashlib.sha256(f"sync:{source_id}:{job_key}".encode("utf-8")).hexdigest()
+                item["source_rating"] = {
+                    **item["source_rating"], "source_id": source_id,
+                    "source_updated_at": payload.get("observed_at"),
+                    "observed_at": utc_now(), "rating_key": f"candidate-{digest[:32]}",
+                }
+            jobs.append(item)
         result = AdapterResult(
             programs=list(payload.get("programs") or []),
-            jobs=list(payload.get("jobs") or []),
+            jobs=jobs,
             articles=list(payload.get("articles") or []),
             content_hash=payload_hash,
             snapshot_complete=bool(payload.get("snapshot_complete", False)),

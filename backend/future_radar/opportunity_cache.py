@@ -29,7 +29,7 @@ from typing import Any, Callable, Hashable
 REVISION_KEY = "future_radar.opportunities.revision.v1"
 NAMESPACE_KEY = "future_radar.opportunities.namespace.v1"
 POSTGRES_REVISION_FUNCTION = "_ff_radar_opportunity_revision_v1"
-CACHE_FORMAT_VERSION = "public-opportunity-score-cache-v2-company-display"
+CACHE_FORMAT_VERSION = "public-opportunity-score-cache-v3-source-ratings"
 
 # These are precisely the inputs selected/filterable by _opportunity_rows.
 # In particular, source scheduling/leases/errors, raw evidence, and model cache
@@ -41,7 +41,7 @@ REVISION_COLUMNS: dict[str, tuple[str, ...]] = {
         "industry_tags", "role_tags", "official_url", "application_url",
         "opening_date", "closing_date", "status", "verification_status",
         "confidence_score", "description", "responsibilities", "requirements",
-        "tags", "first_seen_at", "last_seen_at", "last_changed_at",
+        "tags", "source_ratings", "first_seen_at", "last_seen_at", "last_changed_at",
     ),
     "recruitment_programs": (
         "id", "program_name", "recruitment_year", "recruitment_type", "status",
@@ -56,9 +56,9 @@ REVISION_COLUMNS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _sqlite_trigger_definitions() -> dict[str, tuple[str, str]]:
+def _sqlite_trigger_definitions(columns_by_table=None) -> dict[str, tuple[str, str]]:
     result: dict[str, tuple[str, str]] = {}
-    for table, columns in REVISION_COLUMNS.items():
+    for table, columns in (columns_by_table or REVISION_COLUMNS).items():
         for operation in ("insert", "update", "delete"):
             name = f"ff_radar_cache_v1_{table}_{operation}"
             event = operation.upper()
@@ -80,6 +80,10 @@ def _sqlite_trigger_definitions() -> dict[str, tuple[str, str]]:
 
 
 SQLITE_REVISION_TRIGGERS = _sqlite_trigger_definitions()
+PRE_RATING_SQLITE_REVISION_TRIGGERS = _sqlite_trigger_definitions({
+    table: tuple(column for column in columns if column != "source_ratings")
+    for table, columns in REVISION_COLUMNS.items()
+})
 
 
 def is_known_sqlite_revision_trigger(name: str, table: str, sql: str | None) -> bool:
@@ -91,7 +95,10 @@ def is_known_sqlite_revision_trigger(name: str, table: str, sql: str | None) -> 
     # trailing semicolon. Do not lowercase quoted identifiers or string values.
     normalized = " ".join(sql.strip().removesuffix(";").split())
     normalized = normalized.replace("CREATE TRIGGER IF NOT EXISTS ", "CREATE TRIGGER ", 1)
-    return normalized == " ".join(expected[1].split())
+    return normalized in {
+        " ".join(expected[1].split()),
+        " ".join(PRE_RATING_SQLITE_REVISION_TRIGGERS[name][1].split()),
+    }
 
 
 def postgres_revision_definitions(schema: str) -> tuple[str, dict[str, str]]:
@@ -158,7 +165,12 @@ def install_opportunity_revision(connection: Any) -> None:
             if existing is not None:
                 if not is_known_sqlite_revision_trigger(name, table, existing["sql"]):
                     raise sqlite3.OperationalError("Unexpected Radar cache trigger definition")
-                continue
+                normalized = " ".join(existing["sql"].strip().removesuffix(";").split())
+                normalized = normalized.replace("CREATE TRIGGER IF NOT EXISTS ", "CREATE TRIGGER ", 1)
+                if normalized == " ".join(sql.split()):
+                    continue
+                # Upgrade the exact recognized pre-rating trigger only.
+                connection.execute(f'DROP TRIGGER "{name}"')
             connection.execute(sql)
         return
     schema = str(connection.schema)

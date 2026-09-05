@@ -80,14 +80,19 @@ def test_builds_discovery_only_sync_without_message_metadata():
     assert payload["batch_id"].startswith("bridge-")
 
 
-def test_stable_ids_and_batches_split_at_ten():
+def test_stable_ids_and_large_input_is_split_without_truncation():
     source_id, digest, rows = bridge.parse_browser_message(
-        browser_message(rows=[job(index) for index in range(23)])
+        browser_message(rows=[job(index) for index in range(123)])
     )
     first = bridge.build_batches(source_id, digest, rows)
     second = bridge.build_batches(source_id, digest, rows)
 
-    assert [len(item["jobs"]) for item in first] == [10, 10, 3]
+    assert [len(item["jobs"]) for item in first] == [25, 25, 25, 25, 23]
+    wider = bridge.build_batches(source_id, digest, rows, batch_size=100)
+    assert [len(item["jobs"]) for item in wider] == [100, 23]
+    assert [row["external_id"] for batch in first for row in batch["jobs"]] == [
+        row["external_id"] for batch in wider for row in batch["jobs"]
+    ]
     assert [item["batch_id"] for item in first] == [
         item["batch_id"] for item in second
     ]
@@ -217,7 +222,7 @@ def test_submit_uses_keychain_and_hash_only_atomic_cursor(monkeypatch, tmp_path)
     keychain = mock.Mock(return_value=token)
     submit = mock.Mock(
         side_effect=[
-            {"accepted": 10, "token": token},
+            {"accepted": 25, "token": token},
             {"accepted": 2, "detail": "safe"},
         ]
     )
@@ -225,7 +230,7 @@ def test_submit_uses_keychain_and_hash_only_atomic_cursor(monkeypatch, tmp_path)
     monkeypatch.setattr(bridge, "submit_payload", submit)
 
     value = browser_message(
-        rows=[job(index) for index in range(12)], message_id=raw_message_id
+        rows=[job(index) for index in range(27)], message_id=raw_message_id
     )
     code, stdout, stderr = run_main(
         monkeypatch,
@@ -248,7 +253,7 @@ def test_submit_uses_keychain_and_hash_only_atomic_cursor(monkeypatch, tmp_path)
     keychain.assert_called_once_with()
     assert submit.call_count == 2
     assert all(call.args[1] == token for call in submit.call_args_list)
-    assert all(len(call.args[0]["jobs"]) <= 10 for call in submit.call_args_list)
+    assert all(len(call.args[0]["jobs"]) <= 25 for call in submit.call_args_list)
 
     keychain.reset_mock()
     submit.reset_mock()
@@ -268,7 +273,7 @@ def test_partial_submission_never_advances_cursor(monkeypatch, tmp_path):
     cursor = tmp_path / "cursor.json"
     submit = mock.Mock(
         side_effect=[
-            {"accepted": 10},
+            {"accepted": 25},
             bridge.SourceImportError("server returned HTTP 500"),
         ]
     )
@@ -277,7 +282,7 @@ def test_partial_submission_never_advances_cursor(monkeypatch, tmp_path):
 
     code, stdout, stderr = run_main(
         monkeypatch,
-        browser_message(rows=[job(index) for index in range(12)]),
+        browser_message(rows=[job(index) for index in range(27)]),
         ["--submit", "--cursor-file", str(cursor)],
     )
     assert code == 2
@@ -402,3 +407,59 @@ def test_oversized_rows_are_rejected_instead_of_truncated():
     value = browser_message(rows=[job(company="企" * 161)])
     with pytest.raises(bridge.BridgeError, match="maximum length"):
         bridge.parse_browser_message(value)
+
+
+@pytest.mark.parametrize("source", ["chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-10"])
+def test_retired_or_unknown_monitor_cannot_submit_new_rows(source):
+    with pytest.raises(bridge.BridgeError, match="active"):
+        bridge.parse_browser_message(browser_message(source_id=source))
+
+
+@pytest.mark.parametrize("source", ["chatgpt-radar-07", "chatgpt-radar-08", "chatgpt-radar-09"])
+def test_new_monitor_labels_accept_individual_rendered_job_rows(source):
+    source_id, digest, rows = bridge.parse_browser_message(browser_message(source_id=source))
+    assert bridge.build_batches(source_id, digest, rows)[0]["source_id"] == source
+
+
+def test_source_rating_survives_both_sync_and_ingest_with_scope_and_exact_value():
+    rating = {"scope": "company", "tier_code": "T0.5", "score": 92.25, "reason": "原表公司层面的评分"}
+    source_id, digest, rows = bridge.parse_browser_message(browser_message(rows=[job(source_rating=rating)]))
+    payload = bridge.build_batches(source_id, digest, rows)[0]
+    assert payload["jobs"][0]["source_rating"] == rating
+    assert bridge._legacy_ingest_batch(payload)["jobs"][0]["source_rating"] == rating
+    assert "source_rating" not in bridge._normalize_row(job(), source_id)
+
+
+def test_corrected_rating_changes_batch_id_and_same_message_cursor_content(monkeypatch, tmp_path):
+    path = tmp_path / "cursor.json"
+    first = browser_message(rows=[job(source_rating={"scope": "job", "score": 89})])
+    corrected = browser_message(rows=[job(source_rating={"scope": "job", "score": 91.5})])
+    monkeypatch.setattr(bridge, "read_keychain_token", lambda: "synthetic")
+    submit = mock.Mock(return_value={"accepted": 1})
+    monkeypatch.setattr(bridge, "submit_payload", submit)
+    batch_ids = []
+    for value in (first, corrected):
+        source_id, digest, rows = bridge.parse_browser_message(value)
+        batch_ids.append(bridge.build_batches(source_id, digest, rows)[0]["batch_id"])
+        code, stdout, stderr = run_main(monkeypatch, value, ["--submit", "--cursor-file", str(path)])
+        assert code == 0 and not stderr and json.loads(stdout)["status"] == "submitted"
+    assert batch_ids[0] != batch_ids[1]
+    assert submit.call_count == 2
+    assert submit.call_args.args[0]["jobs"][0]["source_rating"] == {"scope": "job", "score": 91.5}
+    assert run_main(monkeypatch, corrected, ["--submit", "--cursor-file", str(path)])[0] == 0
+    assert submit.call_count == 2
+
+
+def test_retired_hash_only_cursors_remain_unchanged_after_new_source_save(tmp_path):
+    path = tmp_path / "cursor.json"
+    prior = {"version": 1, "sources": {
+        "chatgpt-radar-04": {"message_digest": "a" * 64},
+        "chatgpt-radar-05": {"message_digest": "b" * 64},
+    }}
+    path.write_text(json.dumps(prior))
+    loaded = bridge.load_cursor(path)
+    bridge.save_cursor(path, loaded, "chatgpt-radar-09", "c" * 64, "d" * 64)
+    result = bridge.load_cursor(path)
+    assert result["sources"]["chatgpt-radar-04"] == prior["sources"]["chatgpt-radar-04"]
+    assert result["sources"]["chatgpt-radar-05"] == prior["sources"]["chatgpt-radar-05"]
+    assert bridge.cursor_has_message(loaded, "chatgpt-radar-04", "a" * 64, "e" * 64)

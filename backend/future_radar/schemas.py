@@ -7,6 +7,8 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from ..recruitment_rating import SourceRating
+from ..recruitment_limits import MAX_MONITOR_BATCH_ITEMS
 
 from .normalization import (
     PRIMARY_CATEGORY_CODES,
@@ -51,6 +53,7 @@ class RadarJobInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     external_id: str | None = Field(default=None, max_length=180)
+    source_rating: SourceRating | None = None
     program_external_id: str | None = Field(default=None, max_length=180)
     company: str = Field(min_length=1, max_length=160)
     title: str = Field(min_length=1, max_length=280)
@@ -146,14 +149,14 @@ class FrostFireSyncV1(BaseModel):
     source_name: str | None = Field(default=None, max_length=160)
     observed_at: datetime | None = None
     snapshot_complete: bool = False
-    programs: list[RadarProgramInput] = Field(default_factory=list, max_length=10)
-    jobs: list[RadarJobInput] = Field(default_factory=list, max_length=10)
-    articles: list[RadarArticleInput] = Field(default_factory=list, max_length=10)
+    programs: list[RadarProgramInput] = Field(default_factory=list, max_length=MAX_MONITOR_BATCH_ITEMS)
+    jobs: list[RadarJobInput] = Field(default_factory=list, max_length=MAX_MONITOR_BATCH_ITEMS)
+    articles: list[RadarArticleInput] = Field(default_factory=list, max_length=MAX_MONITOR_BATCH_ITEMS)
 
     @model_validator(mode="after")
     def bounded_batch(self):
-        if len(self.programs) + len(self.jobs) + len(self.articles) > 20:
-            raise ValueError("A sync batch may contain at most 20 total entities.")
+        if len(self.programs) + len(self.jobs) + len(self.articles) > MAX_MONITOR_BATCH_ITEMS:
+            raise ValueError(f"A sync request may contain at most {MAX_MONITOR_BATCH_ITEMS} total entities; send further chunks to continue.")
         return self
 
 

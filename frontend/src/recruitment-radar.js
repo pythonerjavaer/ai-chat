@@ -370,6 +370,46 @@ export function futureRadarOpportunitySource(job = {}) {
   };
 }
 
+export function futureRadarOriginalRating(job = {}) {
+  const normalize = (rating) => {
+    if (!rating || typeof rating !== "object" || !["job", "company"].includes(rating.scope)) return null;
+    const tier = TIER_CODES.includes(rating.tier_code) ? rating.tier_code : null;
+    const rawScore = rating.score;
+    const score = ["number", "string"].includes(typeof rawScore) && String(rawScore).trim()
+      && Number.isFinite(Number(rawScore)) && Number(rawScore) >= 0 && Number(rawScore) <= 100
+      ? Number(rawScore) : null;
+    if (!tier && score == null) return null;
+    const provider = /^chatgpt-radar-\d+$/i.test(String(rating.source_id || ""))
+      || (!rating.source_id && job.rating_source === "chatgpt") ? "ChatGPT" : "外部来源";
+    const scope = job.rating_status === "program_reference" ? "招聘项目" : rating.scope === "company" ? "公司" : "岗位";
+    const value = [tier, score == null ? null : `${score}/100`].filter((item) => item != null).join(" · ");
+    const reason = typeof rating.reason === "string" ? rating.reason.trim().slice(0, 280) : "";
+    return { provider, scope: rating.scope, tier, score, label: `${provider} ${scope}原评`, value, reason };
+  };
+  if (job.rating_status === "conflicted") {
+    const ratings = (Array.isArray(job.source_ratings) ? job.source_ratings : []).map(normalize).filter(Boolean);
+    if (!ratings.length) return null;
+    return {
+      label: "原始评级有差异",
+      summary: "来源原评有差异，当前显示系统评分；可展开查看各来源原评。评级与官网核验分别记录。",
+      applied: false,
+      details: ratings.map((rating) => `${rating.label}：${rating.value}${rating.reason ? `；${rating.reason}` : ""}`),
+    };
+  }
+  const rating = normalize(job.source_rating);
+  if (!rating) return null;
+  const applied = job.rating_status === "applied" && rating.scope === "job";
+  const usage = job.rating_status === "program_reference" ? "项目参考，不作岗位分档"
+    : rating.scope === "company" ? "仅公司参考，岗位单独评分"
+    : applied ? "已用于岗位排序" : "来源参考";
+  return {
+    ...rating,
+    applied,
+    summary: `${rating.label}：${rating.value}（${usage}；不代表官网核验）`,
+    details: rating.reason ? [`原评依据：${rating.reason}`] : [],
+  };
+}
+
 export function futureRadarPublicOpportunityUrl(job = {}) {
   const sources = [...listValues(job.sources), ...listValues(job.discovered_by)];
   const candidates = [job.application_url, job.official_url, job.source_url, job.candidate_url, job.url,

@@ -37,6 +37,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import database
+from .chatgpt_sources import ACTIVE_CHATGPT_SOURCE_IDS, KNOWN_CHATGPT_SOURCE_IDS
+from .recruitment_rating import SourceRating, merge_source_ratings
+from .recruitment_limits import MAX_MONITOR_BATCH_ITEMS
 from .ai_service import (
     build_messages,
     create_embeddings,
@@ -151,11 +154,11 @@ RECRUITMENT_DEEP_SEARCH_COOLDOWN_SECONDS = 0
 
 EXPECTED_CHATGPT_RADAR_SOURCES = [
     {
-        "source_id": f"chatgpt-radar-{index:02d}",
+        "source_id": source_id,
         "source_thread_id": None,
-        "title": f"ChatGPT 监控 {index}",
+        "title": f"ChatGPT 监控 {int(source_id.rsplit('-', 1)[1])}",
     }
-    for index in range(1, 7)
+    for source_id in ACTIVE_CHATGPT_SOURCE_IDS
 ]
 EXPECTED_CHATGPT_SOURCE_IDS = {
     source["source_id"] for source in EXPECTED_CHATGPT_RADAR_SOURCES
@@ -681,6 +684,7 @@ class RecruitmentIngestJob(BaseModel):
     source_item_id: str | None = Field(default=None, max_length=160)
     source_updated_at: datetime | None = None
     external_id: str | None = Field(default=None, max_length=160)
+    source_rating: SourceRating | None = None
     evidence: list[Annotated[str, Field(min_length=1, max_length=280)]] = Field(
         default_factory=list,
         max_length=12,
@@ -709,7 +713,7 @@ class RecruitmentIngestJob(BaseModel):
 class RecruitmentIngestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    jobs: list[RecruitmentIngestJob] = Field(default_factory=list, max_length=10)
+    jobs: list[RecruitmentIngestJob] = Field(default_factory=list, max_length=MAX_MONITOR_BATCH_ITEMS)
     source_id: str | None = Field(
         default=None,
         min_length=1,
@@ -1017,6 +1021,14 @@ def _public_search_update(job: dict) -> dict:
         "last_changed_at", "latest_event_type", "latest_event_at",
     )
     item = {key: job.get(key) for key in allowed}
+    item["source_ratings"] = [
+        {
+            key: _redact_public_text(value, limit=280) if key == "reason" else value
+            for key, value in rating.items()
+            if key not in {"rating_key", "observed_at"}
+        }
+        for rating in merge_source_ratings(job.get("source_ratings"), job.get("source_rating"))
+    ]
     for field in ("official_url", "application_url"):
         item[field] = _public_reference_url(item.get(field))
     for field in (
@@ -1096,7 +1108,7 @@ def _radar_company_aliases() -> dict[str, str]:
 
 def _public_radar_opportunity(job: dict, profile: dict) -> dict:
     # Sanitize before scoring so derived labels cannot copy private transport
-    # fields. Apply the same organization/role model to every source and pool.
+    # fields. Explicit original ratings and official verification stay separate.
     item = score_job(_public_search_update(job), profile)
     program_listing = is_recruitment_program_listing(job)
     item["listing_kind"] = "recruitment_program" if program_listing else "job"
@@ -1117,6 +1129,10 @@ def _public_radar_opportunity(job: dict, profile: dict) -> dict:
             for key, value in item.get("scoring_factors", {}).items()
         }
         item["scoring_status"] = "unscored_program_listing"
+        item["system_tier_code"] = None
+        item["system_job_score"] = None
+        if item.get("rating_status") == "applied":
+            item["rating_status"] = "program_reference"
         item["positive_reasons"] = []
         item["negative_reasons"] = ["这是企业招聘项目，尚未细分到具体岗位，暂不生成岗位 T 级"]
         item["match_reasons"] = []
@@ -2585,7 +2601,7 @@ def _candidate_from_ingest_item(
     source_id = (batch_source_id or item.source_id).strip()
     raw_source_thread_id = (item.source_thread_id or "").strip() or None
     source_thread_id = None
-    if raw_source_thread_id and source_id not in EXPECTED_CHATGPT_SOURCE_IDS:
+    if raw_source_thread_id and source_id not in KNOWN_CHATGPT_SOURCE_IDS:
         source_thread_id = (
             "sha256:" + hashlib.sha256(raw_source_thread_id.encode("utf-8")).hexdigest()[:24]
         )
@@ -2638,6 +2654,11 @@ def _candidate_from_ingest_item(
         "tags": [str(tag).strip()[:120] for tag in item.tags if str(tag).strip()],
         "evidence": [evidence.strip() for evidence in item.evidence if evidence.strip()],
         "incoming_status": item.status,
+        "source_rating": (
+            {**item.source_rating.model_dump(exclude_none=True), "source_id": source_id,
+             "source_updated_at": source_updated_at, "rating_key": f"candidate-{dedupe_key[:32]}"}
+            if item.source_rating else None
+        ),
     }
     payload_fields = {
         key: value
@@ -2658,7 +2679,7 @@ def _candidate_from_ingest_item(
 def _promoted_job(candidate: dict) -> dict:
     if (
         candidate.get("external_id")
-        and candidate.get("source_id") in EXPECTED_CHATGPT_SOURCE_IDS
+        and candidate.get("source_id") in KNOWN_CHATGPT_SOURCE_IDS
     ):
         identity = (
             f"external:{_normalized_identity(candidate['company'])}:"
@@ -2679,6 +2700,10 @@ def _promoted_job(candidate: dict) -> dict:
         "opening_date": candidate.get("verified_opening_date"),
         "closing_date": candidate.get("verified_closing_date"),
         "requirements": candidate.get("requirements", ""),
+        "source_rating": (
+            {**candidate["source_rating"], "observed_at": candidate.get("last_seen_at")}
+            if candidate.get("source_rating") else None
+        ),
         "tags": list(dict.fromkeys([
             *candidate.get("tags", []),
             "校园招聘", "动态监控", "链接已验证", "标题已验证",
@@ -3035,7 +3060,7 @@ def ingest_recruitment_jobs(
         )
         # Include replays/stale/closed/rejected observations as well as new
         # rows. The bridge reads their committed state without rescanning the
-        # entire historical pool for every ten-item ingest batch.
+        # entire historical pool for every bounded transport chunk.
         bridge_candidate_ids.append(stored["id"])
         claim_token = stored.pop("claimed_verification_token", None)
         disposition = stored.pop("disposition")
@@ -3065,6 +3090,13 @@ def ingest_recruitment_jobs(
         else:
             totals[disposition] += 1
             group["counts"][disposition] += 1
+
+        if stored.pop("rating_only_update", False):
+            # The database preserved a still-open official verification and
+            # atomically updated its promoted row's rating metadata.
+            totals["accepted"] += 1
+            group["counts"]["accepted"] += 1
+            continue
 
         # A closed replay stays closed. Verified/rejected rows are intentionally
         # rechecked when their source reports them again: the official page may

@@ -364,13 +364,13 @@
         </header>
         <div class="recruitment-body">
           <section class="recruitment-profile-panel">
-            <div class="recruitment-section-heading"><span>01</span><div><strong>校准你的未来坐标</strong><small>方向、雇主、行业与城市均可按需填写；留白不会阻断扫描。</small></div></div>
-            <form id="recruitment-form" class="recruitment-form">
+            <div class="recruitment-section-heading"><span>01</span><div><strong>已有机会筛选</strong><small id="recruitment-filter-help" class="recruitment-filter-help">按方向、行业、城市与雇主类型筛选已入库机会；修改后自动保存并匹配，留白表示不限。这里的选择不改变扫描范围。</small></div></div>
+            <form id="recruitment-form" class="recruitment-form" aria-describedby="recruitment-filter-help">
               <label class="field compact-field"><span>目标方向 / 职能（逗号分隔）</span><input id="recruitment-roles" placeholder="产品，数据，金融科技，风险" /></label>
               <label class="field compact-field"><span>行业偏好</span><input id="recruitment-industries" placeholder="互联网，金融科技，新能源" /></label>
               <label class="field compact-field"><span>城市偏好（可多选或手动填写）</span><input id="recruitment-locations" placeholder="北京，上海，深圳，香港，可远程" /></label>
               <div class="recruitment-checks"><span>信号星域（可多选，点击立即筛选）</span><label><input type="checkbox" value="state_energy_resources" />央企能源/资源</label><label><input type="checkbox" value="state_tech_telecom" />央企科技/通信</label><label><input type="checkbox" value="tobacco_monopoly" />烟草/专卖体系</label><label><input type="checkbox" value="policy_state_banks" />政策行/国有大行</label><label><input type="checkbox" value="securities_public_funds_asset_management" />券商/公募/资管</label><label><input type="checkbox" value="insurance_integrated_finance" />保险/综合金融</label><label><input type="checkbox" value="internet_tech" />互联网大厂/中厂</label><label><input type="checkbox" value="consumer_foreign_consulting" />快消/外企/咨询</label><label><input type="checkbox" value="quant_private_hedge" />量化/私募/对冲</label><label><input type="checkbox" value="big_four_professional_services" />四大/专业服务</label></div>
-              <button id="recruitment-save" class="primary-button" type="submit" title="保存你的岗位、行业、城市与信号星域偏好，并用现有机会池重新匹配；不会启动外部扫描。"><span>保存坐标并重新匹配</span><b>↗</b></button>
+              <button id="recruitment-save" class="primary-button" type="submit" title="保存筛选条件并重新匹配已有机会；不会启动外部扫描。"><span>保存筛选</span><b>↗</b></button>
               <p id="recruitment-error" class="form-error" role="alert"></p>
             </form>
             <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>企业信号哨站</strong><small>只需输入企业名称。系统会追踪机会池中的新增信号、截止时间窗与公告变化；此过程不调用 AI。</small></div></div>
@@ -387,16 +387,17 @@
             <div class="recruitment-results-heading">
               <div><span class="overline">RECRUITMENT INTELLIGENCE SYSTEM</span><h3>未来招聘情报中枢</h3><small id="recruitment-source-status" class="recruitment-source-copy" role="status" aria-live="polite">主机会池尚未读取；待核验线索与官网确认机会在同一池展示。</small></div>
               <div class="radar-heading-actions">
-                <button id="recruitment-refresh" class="source-status" type="button" title="同步现有公开候选源与已建立的官网哨站；不执行 Deep Scan，也不主动读取 ChatGPT 对话。">同步候选源 ↻</button>
-                <button id="future-radar-run" class="radar-scan-now" type="button" data-scan-type="quick" title="优先核对已知官网、ATS、API 与招聘页面，不主动运行 AI 发现。">
-                  <span class="radar-scan-label"><strong id="future-radar-run-label">立即扫描</strong><small>QUICK SCAN</small></span><b>◎</b>
+                <button id="recruitment-refresh" class="source-status" type="button" aria-describedby="future-radar-action-help" title="同步已接入的公开候选源、官网哨站与本地记录到机会池；不执行 Deep Scan，也不主动读取 ChatGPT 对话。">同步候选源 ↻</button>
+                <button id="future-radar-run" class="radar-scan-now" type="button" data-scan-type="quick" aria-describedby="future-radar-action-help" title="核对全部已知官方招聘信源（官网、ATS 与 API），更新岗位状态；默认不做 OpenAI 联网发现。">
+                  <span class="radar-scan-label"><strong id="future-radar-run-label">快速扫描</strong><small>QUICK SCAN</small></span><b>◎</b>
                 </button>
-                <button id="future-radar-deep-run" class="radar-scan-now radar-scan-deep" type="button" data-scan-type="deep" title="运行智能发现，寻找新的招聘项目与官方入口；同类型运行由服务端锁防止重复并发。">
+                <button id="future-radar-deep-run" class="radar-scan-now radar-scan-deep" type="button" data-scan-type="deep" aria-describedby="future-radar-action-help" title="调用 OpenAI 搜索完整企业名录，发现新的招聘项目与官方入口；新线索进入机会池。">
                   <span class="radar-scan-label"><strong id="future-radar-deep-run-label">深度扫描</strong><small>DEEP SCAN</small></span><b>✦</b>
                 </button>
               </div>
             </div>
-            <p id="future-radar-action-status" class="radar-action-status pending" role="status" aria-live="polite">立即扫描默认执行 Quick Scan，优先核对已知官方信源；Deep Scan 独立执行智能发现。两类扫描均由服务端运行锁防止重复并发，并保留上次成功岗位池。</p>
+            <p id="future-radar-action-help" class="radar-action-help">同步候选源：汇入已接入公开源、官网哨站与本地记录；快速扫描：核对全部已知官方招聘信源，默认不做 OpenAI 联网发现；深度扫描：调用 OpenAI 搜索完整企业名录，发现新项目与新入口。三项操作都不受左侧筛选条件限制。</p>
+            <p id="future-radar-action-status" class="radar-action-status pending" role="status" aria-live="polite">等待操作；扫描进度与结果会显示在这里。</p>
             <section class="radar-operational-status" aria-live="polite">
               <article><small>LAST RADAR SCAN</small><strong id="future-radar-last-scan">等待首次扫描</strong></article>
               <article><small>LAST SUCCESS</small><strong id="future-radar-last-success">尚无成功记录</strong></article>
@@ -405,6 +406,7 @@
             </section>
             <div id="future-radar-dashboard" class="radar-dashboard" aria-label="未来雷达指标"></div>
             <p class="radar-metric-note">新增指标是近7天来源记录；待核验指标是来源记录数。机会池会合并重复并按条件筛选，与指标数量可能不同。</p>
+            <p class="radar-metric-note">机会池保存在服务端数据库，更新版本或重新登录无需重新扫描恢复。扫描只增量更新；过期或确认关闭的机会退出当前列表，历史记录保留。</p>
             <p id="future-radar-loading" class="radar-loading hidden" role="status">正在建立招聘情报星图…</p>
             <p id="future-radar-error" class="radar-load-error hidden" role="alert"></p>
             <nav class="radar-tabs" aria-label="未来雷达视图">
@@ -421,7 +423,7 @@
               </header>
               <div id="future-radar-opportunity-coverage" class="radar-candidate-coverage" aria-live="polite"></div>
               <div id="future-radar-opportunity-summary" class="radar-candidate-summary" aria-live="polite"></div>
-              <div class="recruitment-disclaimer">T 级沿用公司与具体岗位的评价规则，不代表信息已被官网确认；聊天和搜索线索也直接显示，不必切换到另一个池子。</div>
+              <div class="recruitment-disclaimer">T 级与分数会注明来源原评或系统计算依据，不代表信息已被官网确认；聊天和搜索线索也直接显示。</div>
               <form id="future-radar-filter-form" class="radar-filter-bar">
                 <label><span>搜索</span><input id="future-radar-filter-query" maxlength="160" placeholder="公司 / 岗位 / 要求" /></label>
                 <label><span>公司</span><input id="future-radar-filter-company" maxlength="160" placeholder="精确公司名" /></label>

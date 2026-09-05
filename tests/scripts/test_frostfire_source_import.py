@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import pathlib
 import urllib.error
@@ -155,6 +156,113 @@ def test_source_id_must_not_be_a_conversation_uuid():
             "--source-id", uuid_like_placeholder(),
             "--structured-json", "-",
         ])
+
+
+def test_source_rating_is_preserved_and_changes_deterministic_import_hash():
+    payload = sync_payload()
+    rating = {"scope": "job", "tier_code": "T0.5", "score": 91.25, "reason": "源表明确给出的岗位评分"}
+    payload["jobs"] = [{
+        "company": "示例企业",
+        "title": "2027 校园招聘分析师",
+        "official_url": "https://careers.example.com/jobs/1",
+        "source_rating": rating,
+    }]
+    first = source_import._validated_payload(payload, "chatgpt-radar-09")
+    assert first["jobs"][0]["source_rating"] == rating
+    payload["jobs"][0]["source_rating"] = {"scope": "company", "score": 88.5}
+    updated = source_import._validated_payload(payload, "chatgpt-radar-09")
+    assert updated["batch_id"] != first["batch_id"]
+    assert updated["jobs"][0]["source_rating"] == {"scope": "company", "score": 88.5}
+
+
+@pytest.mark.parametrize("source", ["chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-10"])
+def test_retired_monitor_ids_remain_logical_but_reject_fresh_imports(source):
+    assert source_import._validate_logical_source_id(source) == source
+    with pytest.raises(source_import.ImportError, match="active"):
+        source_import._validated_payload(sync_payload(), source)
+
+
+def test_large_snapshot_keeps_all_entities_and_has_stable_transport_batches():
+    payload = {"version": "FROSTFIRE_SYNC_V1", "source_id": "chatgpt-radar-09",
+               "snapshot_complete": True, "jobs": [{
+                   "external_id": f"public-job-{index}", "company": "示例企业",
+                   "title": f"2027校园招聘岗位{index}",
+                   "official_url": f"https://careers.example.com/jobs/{index}",
+               } for index in range(237)]}
+    normalized = source_import._validated_payload(payload, "chatgpt-radar-09")
+    assert len(normalized["jobs"]) == 237
+    assert normalized["snapshot_complete"] is True
+    batches = source_import.split_payload(normalized, "chatgpt-radar-09")
+    assert [len(batch["jobs"]) for batch in batches] == [25] * 9 + [12]
+    assert all(batch["snapshot_complete"] is False for batch in batches)
+    assert [row["external_id"] for batch in batches for row in batch["jobs"]] == [f"public-job-{index}" for index in range(237)]
+    assert batches == source_import.split_payload(normalized, "chatgpt-radar-09")
+    wider = source_import.split_payload(normalized, "chatgpt-radar-09", 100)
+    assert [len(batch["jobs"]) for batch in wider] == [100, 100, 37]
+
+
+def test_mixed_snapshot_entities_share_one_request_bound_without_truncation():
+    payload = sync_payload()
+    payload["articles"] = [dict(payload["articles"][0], article_external_id=f"article-{index}") for index in range(103)]
+    payload["programs"] = [{"external_id": f"program-{index}", "company": "示例企业", "program_name": f"2027校招计划{index}"} for index in range(102)]
+    batches = source_import.split_payload(source_import._validated_payload(payload, "public-source"), "public-source", 100)
+    assert [sum(len(batch[key]) for key in ("jobs", "programs", "articles")) for batch in batches] == [100, 100, 5]
+    assert sum(len(batch["articles"]) for batch in batches) == 103
+    assert sum(len(batch["programs"]) for batch in batches) == 102
+
+
+def test_large_source_import_retry_reuses_stable_batch_ids_after_failure(monkeypatch):
+    payload = {"version": "FROSTFIRE_SYNC_V1", "source_id": "chatgpt-radar-09", "jobs": [{
+        "external_id": f"public-job-{index}", "company": "示例企业", "title": f"岗位{index}",
+        "official_url": f"https://careers.example.com/jobs/{index}",
+    } for index in range(137)]}
+    monkeypatch.setattr(source_import, "_read_local_json", lambda _path: payload)
+    monkeypatch.setattr(source_import, "load_token", lambda: "synthetic")
+    observed = []
+    stored = set()
+
+    def submit(batch, _token, _timeout):
+        observed.append(batch["batch_id"])
+        if len(observed) == 2:
+            raise source_import.ImportError("submission endpoint is temporarily unavailable")
+        stored.update(row["external_id"] for row in batch["jobs"])
+        return {"received": len(batch["jobs"])}
+
+    monkeypatch.setattr(source_import, "submit_payload", submit)
+    stdout, stderr = io.StringIO(), io.StringIO()
+    monkeypatch.setattr(source_import.sys, "stdout", stdout)
+    monkeypatch.setattr(source_import.sys, "stderr", stderr)
+    args = ["--source-id", "chatgpt-radar-09", "--structured-json", "-", "--submit"]
+    assert source_import.main(args) == 2
+    assert len(stored) == 25 and not stdout.getvalue()
+    first_id = observed[0]
+    assert source_import.main(args) == 0
+    assert observed[2] == first_id
+    assert len(stored) == 137
+    assert json.loads(stdout.getvalue())["batches"] == 6
+
+
+def test_feed_import_preserves_every_entry_and_reports_required_continuation(monkeypatch):
+    article = sync_payload()["articles"][0]
+    result = SimpleNamespace(
+        articles=[dict(article, article_external_id=f"feed-{index}") for index in range(137)],
+        coverage={"continuation_required": False},
+    )
+    seen = []
+
+    class Feed:
+        def scan(self, config):
+            seen.append(config["adapter_config"]["max_entries"])
+            return result
+
+    monkeypatch.setitem(source_import.sys.modules, "backend.future_radar.adapters", SimpleNamespace(PublicFeedAdapter=Feed))
+    monkeypatch.setattr(source_import, "validate_public_https_url", lambda value, **_kwargs: value)
+    payload = source_import.payload_from_feed("https://careers.example.com/feed.xml", "public-feed", publisher="公开来源", timeout=5)
+    assert len(payload["articles"]) == 137
+    assert seen == [10000]
+    result.coverage["continuation_required"] = True
+    with pytest.raises(source_import.ImportError, match="continuation"):
+        source_import.payload_from_feed("https://careers.example.com/feed.xml", "public-feed", publisher="公开来源", timeout=5)
 
 
 def test_uuid_shaped_upstream_identifiers_are_pseudonymized_stably():

@@ -48,7 +48,7 @@ test("manual Quick and Deep scans use per-type run state and a short completion 
 });
 
 test("profile matching and source synchronization labels describe their real side effects", () => {
-  assert.match(indexSource, /id="recruitment-save"[\s\S]*保存坐标并重新匹配/);
+  assert.match(indexSource, /id="recruitment-save"[\s\S]*保存筛选/);
   assert.doesNotMatch(indexSource, /保存坐标并重新扫描/);
   assert.match(indexSource, /id="recruitment-refresh"[\s\S]*同步候选源/);
 
@@ -58,7 +58,7 @@ test("profile matching and source synchronization labels describe their real sid
   assert.notEqual(saveEnd, -1);
   const saveSource = appSource.slice(saveStart, saveEnd);
 
-  assert.match(saveSource, /保存坐标并重新匹配/);
+  assert.match(saveSource, /保存筛选/);
   assert.doesNotMatch(saveSource, /保存坐标并重新扫描/);
   assert.doesNotMatch(saveSource, /api\("\/future-radar\/run"/);
   assert.match(appSource, /不执行 Deep Scan，也不主动读取 ChatGPT 对话/);

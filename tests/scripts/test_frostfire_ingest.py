@@ -47,6 +47,45 @@ class FrostfireIngestTests(unittest.TestCase):
         self.assertEqual(ingest.normalize_payload([job]), {"jobs": [job]})
         self.assertEqual(ingest.normalize_payload({"jobs": [job]}), {"jobs": [job]})
 
+    def test_optional_source_rating_retains_explicit_job_or_company_scope(self):
+        ratings = [
+            {"scope": "job", "score": 92.25},
+            {"scope": "company", "tier_code": "T0.5", "reason": "原表明确公司评级"},
+            {"scope": "job", "tier_code": "T1.5", "score": 81},
+        ]
+        for rating in ratings:
+            with self.subTest(rating=rating):
+                result = ingest.normalize_payload(self.valid_job(source_rating=rating))
+                self.assertEqual(result["jobs"][0]["source_rating"], rating)
+        result = ingest.normalize_payload(self.valid_job(source_rating=None))
+        self.assertNotIn("source_rating", result["jobs"][0])
+
+    def test_invalid_source_rating_never_echoes_source_content(self):
+        invalid = [
+            {"scope": "job"},
+            {"score": 88},
+            {"scope": "job", "tier_code": "T4"},
+            {"scope": "job", "score": 101},
+            {"scope": "job", "score": True},
+            {"scope": "job", "score": "88"},
+            {"scope": "job", "score": 88, "reason": "do-not-echo\nprivate"},
+            {"scope": "job", "score": 88, "private-field": "do-not-echo"},
+        ]
+        for rating in invalid:
+            with self.subTest(rating=rating):
+                with self.assertRaises(ingest.InputError) as error:
+                    ingest.normalize_payload(self.valid_job(source_rating=rating))
+                self.assertNotIn("do-not-echo", str(error.exception))
+
+    def test_only_active_reserved_chatgpt_monitors_allow_fresh_ingest(self):
+        for suffix in ("01", "02", "03", "06", "07", "08", "09"):
+            source = "chatgpt-radar-" + suffix
+            self.assertEqual(ingest.normalize_payload({"source_id": source})["source_id"], source)
+        for suffix in ("04", "05", "10"):
+            with self.assertRaisesRegex(ingest.InputError, "active"):
+                ingest.normalize_payload({"source_id": "chatgpt-radar-" + suffix})
+        self.assertEqual(ingest.normalize_payload({"source_id": "public-feed-01"})["source_id"], "public-feed-01")
+
     def test_normalizes_empty_heartbeat_with_batch_source(self):
         heartbeat = {
             "jobs": [],
@@ -59,11 +98,34 @@ class FrostfireIngestTests(unittest.TestCase):
             {"jobs": [], "source_id": "chatgpt-radar-02"},
         )
 
-    def test_rejects_empty_batch_without_source_and_more_than_ten_jobs(self):
+    def test_rejects_empty_batch_without_source_and_bounded_input_overflow(self):
         with self.assertRaisesRegex(ingest.InputError, "source_id is required"):
             ingest.normalize_payload({"jobs": []})
-        with self.assertRaisesRegex(ingest.InputError, "at most 10"):
-            ingest.normalize_payload([self.valid_job() for _ in range(11)])
+        with self.assertRaisesRegex(ingest.InputError, "continue with another page"):
+            ingest.normalize_payload([self.valid_job() for _ in range(ingest.MAX_INPUT_ROWS + 1)])
+
+    def test_full_input_larger_than_request_limit_is_split_without_job_loss(self):
+        jobs = [self.valid_job(external_id=f"public-role-{index}") for index in range(237)]
+        payload = ingest.normalize_payload(jobs)
+        batches = ingest.split_payload(payload)
+        self.assertEqual([len(batch["jobs"]) for batch in batches], [25] * 9 + [12])
+        self.assertEqual([job for batch in batches for job in batch["jobs"]], jobs)
+        self.assertEqual([len(batch["jobs"]) for batch in ingest.split_payload(payload, 100)], [100, 100, 37])
+        with self.assertRaisesRegex(ingest.InputError, "HTTP request"):
+            ingest.submit_payload(payload, "synthetic", 1)
+
+    def test_cli_submits_all_rows_with_configurable_http_batch_size(self):
+        jobs = [self.valid_job(external_id=f"public-role-{index}") for index in range(137)]
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(ingest.sys, "stdin", io.StringIO(json.dumps(jobs))),
+            mock.patch.object(ingest.sys, "stdout", stdout),
+            mock.patch.object(ingest, "load_token", return_value="synthetic"),
+            mock.patch.object(ingest, "submit_payload", side_effect=lambda payload, *_args: (200, json.dumps({"received": len(payload["jobs"])}).encode())) as submit,
+        ):
+            self.assertEqual(ingest.main(["--batch-size", "100"]), 0)
+        self.assertEqual([len(call.args[0]["jobs"]) for call in submit.call_args_list], [100, 37])
+        self.assertEqual(json.loads(stdout.getvalue())["jobs"], 137)
 
     def test_rejects_extra_fields_at_batch_and_job_levels(self):
         with self.assertRaisesRegex(ingest.InputError, "batch contains unsupported"):

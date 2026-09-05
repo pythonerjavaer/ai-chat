@@ -87,10 +87,10 @@ def test_checkpoint_process_lock_and_resume(tmp_path):
             checkpoint.load(fingerprint="different", model="test-model", target_count=1)
 
 
-def test_all_43_jobs_are_delivered_in_batches_no_larger_than_ten(tmp_path):
+def test_all_jobs_are_delivered_across_transport_chunks_without_a_run_quota(tmp_path):
     with backfill.Checkpoint(tmp_path) as checkpoint:
         state = backfill.new_state("x", "test-model", 1)
-        state["targets"]["target"] = {"status": "searched", "jobs": [candidate(title=f"工程师-{i}") for i in range(43)]}
+        state["targets"]["target"] = {"status": "searched", "jobs": [candidate(title=f"工程师-{i}") for i in range(237)]}
         batches = []
 
         def submit(batch):
@@ -100,10 +100,10 @@ def test_all_43_jobs_are_delivered_in_batches_no_larger_than_ten(tmp_path):
         with mock.patch.object(backfill, "submit_jobs", side_effect=submit):
             backfill.flush_pending(state, checkpoint)
             backfill.flush_pending(state, checkpoint)
-        assert [len(batch) for batch in batches] == [10, 10, 10, 10, 3]
-        assert len({j["external_id"] for batch in batches for j in batch}) == 43
+        assert [len(batch) for batch in batches] == [100, 100, 37]
+        assert len({j["external_id"] for batch in batches for j in batch}) == 237
         assert not backfill.pending_jobs(state)
-        assert backfill.summary(state)["ingest"]["pending"] == 43
+        assert backfill.summary(state)["ingest"]["pending"] == 237
 
 
 def test_failed_submission_keeps_saved_jobs_for_ingest_only_retry(tmp_path):

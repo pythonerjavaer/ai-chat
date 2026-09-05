@@ -7,7 +7,7 @@ import {
   DEFAULT_FUTURE_RADAR_STATUS, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, TIER_CODES, buildFutureRadarJobsQuery,
   buildFutureRadarCompanyJobsQuery, starfieldLabel,
   filterJobsByStarfields, futureRadarOpportunityDateCopy,
-  futureRadarOpportunityErrorCopy, futureRadarOpportunitySource,
+  futureRadarOpportunityErrorCopy, futureRadarOpportunitySource, futureRadarOriginalRating,
   futureRadarPublicOpportunityUrl, jobTierBucket, partitionJobsByPriority,
   futureRadarTierQuery, futureRadarVisibleCategoryCount,
 } from "./recruitment-radar.js";
@@ -98,7 +98,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     resumeFutureRadarRunStatusPolling() {},
     state, elements, DEFAULT_FUTURE_RADAR_STATUS, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, TIER_CODES, buildFutureRadarJobsQuery,
     buildFutureRadarCompanyJobsQuery, starfieldLabel,
-    futureRadarOpportunityDateCopy, futureRadarOpportunityErrorCopy, futureRadarOpportunitySource,
+    futureRadarOpportunityDateCopy, futureRadarOpportunityErrorCopy, futureRadarOpportunitySource, futureRadarOriginalRating,
     futureRadarPublicOpportunityUrl, jobTierBucket, partitionJobsByPriority,
     futureRadarTierQuery, futureRadarVisibleCategoryCount,
     document: { hidden: false, querySelectorAll: () => [], createElement: (tag) => new Element(tag), createTextNode: (text) => text },
@@ -248,6 +248,71 @@ test("profile-save legacy response cannot overwrite unified-pool totals or failu
   await r.run("loadFutureRadarSnapshot()");
   await r.run("saveRecruitment(null, {silent: true})");
   assert.match(r.elements.recruitmentStatus.textContent, /主机会池刷新失败/);
+});
+
+test("job cards identify ChatGPT original ratings independently of official verification and system scores", () => {
+  const r = runtime();
+  r.context.testJob = { ...pendingJob("rated"), verification_status: "verified", tier_code: "T0.5", job_score: 91,
+    system_tier_code: "T2", system_job_score: 73, raw_job_score: 73, rating_source: "chatgpt", rating_status: "applied",
+    calibration_adjustment: null, calibration_reason: "岗位职责符合研究方向",
+    source_rating: { scope: "job", tier_code: "T0.5", score: 91, source_id: "chatgpt-radar-09", reason: "岗位职责符合研究方向" } };
+  const card = r.run("createRecruitmentJobCard(testJob)");
+  const rank = descendants(card).find((element) => element.className === "job-rank");
+  assert.equal(rank.textContent, "91 分 T0.5");
+  assert.match(card.textContent, /ChatGPT 岗位原评：T0.5 · 91\/100/);
+  assert.match(card.textContent, /原评依据：岗位职责符合研究方向/);
+  assert.match(card.textContent, /系统 T 级参考 · T2/);
+  assert.match(card.textContent, /系统分数参考 · 73/);
+  assert.match(card.textContent, /原评与系统参考对照/);
+  assert.doesNotMatch(card.textContent, /校准说明：|CALIBRATION · 0/);
+  assert.match(card.textContent, /官网已确认/);
+  assert.match(card.textContent, /不代表官网核验/);
+});
+
+test("partial original ratings do not invent a missing source tier or score", () => {
+  const r = runtime();
+  r.context.testJob = { ...pendingJob("partial-rating"), tier_code: null, job_score: 0,
+    rating_status: "applied", rating_source: "chatgpt", source_rating: { scope: "job", score: 0, source_id: "chatgpt-radar-07" } };
+  let card = r.run("createRecruitmentJobCard(testJob)");
+  let rank = descendants(card).find((element) => element.className === "job-rank");
+  assert.equal(rank.textContent, "0 分 原评未标 T 级");
+  assert.match(card.textContent, /ChatGPT 岗位原评：0\/100/);
+  r.context.testJob = { ...r.context.testJob, tier_code: "T1", job_score: null,
+    source_rating: { scope: "job", tier_code: "T1", source_id: "chatgpt-radar-07" } };
+  card = r.run("createRecruitmentJobCard(testJob)");
+  rank = descendants(card).find((element) => element.className === "job-rank");
+  assert.equal(rank.textContent, "已评分 T1");
+  assert.doesNotMatch(card.textContent, /ChatGPT 岗位原评：T1 · \d/);
+});
+
+test("company references and differing original ratings stay separate from the displayed job rating", () => {
+  const r = runtime();
+  r.context.testJob = { ...pendingJob("company-reference"), listing_kind: "recruitment_program",
+    rating_status: "company_reference", rating_source: "chatgpt",
+    source_rating: { scope: "company", tier_code: "T0", score: 95, source_id: "chatgpt-radar-01" } };
+  let card = r.run("createRecruitmentJobCard(testJob)");
+  let rank = descendants(card).find((element) => element.className === "job-rank");
+  assert.equal(rank.textContent, "未评分");
+  assert.match(card.textContent, /ChatGPT 公司原评：T0 · 95\/100（仅公司参考，岗位单独评分/);
+  r.context.testJob = { ...r.context.testJob, rating_status: "program_reference",
+    source_rating: { scope: "job", tier_code: "T0", score: 95, source_id: "chatgpt-radar-01" } };
+  card = r.run("createRecruitmentJobCard(testJob)");
+  rank = descendants(card).find((element) => element.className === "job-rank");
+  assert.equal(rank.textContent, "未评分");
+  assert.match(card.textContent, /ChatGPT 招聘项目原评：T0 · 95\/100（项目参考，不作岗位分档/);
+  assert.doesNotMatch(card.textContent, /已用于岗位排序/);
+  r.context.testJob = { ...pendingJob("conflicting-rating"), tier_code: "T2", job_score: 73, rating_status: "conflicted",
+    source_ratings: [
+      { scope: "job", tier_code: "T0", source_id: "chatgpt-radar-01", reason: "研究岗位" },
+      { scope: "job", tier_code: "T2", source_id: "chatgpt-radar-06", reason: "岗位职责需核对" },
+    ] };
+  card = r.run("createRecruitmentJobCard(testJob)");
+  rank = descendants(card).find((element) => element.className === "job-rank");
+  assert.equal(rank.textContent, "73 分 T2");
+  assert.match(card.textContent, /原评有差异，当前显示系统评分/);
+  assert.match(card.textContent, /ChatGPT 岗位原评：T0；研究岗位/);
+  assert.match(card.textContent, /ChatGPT 岗位原评：T2；岗位职责需核对/);
+  assert.match(card.textContent, /聊天线索/);
 });
 
 test("NEW and DISCOVERED metrics are keyboard-native buttons filtering the unified pool", async () => {

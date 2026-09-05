@@ -17,6 +17,7 @@ import {
   futureRadarAiSearchNotice,
   futureRadarCandidateVerification,
   futureRadarCoverageCopy,
+  futureRadarOriginalRating,
   futureRadarRunErrorCopy,
   futureRadarRunSuccessCopy,
   futureRadarSourceErrorCopy,
@@ -495,7 +496,7 @@ function renderScoringDetail(job) {
   }
   const elements = { recruitmentJobs: new Element("section") };
   const context = {
-    elements, TIER_CODES, formatOrganizationAssessment, jobTierBucket, partitionJobsByPriority,
+    elements, TIER_CODES, formatOrganizationAssessment, futureRadarOriginalRating, jobTierBucket, partitionJobsByPriority,
     document: { createElement: (tag) => new Element(tag) },
     state: { recruitmentTierFilter: "ALL", futureRadar: { jobsLoaded: true, totalJobs: 1 } },
     futureRadarSelectionIsPending: () => false,

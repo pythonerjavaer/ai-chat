@@ -15,7 +15,9 @@ paths:
       operationId: ingestRecruitmentJobs
       summary: Submit new or updated campus opportunities
       description: |
-        Idempotently accepts up to ten normalized opportunities. An empty jobs
+        Idempotently accepts a transport chunk of up to 100 normalized
+        opportunities per HTTP request. Send additional chunks until all changed
+        opportunities are imported; there is no total-run job quota. An empty jobs
         array with a logical source_id is a heartbeat and records source health
         without inventing a vacancy. Send only information the source monitor
         is authorized to export. Stable source and item identifiers may be
@@ -31,7 +33,7 @@ paths:
               properties:
                 jobs:
                   type: array
-                  maxItems: 10
+                  maxItems: 100
                   default: []
                   items:
                     $ref: '#/components/schemas/RecruitmentJob'
@@ -113,8 +115,9 @@ components:
           type: [string, 'null']
           maxLength: 100
           description: |
-            Optional compatibility field. For chatgpt-radar-01..06, omit the
-            real conversation ID: the server uses source_id and does not retain
+            Optional compatibility field. For known ChatGPT logical slots,
+            including retired historical slots, omit the real conversation ID:
+            the server uses source_id and does not retain
             the supplied thread value. Other source types retain only a short
             SHA-256 reference, never the raw value.
         source_item_id:
@@ -129,6 +132,17 @@ components:
           type: [string, 'null']
           maxLength: 160
           description: Stable vacancy or ATS requisition ID. Preferred idempotency key when available.
+        source_rating:
+          anyOf:
+            - $ref: '#/components/schemas/SourceRating'
+            - type: 'null'
+          description: |
+            The monitoring conversation's explicit original rating. Never derive
+            a missing score from a tier or vice versa. Job-scoped ratings take
+            precedence over system ranking in the opportunity pool; company
+            ratings are reference context only. This does not verify a job or
+            change its open/closed status. Conflicting source observations are
+            retained and flagged rather than choosing the best rating.
         company:
           type: string
           minLength: 1
@@ -194,6 +208,35 @@ components:
           enum: [open, closed]
           default: open
       additionalProperties: false
+    SourceRating:
+      type: object
+      additionalProperties: false
+      required: [scope]
+      anyOf:
+        - required: [tier_code]
+          properties:
+            tier_code:
+              type: string
+        - required: [score]
+          properties:
+            score:
+              type: number
+      properties:
+        scope:
+          type: string
+          enum: [job, company]
+          description: Whether the source explicitly rated this job or only its employer.
+        tier_code:
+          type: [string, 'null']
+          enum: [T0, T0.5, T1, T1.5, T2, T2.5, T3, null]
+        score:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 100
+        reason:
+          type: [string, 'null']
+          maxLength: 280
+          description: Short single-line explanation without contacts, private chat identifiers or credentials.
     SkippedItem:
       type: object
       properties:

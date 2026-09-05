@@ -6,6 +6,7 @@ from functools import lru_cache
 from typing import Any
 
 from .recruitment_organizations import assess_organization
+from .recruitment_rating import resolve_source_ratings
 from .recruitment_directory import (
     canonical_employer_identity,
     employer_category_override,
@@ -130,7 +131,7 @@ SCORING_WEIGHTS = {
     "career_value": 20,
     "job_conditions": 23,
 }
-SCORING_VERSION = "future-radar-job-ranking-v4.1-securities-identity"
+SCORING_VERSION = "future-radar-job-ranking-v4.2-explicit-source-rating"
 
 TIER_TARGET_SCORES = {
     "T0": 92,
@@ -1595,7 +1596,7 @@ def _scoring_factors(
     }
 
 
-def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+def _score_system_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
     categories = semantic_employer_categories(job)
     primary_category = _primary_category(job, categories)
     organization_category = _normalized_organization_category(job)
@@ -1695,3 +1696,39 @@ def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         "industry_tags": industry_tags,
         "role_tags": role_tags,
     }
+
+
+def score_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    result = _score_system_job(job, profile)
+    rating = resolve_source_ratings(job)
+    rating["source_ratings"] = [
+        {key: value for key, value in source.items() if key not in {"rating_key", "observed_at"}}
+        for source in rating["source_ratings"]
+    ]
+    if rating["source_rating"]:
+        rating["source_rating"] = {
+            key: value for key, value in rating["source_rating"].items()
+            if key not in {"rating_key", "observed_at"}
+        }
+    result.update(rating)
+    result["system_tier_code"] = result["tier_code"]
+    result["system_job_score"] = result["job_score"]
+    if rating["rating_status"] != "applied":
+        return result
+    source = rating["source_rating"]
+    # Do not manufacture a score from a tier, or a tier from a score. The
+    # independent system result remains available with an explicit label.
+    result.update({
+        "tier_code": source.get("tier_code"),
+        "job_score": source.get("score"),
+        "match_score": source.get("score"),
+        "scoring_status": "source_rated",
+        "manual_override": True,
+        "calibration_adjustment": None,
+        "calibration_reason": source.get("reason"),
+        "positive_reasons": ["保留监控来源对该具体岗位的原始评级"],
+        "negative_reasons": [],
+        "match_reasons": [source.get("reason") or "采用来源明确给出的岗位评级"],
+        "fit_tags": [*result.get("fit_tags", []), "来源原始评级"],
+    })
+    return result

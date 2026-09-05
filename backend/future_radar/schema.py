@@ -315,6 +315,7 @@ def migrate(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "radar_jobs", "organization_category", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(connection, "radar_jobs", "industry_tags", "TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(connection, "radar_jobs", "role_tags", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(connection, "radar_jobs", "source_ratings", "TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(connection, "radar_jobs", "description", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(connection, "radar_jobs", "responsibilities", "TEXT NOT NULL DEFAULT ''")
     # Run the versioned repair before the older metadata-only backfill, so a

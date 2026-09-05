@@ -6,6 +6,12 @@ Supported inputs are deliberately public or user-supplied: a ChatGPT
 file, one public article URL, or a public RSS/Atom feed.  The script never logs
 in to ChatGPT, reads browser cookies, calls a private conversation endpoint, or
 turns a discovery article into a verified job.
+
+Rendered assistant tables and individual HTTPS-linked jobs are handled by
+``frostfire_chatgpt_bridge.py`` or ``frostfire_chatgpt_history.py`` after the
+browser operator extracts sanitized rows; those messages need no sync JSON.
+Explicit source ratings in structured input are retained by the shared schema
+and included in the deterministic batch hash.
 """
 
 from __future__ import annotations
@@ -38,6 +44,8 @@ from backend.recruitment_watch import (  # noqa: E402
     fetch_watch_page,
     validate_public_https_url,
 )
+from scripts.frostfire_chatgpt_sources import is_inactive_chatgpt_source  # noqa: E402
+from scripts.frostfire_batching import DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, MAX_INPUT_ROWS, validate_batch_size  # noqa: E402
 
 
 ENDPOINT = "https://frostfire-ai.onrender.com/api/future-radar/sync"
@@ -103,6 +111,13 @@ def _validate_logical_source_id(value: str) -> str:
     return value
 
 
+def _validate_active_source_id(value: str) -> str:
+    source_id = _validate_logical_source_id(value)
+    if is_inactive_chatgpt_source(source_id):
+        raise ImportError("source_id is not an active ChatGPT monitoring label")
+    return source_id
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build a Future Radar batch from a public or local controlled source."
@@ -128,9 +143,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--submit", action="store_true", help="submit with the ingest token instead of printing JSON"
     )
     parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
+                        help="entities per HTTP request (1-100; default: 25); all input entities are processed")
     args = parser.parse_args(argv)
     try:
-        _validate_logical_source_id(args.source_id)
+        validate_batch_size(args.batch_size)
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        _validate_active_source_id(args.source_id)
     except ImportError as exc:
         parser.error(str(exc))
     if not 1 <= args.timeout <= 300:
@@ -267,7 +288,24 @@ def _pseudonymize_uuid_identifiers(payload: dict[str, Any], source_id: str) -> N
 def _validated_payload(candidate: Any, source_id: str) -> dict[str, Any]:
     if not isinstance(candidate, dict) or candidate.get("version") != "FROSTFIRE_SYNC_V1":
         raise ImportError("input does not contain a FROSTFIRE_SYNC_V1 object")
-    source_id = _validate_logical_source_id(source_id)
+    source_id = _validate_active_source_id(source_id)
+    groups = ("programs", "jobs", "articles")
+    if any(key in candidate and not isinstance(candidate[key], list) for key in groups):
+        raise ImportError("source collections must be arrays")
+    count = sum(len(candidate.get(key, [])) for key in groups)
+    if count > MAX_INPUT_ROWS:
+        raise ImportError(f"one input page may contain at most {MAX_INPUT_ROWS} entities; continue with another page")
+    if count > MAX_BATCH_SIZE:
+        # Validate the entire local snapshot via bounded transport schemas,
+        # retaining all rows. Chunking only happens at the HTTP boundary.
+        normalized = _validated_payload({**candidate, **{key: [] for key in groups}}, source_id)
+        chunks = split_payload(candidate, source_id, MAX_BATCH_SIZE)
+        for key in groups:
+            normalized[key] = [item for chunk in chunks for item in chunk[key]]
+        normalized.pop("batch_id", None)
+        canonical = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        normalized["batch_id"] = "import-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+        return normalized
     # A JSON round trip provides a bounded deep copy so UUID pseudonymization
     # cannot mutate the caller's source object.
     try:
@@ -299,15 +337,37 @@ def _validated_payload(candidate: Any, source_id: str) -> dict[str, Any]:
     return normalized
 
 
+def split_payload(payload: dict[str, Any], source_id: str,
+                  batch_size: int = DEFAULT_BATCH_SIZE) -> list[dict[str, Any]]:
+    validate_batch_size(batch_size)
+    groups = ("programs", "jobs", "articles")
+    entities = [(key, item) for key in groups for item in payload.get(key, [])]
+    if not entities:
+        return [_validated_payload(payload, source_id)]
+    batches = []
+    for offset in range(0, len(entities), batch_size):
+        candidate = {**payload, **{key: [] for key in groups}}
+        if len(entities) > batch_size:
+            # A partial transport request must never close other jobs from a
+            # full snapshot. Reconciliation needs a server transaction token.
+            candidate["snapshot_complete"] = False
+        for key, item in entities[offset:offset + batch_size]:
+            candidate[key].append(item)
+        batches.append(_validated_payload(candidate, source_id))
+    return batches
+
+
 def payload_from_chatgpt_share(url: str, source_id: str, *, timeout: float) -> dict[str, Any]:
-    source_id = _validate_logical_source_id(source_id)
+    source_id = _validate_active_source_id(source_id)
     safe_url = _safe_chatgpt_share_url(url)
     page = fetch_watch_page(safe_url, (), timeout_seconds=timeout)
     for candidate in _json_candidates(page.raw_text + "\n" + page.text):
         if candidate.get("version") == "FROSTFIRE_SYNC_V1":
             return _validated_payload(candidate, source_id)
     raise ImportError(
-        "the public share snapshot has no complete FROSTFIRE_SYNC_V1 JSON object; update the shared snapshot or import the JSON file directly"
+        "the public share snapshot has no complete FROSTFIRE_SYNC_V1 JSON object; "
+        "for rendered recruitment tables or HTTPS-linked job entries, extract "
+        "sanitized rows for frostfire_chatgpt_history.py or frostfire_chatgpt_bridge.py"
     )
 
 
@@ -336,7 +396,7 @@ def payload_from_article(
     published_at: str | None,
     timeout: float,
 ) -> dict[str, Any]:
-    source_id = _validate_logical_source_id(source_id)
+    source_id = _validate_active_source_id(source_id)
     page = fetch_watch_page(url, (), timeout_seconds=timeout)
     signal = f"{title} {page.text}".casefold()
     year_match = re.search(r"(?<!\d)(20\d{2})(?!\d)", signal)
@@ -364,7 +424,7 @@ def payload_from_feed(url: str, source_id: str, *, publisher: str, timeout: floa
     # configuration unless this explicitly requested feed operation needs it.
     from backend.future_radar.adapters import PublicFeedAdapter
 
-    source_id = _validate_logical_source_id(source_id)
+    source_id = _validate_active_source_id(source_id)
     parsed = urllib.parse.urlsplit(validate_public_https_url(url, resolve_dns=True))
     result = PublicFeedAdapter().scan({
         "id": source_id,
@@ -372,14 +432,16 @@ def payload_from_feed(url: str, source_id: str, *, publisher: str, timeout: floa
         "account_name": _redact_untrusted_text(publisher, limit=160),
         "url": url,
         "domain": parsed.hostname,
-        "adapter_config": {"adapter": "public_feed", "timeout_seconds": timeout, "max_entries": 10},
+        "adapter_config": {"adapter": "public_feed", "timeout_seconds": timeout, "max_entries": MAX_INPUT_ROWS},
     })
+    if result.coverage.get("continuation_required"):
+        raise ImportError("public feed exceeds one bounded input page; follow its continuation before claiming a complete import")
     return _validated_payload(
         {
             "version": "FROSTFIRE_SYNC_V1",
             "source_id": source_id,
             "snapshot_complete": False,
-            "articles": result.articles[:10],
+            "articles": result.articles,
         },
         source_id,
     )
@@ -406,6 +468,8 @@ def load_token() -> str:
 
 
 def submit_payload(payload: dict[str, Any], token: str, timeout: float) -> Any:
+    if sum(len(payload.get(key, [])) for key in ("programs", "jobs", "articles")) > MAX_BATCH_SIZE:
+        raise ImportError("one HTTP request exceeds the 100-entity transport bound; split the input into requests")
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     request = urllib.request.Request(
         ENDPOINT,
@@ -475,15 +539,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         payload = build_payload(args)
+        batches = split_payload(payload, args.source_id, args.batch_size)
         if args.submit:
             token = load_token()
             if not token:
                 raise ImportError(
                     f"set {TOKEN_ENV} or add macOS Keychain service '{KEYCHAIN_SERVICE}'"
                 )
-            output = _safe_response(submit_payload(payload, token, args.timeout))
+            results = [_safe_response(submit_payload(batch, token, args.timeout)) for batch in batches]
+            output = results[0] if len(results) == 1 else {"batches": len(results), "results": results}
         else:
-            output = payload
+            output = batches[0] if len(batches) == 1 else batches
     except (ImportError, WatchFetchError, OSError, urllib.error.URLError) as exc:
         print(f"source import error: {exc}", file=sys.stderr)
         return 2

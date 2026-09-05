@@ -840,6 +840,36 @@ def test_frostfire_sync_v1_is_idempotent_and_rejects_key_reuse(radar_service):
         FrostFireSyncV1.model_validate({**payload, "cookie": "must-not-be-accepted"})
 
 
+def test_sync_processes_all_records_across_hundred_item_transport_chunks(radar_service):
+    for start, count in ((0, 100), (100, 13)):
+        payload = FrostFireSyncV1.model_validate({
+            "version": "FROSTFIRE_SYNC_V1", "source_id": "large-external-sync",
+            "jobs": [sample_job(f"all-changed-{index}") for index in range(start, start + count)],
+        }).model_dump(mode="json")
+        result = radar_service.sync(payload)
+        assert result["counts"]["new_jobs"] == count
+        assert not result["counts"]["errors"]
+    assert table_count(radar_service, "radar_jobs") == 113
+    with pytest.raises(ValidationError):
+        FrostFireSyncV1.model_validate({
+            "version": "FROSTFIRE_SYNC_V1", "source_id": "large-external-sync",
+            "jobs": [sample_job(f"overflow-{index}") for index in range(101)],
+        })
+
+
+def test_sync_combined_payload_bound_allows_more_than_ten_each(radar_service):
+    payload = {
+        "version": "FROSTFIRE_SYNC_V1", "source_id": "mixed-external-sync",
+        "jobs": [sample_job(f"mixed-{index}") for index in range(40)],
+        "programs": [{"company": "示例公司", "program_name": f"校园招聘项目{index}"} for index in range(30)],
+        "articles": [{"article_title": f"校园招聘公告{index}"} for index in range(30)],
+    }
+    validated = FrostFireSyncV1.model_validate(payload)
+    assert len(validated.jobs) + len(validated.programs) + len(validated.articles) == 100
+    with pytest.raises(ValidationError, match="100 total"):
+        FrostFireSyncV1.model_validate({**payload, "articles": [*payload["articles"], {"article_title": "多一条"}]})
+
+
 def test_semantically_irrelevant_html_and_whitespace_changes_do_not_emit_updated(radar_service):
     source = create_source(radar_service, "semantic-html-source")
     base = sample_job("semantic-job")
@@ -1551,6 +1581,26 @@ def test_public_reference_url_rejects_phone_numbers():
     assert _public_reference_url(
         "https://public.example.com/articles/campus-2027"
     ) == "https://public.example.com/articles/campus-2027"
+
+
+def test_public_feed_import_reads_beyond_hundred_and_reports_any_remaining_entries(monkeypatch):
+    entries = "".join(
+        f"<item><title>2027校园招聘{index}</title><link>https://careers.example.com/feed/{index}</link></item>"
+        for index in range(113)
+    )
+    page = SimpleNamespace(raw_text=f"<rss><channel>{entries}</channel></rss>", text="校园招聘", fingerprint="large-feed")
+    monkeypatch.setattr("backend.future_radar.adapters.fetch_watch_page", lambda *_args, **_kwargs: page)
+    source = {
+        "url": "https://feeds.example.com/campus.xml", "name": "公开招聘订阅", "domain": "feeds.example.com",
+        "adapter_config": {"max_entries": 10000, "domain_delay_seconds": 0},
+    }
+    complete = PublicFeedAdapter().scan(source)
+    assert len(complete.articles) == 113 and complete.status == "healthy"
+    assert complete.coverage["entries_remaining"] == 0
+    limited = PublicFeedAdapter().scan({**source, "adapter_config": {"max_entries": 100, "domain_delay_seconds": 0}})
+    assert len(limited.articles) == 100 and limited.status == "partial"
+    assert limited.coverage["entries_remaining"] == 13
+    assert limited.coverage["continuation_required"] and "another input page" in limited.message
 
 
 @pytest.mark.parametrize("url", [

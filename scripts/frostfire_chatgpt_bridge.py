@@ -4,7 +4,9 @@
 This is a narrow trust-boundary tool for a local browser automation.  It does
 not open ChatGPT, accept conversation URLs, read cookies, or retain message
 content.  stdin must contain exactly one logical source, one message ID, and a
-list of already-structured recruitment table rows::
+list of sanitized recruitment rows extracted from rendered assistant tables or
+specific job entries with public HTTPS links. The original assistant message
+does not need to contain JSON or the FROSTFIRE_SYNC_V1 protocol::
 
     {"source_id": "chatgpt-radar-01", "message_id": "message-42", "rows": [...]}
 
@@ -12,6 +14,9 @@ The message ID is hashed immediately.  Neither it nor any official URL is
 written to the cursor file.  Successful submissions advance an atomic local
 cursor; validation, emission, and dry-runs never advance it.  A retry after a
 partial submission is safe because every batch and job identifier is stable.
+All rows in each bounded input page are processed, with 25 rows per HTTP
+request by default (configurable up to 100). Continue additional pages with
+stable page identifiers until the complete monitored history is covered.
 """
 
 from __future__ import annotations
@@ -35,24 +40,27 @@ if str(SCRIPT_ROOT) not in sys.path:
 
 from backend.future_radar.normalization import clean_text, stable_digest  # noqa: E402
 from backend.recruitment_watch import WatchFetchError, validate_public_https_url  # noqa: E402
+from scripts.frostfire_batching import DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, MAX_INPUT_ROWS, validate_batch_size  # noqa: E402
 from scripts.frostfire_ingest import (  # noqa: E402
     InputError as IngestInputError,
     KEYCHAIN_SERVICE,
     normalize_payload as normalize_ingest_payload,
     read_keychain_token,
     submit_payload,
+    validate_source_rating,
 )
 from scripts.frostfire_source_import import (  # noqa: E402
     ImportError as SourceImportError,
     UUID_PATTERN,
+    _validate_active_source_id,
     _validate_logical_source_id,
     _validated_payload,
 )
 
 
 MAX_INPUT_BYTES = 2_000_000
-MAX_ROWS = 100
-MAX_BATCH_JOBS = 10
+MAX_ROWS = MAX_INPUT_ROWS
+MAX_BATCH_JOBS = DEFAULT_BATCH_SIZE
 MAX_CURSOR_BYTES = 256_000
 CURSOR_VERSION = 1
 
@@ -62,7 +70,7 @@ ROW_FIELDS = frozenset({
     "employer_type", "industry", "primary_category", "organization_category",
     "industry_tags", "role_tags", "official_url", "application_url",
     "opening_date", "closing_date", "status", "description",
-    "responsibilities", "requirements", "tags", "evidence",
+    "responsibilities", "requirements", "tags", "evidence", "source_rating",
 })
 REQUIRED_ROW_FIELDS = frozenset({"company", "title", "official_url"})
 MESSAGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -119,7 +127,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="local hash-only cursor file (default: macOS Application Support)",
     )
     parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
+                        help="rows per HTTP request (1-100; default: 25); all input rows are processed")
     args = parser.parse_args(argv)
+    try:
+        validate_batch_size(args.batch_size)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not 1 <= args.timeout <= 300:
         parser.error("--timeout must be between 1 and 300 seconds")
     return args
@@ -142,6 +156,12 @@ def _read_stdin(stream: Any | None = None) -> Any:
 
 def _message_digest(source_id: str, message_id: str) -> str:
     return hashlib.sha256(f"{source_id}\0{message_id}".encode("utf-8")).hexdigest()
+
+
+def _rows_digest(rows: list[dict[str, Any]]) -> str:
+    return hashlib.sha256(json.dumps(
+        rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")).hexdigest()
 
 
 def _validate_message_id(value: Any) -> str:
@@ -305,6 +325,11 @@ def _normalize_row(row: Any, source_id: str) -> dict[str, Any]:
     primary_category = _optional_string(row, "primary_category", limit=80)
     if primary_category:
         normalized["primary_category"] = primary_category
+    if row.get("source_rating") is not None:
+        try:
+            normalized["source_rating"] = validate_source_rating(row["source_rating"])
+        except IngestInputError as exc:
+            raise BridgeError("row.source_rating is invalid") from exc
     return normalized
 
 
@@ -315,13 +340,13 @@ def parse_browser_message(value: Any) -> tuple[str, str, list[dict[str, Any]]]:
         raise BridgeError("input must contain only source_id, message_id, and rows")
     try:
         # Reuse the source importer's UUID rejection and logical-ID grammar.
-        source_id = _validate_logical_source_id(value["source_id"])
+        source_id = _validate_active_source_id(value["source_id"])
     except (KeyError, SourceImportError, TypeError) as exc:
-        raise BridgeError("source_id must be a logical source label") from exc
+        raise BridgeError("source_id must be an active logical source label") from exc
     message_id = _validate_message_id(value.get("message_id"))
     rows = value.get("rows")
     if not isinstance(rows, list) or len(rows) > MAX_ROWS:
-        raise BridgeError(f"rows must be an array with at most {MAX_ROWS} items")
+        raise BridgeError(f"rows must be a bounded input page with at most {MAX_ROWS} items; continue with another page")
     normalized = [_normalize_row(row, source_id) for row in rows]
     return source_id, _message_digest(source_id, message_id), normalized
 
@@ -330,8 +355,10 @@ def build_batches(
     source_id: str,
     message_digest: str,
     rows: list[dict[str, Any]],
+    *, batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> list[dict[str, Any]]:
-    chunks = [rows[index : index + MAX_BATCH_JOBS] for index in range(0, len(rows), MAX_BATCH_JOBS)]
+    validate_batch_size(batch_size)
+    chunks = [rows[index : index + batch_size] for index in range(0, len(rows), batch_size)]
     if not chunks:
         chunks = [[]]
     batches: list[dict[str, Any]] = []
@@ -369,7 +396,7 @@ def _legacy_ingest_batch(batch: dict[str, Any]) -> dict[str, Any]:
     """
     jobs = []
     for item in batch.get("jobs", []):
-        jobs.append({
+        job = {
             "company": item["company"],
             "title": item["title"],
             "city": item.get("city") or "地点待公告确认",
@@ -385,7 +412,10 @@ def _legacy_ingest_batch(batch: dict[str, Any]) -> dict[str, Any]:
             "source_id": batch["source_id"],
             "external_id": item.get("external_id"),
             "evidence": list(item.get("evidence") or []),
-        })
+        }
+        if item.get("source_rating") is not None:
+            job["source_rating"] = item["source_rating"]
+        jobs.append(job)
     try:
         return normalize_ingest_payload({
             "source_id": batch["source_id"],
@@ -458,25 +488,38 @@ def load_cursor(path: Path) -> dict[str, Any]:
             raise BridgeError("cursor file has an unsupported format") from exc
         if (
             not isinstance(item, dict)
-            or set(item) != {"message_digest"}
+            or set(item) not in ({"message_digest"}, {"message_digest", "rows_digest"})
             or not re.fullmatch(
                 r"[0-9a-f]{64}", str(item.get("message_digest", ""))
             )
+            or ("rows_digest" in item and not re.fullmatch(r"[0-9a-f]{64}", str(item["rows_digest"])))
         ):
             raise BridgeError("cursor file has an unsupported format")
     return value
 
 
-def cursor_has_message(cursor: dict[str, Any], source_id: str, digest: str) -> bool:
+def cursor_has_message(
+    cursor: dict[str, Any], source_id: str, digest: str, rows_digest: str | None = None,
+) -> bool:
     item = cursor.get("sources", {}).get(source_id)
-    return isinstance(item, dict) and item.get("message_digest") == digest
+    if not isinstance(item, dict) or item.get("message_digest") != digest:
+        return False
+    # Preserve legacy receipts that predate content hashing. New receipts
+    # recognize corrected ratings/rows even if a browser message ID is stable.
+    return rows_digest is None or "rows_digest" not in item or item["rows_digest"] == rows_digest
 
 
-def save_cursor(path: Path, cursor: dict[str, Any], source_id: str, digest: str) -> None:
+def save_cursor(
+    path: Path, cursor: dict[str, Any], source_id: str, digest: str,
+    rows_digest: str | None = None,
+) -> None:
     controlled = {
         "version": CURSOR_VERSION,
         "sources": {
-            key: {"message_digest": value["message_digest"]}
+            key: {
+                field: value[field] for field in ("message_digest", "rows_digest")
+                if field in value and re.fullmatch(r"[0-9a-f]{64}", str(value[field]))
+            }
             for key, value in cursor.get("sources", {}).items()
             if isinstance(key, str)
             and isinstance(value, dict)
@@ -484,6 +527,8 @@ def save_cursor(path: Path, cursor: dict[str, Any], source_id: str, digest: str)
         },
     }
     controlled["sources"][source_id] = {"message_digest": digest}
+    if rows_digest is not None:
+        controlled["sources"][source_id]["rows_digest"] = rows_digest
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if path.is_symlink():
@@ -523,8 +568,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         source_id, message_digest, rows = parse_browser_message(_read_stdin())
         cursor = load_cursor(args.cursor_file)
-        unchanged = cursor_has_message(cursor, source_id, message_digest)
-        batches = [] if unchanged else build_batches(source_id, message_digest, rows)
+        rows_digest = _rows_digest(rows)
+        unchanged = cursor_has_message(cursor, source_id, message_digest, rows_digest)
+        batches = [] if unchanged else build_batches(source_id, message_digest, rows, batch_size=args.batch_size)
 
         if args.dry_run:
             _print_json({
@@ -558,7 +604,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for batch in batches:
             ingest_batch = _legacy_ingest_batch(batch)
             results.append(_submit_batch(ingest_batch, token, args.timeout))
-        save_cursor(args.cursor_file, cursor, source_id, message_digest)
+        save_cursor(args.cursor_file, cursor, source_id, message_digest, rows_digest)
         _print_json({
             "status": "submitted",
             "source_id": source_id,

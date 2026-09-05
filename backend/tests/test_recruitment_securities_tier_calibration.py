@@ -119,7 +119,7 @@ def test_broker_words_and_unsafe_prefix_continuations_do_not_inherit_a_tier(comp
 
 def test_securities_identity_change_keeps_the_original_eleven_dimension_weights():
     ranked = score_job(_core_securities_job("中信证券股份有限公司总部"), {})
-    assert SCORING_VERSION == "future-radar-job-ranking-v4.1-securities-identity"
+    assert SCORING_VERSION == "future-radar-job-ranking-v4.2-explicit-source-rating"
     assert SCORING_WEIGHTS == {
         "employer_platform": 16,
         "role_function": 41,

@@ -10,6 +10,7 @@ import unicodedata
 from datetime import date, datetime
 from typing import Any, Iterable
 
+from ..recruitment_rating import merge_source_ratings
 from ..recruitment_watch import WatchFetchError, validate_public_https_url
 from ..recruitment_directory import employer_category_override
 
@@ -35,7 +36,7 @@ SEMANTIC_JOB_FIELDS = (
     "employer_type", "industry", "primary_category", "organization_category",
     "industry_tags", "role_tags", "official_url", "application_url",
     "opening_date", "closing_date", "status", "verification_status",
-    "description", "responsibilities", "requirements", "tags",
+    "description", "responsibilities", "requirements", "tags", "source_ratings",
 )
 SEMANTIC_PROGRAM_FIELDS = (
     "external_id", "company", "program_name", "recruitment_year",
@@ -340,6 +341,7 @@ def normalize_job(item: dict[str, Any]) -> dict[str, Any]:
         "responsibilities": clean_text(item.get("responsibilities"), limit=8_000),
         "requirements": clean_text(item.get("requirements"), limit=8_000),
         "tags": normalize_tags(item.get("tags")),
+        "source_ratings": merge_source_ratings(item.get("source_ratings"), item.get("source_rating")),
         "evidence": normalize_evidence(item.get("evidence")),
     }
     if normalized["status"] not in {"open", "closed", "unknown"}:

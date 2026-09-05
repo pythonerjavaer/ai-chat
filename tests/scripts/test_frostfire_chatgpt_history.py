@@ -84,10 +84,90 @@ def run_main(monkeypatch, value, argv):
     return code, stdout.getvalue(), stderr.getvalue()
 
 
-@pytest.mark.parametrize("source", ["chatgpt-radar-00", "chatgpt-radar-07", "arbitrary", None, [], "https://example.com"])
-def test_only_six_logical_sources(source):
+@pytest.mark.parametrize("source", ["chatgpt-radar-00", "chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-10", "arbitrary", None, [], "https://example.com"])
+def test_only_seven_active_logical_sources(source):
     with pytest.raises(history.HistoryError, match="source_id"):
         history.parse_history(document(source=source))
+
+
+@pytest.mark.parametrize("source", ["chatgpt-radar-01", "chatgpt-radar-02", "chatgpt-radar-03", "chatgpt-radar-06", "chatgpt-radar-07", "chatgpt-radar-08", "chatgpt-radar-09"])
+def test_every_active_source_accepts_sanitized_rendered_job_entries(source):
+    # The browser-side extraction supplies rows, without requiring the source
+    # assistant message to be a JSON block or carry a protocol marker.
+    output = plan(document(source=source))
+    assert output.batches[0].payload["source_id"] == source
+    assert len(output.batches[0].items) == 1
+
+
+def test_script_source_registry_matches_backend_without_retiring_hash_history():
+    from backend.chatgpt_sources import ACTIVE_CHATGPT_SOURCE_IDS, KNOWN_CHATGPT_SOURCE_IDS
+
+    assert tuple(history.ACTIVE_CHATGPT_SOURCE_IDS) == ACTIVE_CHATGPT_SOURCE_IDS
+    assert history.HISTORICAL_CHATGPT_SOURCE_IDS == KNOWN_CHATGPT_SOURCE_IDS
+    assert len(history.ALLOWED_SOURCES) == 7
+    assert history.HISTORICAL_CHATGPT_SOURCE_IDS - history.ALLOWED_SOURCES == {
+        "chatgpt-radar-04", "chatgpt-radar-05",
+    }
+
+
+def test_transport_bound_matches_server_but_default_is_smaller():
+    from backend.recruitment_limits import MAX_MONITOR_BATCH_ITEMS
+    from scripts.frostfire_batching import DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE
+
+    assert MAX_BATCH_SIZE == MAX_MONITOR_BATCH_ITEMS == 100
+    assert DEFAULT_BATCH_SIZE == 25
+
+
+@pytest.mark.parametrize("size", ["0", "101", "-1"])
+def test_invalid_http_batch_size_is_rejected_before_reading_source(size):
+    with pytest.raises(SystemExit):
+        history.parse_args(["--batch-size", size])
+
+
+def test_retired_source_hash_ledgers_are_loaded_and_preserved_on_active_submit(monkeypatch, tmp_path):
+    path = tmp_path / "ledger.json"
+    ledger = empty_ledger()
+    for source_id in ("chatgpt-radar-04", "chatgpt-radar-05"):
+        state = history._source_state()
+        state["messages"][digest(source_id)] = {"rows_digest": digest("rows"), "row_count": 1}
+        state["items"][digest("key")] = digest("content")
+        ledger["sources"][source_id] = state
+    history.save_ledger(path, ledger)
+    before = history.load_ledger(path)
+    monkeypatch.setattr(history, "read_keychain_token", lambda: "synthetic")
+    monkeypatch.setattr(history, "submit_payload", mock.Mock(side_effect=receipt))
+    code, _stdout, stderr = run_main(monkeypatch, document(source="chatgpt-radar-09"), ["--submit", "--ledger-file", str(path)])
+    assert code == 0 and not stderr
+    after = history.load_ledger(path)
+    assert set(after["sources"]) == {"chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-09"}
+    for source_id in before["sources"]:
+        assert after["sources"][source_id] == before["sources"][source_id]
+
+
+def test_same_job_rating_correction_is_incremental_and_keeps_latest_exact_scope(monkeypatch, tmp_path):
+    path = tmp_path / "ledger.json"
+    first_rating = {"scope": "company", "tier_code": "T1", "score": 86.5}
+    corrected_rating = {"scope": "job", "tier_code": "T0.5", "score": 92.25, "reason": "原表明确更新岗位评级"}
+    initial = document([message("original-table", [job(source_rating=first_rating)])])
+    corrected = document([
+        message("corrected-table", [job(source_rating=corrected_rating)]),
+        *initial["messages"],
+    ])
+    monkeypatch.setattr(history, "read_keychain_token", lambda: "synthetic")
+    submit = mock.Mock(side_effect=receipt)
+    monkeypatch.setattr(history, "submit_payload", submit)
+    for value in (initial, corrected, corrected):
+        code, _stdout, stderr = run_main(monkeypatch, value, ["--submit", "--ledger-file", str(path)])
+        assert code == 0 and not stderr
+    assert submit.call_count == 2
+    sent = [call.args[0]["jobs"][0] for call in submit.call_args_list]
+    assert sent[0]["source_rating"] == first_rating
+    assert sent[1]["source_rating"] == corrected_rating
+    assert sent[0]["external_id"] == sent[1]["external_id"]
+    assert history._content_digest(sent[0]) != history._content_digest(sent[1])
+    state = history.load_ledger(path)["sources"]["chatgpt-radar-01"]
+    assert len(state["messages"]) == 2
+    assert "source_rating" not in path.read_text()
 
 
 @pytest.mark.parametrize("field", ["source_thread_id", "conversation_url", "cookies", "profile", "raw_text", "message_id"])
@@ -161,11 +241,11 @@ def test_duplicate_json_property_is_rejected_before_source_override():
         history._json_loads('{"unknown":NaN}')
 
 
-def test_newest_first_dedupe_preserves_latest_role_and_splits_at_ten():
-    newest = message("new", [job(1, requirements="新的公开要求"), *[job(index) for index in range(2, 14)]])
+def test_newest_first_dedupe_preserves_latest_role_across_transport_chunks():
+    newest = message("new", [job(1, requirements="新的公开要求"), *[job(index) for index in range(2, 29)]])
     older = message("old", [job(1, requirements="旧要求"), job(2)])
     output = plan(document([newest, older]))
-    assert [len(batch.payload["jobs"]) for batch in output.batches] == [10, 3]
+    assert [len(batch.payload["jobs"]) for batch in output.batches] == [25, 3]
     assert output.batches[0].payload["jobs"][0]["requirements"] == "新的公开要求"
     assert output.duplicate_rows == 2
     assert output.summary()["history_complete"] is False
@@ -179,8 +259,40 @@ def test_newest_first_dedupe_preserves_latest_role_and_splits_at_ten():
 def test_large_single_message_is_batched_without_silently_truncating_at_100():
     output = plan(document([message("long-public-table", [job(i) for i in range(103)])]))
     assert sum(len(batch.items) for batch in output.batches) == 103
-    assert len(output.batches) == 11
+    assert [len(batch.items) for batch in output.batches] == [25, 25, 25, 25, 3]
     assert output.batches[-1].payload["jobs"][-1]["external_id"] == "public-ats-102"
+
+
+def test_large_history_failure_can_resume_with_different_transport_size(monkeypatch, tmp_path):
+    path = tmp_path / "ledger.json"
+    value = document([message("large-table", [job(index) for index in range(137)])], complete=True)
+    monkeypatch.setattr(history, "read_keychain_token", lambda: "synthetic")
+    calls = []
+
+    def interrupted(payload, token, timeout):
+        calls.append(payload)
+        if len(calls) == 2:
+            return 503, b"{}"
+        return receipt(payload, token, timeout)
+
+    monkeypatch.setattr(history, "submit_payload", interrupted)
+    code, stdout, stderr = run_main(monkeypatch, value, ["--submit", "--ledger-file", str(path)])
+    assert code == 4 and not stderr
+    assert json.loads(stdout)["successful_batches"] == 1
+    assert json.loads(stdout)["history_complete"] is False
+    state = history.load_ledger(path)["sources"]["chatgpt-radar-01"]
+    assert state["messages"] == {} and len(state["items"]) == 50
+    submit = mock.Mock(side_effect=receipt)
+    monkeypatch.setattr(history, "submit_payload", submit)
+    code, stdout, stderr = run_main(monkeypatch, value, ["--submit", "--batch-size", "100", "--ledger-file", str(path)])
+    assert code == 0 and not stderr
+    assert json.loads(stdout)["history_complete"] is True
+    assert [len(call.args[0]["jobs"]) for call in submit.call_args_list] == [100, 12]
+    ids = [item["external_id"] for call in submit.call_args_list for item in call.args[0]["jobs"]]
+    assert ids == [f"public-ats-{index}" for index in range(25, 137)]
+    submit.reset_mock()
+    assert run_main(monkeypatch, value, ["--submit", "--ledger-file", str(path)])[0] == 0
+    submit.assert_not_called()
 
 
 def test_same_semantic_job_with_different_row_id_dedupes_without_city_cross_product():
@@ -267,7 +379,7 @@ def test_all_batches_pass_actual_cli_preflight_before_any_keychain_read(monkeypa
     submit = mock.Mock(side_effect=receipt)
     monkeypatch.setattr(history, "submit_payload", submit)
     path = tmp_path / "ledger.json"
-    value = document([message("many", [job(i) for i in range(23)])], complete=True)
+    value = document([message("many", [job(i) for i in range(63)])], complete=True)
     code, stdout, stderr = run_main(monkeypatch, value, ["--submit", "--ledger-file", str(path)])
     assert code == 0 and not stderr
     output = json.loads(stdout)
@@ -298,7 +410,7 @@ def test_partial_failure_advances_only_confirmed_messages_and_retry_only_unsent_
     path = tmp_path / "ledger.json"
     value = document([
         message("newest", [job(1), job(2)]),
-        message("older", [job(i) for i in range(3, 14)]),
+        message("older", [job(i) for i in range(3, 29)]),
     ], complete=True)
     keychain = mock.Mock(return_value="synthetic-local-token")
     monkeypatch.setattr(history, "read_keychain_token", keychain)
@@ -320,7 +432,7 @@ def test_partial_failure_advances_only_confirmed_messages_and_retry_only_unsent_
     ledger = history.load_ledger(path)
     receipts = ledger["sources"]["chatgpt-radar-01"]
     assert set(receipts["messages"]) == {digest("newest")}
-    assert len(receipts["items"]) == 20
+    assert len(receipts["items"]) == 50
     assert receipts["history_complete"] is False
 
     submit = mock.Mock(side_effect=receipt)
@@ -329,7 +441,7 @@ def test_partial_failure_advances_only_confirmed_messages_and_retry_only_unsent_
     assert code == 0 and not stderr
     assert json.loads(stdout)["history_complete"] is True
     assert submit.call_count == 1
-    assert [j["external_id"] for j in submit.call_args.args[0]["jobs"]] == ["public-ats-11", "public-ats-12", "public-ats-13"]
+    assert [j["external_id"] for j in submit.call_args.args[0]["jobs"]] == ["public-ats-26", "public-ats-27", "public-ats-28"]
     assert set(history.load_ledger(path)["sources"]["chatgpt-radar-01"]["messages"]) == {digest("newest"), digest("older")}
 
 

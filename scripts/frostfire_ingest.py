@@ -21,7 +21,16 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any, Sequence
+
+
+SCRIPT_ROOT = Path(__file__).resolve().parents[1]
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+
+from scripts.frostfire_chatgpt_sources import is_inactive_chatgpt_source  # noqa: E402
+from scripts.frostfire_batching import DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, MAX_INPUT_ROWS, validate_batch_size  # noqa: E402
 
 
 ENDPOINT = "https://frostfire-ai.onrender.com/api/recruitment/ingest"
@@ -29,7 +38,7 @@ TOKEN_ENV = "FROSTFIRE_INGEST_TOKEN"
 KEYCHAIN_SERVICE = "frostfire-recruitment-ingest"
 MAX_STDIN_BYTES = 2_000_000
 MAX_RESPONSE_BYTES = 1_000_000
-MAX_JOBS = 10
+MAX_JOBS = MAX_BATCH_SIZE
 MAX_EVIDENCE_ITEMS = 12
 MAX_EVIDENCE_LENGTH = 280
 
@@ -38,7 +47,7 @@ JOB_FIELDS = {
     "company", "title", "city", "employer_type", "industry", "official_url",
     "source", "opening_date", "closing_date", "requirements", "tags", "status",
     "source_id", "source_thread_id", "source_item_id", "source_updated_at",
-    "external_id", "evidence",
+    "external_id", "evidence", "source_rating",
 }
 REQUIRED_JOB_FIELDS = {"company", "title", "city", "official_url"}
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
@@ -77,7 +86,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="SECONDS",
         help="network timeout in seconds (default: 45; allowed: 1-300)",
     )
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
+                        help="jobs per HTTP request (1-100; default: 25); all input jobs are processed")
     args = parser.parse_args(argv)
+    try:
+        validate_batch_size(args.batch_size)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not 1 <= args.timeout <= 300:
         parser.error("--timeout must be between 1 and 300 seconds")
     return args
@@ -90,7 +105,10 @@ def validate_source_id(value: Any, *, required: bool = False) -> str | None:
         raise InputError(
             "source_id must be 1-64 characters using letters, digits, '.', '_', ':', or '-'"
         )
-    return value.strip()
+    source_id = value.strip()
+    if is_inactive_chatgpt_source(source_id):
+        raise InputError("source_id is not an active ChatGPT monitoring label")
+    return source_id
 
 
 def validate_evidence(value: Any) -> list[str]:
@@ -130,6 +148,21 @@ def validate_source_updated_at(value: Any) -> str:
     return text
 
 
+def validate_source_rating(value: Any) -> dict[str, Any]:
+    # Keep ordinary, unrated CLI submissions standard-library-only. Rated
+    # submissions use the exact same small schema as the service and V1 sync.
+    try:
+        from backend.recruitment_rating import SourceRating
+    except ImportError as exc:
+        raise InputError("source_rating validation requires the backend Python environment") from exc
+
+    try:
+        return SourceRating.model_validate(value).model_dump(mode="json", exclude_none=True)
+    except ValueError as exc:
+        # Model errors can contain the rejected reason; never log that text.
+        raise InputError("source_rating must contain an explicit scope and valid tier or score") from exc
+
+
 def validate_job(job: Any) -> dict[str, Any]:
     if not isinstance(job, dict):
         raise InputError("every job must be a JSON object")
@@ -153,6 +186,10 @@ def validate_job(job: Any) -> dict[str, Any]:
         )
     if "evidence" in normalized:
         normalized["evidence"] = validate_evidence(normalized["evidence"])
+    if normalized.get("source_rating") is not None:
+        normalized["source_rating"] = validate_source_rating(normalized["source_rating"])
+    else:
+        normalized.pop("source_rating", None)
     if "status" in normalized and normalized["status"] not in {"open", "closed"}:
         raise InputError("status must be 'open' or 'closed'")
     return normalized
@@ -176,8 +213,8 @@ def normalize_payload(value: Any) -> dict[str, Any]:
     jobs = payload.get("jobs", [])
     if not isinstance(jobs, list):
         raise InputError("'jobs' must be an array")
-    if len(jobs) > MAX_JOBS:
-        raise InputError(f"a batch may contain at most {MAX_JOBS} jobs")
+    if len(jobs) > MAX_INPUT_ROWS:
+        raise InputError(f"one input page may contain at most {MAX_INPUT_ROWS} jobs; continue with another page")
     normalized: dict[str, Any] = {"jobs": [validate_job(job) for job in jobs]}
     if "source_id" in payload:
         normalized["source_id"] = validate_source_id(
@@ -243,6 +280,8 @@ def submit_payload(
     token: str,
     timeout: float,
 ) -> tuple[int, bytes]:
+    if len(payload.get("jobs", [])) > MAX_JOBS:
+        raise InputError(f"one HTTP request may contain at most {MAX_JOBS} jobs; split the input into requests")
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     request = urllib.request.Request(
         ENDPOINT,
@@ -272,10 +311,17 @@ def redact_secret(value: str, secret: str) -> str:
     return value.replace(secret, "[redacted]") if secret else value
 
 
+def split_payload(payload: dict[str, Any], batch_size: int = DEFAULT_BATCH_SIZE) -> list[dict[str, Any]]:
+    validate_batch_size(batch_size)
+    jobs = payload["jobs"]
+    return [{**payload, "jobs": jobs[index:index + batch_size]} for index in range(0, len(jobs), batch_size)] or [payload]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         payload = read_payload()
+        batches = split_payload(payload, args.batch_size)
     except InputError as exc:
         print(f"input error: {exc}", file=sys.stderr)
         return EXIT_INPUT
@@ -287,6 +333,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "heartbeat": not payload["jobs"],
             "jobs": len(payload["jobs"]),
             "source_id": payload.get("source_id"),
+            "batches": len(batches),
+            "batch_sizes": [len(batch["jobs"]) for batch in batches],
         })
         return EXIT_OK
 
@@ -300,7 +348,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_SECRET
 
     try:
-        status, raw = submit_payload(payload, token, args.timeout)
+        results = []
+        for batch in batches:
+            status, raw = submit_payload(batch, token, args.timeout)
+            try:
+                results.append(json.loads(raw.decode("utf-8")))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise InputError(f"HTTP {status} did not return valid JSON") from exc
     except urllib.error.HTTPError as exc:
         # Never print request headers: they contain the ingest token.
         detail = ""
@@ -324,12 +378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"response error: {exc}", file=sys.stderr)
         return EXIT_RESPONSE
 
-    try:
-        result = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
-        print(f"response error: HTTP {status} did not return valid JSON", file=sys.stderr)
-        return EXIT_RESPONSE
-    print_json(result)
+    print_json(results[0] if len(results) == 1 else {"batches": len(results), "jobs": len(payload["jobs"]), "results": results})
     return EXIT_OK
 
 

@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 
 from ..live_sources import is_actionable_recruitment_listing, is_recruitment_program_listing
+from ..recruitment_rating import merge_source_ratings
 from .normalization import (
     PRIMARY_CATEGORY_CODES, canonical_telecom_operator, clean_text, normalized_key,
 )
@@ -26,7 +27,7 @@ from .opportunity_cache import (
 
 JSON_SOURCE_FIELDS = ("adapter_config", "query_config", "region_config")
 JSON_RUN_FIELDS = ("errors", "source_ids")
-JSON_JOB_FIELDS = ("tags", "industry_tags", "role_tags")
+JSON_JOB_FIELDS = ("tags", "industry_tags", "role_tags", "source_ratings")
 
 RUN_LOCK_TTL_SECONDS = 30 * 60
 SOURCE_LOCK_TTL_SECONDS = 20 * 60
@@ -713,7 +714,7 @@ class RadarRepository:
             "employer_type", "industry", "primary_category", "organization_category", "industry_tags",
             "role_tags", "official_url", "application_url", "opening_date", "closing_date", "status",
             "verification_status", "confidence_score", "description", "responsibilities", "requirements",
-            "tags", "content_hash", "source_id", "missing_successes", "first_seen_at", "last_seen_at",
+            "tags", "source_ratings", "content_hash", "source_id", "missing_successes", "first_seen_at", "last_seen_at",
             "last_changed_at", "created_at", "updated_at",
         )
         update_columns = tuple(key for key in insert_columns if key not in {"id", "external_id", "first_seen_at", "created_at"})
@@ -850,9 +851,9 @@ class RadarRepository:
                  employer_type, industry, primary_category, organization_category,
                  industry_tags, role_tags, official_url, application_url, opening_date,
                  closing_date, status, verification_status, confidence_score, description,
-                 responsibilities, requirements, tags, content_hash, source_id, first_seen_at,
+                 responsibilities, requirements, tags, source_ratings, content_hash, source_id, first_seen_at,
                  last_seen_at, last_changed_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id, item["external_id"], program_id, company_id, item["company"],
@@ -865,6 +866,7 @@ class RadarRepository:
                 item.get("verification_status", "pending"), item.get("confidence_score", 0),
                 item.get("description", ""), item.get("responsibilities", ""),
                 item.get("requirements", ""), _json(item.get("tags", [])),
+                _json(item.get("source_ratings", [])),
                 item["content_hash"], source_id, now, now, now, now, now,
             ),
         )
@@ -884,7 +886,7 @@ class RadarRepository:
                 employer_type=?, industry=?, primary_category=?, organization_category=?,
                 industry_tags=?, role_tags=?, official_url=?, application_url=?, opening_date=?,
                 closing_date=?, status=?, verification_status=?, confidence_score=?,
-                description=?, responsibilities=?, requirements=?, tags=?, content_hash=?,
+                description=?, responsibilities=?, requirements=?, tags=?, source_ratings=?, content_hash=?,
                 source_id=?, missing_successes=0, last_seen_at=?, last_changed_at=?, updated_at=?
             WHERE id=?
             """,
@@ -898,7 +900,7 @@ class RadarRepository:
                 item.get("status", "open"), item.get("verification_status", "pending"),
                 item.get("confidence_score", 0), item.get("description", ""),
                 item.get("responsibilities", ""), item.get("requirements", ""),
-                _json(item.get("tags", [])), item["content_hash"], source_id, now, now,
+                _json(item.get("tags", [])), _json(item.get("source_ratings", [])), item["content_hash"], source_id, now, now,
                 now, job_id,
             ),
         )
@@ -1773,6 +1775,9 @@ class RadarRepository:
                     str(item["id"]),
                 ))
                 winner = dict(winner)
+                winner["source_ratings"] = merge_source_ratings(*[
+                    member.get("source_ratings") for member in members
+                ])
                 provenance = {}
                 for member in members:
                     for source in member["sources"]:

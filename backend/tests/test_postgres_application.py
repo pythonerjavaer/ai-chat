@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -276,3 +277,90 @@ def test_health_fails_closed_without_returning_connection_details(monkeypatch):
     assert caught.value.detail == "Database is unavailable."
     assert "private-" not in str(caught.value)
     assert seen == [2.0]
+
+
+def test_original_rating_and_pool_survive_postgres_restart_and_relogin(persistent_app, monkeypatch):
+    """Restart an explicitly provisioned temporary cluster only when requested."""
+    from fastapi.testclient import TestClient
+    from backend.future_radar.adapters import LegacyDatabaseAdapter
+    from backend.storage import close_postgres_pools
+    from psycopg.conninfo import conninfo_to_dict
+
+    app = persistent_app
+    monkeypatch.setattr(app.main.settings, "recruitment_ingest_token", "local-rating-fixture")
+    monkeypatch.setattr(app.service, "adapter_factory", lambda _source: LegacyDatabaseAdapter())
+    checks = []
+
+    def verify(candidate):
+        checks.append(candidate["id"])
+        return "verified", None, {"opening_date": "2026-08-01", "closing_date": "2099-09-01"}
+
+    monkeypatch.setattr(app.main, "_verify_ingest_candidate", verify)
+    request = {
+        "source_id": "chatgpt-radar-01", "source_updated_at": "2026-08-20T00:00:00Z",
+        "jobs": [{
+            "external_id": "persistent-original-rating", "company": "示例科技",
+            "title": "2027 校园招聘数据分析岗", "city": "上海", "employer_type": "互联网企业",
+            "industry": "科技", "official_url": "https://careers.example.com/campus/rated-job",
+            "requirements": "面向应届毕业生，参与风险研究、数据分析和指标体系建设。",
+            "tags": ["校园招聘", "internet_tech"],
+        }],
+    }
+    ingest_headers = {"X-Recruitment-Token": "local-rating-fixture"}
+    with TestClient(app.main.app) as client:
+        headers, _ = register(client, "rating-postgres-user")
+        assert client.post("/api/recruitment/ingest", headers=ingest_headers, json=request).json()["accepted"] == 1
+        request["jobs"][0]["source_rating"] = {"scope": "job", "tier_code": "T1.5", "score": 79.25}
+        request["source_updated_at"] = "2026-08-21T00:00:00Z"
+        rated = client.post("/api/recruitment/ingest", headers=ingest_headers, json=request)
+        assert rated.status_code == 200 and rated.json()["updated"] == rated.json()["accepted"] == 1
+        assert len(checks) == 1, "Adding a rating must preserve an existing official verification"
+        selected = client.get("/api/future-radar/opportunities?tier_code=T1.5", headers=headers)
+        assert selected.status_code == 200 and selected.json()["total"] == 1
+        assert selected.json()["items"][0]["job_score"] == 79.25
+    close_postgres_pools()
+
+    restart_directory = os.environ.get("FROSTFIRE_TEST_POSTGRES_RESTART_DATA")
+    if restart_directory:
+        data_directory = Path(restart_directory).resolve()
+        assert data_directory.name == "data"
+        assert data_directory.parent.name.startswith("frostfire-rating-pg.")
+        assert data_directory.parent.parent == Path("/tmp").resolve()
+        process_record = (data_directory / "postmaster.pid").read_text().splitlines()
+        assert Path(process_record[1]).resolve() == data_directory
+        assert int(process_record[3]) == int(conninfo_to_dict(app.dsn)["port"])
+        pg_ctl = shutil.which("pg_ctl")
+        assert pg_ctl, "The explicit temporary cluster restart requires pg_ctl"
+        restarted = subprocess.run([
+            pg_ctl, "-D", str(data_directory), "-l", str(data_directory.parent / "restart.log"),
+            "-m", "fast", "-w", "restart",
+        ], capture_output=True, text=True, timeout=30)
+        assert restarted.returncode == 0, "Temporary PostgreSQL restart failed"
+
+    environment = {
+        **os.environ, "PYTHON_DOTENV_DISABLED": "1", "DATABASE_BACKEND": "postgres",
+        "DATABASE_URL": app.dsn, "DATABASE_SCHEMA": app.schema, "DATABASE_POOL_SIZE": "2",
+        "OPENAI_API_KEY": "unused-local-fixture", "JWT_SECRET": "fixture-secret-at-least-32-characters",
+    }
+    persisted = subprocess.run([
+        sys.executable, "-c",
+        "import json; from backend import database; c=database.connect(); "
+        "ratings=[json.loads(c.execute('SELECT '+field+' FROM '+table).fetchone()[0]) "
+        "for table,field in [('recruitment_ingest_candidates','source_rating'), "
+        "('recruitment_jobs','source_rating'),('radar_jobs','source_ratings')]]; "
+        "c.close(); database.close_database_pools(); print(json.dumps(ratings))",
+    ], env=environment, cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=20)
+    assert persisted.returncode == 0, "Separate-process rating persistence check failed"
+    candidate, legacy, radar = json.loads(persisted.stdout)
+    for rating in (candidate, legacy, radar[0]):
+        assert rating["scope"] == "job" and rating["tier_code"] == "T1.5" and rating["score"] == 79.25
+
+    with TestClient(app.main.app) as restarted:
+        login = restarted.post("/api/auth/login", json={
+            "username": "rating-postgres-user", "password": "local-fixture-password-123",
+        })
+        assert login.status_code == 200
+        headers = {"Authorization": "Bearer " + login.json()["access_token"]}
+        selected = restarted.get("/api/future-radar/opportunities?tier_code=T1.5", headers=headers)
+        assert selected.status_code == 200 and selected.json()["total"] == 1
+        assert selected.json()["items"][0]["source_rating"]["score"] == 79.25

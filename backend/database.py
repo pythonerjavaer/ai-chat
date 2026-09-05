@@ -437,6 +437,8 @@ def init_db(*, connection_factory: Callable[[], Any] | None = None) -> None:
             "verified_opening_date",
             "TEXT",
         )
+        for rating_table in ("recruitment_jobs", "recruitment_ingest_candidates"):
+            _ensure_column(connection, rating_table, "source_rating", "TEXT")
         _ensure_column(
             connection,
             "recruitment_ingest_candidates",
@@ -1753,6 +1755,8 @@ def _decode_recruitment_ingest_candidate(row: sqlite3.Row) -> dict[str, Any]:
             item[field] = json.loads(item.get(field) or "[]")
         except (TypeError, json.JSONDecodeError):
             item[field] = []
+    from .recruitment_rating import normalize_source_rating
+    item["source_rating"] = normalize_source_rating(item.get("source_rating"))
     return item
 
 
@@ -1785,6 +1789,12 @@ def _update_existing_recruitment_ingest_candidate(
             (now, existing["id"]),
         )
         return "stale"
+    # Omission is not a request to revoke a previously explicit rating. Keep
+    # its original provenance even when a later source observation has no
+    # rating. The payload hash still identifies the actual incoming payload.
+    if candidate.get("source_rating") is None and existing["source_rating"]:
+        from .recruitment_rating import normalize_source_rating
+        candidate = {**candidate, "source_rating": normalize_source_rating(existing["source_rating"])}
     if existing["payload_hash"] == candidate["payload_hash"]:
         connection.execute(
             """
@@ -1801,13 +1811,60 @@ def _update_existing_recruitment_ingest_candidate(
             ),
         )
         return "duplicate"
+    # A rating is metadata, not new evidence about whether the vacancy exists.
+    # Preserve an idle, still-current official verification when *only* that
+    # metadata (and its source timestamp/item reference) changed. Any material
+    # role, link, date, status, tag or evidence change follows the full path.
+    from .recruitment_rating import normalize_source_rating
+    prior = _decode_recruitment_ingest_candidate(existing)
+    verification_fields = (
+        "source_key", "source_id", "source_thread_id", "external_id", "company",
+        "employer_type", "title", "city", "industry", "official_url", "canonical_url",
+        "source", "opening_date", "closing_date", "requirements", "tags", "evidence",
+        "incoming_status",
+    )
+    today = datetime.now().date().isoformat()
+    rating_only_update = (
+        prior.get("verification_status") == "verified"
+        and prior.get("incoming_status") == "open"
+        and prior.get("promoted_job_id")
+        and not prior.get("verification_claim_token")
+        and all(not prior.get(field) or prior[field] > today for field in (
+            "closing_date", "verified_closing_date",
+        ))
+        and prior.get("source_rating") != normalize_source_rating(candidate.get("source_rating"))
+        and all(prior.get(field) == candidate.get(field) for field in verification_fields)
+    )
+    if rating_only_update:
+        promoted = connection.execute(
+            "SELECT status, closing_date FROM recruitment_jobs WHERE id=?", (prior["promoted_job_id"],),
+        ).fetchone()
+        rating_only_update = bool(
+            promoted and promoted["status"] == "open"
+            and (not promoted["closing_date"] or promoted["closing_date"] > today)
+        )
+    if rating_only_update:
+        connection.execute(
+            "UPDATE recruitment_ingest_candidates SET source_rating=?, source_updated_at=?, "
+            "source_item_id=?, payload_hash=?, last_seen_at=? WHERE id=?",
+            (json.dumps(candidate.get("source_rating"), ensure_ascii=False),
+             candidate.get("source_updated_at"), candidate.get("source_item_id"),
+             candidate["payload_hash"], now, prior["id"]),
+        )
+        rating = candidate.get("source_rating")
+        connection.execute(
+            "UPDATE recruitment_jobs SET source_rating=? WHERE id=?",
+            (json.dumps({**rating, "observed_at": now} if rating else None, ensure_ascii=False),
+             prior["promoted_job_id"]),
+        )
+        return "rating_updated"
     connection.execute(
         """
         UPDATE recruitment_ingest_candidates
         SET source_key=?, source_id=?, source_thread_id=?, source_item_id=?,
             external_id=?, source_updated_at=?, company=?, employer_type=?, title=?,
             city=?, industry=?, official_url=?, canonical_url=?, source=?,
-            opening_date=?, closing_date=?, requirements=?, tags=?, evidence=?,
+            opening_date=?, closing_date=?, requirements=?, tags=?, evidence=?, source_rating=?,
             incoming_status=?, payload_hash=?, verification_status='pending',
             verification_reason=NULL, rejected_at=NULL,
             verification_attempt_count=0, last_verification_attempt_at=NULL,
@@ -1826,6 +1883,7 @@ def _update_existing_recruitment_ingest_candidate(
             candidate.get("requirements", ""),
             json.dumps(candidate.get("tags", []), ensure_ascii=False),
             json.dumps(candidate.get("evidence", []), ensure_ascii=False),
+            json.dumps(candidate.get("source_rating"), ensure_ascii=False),
             candidate.get("incoming_status", "open"), candidate["payload_hash"],
             now, existing["id"],
         ),
@@ -1863,9 +1921,9 @@ def upsert_recruitment_ingest_candidate(
                          source_item_id, external_id, source_updated_at, company,
                          employer_type, title, city, industry, official_url,
                          canonical_url, source, opening_date, closing_date,
-                         requirements, tags, evidence, incoming_status, payload_hash,
+                         requirements, tags, evidence, source_rating, incoming_status, payload_hash,
                          verification_status, first_seen_at, last_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                             'pending', ?, ?)
                     """,
                     (
@@ -1880,6 +1938,7 @@ def upsert_recruitment_ingest_candidate(
                         candidate.get("requirements", ""),
                         json.dumps(candidate.get("tags", []), ensure_ascii=False),
                         json.dumps(candidate.get("evidence", []), ensure_ascii=False),
+                        json.dumps(candidate.get("source_rating"), ensure_ascii=False),
                         candidate.get("incoming_status", "open"), candidate["payload_hash"],
                         now, now,
                     ),
@@ -1903,7 +1962,7 @@ def upsert_recruitment_ingest_candidate(
             disposition = _update_existing_recruitment_ingest_candidate(
                 connection, existing, candidate, now
             )
-        if claim_for_verification and disposition != "stale":
+        if claim_for_verification and disposition not in {"stale", "rating_updated"}:
             claim_token = str(uuid.uuid4())
             stale_before = (
                 datetime.now(timezone.utc) - timedelta(seconds=claim_ttl_seconds)
@@ -1930,7 +1989,9 @@ def upsert_recruitment_ingest_candidate(
             (candidate["dedupe_key"],),
         ).fetchone()
     result = _decode_recruitment_ingest_candidate(row)
-    result["disposition"] = disposition
+    result["disposition"] = "updated" if disposition == "rating_updated" else disposition
+    if disposition == "rating_updated":
+        result["rating_only_update"] = True
     result["claimed_verification_token"] = claimed_verification_token
     return result
 
@@ -2073,15 +2134,15 @@ def _upsert_recruitment_job_on_connection(
         """
         INSERT INTO recruitment_jobs
             (id, company, employer_type, title, city, industry, url, source,
-             opening_date, closing_date, requirements, tags, historical_applicants,
+             opening_date, closing_date, requirements, tags, source_rating, historical_applicants,
              historical_offers, last_verified_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             company=excluded.company, employer_type=excluded.employer_type,
             title=excluded.title, city=excluded.city, industry=excluded.industry,
             url=excluded.url, source=excluded.source,
             opening_date=excluded.opening_date, closing_date=excluded.closing_date,
-            requirements=excluded.requirements, tags=excluded.tags,
+            requirements=excluded.requirements, tags=excluded.tags, source_rating=excluded.source_rating,
             historical_applicants=excluded.historical_applicants,
             historical_offers=excluded.historical_offers,
             last_verified_at=excluded.last_verified_at, status=excluded.status
@@ -2091,6 +2152,7 @@ def _upsert_recruitment_job_on_connection(
             job["title"], job.get("city", ""), job.get("industry", ""),
             job.get("url", ""), job.get("source", ""), job.get("opening_date"),
             job.get("closing_date"), job.get("requirements", ""), encoded_tags,
+            json.dumps(job.get("source_rating"), ensure_ascii=False),
             job.get("historical_applicants"), job.get("historical_offers"),
             job.get("last_verified_at", utc_now()), job.get("status", "open"),
         ),
@@ -2654,6 +2716,7 @@ def set_system_state(key: str, value: dict[str, Any]) -> None:
 
 
 def list_recruitment_jobs() -> list[dict[str, Any]]:
+    from .recruitment_rating import normalize_source_rating
     with connect() as connection:
         rows = connection.execute(
             """
@@ -2671,6 +2734,7 @@ def list_recruitment_jobs() -> list[dict[str, Any]]:
             item["tags"] = json.loads(item["tags"])
         except (TypeError, json.JSONDecodeError):
             item["tags"] = []
+        item["source_rating"] = normalize_source_rating(item.get("source_rating"))
         result.append(item)
     return result
 

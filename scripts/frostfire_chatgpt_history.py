@@ -3,8 +3,13 @@
 
 This script never reads a browser, a conversation ID, cookies, or raw messages.
 It accepts only logical sources, irreversible message digests, and the existing
-bridge's recruitment row allowlist. Default operation is an offline dry-run.
+bridge's recruitment row allowlist. Rendered assistant tables and individual
+HTTPS-linked job entries are equally valid sources for sanitized rows; the
+original message need not contain JSON. Default operation is an offline dry-run.
 The separate local ledger contains only digests, booleans, and numeric counts.
+The 10,000-row and byte bounds apply to one input page, not a monitoring run.
+Continue newest-first pages until all readable updates are processed; leave
+history_complete false while any source history remains unread or held.
 """
 
 from __future__ import annotations
@@ -36,6 +41,11 @@ if str(SCRIPT_ROOT) not in sys.path:
 
 from backend.future_radar.normalization import canonicalize_url, normalized_key  # noqa: E402
 from scripts import frostfire_chatgpt_bridge as bridge  # noqa: E402
+from scripts.frostfire_batching import DEFAULT_BATCH_SIZE, MAX_INPUT_ROWS, validate_batch_size  # noqa: E402
+from scripts.frostfire_chatgpt_sources import (  # noqa: E402
+    ACTIVE_CHATGPT_SOURCE_IDS,
+    HISTORICAL_CHATGPT_SOURCE_IDS,
+)
 from scripts.frostfire_ingest import (  # noqa: E402
     InputError as IngestInputError,
     MAX_RESPONSE_BYTES,
@@ -49,13 +59,13 @@ from scripts.frostfire_source_import import (  # noqa: E402
 )
 
 
-ALLOWED_SOURCES = frozenset(f"chatgpt-radar-{index:02d}" for index in range(1, 7))
+ALLOWED_SOURCES = frozenset(ACTIVE_CHATGPT_SOURCE_IDS)
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 PRIVATE_CHAT_PATTERN = re.compile(r"(?i)(?:chatgpt\.com|chat\.openai\.com)(?:[/:?#]|$)")
 MAX_INPUT_BYTES = 8_000_000
 MAX_MESSAGES = 1_000
-MAX_MESSAGE_ROWS = 1_000
-MAX_TOTAL_ROWS = 5_000
+MAX_MESSAGE_ROWS = MAX_INPUT_ROWS
+MAX_TOTAL_ROWS = MAX_INPUT_ROWS
 MAX_LEDGER_BYTES = 8_000_000
 MAX_LEDGER_HASHES = 50_000
 LEDGER_VERSION = 1
@@ -150,7 +160,7 @@ def parse_history(value: Any) -> History:
         raise HistoryError("input must contain only source_id, history_complete, and messages")
     source_id = value.get("source_id")
     if not isinstance(source_id, str) or source_id not in ALLOWED_SOURCES:
-        raise HistoryError("source_id must be chatgpt-radar-01 through chatgpt-radar-06")
+        raise HistoryError("source_id must be one of the seven active ChatGPT monitoring labels")
     if type(value.get("history_complete")) is not bool:
         raise HistoryError("history_complete must be a boolean")
     raw_messages = value.get("messages")
@@ -223,7 +233,9 @@ def _validate_ledger(value: Any) -> dict[str, Any]:
         raise HistoryError("history ledger has an unsupported format")
     size = 0
     for source_id, item in value["sources"].items():
-        if source_id not in ALLOWED_SOURCES or not isinstance(item, dict) or set(item) != SOURCE_LEDGER_FIELDS:
+        # Retired monitors retain their receipts; changing the active roster
+        # must neither invalidate an existing ledger nor reset its cursors.
+        if source_id not in HISTORICAL_CHATGPT_SOURCE_IDS or not isinstance(item, dict) or set(item) != SOURCE_LEDGER_FIELDS:
             raise HistoryError("history ledger has unsupported source state")
         if (type(item["history_complete"]) is not bool
                 or type(item["last_message_count"]) is not int or not 0 <= item["last_message_count"] <= MAX_MESSAGES
@@ -415,7 +427,9 @@ class Plan:
         }
 
 
-def prepare_history(history: History, ledger: dict[str, Any], *, today: date | None = None) -> Plan:
+def prepare_history(history: History, ledger: dict[str, Any], *, today: date | None = None,
+                    batch_size: int = DEFAULT_BATCH_SIZE) -> Plan:
+    validate_batch_size(batch_size)
     today = today or datetime.now(ZoneInfo("Asia/Shanghai")).date()
     state = ledger["sources"].get(history.source_id, _source_state())
     receipt_anchors: dict[str, int] = {}
@@ -483,8 +497,8 @@ def prepare_history(history: History, ledger: dict[str, Any], *, today: date | N
             else:
                 selected.append(item)
     batches = []
-    for index in range(0, len(selected), bridge.MAX_BATCH_JOBS):
-        chunk = selected[index:index + bridge.MAX_BATCH_JOBS]
+    for index in range(0, len(selected), batch_size):
+        chunk = selected[index:index + batch_size]
         batches.append(Batch(validate_ingest_payload({"source_id": history.source_id, "jobs": [item.job for item in chunk]}), chunk))
     if empty_messages:
         # Only explicitly empty, successfully parsed messages can authorize a
@@ -623,7 +637,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     modes.add_argument("--submit", action="store_true", help="submit after all dry-runs; use only the macOS Keychain token")
     parser.add_argument("--ledger-file", type=Path, default=default_ledger_path())
     parser.add_argument("--timeout", type=float, default=90.0)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
+                        help="jobs per HTTP request (1-100; default: 25); continue pages until all updates are processed")
     args = parser.parse_args(argv)
+    try:
+        validate_batch_size(args.batch_size)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not 1 <= args.timeout <= 300:
         parser.error("--timeout must be between 1 and 300 seconds")
     return args
@@ -636,7 +656,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         path = _checked_ledger_path(args.ledger_file)
         with ledger_lock(path) if args.submit else contextlib.nullcontext():
             ledger = load_ledger(path)
-            plan = prepare_history(history, ledger)
+            plan = prepare_history(history, ledger, batch_size=args.batch_size)
             validate_with_ingest_cli(plan.batches)
             if args.emit:
                 print(json.dumps([batch.payload for batch in plan.batches], ensure_ascii=False, indent=2))

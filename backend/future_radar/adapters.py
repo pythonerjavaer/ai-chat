@@ -22,7 +22,10 @@ from typing import Any, Protocol
 from openai import OpenAI
 
 from .. import database
+from ..chatgpt_sources import KNOWN_CHATGPT_SOURCE_IDS
 from ..recruitment import primary_employer_category
+from ..recruitment_rating import merge_source_ratings, normalize_source_rating
+from ..recruitment_limits import MAX_MONITOR_BATCH_ITEMS
 from ..recruitment_search import (
     EMPLOYER_ALIAS_GROUPS,
     EmployerSearchTarget,
@@ -660,6 +663,7 @@ class LegacyDatabaseAdapter:
                 "description": item.get("description", ""),
                 "responsibilities": item.get("responsibilities", ""),
                 "requirements": item.get("requirements", ""),
+                "source_ratings": merge_source_ratings(item.get("source_rating")),
                 "tags": [*tags, "legacy-compatible"],
             })
         content_hash = hashlib.sha256(json.dumps(
@@ -674,6 +678,7 @@ class LegacyDiscoveryDatabaseAdapter:
     This is a deterministic projection of two local tables, not another web
     search.  It deliberately never selects conversation identifiers, evidence,
     source labels, payloads or verification diagnostics from the ingest table.
+    Explicit source ratings use a separate bounded, validated provenance field.
     Stable identities align with the official legacy bridge so a later
     promotion adds provenance to one job instead of making a duplicate.
     """
@@ -747,6 +752,9 @@ class LegacyDiscoveryDatabaseAdapter:
             verification = "pending"
         url = _public_reference_url(item.get("canonical_url") or item.get("url"))
         url = url or _public_reference_url(item.get("official_url"))
+        rating = normalize_source_rating(item.get("source_rating"))
+        if rating:
+            rating["observed_at"] = item.get("last_seen_at") or item.get("last_verified_at")
         return {
             "external_id": external_id,
             "company": company,
@@ -764,6 +772,7 @@ class LegacyDiscoveryDatabaseAdapter:
             "verification_status": verification,
             "confidence_score": 0.5,
             "requirements": _redact_public_text(item.get("requirements"), limit=1_200),
+            "source_ratings": merge_source_ratings(rating),
             "tags": list(dict.fromkeys([*tags, "历史搜索发现"])),
         }
 
@@ -777,14 +786,14 @@ class LegacyDiscoveryDatabaseAdapter:
             # An empty/invalid scope must not silently become a full-pool scan.
             if (
                 not isinstance(raw_ids, list)
-                or len(raw_ids) > 10
+                or len(raw_ids) > MAX_MONITOR_BATCH_ITEMS
                 or any(
                     not isinstance(value, str)
                     or not re.fullmatch(r"candidate-[0-9a-f]{32}", value)
                     for value in raw_ids
                 )
             ):
-                raise ValueError("candidate_ids must contain at most 10 internal candidate IDs.")
+                raise ValueError(f"candidate_ids must contain at most {MAX_MONITOR_BATCH_ITEMS} internal candidate IDs.")
             candidate_ids = list(dict.fromkeys(raw_ids))
         legacy_rows = []
         ingest_rows = []
@@ -794,7 +803,7 @@ class LegacyDiscoveryDatabaseAdapter:
                     legacy_rows = connection.execute(
                         """
                         SELECT id, company, employer_type, title, city, industry, url,
-                               opening_date, closing_date, requirements, tags, status,
+                               opening_date, closing_date, requirements, tags, source_rating, status,
                                last_verified_at
                         FROM recruitment_jobs
                         WHERE source=? OR tags LIKE '%AI网页搜索%'
@@ -802,15 +811,13 @@ class LegacyDiscoveryDatabaseAdapter:
                         """,
                         (WEB_SEARCH_SOURCE,),
                     ).fetchall()
-                ingest_query = """
+                source_slots = ",".join("?" for _ in KNOWN_CHATGPT_SOURCE_IDS)
+                ingest_query = f"""
                 SELECT id, dedupe_key, external_id, promoted_job_id,
-                       CASE WHEN source_id IN (
-                           'chatgpt-radar-01', 'chatgpt-radar-02', 'chatgpt-radar-03',
-                           'chatgpt-radar-04', 'chatgpt-radar-05', 'chatgpt-radar-06'
-                       ) THEN 1 ELSE 0 END AS controlled_chatgpt,
+                       CASE WHEN source_id IN ({source_slots}) THEN 1 ELSE 0 END AS controlled_chatgpt,
                        company, employer_type, title, city, industry,
                        official_url, canonical_url, opening_date, closing_date,
-                       requirements, tags, incoming_status AS status,
+                       requirements, tags, source_rating, incoming_status AS status,
                        verification_status, source_updated_at, last_seen_at
                 FROM recruitment_ingest_candidates
                 """
@@ -818,7 +825,9 @@ class LegacyDiscoveryDatabaseAdapter:
                     placeholders = ",".join("?" for _ in candidate_ids)
                     ingest_query += f" WHERE id IN ({placeholders})"
                 ingest_query += " ORDER BY id"
-                ingest_rows = connection.execute(ingest_query, tuple(candidate_ids)).fetchall()
+                ingest_rows = connection.execute(
+                    ingest_query, (*sorted(KNOWN_CHATGPT_SOURCE_IDS), *candidate_ids),
+                ).fetchall()
 
         jobs_by_id: dict[str, dict[str, Any]] = {}
         retired_job_external_ids: set[str] = set()
@@ -838,6 +847,9 @@ class LegacyDiscoveryDatabaseAdapter:
                 )
                 job = None if explicitly_retired else self._job(item, external_id=external_id)
                 if job:
+                    job["source_ratings"] = merge_source_ratings(
+                        jobs_by_id.get(external_id, {}).get("source_ratings"), job.get("source_ratings"),
+                    )
                     jobs_by_id[external_id] = job
                     retired_job_external_ids.discard(external_id)
                 elif is_ingest:
@@ -2383,8 +2395,8 @@ class PublicFeedAdapter:
             max_entries = int(config.get("max_entries", 30))
         except (TypeError, ValueError) as exc:
             raise ValueError("public_feed max_entries must be an integer.") from exc
-        if not 1 <= max_entries <= 100:
-            raise ValueError("public_feed max_entries must be between 1 and 100.")
+        if not 1 <= max_entries <= 10_000:
+            raise ValueError("public_feed max_entries must be between 1 and 10000.")
         publisher = _redact_public_text(
             source.get("account_name") or source.get("name"), limit=160
         )
@@ -2421,6 +2433,16 @@ class PublicFeedAdapter:
             articles=articles,
             content_hash=page.fingerprint,
             normalized_content=_redact_public_text(page.text, limit=20_000),
+            status="partial" if len(entries) > max_entries else "healthy",
+            message=(
+                f"Feed has {len(entries)} entries; {len(entries) - max_entries} require another input page."
+                if len(entries) > max_entries else ""
+            ),
+            coverage={
+                "entries_total": len(entries), "entries_processed": min(len(entries), max_entries),
+                "entries_remaining": max(0, len(entries) - max_entries),
+                "continuation_required": len(entries) > max_entries,
+            },
             # A feed is a rolling window, not a complete snapshot of all jobs.
             snapshot_complete=False,
         )

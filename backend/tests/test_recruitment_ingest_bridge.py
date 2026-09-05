@@ -258,8 +258,29 @@ def test_bridge_scope_includes_duplicate_updated_stale_rejected_and_closed_candi
     assert harness.scan_scopes == [[candidate_id]] * 6
 
 
-def test_ingest_batch_limit_rejects_more_than_ten_before_creating_a_bridge(harness):
-    request = {"source_id": "chatgpt-radar-01", "jobs": [payload(f"role-{index}")["jobs"][0] for index in range(11)]}
+def test_ingest_transport_limit_rejects_more_than_one_hundred_before_creating_a_bridge(harness):
+    request = {"source_id": "chatgpt-radar-01", "jobs": [payload(f"role-{index}")["jobs"][0] for index in range(101)]}
     response = harness.client.post("/api/recruitment/ingest", headers=INGEST_HEADERS, json=request)
     assert response.status_code == 422
     assert harness.scans == [] and candidate_rows() == []
+
+
+def test_full_hundred_job_chunk_and_following_chunk_are_both_fully_projected(harness):
+    for start, count in ((0, 100), (100, 13)):
+        jobs = [{**payload(f"bulk-role-{index}")["jobs"][0],
+                 "title": f"2027 校园招聘数据分析岗 方向{index}"}
+                for index in range(start, start + count)]
+        response = harness.client.post("/api/recruitment/ingest", headers=INGEST_HEADERS, json={
+            "source_id": "chatgpt-radar-01", "jobs": jobs,
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()["received"] == response.json()["pending"] == count
+        assert response.json()["search_updates_refresh"] == {"status": "success"}
+        assert len(harness.scan_scopes[-1]) == count
+    assert len(candidate_rows()) == 113
+    with database.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM radar_jobs").fetchone()[0] == 113
+    pool = harness.client.get("/api/future-radar/opportunities", headers=harness.bearer, params={
+        "priority_only": "false", "balanced_only": "false", "page_size": 100,
+    })
+    assert pool.status_code == 200 and pool.json()["total"] == 113
