@@ -17,6 +17,13 @@ WECHAT_SOURCE_NAMES = (
     ("wechat-sasac-xiaoxin", "国资小新"),
     ("wechat-guoyang-career", "国央求职网"),
     ("wechat-bank-recruitment", "银行招聘网"),
+)
+
+# These were briefly added as separate discovery sources while investigating a
+# China Mobile coverage gap.  They are intentionally retained as disabled
+# registry rows on existing deployments, so a restart cannot keep scanning
+# them, while prior source history remains intact.
+RETIRED_WECHAT_SOURCE_NAMES = (
     ("wechat-china-mobile-recruitment", "中国移动招聘"),
     ("wechat-jiutian-recruitment", "中移九天招聘"),
 )
@@ -524,6 +531,26 @@ def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
             "query_config": {"recruitment_year": 2027, "scope": "campus"},
             "region_config": {"timezone": "Asia/Shanghai", "regions": ["中国大陆", "香港"]},
             "status": "pending" if web_search_enabled else "discovery_limited",
+            "verification_status": "unverified",
+        })
+    for source_id, name in RETIRED_WECHAT_SOURCE_NAMES:
+        sources.append({
+            "id": source_id,
+            "name": name,
+            "platform": "wechat",
+            "source_type": "wechat_public",
+            "url": None,
+            "domain": None,
+            "account_name": name,
+            "account_id": None,
+            "enabled": False,
+            "priority": 0,
+            "trust_level": "discovery",
+            "interval_minutes": WECHAT_DISCOVERY_INTERVAL_MINUTES,
+            "adapter_config": {"adapter": "discovery_limited"},
+            "query_config": {"recruitment_year": 2027, "scope": "campus"},
+            "region_config": {"timezone": "Asia/Shanghai", "regions": ["中国大陆", "香港"]},
+            "status": "disabled",
             "verification_status": "unverified",
         })
     for source in VERIFIED_OFFICIAL_SOURCES:
