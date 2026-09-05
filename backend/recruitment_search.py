@@ -63,6 +63,9 @@ OFFICIAL_RECRUITMENT_DOMAINS_BY_EMPLOYER = {
     "荣耀": ("honor.com",),
     "中国电信": ("chinatelecom.com.cn",),
     "中国移动": ("job.10086.cn",),
+    "中移九天": ("job.10086.cn", "bigdata.10086.cn"),
+    "中国移动通信研究院": ("job.10086.cn", "bigdata.10086.cn"),
+    "中国移动数智事业部": ("job.10086.cn", "bigdata.10086.cn"),
     # Zhaopin is not trusted globally. This exact tenant is the official
     # China Unicom campus host registered by the verified source registry.
     "中国联通": ("zglt.zhaopin.com",),

@@ -17,6 +17,8 @@ WECHAT_SOURCE_NAMES = (
     ("wechat-sasac-xiaoxin", "国资小新"),
     ("wechat-guoyang-career", "国央求职网"),
     ("wechat-bank-recruitment", "银行招聘网"),
+    ("wechat-china-mobile-recruitment", "中国移动招聘"),
+    ("wechat-jiutian-recruitment", "中移九天招聘"),
 )
 
 EXISTING_PUBLIC_SOURCES = (
