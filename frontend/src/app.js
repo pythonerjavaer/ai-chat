@@ -4896,7 +4896,7 @@ async function saveRecruitment(event, { silent = false } = {}) {
   if (saveButton && !silent) saveButton.disabled = true;
   if (saveLabel && !silent) saveLabel.textContent = "保存中…";
   elements.recruitmentError.textContent = "";
-  setRecruitmentStatus("正在保存筛选并匹配已有机会…");
+  setRecruitmentStatus("正在保存筛选…");
   const employerTypes = [...document.querySelectorAll(".recruitment-checks input:checked")].map((input) => input.value);
   try {
     const profile = await api("/recruitment/profile", {
@@ -4909,19 +4909,35 @@ async function saveRecruitment(event, { silent = false } = {}) {
       }),
     });
     state.recruitmentProfile = profile;
+
+    // Saving a preference is a small, durable operation.  It must not be
+    // reported as failed merely because rendering a large opportunity pool is
+    // slower than an arbitrary frontend timer (the old code used 12 seconds).
+    // Reloading the pool is deliberately a separate best-effort read below.
+    setRecruitmentStatus("筛选已保存，正在加载匹配机会…");
     futureRadarProfileReload.request();
-    const data = await Promise.race([
-      api("/recruitment/jobs"),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("岗位匹配请求超时，请稍后重试。")), 12000)),
-    ]);
-    state.recruitmentJobs = data.jobs || [];
-    const displayJobs = futureRadarDisplayJobs(state.recruitmentJobs);
-    renderRecruitmentJobs(displayJobs);
-    renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(displayJobs));
-    renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
-    renderRecruitmentMonitors(data.monitor_pools || []);
-    renderFutureRadarOpportunityStatus();
-    if (!silent) showToast("筛选已保存，正在匹配已有机会。扫描范围不变。", 3500);
+    try {
+      // Pool reads can legitimately take longer on a waking Render instance
+      // or while Supabase is returning a large saved pool.  api() still owns
+      // the abort controller and the backend remains the source of truth.
+      const data = await api("/recruitment/jobs", { timeoutMs: 45000 });
+      state.recruitmentJobs = data.jobs || [];
+      const displayJobs = futureRadarDisplayJobs(state.recruitmentJobs);
+      renderRecruitmentJobs(displayJobs);
+      renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(displayJobs));
+      renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
+      renderRecruitmentMonitors(data.monitor_pools || []);
+      renderFutureRadarOpportunityStatus();
+      if (!silent) showToast("筛选已保存，匹配机会已更新。扫描范围不变。", 3500);
+    } catch (error) {
+      // Do not roll back, or falsely describe, the successfully persisted
+      // profile.  The next normal Radar refresh will retry this read.
+      const detail = translateError(error?.message || String(error));
+      elements.recruitmentError.textContent = `筛选已保存；机会池暂时未加载：${detail}`;
+      setRecruitmentStatus("筛选已保存；机会池正在等待下一次刷新。");
+      renderFutureRadarOpportunityStatus();
+      if (!silent) showToast("筛选已保存；机会池加载较慢，可稍后点“刷新机会”。", 5000);
+    }
   } catch (error) {
     elements.recruitmentError.textContent = translateError(error.message);
     renderFutureRadarOpportunityStatus();
