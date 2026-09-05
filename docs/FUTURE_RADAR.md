@@ -327,7 +327,7 @@ AI 提取失败时会记录警告并降级：已经完成的确定性页面抓�
 | `FUTURE_RADAR_MAX_WORKERS` | `4` | 单次扫描线程上限，限制 1–8 |
 | `FUTURE_RADAR_AI_MODEL` | `RECRUITMENT_WEB_SEARCH_MODEL`，否则 `gpt-5.4-mini` | 公开 HTML 结构化提取模型 |
 | `OPENAI_API_KEY` | 无 | AI 提取和可选 OpenAI 网页补漏；必须只放服务端环境 |
-| `RECRUITMENT_WEB_SEARCH_ENABLED` | 本地示例 `false`；当前 Render Blueprint `true` | 是否启用 `openai-public-web-search` 与五个 `wechat_web_search` 公网 discovery 来源；公众号公网发现默认每 30 分钟检查一次 |
+| `RECRUITMENT_WEB_SEARCH_ENABLED` | 本地示例 `false`；当前 Render Blueprint `true` | 是否启用 `openai-public-web-search` 与五个 `wechat_web_search` 公网 discovery 来源；当前 Render Blueprint 设为每天检查一次 |
 | `RECRUITMENT_WEB_SEARCH_MODEL` | `gpt-5.4-mini` | 重点雇主与公众号公网 Web Search 模型 |
 | `RECRUITMENT_INGEST_TOKEN` | 无 | `/api/recruitment/ingest` 与 `/api/future-radar/sync` 的共享接收密钥 |
 | `ADMIN_DASHBOARD_TOKEN` | 无 | 汇总使用面板、Source 配置 API 与 Force Scan 的管理员密钥；普通 Quick/Deep 不使用此 Token |

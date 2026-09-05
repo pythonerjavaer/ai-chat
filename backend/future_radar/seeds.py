@@ -37,7 +37,7 @@ RETIRED_WECHAT_SOURCE_NAMES = (
 # Public article discovery is deliberately independent from the official ATS
 # schedule.  These sources search only public, already-indexed material and
 # never authenticate to a personal WeChat account.
-WECHAT_DISCOVERY_INTERVAL_MINUTES = 30
+WECHAT_DISCOVERY_INTERVAL_MINUTES = 1440
 
 EXISTING_PUBLIC_SOURCES = (
     (

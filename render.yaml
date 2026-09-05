@@ -35,19 +35,19 @@ services:
       - key: ADZUNA_COUNTRY
         value: gb
       - key: RECRUITMENT_REFRESH_MINUTES
-        value: 30
+        value: 1440
       - key: RECRUITMENT_WEB_SEARCH_ENABLED
         value: true
       - key: RECRUITMENT_WEB_SEARCH_MODEL
         value: gpt-5.4-mini
       - key: RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES
-        value: 360
+        value: 1440
       - key: RECRUITMENT_WEB_SEARCH_MAX_TOOL_CALLS
         value: 10
       - key: FUTURE_RADAR_ENABLED
         value: true
       - key: FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES
-        value: 30
+        value: 1440
       - key: FUTURE_RADAR_CLOSE_CONFIRMATIONS
         value: 2
       - key: FUTURE_RADAR_MAX_WORKERS
