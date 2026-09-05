@@ -138,9 +138,13 @@ Source Registry 目前包含以下公开入口。聚合频道仅作为 discovery
 
 ### 本机 ChatGPT 只读桥接
 
-私有 ChatGPT 监控结果不由 Render 抓取。唯一支持的自动路径运行在用户本机：用户先在浏览器中保持登录，本机 Codex 自动任务只读取当前页面可见的助手消息 DOM，从招聘表格单元格和真实锚点中提取允许字段，再把已经脱敏的结构化行交给 `scripts/frostfire_chatgpt_bridge.py`。该路径不读取 Cookie、Authorization、页面存储、隐藏 API、完整会话或用户消息，也不向 ChatGPT 发送消息。
+私有 ChatGPT 监控结果不由 Render 抓取。自动桥接运行在用户本机：用户先在浏览器中保持登录，本机 Codex 自动任务只读取当前页面可见的助手消息 DOM，从招聘表格或具体岗位条目及真实公开 HTTPS 锚点中提取允许字段，再把已经脱敏的结构化行交给 `scripts/frostfire_chatgpt_bridge.py`。原消息无需采用 JSON 格式；只有引用标记而没有可提取的实际 URL 时，先读取渲染锚点，无法取得则保留待处理，不猜测链接。该路径不读取 Cookie、Authorization、页面存储、隐藏 API、完整会话或用户消息，也不向 ChatGPT 发送消息。
 
-桥接脚本立即摘要化消息游标，本机状态文件只保存逻辑来源和不可逆摘要；岗位按每批最多 10 条提交到 `/api/recruitment/ingest`。服务端先把候选放入隔离区，再重新读取企业官方 HTTPS 页面，核对公司、校招、岗位、日期与关闭状态。未核验、被拒绝或已关闭的候选不会进入公开岗位 API。这个本机流程依赖 Mac、Codex、网络和浏览器登录会话持续可用；它不是 Render 内的 24/7 云直连。
+七个活动逻辑来源为 `chatgpt-radar-01`、`02`、`03`、`06`、`07`、`08`、`09`。退役 `04`、`05` 不再接收新监控输入，但历史游标、事件、候选与来源记录保留；私有页面映射只留在本机配置。
+
+桥接脚本立即摘要化消息游标，本机状态文件只保存逻辑来源和不可逆摘要；`--batch-size` 默认每次 HTTP 请求 25 条，可设置为 1–100 条，持续向 `/api/recruitment/ingest` 提交全部更新，没有每轮总条数配额。单个输入页最多 10,000 行且受字节安全边界约束，更多内容分页续传；未读完来源时保持 `history_complete=false`。历史账本逐批保存确认回执，中断后仅补未确认条目，重试可调整请求大小。服务端重新读取企业官方 HTTPS 页面，核对公司、校招、岗位、日期与关闭状态；已核验兼容接口只返回确认记录，有有效公开链接的待核验线索仍可在登录后的统一机会池查看并保留真实标记。这个本机流程依赖 Mac、Codex、网络和浏览器登录会话持续可用；它不是 Render 内的 24/7 云直连。
+
+可选 `source_rating` 保留来源明确给出的 T 级、数值评分、理由与 `job`／`company` 作用范围。岗位评级只应用于对应岗位，公司评级保留为参考；没有明确 T 级时不根据 P 类优先级补造，来源冲突保留待核对。评级及其修正参与内容哈希和增量更新，与官网核验相互独立，不能将待核验记录提升为已确认。
 
 ### Source API
 
@@ -247,7 +251,7 @@ Content-Type: application/json
 
 来源与运行 API 只返回归一化错误代码和固定安全文案。OpenAI 的原始 429、额度、请求标识及其他 provider 诊断不会写入公开运行记录，也不会从来源健康接口回显；`AI_CREDITS_EXHAUSTED` 只表示 AI 补漏不可用，不影响确定性官网扫描。
 
-`POST /sync` 的 `version` 必须是 `FROSTFIRE_SYNC_V1`。`programs`、`jobs`、`articles` 各最多 10 条，三者合计最多 20 条；现有六源自动桥接可以采用更严格的每批最多 10 条策略。请求可以带 `Idempotency-Key`；未提供时依次使用 `batch_id` 或 payload hash。同一幂等键重放同一 payload 返回原结果，复用到不同 payload 返回 409。未知字段、非 HTTPS URL、包含邮箱/电话号码的 evidence 会被 schema 拒绝。
+`POST /sync` 的 `version` 必须是 `FROSTFIRE_SYNC_V1`。每次 HTTP 请求中 `programs`、`jobs`、`articles` 各最多 100 条，三者合计最多 100 个实体；这是传输安全边界，不限制一轮监控处理的总量。`frostfire_source_import.py` 接收完整的有界输入页，按 `--batch-size` 默认 25、最大 100 连续发出全部请求；超出单页行数或字节边界时继续分页导入。拆分请求均保持 `snapshot_complete=false`，避免部分传输错误关闭尚未发送的记录。请求可以带 `Idempotency-Key`；未提供时依次使用 `batch_id` 或 payload hash。同一幂等键重放同一 payload 返回原结果，复用到不同 payload 返回 409；改变传输大小不改变岗位稳定 ID。未知字段、非 HTTPS URL、包含邮箱/电话号码的 evidence 会被 schema 拒绝。
 
 前端一次并行读取 dashboard、jobs、programs、events、sources、runs 和 search-updates；某一个接口失败时保留其他已成功区域。只有 Future Radar 对话框可见时才每 30 秒读取增量事件与当前页搜索候选。这个轮询不会触发抓取，也不是后台 scheduler。
 
