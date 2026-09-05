@@ -11,13 +11,19 @@ import urllib.parse
 from typing import Any
 
 
-WECHAT_SOURCE_NAMES = (
-    ("wechat-guoyang-campus", "国央校招"),
-    ("wechat-iguopin", "国聘"),
-    ("wechat-sasac-xiaoxin", "国资小新"),
-    ("wechat-guoyang-career", "国央求职网"),
-    ("wechat-bank-recruitment", "银行招聘网"),
+# User-confirmed public article anchors.  These are not private account IDs and
+# do not grant access to a WeChat account; they give each public-web discovery
+# source a concrete, inspectable starting point instead of relying on its name
+# alone.  The order reflects the five accounts supplied by the user.
+WECHAT_PUBLIC_ARTICLE_ANCHORS = (
+    ("wechat-guoyang-campus", "国央校招", "https://mp.weixin.qq.com/s/2YRjkdejWz-AAOcpoS85WA"),
+    ("wechat-iguopin", "国聘", "https://mp.weixin.qq.com/s/uXDQ9RBPBcIRAjZV7S2jgg"),
+    ("wechat-sasac-xiaoxin", "国资小新", "https://mp.weixin.qq.com/s/fKmsPl5K33HLDk-kUKOZEw"),
+    ("wechat-guoyang-career", "国央求职网", "https://mp.weixin.qq.com/s/CqdDhYs-gP6l1J4ipjWSyQ"),
+    ("wechat-bank-recruitment", "银行招聘网", "https://mp.weixin.qq.com/s/1fuJNWMpHT7Oiq0kD3poFA"),
 )
+
+WECHAT_SOURCE_NAMES = tuple((source_id, name) for source_id, name, _url in WECHAT_PUBLIC_ARTICLE_ANCHORS)
 
 # These were briefly added as separate discovery sources while investigating a
 # China Mobile coverage gap.  They are intentionally retained as disabled
@@ -512,22 +518,28 @@ VERIFIED_OFFICIAL_SOURCES = (
 
 def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
-    for source_id, name in WECHAT_SOURCE_NAMES:
+    for source_id, name, public_article_url in WECHAT_PUBLIC_ARTICLE_ANCHORS:
         discovery_adapter = "wechat_web_search" if web_search_enabled else "discovery_limited"
         sources.append({
             "id": source_id,
             "name": name,
             "platform": "wechat",
             "source_type": "wechat_public",
-            "url": None,
-            "domain": None,
+            "url": public_article_url,
+            "domain": "mp.weixin.qq.com",
             "account_name": name,
             "account_id": None,
             "enabled": True,
             "priority": 70,
             "trust_level": "discovery",
             "interval_minutes": WECHAT_DISCOVERY_INTERVAL_MINUTES,
-            "adapter_config": {"adapter": discovery_adapter},
+            "adapter_config": {
+                "adapter": discovery_adapter,
+                # The discovery adapter still uses public Web Search and
+                # requires public citations for every returned article/job.
+                # This seed URL is a search anchor, never an official job URL.
+                "public_article_anchors": [public_article_url],
+            },
             "query_config": {"recruitment_year": 2027, "scope": "campus"},
             "region_config": {"timezone": "Asia/Shanghai", "regions": ["中国大陆", "香港"]},
             "status": "pending" if web_search_enabled else "discovery_limited",

@@ -389,9 +389,24 @@ class WechatWebSearchAdapter:
         today = date.today()
         target_year = today.year + (1 if today.month >= 6 else 0)
         account = clean_text(source.get("account_name") or source.get("name"), limit=160)
+        raw_anchors = source.get("adapter_config", {}).get("public_article_anchors", [])
+        anchors = [
+            _public_reference_url(value)
+            for value in raw_anchors
+            if isinstance(value, str) and _public_reference_url(value)
+        ][:5]
+        anchor_copy = ""
+        if anchors:
+            anchor_copy = (
+                "\n以下是用户确认属于该来源的公开文章锚点。先在公网检索这些文章及其"
+                "相关的最新公开招聘内容；它们仅是发现线索，绝不能当作官方岗位链接：\n- "
+                + "\n- ".join(anchors)
+                + "\n"
+            )
         return f"""
 今天是 {today.isoformat()}。在公开网页中搜索与“{account}”相关的最新校园招聘内容，
 重点寻找 {target_year} 届校招、应届生、Graduate、管培生和提前批机会。
+{anchor_copy}
 
 要求：
 1. articles 只能返回真实、可打开的公开 HTTPS 文章或公开招聘栏目链接；不得臆造 URL。
