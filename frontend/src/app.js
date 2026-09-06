@@ -1,4 +1,5 @@
 import DOMPurify from "dompurify";
+import { initRadarPersonal } from "./radar-personal.js";
 import { marked } from "marked";
 import { Capacitor } from "@capacitor/core";
 import { Haptics, ImpactStyle } from "@capacitor/haptics";
@@ -881,6 +882,7 @@ function applyUser() {
 }
 
 function endFutureRadarSession(expired = false) {
+  personalRadar.reset();
   radarPollingGate.clearSession();
   radarOpportunityPollingGate.clearSession();
   stopFutureRadarPolling();
@@ -3024,6 +3026,7 @@ function showFutureRadarMetric(code) {
   if (elements.futureRadarFilterVerification) elements.futureRadarFilterVerification.value = updates.verification_status;
   if (elements.futureRadarFilterClosingAfter) elements.futureRadarFilterClosingAfter.value = updates.closing_after;
   if (elements.futureRadarFilterClosingBefore) elements.futureRadarFilterClosingBefore.value = updates.closing_before;
+  if (elements.futureRadarFilterSort) elements.futureRadarFilterSort.value = updates.sort;
   state.recruitmentTierFilter = "ALL";
   activateFutureRadarTab("jobs");
   return loadFutureRadarJobPage(1, true);
@@ -3347,7 +3350,7 @@ function renderFutureRadarRuns(runs = state.futureRadar.runs) {
 }
 
 function activateFutureRadarTab(tab) {
-  const next = ["jobs", "programs", "events", "sources", "runs"].includes(tab) ? tab : "jobs";
+  const next = ["jobs", "programs", "events", "sources", "runs", "saved"].includes(tab) ? tab : "jobs";
   state.futureRadar.activeTab = next;
   document.querySelectorAll("[data-radar-tab]").forEach((button) => {
     const active = button.dataset.radarTab === next;
@@ -3557,7 +3560,9 @@ function readFutureRadarFilters() {
 function resetFutureRadarFilters() {
   elements.futureRadarFilterForm.reset();
   state.futureRadar.filters = { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" };
-  state.recruitmentTierFilter = "BALANCED";
+  state.recruitmentTierFilter = "ALL";
+  document.querySelectorAll(".recruitment-checks input").forEach(input => { input.checked = false; });
+  activateFutureRadarTab("jobs");
   state.futureRadar.page = 1;
   loadFutureRadarJobPage(1, true);
 }
@@ -4742,6 +4747,7 @@ function createRecruitmentJobCard(job) {
   if (watchButton.disabled) watchButton.title = "等待官方公开链接核验后可建立监控";
   watchButton.addEventListener("click", () => addRecruitmentWatchFromJob({ ...job, url: jobUrl }, watchButton));
   bottom.appendChild(watchButton);
+  if (job.id) bottom.appendChild(personalRadar.saveButton(job));
   return card;
 }
 
@@ -4872,6 +4878,7 @@ async function openRecruitment() {
     elements.recruitmentDialog.showModal();
     playSceneEntry(elements.recruitmentDialog);
   }
+  personalRadar.start();
   await refreshRecruitment();
   startFutureRadarPolling();
 }
@@ -5277,6 +5284,10 @@ elements.messageInput.addEventListener("keydown", (event) => {
 });
 $("composer-upload").addEventListener("click", () => elements.documentInput.click());
 $("studio-open").addEventListener("click", openStudio);
+const personalRadar = initRadarPersonal({
+  api, session: () => state.token, host: elements.recruitmentDialog,
+  makeCard: createRecruitmentJobCard, toast: showToast,
+});
 $("recruitment-open").addEventListener("click", openRecruitment);
 $("music-open").addEventListener("click", openMusicDimension);
 $("mobile-music-open").addEventListener("click", openMusicDimension);
@@ -5307,7 +5318,11 @@ elements.futureRadarFilterForm.addEventListener("submit", (event) => {
 });
 elements.futureRadarFilterReset.addEventListener("click", resetFutureRadarFilters);
 document.querySelectorAll("[data-radar-tab]").forEach((button) => {
-  button.addEventListener("click", () => activateFutureRadarTab(button.dataset.radarTab));
+  button.addEventListener("click", () => {
+    if (button.dataset.radarTab === "jobs") return resetFutureRadarFilters();
+    activateFutureRadarTab(button.dataset.radarTab);
+    if (button.dataset.radarTab === "saved") personalRadar.renderSaved();
+  });
 });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {

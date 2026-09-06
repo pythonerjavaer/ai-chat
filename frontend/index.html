@@ -411,6 +411,7 @@
             <p id="future-radar-error" class="radar-load-error hidden" role="alert"></p>
             <nav class="radar-tabs" aria-label="未来雷达视图">
               <button class="active" type="button" data-radar-tab="jobs" aria-selected="true">全部机会 <span id="future-radar-opportunity-count">—</span></button>
+              <button type="button" data-radar-tab="saved" aria-selected="false">★ 我的报名清单</button>
               <button type="button" data-radar-tab="programs" aria-selected="false">招聘项目</button>
               <button type="button" data-radar-tab="events" aria-selected="false">情报流</button>
               <button type="button" data-radar-tab="sources" aria-selected="false">信源健康</button>
@@ -440,7 +441,7 @@
                 <label><span>开放日期止</span><input id="future-radar-filter-opening-before" type="date" /></label>
                 <label><span>截止日期起</span><input id="future-radar-filter-closing-after" type="date" /></label>
                 <label><span>截止日期止</span><input id="future-radar-filter-closing-before" type="date" /></label>
-                <div class="radar-filter-actions"><button type="submit">应用筛选</button><button id="future-radar-filter-reset" type="button">重置</button></div>
+                <div class="radar-filter-actions"><button type="submit">应用筛选</button><button id="future-radar-filter-reset" type="button">返回全部机会池（清除筛选）</button></div>
               </form>
               <section id="recruitment-deadline-alerts" class="recruitment-deadline-alerts" aria-live="polite"></section>
               <div id="recruitment-jobs" class="recruitment-jobs"></div>
