@@ -1929,3 +1929,12 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
   .cross-exam-dialog.scene-entering .crossfire-shell { animation: none !important; filter: none !important; transform: none !important; }
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+/* Account-owned radar application list and persistent unread updates. */
+.radar-update-dialog { width: min(920px, calc(100vw - 32px)); max-height: 88vh; overflow: auto; padding: 28px; border: 1px solid #556b80; border-radius: 20px; color: #e7eff6; background: #111d2b; }
+.radar-update-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.radar-update-dialog button, [data-radar-panel="saved"] button { padding: 10px 16px; border-radius: 8px; cursor: pointer; }
+.radar-update-list { display: grid; gap: 16px; margin: 20px 0; }
+.radar-update-list[hidden], .radar-update-dialog button[hidden] { display: none; }
+[data-radar-panel="saved"] > .job-card { margin: 16px 0; }
+[data-radar-panel="saved"] label { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+[data-radar-panel="saved"] input { width: 90px; padding: 10px; }

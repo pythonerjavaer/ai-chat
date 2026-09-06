@@ -1526,6 +1526,87 @@ def future_radar_opportunity(job_id: str, user: User) -> dict:
     return job
 
 
+class RadarSavedJobRequest(BaseModel):
+    priority: int = Field(default=100, ge=1, le=10000)
+
+
+class RadarNotificationAck(BaseModel):
+    through_event_id: int = Field(ge=0)
+
+
+@app.get("/api/future-radar/saved-jobs")
+def radar_saved_jobs(user: User) -> dict:
+    from .future_radar import personal
+    items = personal.saved_jobs(database.connect, user["id"])
+    for item in items:
+        try:
+            item["job"] = future_radar_opportunity(item["job"]["id"], user)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            item["unavailable"] = True
+    return {"items": items}
+
+
+@app.put("/api/future-radar/saved-jobs/{job_id}")
+def radar_save_job(job_id: str, request: RadarSavedJobRequest, user: User) -> dict:
+    from .future_radar import personal
+    job = future_radar_opportunity(job_id, user)
+    personal.save_job(database.connect, user["id"], job, request.priority, database.utc_now())
+    return {"saved": True, "priority": request.priority}
+
+
+@app.patch("/api/future-radar/saved-jobs/{job_id}")
+def radar_prioritize_job(job_id: str, request: RadarSavedJobRequest, user: User) -> dict:
+    with database.connect() as connection:
+        changed = connection.execute(
+            "UPDATE radar_saved_jobs SET priority=? WHERE user_id=? AND job_id=?",
+            (request.priority, user["id"], job_id),
+        ).rowcount
+    if not changed:
+        raise HTTPException(status_code=404, detail="Saved job not found")
+    return {"priority": request.priority}
+
+
+@app.delete("/api/future-radar/saved-jobs/{job_id}")
+def radar_unsave_job(job_id: str, user: User) -> dict:
+    with database.connect() as connection:
+        connection.execute("DELETE FROM radar_saved_jobs WHERE user_id=? AND job_id=?", (user["id"], job_id))
+    return {"saved": False}
+
+
+@app.get("/api/future-radar/notifications")
+def radar_notifications(user: User) -> dict:
+    from .future_radar import personal
+    events, through = personal.pending_events(database.connect, user["id"])
+    items = []
+    seen = set()
+    for event in events:
+        if event["entity_id"] in seen:
+            continue
+        try:
+            job = future_radar_opportunity(event["entity_id"], user)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                continue
+            raise
+        seen.add(event["entity_id"])
+        items.append({"event_id": event["id"], "job": job})
+    if not items:
+        personal.acknowledge(database.connect, user["id"], through)
+    return {"items": items, "through_event_id": through}
+
+
+@app.post("/api/future-radar/notifications/ack")
+def radar_ack_notifications(request: RadarNotificationAck, user: User) -> dict:
+    from .future_radar import personal
+    try:
+        personal.acknowledge(database.connect, user["id"], request.through_event_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"acknowledged": True}
+
+
 @app.get("/api/future-radar/jobs")
 def future_radar_jobs(
     user: User,

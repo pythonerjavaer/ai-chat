@@ -93,6 +93,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   elements.futureRadarFilterForm = { reset() {} };
   const noop = () => {};
   const context = {
+    personalRadar: { reset() {}, start() {}, saveButton: () => new Element("button") },
     AbortController, URLSearchParams,
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     radarOpportunityPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
@@ -489,17 +490,23 @@ test("legacy profile compatibility failure cannot block a successful main pool r
   assert.equal(r.state.futureRadar.totalJobs, 255);
 });
 
-test("reset and the HTML default use active without widening to closed opportunities", async () => {
+test("return to all clears deadline and tier filters without widening to closed opportunities", async () => {
   const r = runtime({ fail: false });
   r.state.futureRadar.filters.status = "closed";
+  r.state.futureRadar.filters.closing_after = "2026-09-07";
+  r.state.futureRadar.filters.closing_before = "2026-09-14";
+  r.state.futureRadar.filters.source_id = "some-source";
   r.state.recruitmentTierFilter = "BELOW_PRIORITY";
   const requested = [];
   r.context.loadFutureRadarJobPage = (page) => requested.push({ page, status: r.state.futureRadar.filters.status });
   r.run("resetFutureRadarFilters()");
   assert.deepEqual(requested, [{ page: 1, status: "active" }]);
-  assert.equal(r.state.recruitmentTierFilter, "BALANCED");
+  assert.equal(r.state.recruitmentTierFilter, "ALL");
   const resetQuery = new URLSearchParams(r.run("futureRadarJobsQuery()"));
-  assert.equal(resetQuery.get("balanced_only"), "true");
+  assert.equal(resetQuery.get("balanced_only"), "false");
+  assert.equal(resetQuery.has("closing_before"), false);
+  assert.equal(resetQuery.has("closing_after"), false);
+  assert.equal(resetQuery.has("source_id"), false);
   assert.equal(resetQuery.get("priority_only"), "false");
   assert.match(html, /id="future-radar-filter-status"><option value="active">全部有效机会（含待核验）/);
   assert.match(html, /value="all">全部（含已关闭）/);

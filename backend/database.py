@@ -534,6 +534,8 @@ def init_db(*, connection_factory: Callable[[], Any] | None = None) -> None:
                 "WHERE last_status = 'changed' OR change_pending = 1"
             )
         migrate_future_radar(connection)
+        from .future_radar.personal import migrate as migrate_personal_radar
+        migrate_personal_radar(connection)
         install_opportunity_revision(connection)
 
 
