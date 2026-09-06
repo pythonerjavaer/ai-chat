@@ -1378,6 +1378,7 @@ def search_current_recruitment_jobs(
     failed_pools: set[str] = set()
     failed_batches: list[str] = []
     failed_employer_names: set[str] = set()
+    first_failure: Exception | None = None
     if not batches:
         return WebRecruitmentSearchResult(
             jobs=[], input_tokens=0, output_tokens=0, total_tokens=0,
@@ -1400,7 +1401,9 @@ def search_current_recruitment_jobs(
                 for pending in futures:
                     pending.cancel()
                 raise
-            except Exception:
+            except Exception as exc:
+                if first_failure is None:
+                    first_failure = exc
                 failed_pools.add(str(batch.pool["id"]))
                 failed_batches.append(batch.id)
                 failed_employer_names.update(
@@ -1409,7 +1412,7 @@ def search_current_recruitment_jobs(
                 logger.exception("Recruitment web search batch failed: %s", batch.id)
 
     if not results:
-        raise RuntimeError("All recruitment web-search pools failed.")
+        raise RuntimeError("All recruitment web-search pools failed.") from first_failure
 
     jobs: list[dict[str, Any]] = []
     jobs_by_identity: dict[tuple[str, str, str, str], dict[str, Any]] = {}

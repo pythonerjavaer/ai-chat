@@ -581,3 +581,8 @@ test("unranked and old-API T details never display stale or invented organizatio
   assert.match(legacyDetail.textContent, /FINAL SCORE · 83 \/ 100/);
   assert.doesNotMatch(legacyDetail.textContent, /招聘单位层级|实际单位平台分|层级未知/);
 });
+
+ test("safe quota diagnostics retain the actionable API notice", () => {
+  assert.match(futureRadarAiSearchNotice({code: "AI_CREDITS_EXHAUSTED"}), /API 额度不足/);
+  assert.match(futureRadarAiSearchNotice({last_error: "AI 补漏额度暂不可用；确定性官网信源仍会继续扫描。"}), /API 额度不足/);
+});

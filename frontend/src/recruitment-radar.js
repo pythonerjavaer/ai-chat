@@ -529,7 +529,7 @@ function radarDiagnosticText(value, depth = 0, seen = new WeakSet()) {
 export function futureRadarAiSearchNotice(value = {}) {
   const diagnostics = radarDiagnosticText(value).toLowerCase();
   const isAiSearch = /openai-public-web-search|openai[_ -]?web[_ -]?search|openai.{0,20}(网页|web).{0,20}(搜索|search)|all recruitment web-search pools failed|ai (网页搜索|补漏)/i.test(diagnostics);
-  const isQuotaFailure = /insufficient_quota|quota.{0,30}(exceed|limit)|exceed.{0,30}quota|billing[_ -]?(hard[_ -]?limit|not[_ -]?active)|credit.{0,20}balance|account.{0,20}balance|额度不足|余额不足|账户余额/.test(diagnostics);
+  const isQuotaFailure = /ai_credits_exhausted|ai 补漏额度暂不可用|insufficient_quota|quota.{0,30}(exceed|limit)|exceed.{0,30}quota|billing[_ -]?(hard[_ -]?limit|not[_ -]?active)|credit.{0,20}balance|account.{0,20}balance|额度不足|余额不足|账户余额/.test(diagnostics);
   if (!isAiSearch && !isQuotaFailure) return "";
   return isQuotaFailure
     ? "OpenAI 搜索暂不可用（API 额度不足）；补充额度后可恢复 AI 补漏。已核验官网源仍会继续扫描。"

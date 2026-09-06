@@ -813,6 +813,25 @@ def test_openai_adapter_failure_degrades_and_never_persists_provider_detail(
     assert "sk-private" not in stored["last_error"]
 
 
+def test_wrapped_provider_quota_failure_remains_safe():
+    from backend.future_radar.service import _safe_source_failure
+
+    provider = RuntimeError("credit_balance_exhausted sk-private-secret")
+    wrapper = RuntimeError("All recruitment web-search pools failed.")
+    wrapper.__cause__ = provider
+    source = {"platform": "openai"}
+    code, message = _safe_source_failure(source, wrapper)
+    assert code == "AI_CREDITS_EXHAUSTED"
+    assert "sk-private" not in message
+    provider.__context__ = wrapper  # Malformed exception chains must terminate.
+    assert _safe_source_failure(source, wrapper) == (code, message)
+    public = main._public_radar_source({
+        "platform": "wechat", "adapter_config": {"adapter": "wechat_web_search"},
+        "last_error_at": "2026-09-07", "last_error": message,
+    })
+    assert public["last_error"] == message
+
+
 def test_frostfire_sync_v1_is_idempotent_and_rejects_key_reuse(radar_service):
     payload = FrostFireSyncV1.model_validate({
         "version": "FROSTFIRE_SYNC_V1",

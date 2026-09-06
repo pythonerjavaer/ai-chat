@@ -67,7 +67,14 @@ def _safe_source_failure(
     ).casefold()
     source_type = str(source.get("source_type") or "").casefold()
     platform = str(source.get("platform") or "").casefold()
-    fingerprint = f"{type(exc).__name__} {exc}".casefold()
+    failure_chain: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        failure_chain.append(f"{type(current).__name__} {current}")
+        current = current.__cause__ or current.__context__
+    fingerprint = " ".join(failure_chain).casefold()
     if (
         adapter in {"openai_web_search", "wechat_web_search"}
         or source_type == "openai_web_search"

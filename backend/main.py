@@ -1026,7 +1026,8 @@ def _public_radar_source(source: dict) -> dict:
     if source.get("last_error_at"):
         if source.get("status") == "discovery_limited":
             item["last_error"] = _PUBLIC_RADAR_ERROR_MESSAGES["DISCOVERY_LIMITED"]
-        elif str(source.get("platform") or "").casefold() == "openai":
+        elif (str(source.get("platform") or "").casefold() == "openai"
+              or source.get("adapter_config", {}).get("adapter") == "wechat_web_search"):
             safe_provider_messages = {
                 _PUBLIC_RADAR_ERROR_MESSAGES[code]
                 for code in (
