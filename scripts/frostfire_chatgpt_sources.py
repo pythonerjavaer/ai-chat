@@ -1,16 +1,14 @@
 """Logical monitoring labels only; private conversation mappings stay local."""
 
 ACTIVE_CHATGPT_SOURCE_IDS = (
-    "chatgpt-radar-01",
     "chatgpt-radar-02",
-    "chatgpt-radar-03",
-    "chatgpt-radar-06",
     "chatgpt-radar-07",
     "chatgpt-radar-08",
     "chatgpt-radar-09",
+    "chatgpt-radar-10",
 )
 HISTORICAL_CHATGPT_SOURCE_IDS = frozenset(
-    f"chatgpt-radar-{index:02d}" for index in range(1, 10)
+    f"chatgpt-radar-{index:02d}" for index in range(1, 11)
 )
 RETIRED_CHATGPT_SOURCE_IDS = HISTORICAL_CHATGPT_SOURCE_IDS - set(ACTIVE_CHATGPT_SOURCE_IDS)
 

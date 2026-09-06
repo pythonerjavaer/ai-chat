@@ -160,7 +160,7 @@ def parse_history(value: Any) -> History:
         raise HistoryError("input must contain only source_id, history_complete, and messages")
     source_id = value.get("source_id")
     if not isinstance(source_id, str) or source_id not in ALLOWED_SOURCES:
-        raise HistoryError("source_id must be one of the seven active ChatGPT monitoring labels")
+        raise HistoryError("source_id must be one of the active ChatGPT monitoring labels")
     if type(value.get("history_complete")) is not bool:
         raise HistoryError("history_complete must be a boolean")
     raw_messages = value.get("messages")
