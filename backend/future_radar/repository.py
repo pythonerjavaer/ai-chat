@@ -2529,7 +2529,7 @@ class RadarRepository:
 
     def dashboard(self) -> dict[str, Any]:
         today = date.today()
-        soon = (today + timedelta(days=30)).isoformat()
+        soon = (today + timedelta(days=15)).isoformat()
         recent = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         active_run_types = self.active_run_types()
         with self._connect() as connection:
