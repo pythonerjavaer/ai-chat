@@ -269,7 +269,7 @@ const elements = {
   futureRadarPagination: $("future-radar-pagination"), futureRadarPagePrev: $("future-radar-page-prev"),
   futureRadarPageNext: $("future-radar-page-next"), futureRadarPageStatus: $("future-radar-page-status"),
   futureRadarOpportunityCount: $("future-radar-opportunity-count"),
-  futureRadarOpportunityRefresh: $("future-radar-opportunity-refresh"),
+  futureRadarOpportunityRefresh: $("future-radar-opportunity-refresh"), futureRadarReturnToPool: $("future-radar-return-to-pool"),
   futureRadarOpportunitySummary: $("future-radar-opportunity-summary"),
   futureRadarOpportunityCoverage: $("future-radar-opportunity-coverage"),
   futureRadarFilterForm: $("future-radar-filter-form"), futureRadarFilterQuery: $("future-radar-filter-query"),
@@ -3469,6 +3469,10 @@ function applyFutureRadarJobsPayload(payload, query = futureRadarJobsQuery()) {
   state.futureRadar.jobsAppliedPageSize = state.futureRadar.pageSize;
   state.futureRadar.opportunityStats = payload.stats || {};
   state.futureRadar.opportunityStatsQuery = query;
+  // The deadline card and the pool must use the same 15-day result set. Refresh
+  // it immediately after the pool response arrives so a stale dashboard read
+  // cannot leave a visible zero beside populated closing-soon results.
+  renderFutureRadarDashboard(state.futureRadar.dashboard);
   state.futureRadar.searchScope = payload.scope || state.futureRadar.searchScope;
   state.futureRadar.searchCoverage = payload.coverage ?? state.futureRadar.searchCoverage;
   state.futureRadar.searchStatus = payload.search_status || state.futureRadar.searchStatus;
@@ -5342,6 +5346,7 @@ elements.futureRadarPageNext.addEventListener("click", () => loadFutureRadarJobP
 elements.futureRadarOpportunityRefresh.addEventListener("click", () => {
   retryFutureRadarOpportunities();
 });
+elements.futureRadarReturnToPool?.addEventListener("click", resetFutureRadarFilters);
 elements.futureRadarFilterForm.addEventListener("submit", (event) => {
   event.preventDefault();
   readFutureRadarFilters();

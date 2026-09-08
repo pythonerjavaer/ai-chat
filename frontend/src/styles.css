@@ -439,6 +439,9 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .radar-tab-panel { min-height: 180px; }
 .radar-candidate-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 11px; padding: 14px 15px; border: 1px solid rgba(255,181,89,.18); border-radius: 13px; background: radial-gradient(circle at 92% 0, rgba(255,142,56,.09), transparent 38%), linear-gradient(135deg, rgba(32,118,145,.09), rgba(101,63,23,.055)); }
 .radar-candidate-heading > div { min-width: 0; }
+.radar-candidate-actions { display: flex; flex: 0 0 auto; gap: 8px; }
+.radar-candidate-actions #future-radar-return-to-pool { color: #b8f7dc; border-color: rgba(91,222,179,.34); background: rgba(28,124,92,.14); }
+.radar-candidate-actions #future-radar-return-to-pool:hover { border-color: rgba(112,239,193,.58); background: rgba(34,144,105,.23); }
 .radar-candidate-heading h3 { margin: 4px 0 5px; color: #f0fbff; font-size: 16px; }
 .radar-candidate-heading p { max-width: 720px; margin: 0; color: #8ca4af; font-size: 9px; line-height: 1.6; }
 .radar-candidate-heading button { flex: 0 0 auto; min-height: 34px; padding: 0 11px; color: #ffdda9; border: 1px solid rgba(255,184,85,.22); border-radius: 9px; background: rgba(170,95,32,.09); cursor: pointer; font-size: 8px; font-weight: 800; }
@@ -1839,6 +1842,7 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
   .radar-tabs button { min-height: 38px; font-size: 9px; }
   .radar-candidate-heading { display: grid; gap: 12px; padding: 13px; }
   .radar-candidate-heading p { font-size: 10px; }
+  .radar-candidate-actions { display: grid; width: 100%; }
   .radar-candidate-heading button { width: 100%; min-height: 40px; }
   .radar-candidate-summary { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .radar-candidate-summary article { min-height: 38px; display: flex; align-items: center; font-size: 9px; }
