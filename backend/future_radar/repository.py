@@ -2185,6 +2185,13 @@ class RadarRepository:
             input_sanitizer=input_sanitizer,
         )
         all_items = pool.items
+        today = date.today().isoformat()
+        closing_window_end = (date.today() + timedelta(days=15)).isoformat()
+        closing_soon = sum(
+            item.get("status") == "open"
+            and today <= str(item.get("closing_date") or "") <= closing_window_end
+            for item in all_items
+        )
         balanced_items = self._balanced_opportunities(all_items)
         items = all_items
         tier_counts = dict(pool.tier_counts)
@@ -2263,6 +2270,7 @@ class RadarRepository:
                 "verified_count": verification["verified"],
                 "source_screened_count": verification["source_screened"],
                 "discovered_count": verification["pending"] + verification["conflicted"],
+                "closing_soon": closing_soon,
                 "verification_status": verification, "job_status": statuses,
                 "tier_counts": tier_counts, "category_counts": category_counts,
                 "primary_category": dict(category_counts),

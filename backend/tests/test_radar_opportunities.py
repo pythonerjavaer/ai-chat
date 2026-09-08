@@ -489,8 +489,8 @@ def test_provenance_and_coverage_never_expose_private_transport_fields(harness):
         },
     })
     result = get_pool(harness)
-    assert result["scope"]["list_entry_count"] == 231
-    assert result["scope"]["target_count"] == 218
+    assert result["scope"]["list_entry_count"] == 234
+    assert result["scope"]["target_count"] == 221
     assert result["coverage"]["searched_count"] == 200
     text = json.dumps(result)
     detail = harness.client.get(

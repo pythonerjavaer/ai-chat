@@ -2911,6 +2911,12 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   ];
   elements.futureRadarDashboard.replaceChildren();
   metrics.forEach(([code, label, paths]) => {
+    const opportunityClosingSoon = code === "CLOSING SOON"
+      ? radarNumber(state.futureRadar?.opportunityStats, ["closing_soon"], 0)
+      : 0;
+    const metricValue = code === "CLOSING SOON"
+      ? Math.max(radarNumber(dashboard, paths), opportunityClosingSoon)
+      : radarNumber(dashboard, paths);
     const clickable = true;
     const card = makeElement(clickable ? "button" : "article", `radar-metric metric-${code.toLowerCase().replaceAll(" ", "-")}`);
     if (clickable) {
@@ -2921,7 +2927,7 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
     }
     card.append(
       makeElement("small", "", code),
-      makeElement("strong", "", radarNumber(dashboard, paths).toLocaleString("zh-CN")),
+      makeElement("strong", "", metricValue.toLocaleString("zh-CN")),
       makeElement("span", "", label),
     );
     elements.futureRadarDashboard.appendChild(card);
