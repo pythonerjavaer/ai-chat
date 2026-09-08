@@ -4045,12 +4045,18 @@ function renderRecruitmentDeadlineAlerts(jobs) {
   if (urgent.length) {
     const reveal = makeElement("button", "deadline-reveal-button", `查看即将截止的 ${urgent.length} 个机会`);
     reveal.type = "button";
+    const returnToPool = makeElement("button", "deadline-return-pool", "返回全部机会池");
+    returnToPool.type = "button";
     list.hidden = true;
     reveal.addEventListener("click", () => {
       list.hidden = !list.hidden;
       reveal.textContent = list.hidden ? `查看即将截止的 ${urgent.length} 个机会` : "收起即将截止机会";
     });
-    elements.recruitmentDeadlineAlerts.append(heading, reveal, list);
+    returnToPool.addEventListener("click", resetFutureRadarFilters);
+    const actions = document.createElement("div");
+    actions.className = "deadline-alert-actions";
+    actions.append(reveal, returnToPool);
+    elements.recruitmentDeadlineAlerts.append(heading, actions, list);
   } else {
     elements.recruitmentDeadlineAlerts.append(heading, list);
   }
