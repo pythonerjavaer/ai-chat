@@ -40,6 +40,7 @@ import {
   partitionJobsByPriority,
   starfieldLabel,
 } from "./recruitment-radar.js";
+
 import "./styles.css";
 import { radarPollingGate, radarOpportunityPollingGate, RADAR_STATUS_INTERVAL_MS } from "./radar-polling.js";
 
@@ -834,7 +835,7 @@ function watchHasFreshChange(watch) {
 function renderHomeRecruitmentAlerts(jobs, watches = state.recruitmentWatches) {
   const urgent = jobs
     .map((job) => ({ ...job, days_left: recruitmentDaysLeft(job) }))
-    .filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 7)
+    .filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 30)
     .sort((a, b) => a.days_left - b.days_left);
   const changedWatches = (watches || []).filter(watchHasFreshChange);
   elements.homeAlertList.replaceChildren();
@@ -3011,7 +3012,7 @@ function showFutureRadarMetric(code) {
   const now = new Date();
   const iso = (value) => value.toISOString().slice(0, 10);
   const closingBefore = new Date(now);
-  closingBefore.setDate(closingBefore.getDate() + 7);
+  closingBefore.setDate(closingBefore.getDate() + 30);
   const updates = {
     status: code === "CLOSED" ? "closed" : DEFAULT_FUTURE_RADAR_STATUS,
     event_type: code === "NEW" ? "NEW" : code === "UPDATED" ? "UPDATED" : "",
@@ -4025,14 +4026,32 @@ function renderRecruitmentDeadlineAlerts(jobs) {
   if (futureRadarSelectionIsPending()) return;
   const reviewJobs = jobs.filter((job) => ["pending", "conflicted", "failed", "unknown"].includes(recruitmentVerification(job)));
   const verifiedJobs = jobs.filter((job) => recruitmentVerification(job) === "verified").map((job) => ({ ...job, days_left: recruitmentDaysLeft(job) }));
-  const urgent = verifiedJobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 7);
+  const urgent = verifiedJobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 30);
+  const visibleClosingSoon = jobs.filter((job) => {
+    const daysLeft = recruitmentDaysLeft(job);
+    return Number.isInteger(daysLeft) && daysLeft >= 0 && daysLeft <= 30;
+  }).length;
+  const closingMetric = elements.futureRadarDashboard?.querySelector(".metric-closing-soon");
+  if (closingMetric && visibleClosingSoon && radarNumber(state.futureRadar.dashboard, ["closing_soon", "closing_soon_jobs", "counts.closing_soon"]) === 0) {
+    closingMetric.querySelector("strong").textContent = String(visibleClosingSoon);
+    closingMetric.querySelector("span").textContent = "当前列表 30 天内";
+    closingMetric.title = `当前机会列表有 ${visibleClosingSoon} 个岗位将在 30 天内截止；点击查看。`;
+  }
   const dated = verifiedJobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0);
   const heading = document.createElement("strong");
   heading.textContent = urgent.length
-    ? `${companyView ? "当前筛选近期时间窗（最多 12 条）" : "本页时间窗预警"} · ${urgent.length} 个官网已确认机会将在 7 天内关闭`
+    ? `${companyView ? "当前筛选近期时间窗（最多 12 条）" : "本页时间窗预警"} · ${urgent.length} 个官网已确认机会将在 30 天内关闭`
     : dated.length
-      ? "时间窗预警 · 暂无 7 天内关闭的已核验机会"
+      ? "时间窗预警 · 暂无 30 天内关闭的已核验机会"
       : "时间窗预警 · 暂无原始公告明确标注截止日期，刷新后将自动核验";
+  const deadlineFilterActive = Boolean(state.futureRadar.filters.closing_after || state.futureRadar.filters.closing_before || state.futureRadar.filters.sort === "closing");
+  const returnToPool = deadlineFilterActive
+    ? makeElement("button", "deadline-return-pool", "返回全部机会池（清除筛选）")
+    : null;
+  if (returnToPool) {
+    returnToPool.type = "button";
+    returnToPool.addEventListener("click", resetFutureRadarFilters);
+  }
   const list = document.createElement("div");
   urgent.forEach((job) => {
     const item = document.createElement("a");
@@ -4045,20 +4064,20 @@ function renderRecruitmentDeadlineAlerts(jobs) {
   if (urgent.length) {
     const reveal = makeElement("button", "deadline-reveal-button", `查看即将截止的 ${urgent.length} 个机会`);
     reveal.type = "button";
-    const returnToPool = makeElement("button", "deadline-return-pool", "返回全部机会池");
-    returnToPool.type = "button";
     list.hidden = true;
     reveal.addEventListener("click", () => {
       list.hidden = !list.hidden;
       reveal.textContent = list.hidden ? `查看即将截止的 ${urgent.length} 个机会` : "收起即将截止机会";
     });
-    returnToPool.addEventListener("click", resetFutureRadarFilters);
     const actions = document.createElement("div");
     actions.className = "deadline-alert-actions";
-    actions.append(reveal, returnToPool);
+    actions.append(reveal);
+    if (returnToPool) actions.append(returnToPool);
     elements.recruitmentDeadlineAlerts.append(heading, actions, list);
   } else {
-    elements.recruitmentDeadlineAlerts.append(heading, list);
+    elements.recruitmentDeadlineAlerts.append(heading);
+    if (returnToPool) elements.recruitmentDeadlineAlerts.append(returnToPool);
+    elements.recruitmentDeadlineAlerts.append(list);
   }
   if (reviewJobs.length) {
     const note = document.createElement("small");

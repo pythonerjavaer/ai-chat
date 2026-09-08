@@ -2453,6 +2453,7 @@ def test_search_updates_pool_exposes_candidates_with_status_and_filters(
             "verified": 1,
             "conflicted": 1,
             "rejected": 1,
+            "source_screened": 0,
         }
         assert body["stats"]["job_status"] == {
             "open": 3,
