@@ -60,17 +60,17 @@ def record_heartbeat(source: dict) -> None:
     )
 
 
-def test_five_active_sources_are_logical_slots_without_private_metadata():
+def test_six_active_sources_are_logical_slots_without_private_metadata():
     sources = main.EXPECTED_CHATGPT_RADAR_SOURCES
     assert [source["source_id"] for source in sources] == [
-        f"chatgpt-radar-{index:02d}" for index in (2, 7, 8, 9, 10)
+        f"chatgpt-radar-{index:02d}" for index in (2, 7, 8, 9, 10, 11)
     ]
     assert all(source["source_thread_id"] is None for source in sources)
     assert all(set(source) == {"source_id", "source_thread_id", "title"} for source in sources)
     assert tuple(source["source_id"] for source in sources) == SCRIPT_SOURCES
 
 
-def test_seeding_active_five_keeps_retired_sources_and_pending_candidates(sync_db):
+def test_seeding_active_six_keeps_retired_sources_and_pending_candidates(sync_db):
     old_sources = [
         {"source_id": f"chatgpt-radar-{index:02d}", "source_thread_id": None,
          "title": f"ChatGPT 监控 {index}"}
@@ -84,17 +84,17 @@ def test_seeding_active_five_keeps_retired_sources_and_pending_candidates(sync_d
 
     database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
     database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
-    after = database.recruitment_sync_status(expected_source_count=5)
+    after = database.recruitment_sync_status(expected_source_count=6)
 
-    assert after["source_count"] == 10  # Retired history is not erased.
-    assert after["expected_source_count"] == 5
+    assert after["source_count"] == 11  # Retired history is not erased.
+    assert after["expected_source_count"] == 6
     assert after["connected_source_count"] == 6
     old_by_id = {source["source_id"]: source for source in before["sources"]}
     new_by_id = {source["source_id"]: source for source in after["sources"]}
     assert all(new_by_id[source_id] == source for source_id, source in old_by_id.items())
-    assert new_by_id["chatgpt-radar-10"]["status"] == "pending"
-    assert new_by_id["chatgpt-radar-10"]["last_seen_at"] is None
-    assert new_by_id["chatgpt-radar-10"]["source_ref"] is None
+    assert new_by_id["chatgpt-radar-11"]["status"] == "pending"
+    assert new_by_id["chatgpt-radar-11"]["last_seen_at"] is None
+    assert new_by_id["chatgpt-radar-11"]["source_ref"] is None
     assert before["recent_events"] == after["recent_events"]
     with database.connect() as connection:
         assert connection.execute(
@@ -102,14 +102,14 @@ def test_seeding_active_five_keeps_retired_sources_and_pending_candidates(sync_d
             (stored["id"],),
         ).fetchone()[0] == 1
     public = main.public_chatgpt_sync_status()
-    assert public["expected_source_count"] == 5
+    assert public["expected_source_count"] == 6
     assert public["connected_source_count"] == 1
     assert public["status"] == "partial"
     assert public["inventory_total"] == 0  # Inactive history does not inflate active transport.
     assert public["reason_counts"] == {"pending": {}, "rejected": {}}
 
 
-def test_new_fifth_active_source_heartbeat_is_required_before_all_report_synced(sync_db):
+def test_new_sixth_active_source_heartbeat_is_required_before_all_report_synced(sync_db):
     database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
     for source in main.EXPECTED_CHATGPT_RADAR_SOURCES[:-1]:
         record_heartbeat(source)
@@ -122,7 +122,7 @@ def test_new_fifth_active_source_heartbeat_is_required_before_all_report_synced(
         headers=headers,
         json={
             "jobs": [],
-            "source_id": "chatgpt-radar-10",
+            "source_id": "chatgpt-radar-11",
             "source_updated_at": "2026-08-30T01:00:00Z",
         },
     )
@@ -130,9 +130,9 @@ def test_new_fifth_active_source_heartbeat_is_required_before_all_report_synced(
     assert response.json()["received"] == 0
     assert response.json()["accepted"] == 0
     status = client.get("/api/recruitment/sync/status", headers=headers).json()
-    assert status["expected_source_count"] == status["connected_source_count"] == 5
-    sixth = next(source for source in status["sources"] if source["source_id"] == "chatgpt-radar-10")
-    assert sixth["title"] == "ChatGPT 监控 10"
+    assert status["expected_source_count"] == status["connected_source_count"] == 6
+    sixth = next(source for source in status["sources"] if source["source_id"] == "chatgpt-radar-11")
+    assert sixth["title"] == "ChatGPT 监控 11"
     assert sixth["last_source_updated_at"] == "2026-08-30T01:00:00+00:00"
     assert sixth["source_ref"] is None
     assert main.public_chatgpt_sync_status()["status"] == "synced"
