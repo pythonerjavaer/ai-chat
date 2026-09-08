@@ -2910,11 +2910,14 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
     ["VERIFIED", "官网确认记录", ["verified", "verified_jobs", "counts.verified"]],
   ];
   elements.futureRadarDashboard.replaceChildren();
+  // A failed pool read means dashboard zeros are a fallback, not a count.
+  // Keep that uncertainty visible instead of presenting a false empty pool.
+  const poolUnavailable = Boolean(state.futureRadar?.jobsError);
   metrics.forEach(([code, label, paths]) => {
     const opportunityClosingSoon = code === "CLOSING SOON"
       ? radarNumber(state.futureRadar?.opportunityStats, ["closing_soon"], 0)
       : 0;
-    const metricValue = code === "CLOSING SOON"
+    const metricValue = poolUnavailable ? null : code === "CLOSING SOON"
       ? Math.max(radarNumber(dashboard, paths), opportunityClosingSoon)
       : radarNumber(dashboard, paths);
     const clickable = true;
@@ -2927,7 +2930,7 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
     }
     card.append(
       makeElement("small", "", code),
-      makeElement("strong", "", metricValue.toLocaleString("zh-CN")),
+      makeElement("strong", "", metricValue == null ? "—" : metricValue.toLocaleString("zh-CN")),
       makeElement("span", "", label),
     );
     elements.futureRadarDashboard.appendChild(card);
