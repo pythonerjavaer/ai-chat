@@ -78,7 +78,7 @@ test('applied history uses an independent complete query and shows unbookmarked 
   await pending;
   assert.deepEqual(cards(f.panel('applied')).map(card => card.job.id), ['closed-unbookmarked']);
   assert.match(text(f.panel('applied')), /招聘已关闭/);
-  assert.match(text(f.panel('applied')), /共 1 条已报名/);
+  assert.match(text(f.panel('applied')), /共 1 条关联岗位/);
 });
 
 test('applied history paginates every record and backs up after the last record on a page is removed', async t => {
@@ -127,7 +127,7 @@ test('removing an application refreshes the visible history without requiring a 
   assert.match(f.requests.at(-1).url, /application_status=applied/);
   f.accept({total: 0, items: []}); await Promise.resolve();
   assert.equal(cards(f.panel('applied')).length, 0);
-  assert.match(text(f.panel('applied')), /暂无已确认/);
+  assert.match(text(f.panel('applied')), /尚未关联机会池中的具体岗位/);
 });
 
 test('saved candidates exclude already-applied and skipped bookmarks', async t => {

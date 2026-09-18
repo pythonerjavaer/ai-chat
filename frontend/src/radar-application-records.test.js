@@ -53,7 +53,7 @@ test('batch import previews names before writing and saves only private confirme
   await f.button('预览导入').dispatch('click');
   assert.equal(f.requests.length, 0);
   assert.match(text(f.component.panel), /将保存 2 条/);
-  assert.match(text(f.component.panel), /Company A · 具体岗位未补充/);
+  assert.match(text(f.component.panel), /Company A · 按单位记录/);
   const pending = f.button('保存预览中的报名记录').dispatch('click');
   assert.equal(f.requests[0].method, 'PUT');
   assert.match(f.requests[0].url, /^\/future-radar\/application-records\/manual-/);

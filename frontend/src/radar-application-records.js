@@ -32,7 +32,7 @@ export async function prepareApplicationRecords(value) {
 export function initApplicationRecords({ api, session, toast }) {
   const node = (tag, text = '', className = '') => { const item = document.createElement(tag); item.textContent = text; item.className = className; return item; };
   const panel = node('section', '', 'radar-application-history');
-  panel.append(node('h4', '历史报名台账'), node('p', '仅记录你本人已确认的报名。未补充具体岗位的公司级记录，不代表这家公司所有岗位都已投递，也不会新增公共机会。'));
+  panel.append(node('h4', '历史报名台账'), node('p', '记录你本人已确认报名的单位。可以只按单位记录，具体岗位选填。'));
   const list = node('div', '', 'radar-entity-list');
   const progress = node('p', '点击“已报名”读取历史报名台账。'); progress.setAttribute('role', 'status');
   const pagination = node('nav', '', 'radar-pagination'); pagination.setAttribute('aria-label', '历史报名台账分页');
@@ -69,7 +69,7 @@ export function initApplicationRecords({ api, session, toast }) {
       page = nextPage; list.replaceChildren();
       for (const record of payload.items || []) {
         const card = node('article', '', 'radar-entity-card');
-        card.append(node('span', '已报名 · 本人确认', 'radar-application-badge'), node('h4', record.company), node('p', record.title || '具体岗位未补充'));
+        card.append(node('span', '已报名 · 本人确认', 'radar-application-badge'), node('h4', record.company), node('p', record.title || '按单位记录'));
         const meta = [record.batch, record.location, record.confirmed_date ? `确认日期 ${record.confirmed_date}` : ''].filter(Boolean).join(' · ');
         if (meta) card.append(node('p', meta));
         if (record.notes) card.append(node('p', record.notes));
@@ -129,7 +129,7 @@ export function initApplicationRecords({ api, session, toast }) {
       const records = await prepareApplicationRecords(JSON.parse(textarea.value));
       if (token !== session() || current !== preparation) return;
       prepared = records; preview.replaceChildren(node('p', `将保存 ${records.length} 条已确认报名记录：`));
-      const names = node('ul'); records.forEach(({body}) => names.append(node('li', `${body.company} · ${body.title || '具体岗位未补充'}${body.batch ? ` · ${body.batch}` : ''}`))); preview.append(names); importButton.disabled = false;
+      const names = node('ul'); records.forEach(({body}) => names.append(node('li', `${body.company} · ${body.title || '按单位记录'}${body.batch ? ` · ${body.batch}` : ''}`))); preview.append(names); importButton.disabled = false;
     } catch (error) { if (token === session() && current === preparation) preview.replaceChildren(node('p', error instanceof SyntaxError ? 'JSON 格式不正确，请检查后重新预览。' : error.message)); }
   });
   importButton.addEventListener('click', () => submit(prepared));

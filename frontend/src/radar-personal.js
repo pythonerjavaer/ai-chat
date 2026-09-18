@@ -70,13 +70,13 @@ export function initRadarPersonal({ api, session, host, makeCard, toast, onAppli
     refreshButton.addEventListener('click', () => Promise.allSettled([applicationRecords.load(1), loadApplied(appliedPage)]));
     appliedPanel.append(refreshButton);
     if (appliedLoading) {
-      const loading = node('p', '正在读取已报名记录…'); loading.setAttribute('role', 'status');
+      const loading = node('p', '正在读取关联的具体岗位…'); loading.setAttribute('role', 'status');
       appliedPanel.append(loading);
     }
     if (appliedError) {
       const error = node('p', appliedError); error.setAttribute('role', 'alert'); appliedPanel.append(error);
     }
-    if (!appliedLoading && !appliedError && !appliedTotal) appliedPanel.append(node('p', '暂无已确认的报名记录。岗位卡片中选择“已投递”后，会显示在这里。'));
+    if (!appliedLoading && !appliedError && !appliedTotal) appliedPanel.append(node('p', '尚未关联机会池中的具体岗位。上方历史报名记录不受影响；在岗位卡片中选择“已投递”后，会显示在这里。'));
     const list = node('div', '', 'recruitment-jobs');
     appliedItems.forEach(job => {
       const card = makeCard(job);
@@ -90,7 +90,7 @@ export function initRadarPersonal({ api, session, host, makeCard, toast, onAppli
     previous.addEventListener('click', () => loadApplied(appliedPage - 1));
     const next = node('button', '下一页 →'); next.type = 'button'; next.disabled = appliedLoading || appliedPage >= pages;
     next.addEventListener('click', () => loadApplied(appliedPage + 1));
-    navigation.append(previous, node('span', `第 ${appliedPage} / ${pages} 页 · 共 ${appliedTotal} 条已报名`), next);
+    navigation.append(previous, node('span', `第 ${appliedPage} / ${pages} 页 · 共 ${appliedTotal} 条关联岗位`), next);
     appliedPanel.append(navigation);
   }
   async function loadApplied(page = 1) {
@@ -114,7 +114,7 @@ export function initRadarPersonal({ api, session, host, makeCard, toast, onAppli
       appliedPage = requestedPage; appliedTotal = total; appliedItems = payload.items || [];
     } catch (_) {
       if (token !== session() || request !== appliedRequest) return;
-      appliedError = '已报名记录读取失败，请点击“刷新已报名”重试。';
+      appliedError = '关联岗位暂时读取失败，上方历史报名记录不受影响。可点击“刷新已报名”重试。';
     } finally {
       if (token === session() && request === appliedRequest) { appliedLoading = false; renderApplied(); }
     }
