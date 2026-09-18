@@ -63,7 +63,7 @@ export function renderRadarConstellation(container, pools, doc = document) {
   const header = node('div', 'star-map-telemetry');
   header.append(node('span', '', 'SECTOR ATLAS'), node('span', '', `${pools.length} 星域 · ${directories.reduce((n, directory) => n + directory.entries.length, 0)} 个展示项`));
   const field = node('div', 'star-map-field');
-  field.setAttribute('role', 'group'); field.setAttribute('aria-label', '雷达星图，查看按行业归类的高优先级单位');
+  field.setAttribute('role', 'group'); field.setAttribute('aria-label', '星域导航，查看完整行业名录与高优先级单位');
   for (let i = 0; i < 3; i++) field.appendChild(node('i', `star-map-orbit orbit-${i}`));
   const core = node('div', 'star-map-core');
   core.append(node('span', '', '◎'), node('strong', '', '星域导航'), node('small', '', 'PRIORITY ATLAS'));

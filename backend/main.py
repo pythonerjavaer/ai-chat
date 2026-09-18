@@ -2142,35 +2142,29 @@ def public_chatgpt_sync_status() -> dict:
 
 
 def _priority_radar_pools(user_id: int) -> list[dict[str, object]]:
-    """Build category-only star navigation from the user's maintained priorities.
+    """Return the complete sector atlas, with private priorities merged in place.
 
-    The atlas is not a ChatGPT ingestion report and it is not a second sentry
-    list.  It keeps explicit high-priority targets, confirmed applications and
-    saved jobs in their real business category, whether or not a new source has
-    found a vacancy this round.
+    A sector remains a durable navigation directory rather than a scan result.
+    Confirmed applications, saved roles and explicit priority targets supplement
+    their matching sector but never create a separate personal or GPT sector.
     """
-    pool_metadata = {pool["primary_category"]: pool for pool in PERSONAL_MONITOR_POOLS}
     category_by_employer = {
         employer: pool["primary_category"]
         for pool in PERSONAL_MONITOR_POOLS
         for employer in pool["employers"]
     }
-    names_by_category: dict[str, set[str]] = defaultdict(set)
+    additions: dict[str, set[str]] = defaultdict(set)
 
     def add(company: object) -> None:
         name = str(company or "").strip()
-        if not name:
-            return
         category = category_by_employer.get(name) or employer_directory_category(name)
-        if category in pool_metadata:
-            names_by_category[category].add(name)
+        if name and category:
+            additions[category].add(name)
 
     for employer in PERSONAL_RADAR_PINNED_EMPLOYERS:
         add(employer)
-
     from .future_radar import personal
-    records = personal.application_records(database.connect, user_id, page=1, page_size=200)
-    for record in records["items"]:
+    for record in personal.application_records(database.connect, user_id, page=1, page_size=200)["items"]:
         add(record.get("company"))
     for item in personal.saved_jobs(database.connect, user_id):
         add(item.get("job", {}).get("company"))
@@ -2178,13 +2172,11 @@ def _priority_radar_pools(user_id: int) -> list[dict[str, object]]:
     result = []
     for pool in PERSONAL_MONITOR_POOLS:
         category = pool["primary_category"]
-        employers = names_by_category.get(category)
-        if not employers:
-            continue
+        employers = set(pool["employers"]) | additions[category]
         result.append({
             "id": category,
             "name": pool["name"],
-            "focus": "已报名、收藏或明确列为高优先级的单位，按所属行业归入本星域；不代表当前有开放岗位。",
+            "focus": pool["focus"],
             "employers": sorted(employers, key=str.casefold),
         })
     return result

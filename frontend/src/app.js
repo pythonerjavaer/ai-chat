@@ -4058,7 +4058,7 @@ async function loadRecruitmentMonitors() {
     renderRecruitmentMonitors(data.monitor_pools || []);
   } catch (error) {
     container.replaceChildren(makeElement("p", "", "机构名录暂时无法读取，请重试。"));
-    const retry = makeElement("button", "job-watch-button", "重新读取雷达星图");
+    const retry = makeElement("button", "job-watch-button", "重新读取星域导航");
     retry.type = "button";
     retry.addEventListener("click", () => loadRecruitmentMonitors());
     container.appendChild(retry);
