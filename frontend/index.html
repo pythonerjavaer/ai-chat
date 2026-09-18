@@ -375,11 +375,12 @@
             </form>
             <div class="recruitment-section-heading monitor-heading"><span>02</span><div><strong>企业信号哨站</strong><small>只需输入企业名称。系统会追踪机会池中的新增信号、截止时间窗与公告变化；此过程不调用 AI。</small></div></div>
             <form id="recruitment-watch-form" class="recruitment-watch-form">
+              <div class="watch-console-banner"><div class="watch-beacon" aria-hidden="true"><i></i><i></i><b>⌁</b><span>▲</span></div><div><small>SIGNAL OUTPOST</small><strong>连接你的关注目标</strong><span id="watch-console-status" role="status">哨站状态尚未读取</span></div><em aria-hidden="true">02</em></div>
               <label class="field compact-field"><span>企业名称</span><input id="recruitment-watch-company" maxlength="120" placeholder="例如：中信期货、Babycare、平安银行" required /></label>
               <small class="watch-form-hint">只需填写企业名称；系统会在当前机会池中追踪新增机会、截止时间窗与公告变化，不额外消耗 Token。</small>
               <button id="recruitment-watch-add" class="watch-add-button" type="submit"><span>建立信号哨站</span><b>＋</b></button>
             </form>
-            <div id="recruitment-watch-list" class="recruitment-watch-list"><small>尚未建立企业信号哨站。</small></div>
+            <div id="recruitment-watch-list" class="recruitment-watch-list"><div class="watch-empty-dock">等待读取哨站状态</div></div>
             <div class="recruitment-section-heading monitor-heading"><span>03</span><div><strong>雷达星图</strong><small>这里定义信号扫描范围，不代表每家机构当前均有开放机会；请以可访问的原始公告为准。</small></div></div>
             <div id="recruitment-monitor-pools" class="recruitment-monitor-pools" aria-live="polite"><p>机构名录尚未读取。</p></div>
           </section>

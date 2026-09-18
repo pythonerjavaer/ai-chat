@@ -1952,3 +1952,64 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 .radar-application-control[data-application-status="skipped"] .radar-application-badge { color: #edbd9b; border-color: #926e58; }
 .radar-application-control select { max-width: 150px; padding: 6px 8px; }
 .job-card-top { flex-wrap: wrap; }
+
+/* Directory constellation: decorative coordinates do not imply live scans. */
+.star-map-console { overflow:hidden; border:1px solid #296475; border-radius:20px 5px; background:radial-gradient(ellipse at 50% 20%,#123047 0,#071522 42%,#070e19 80%); box-shadow:inset 0 0 32px #37cbf00a,0 14px 40px #0003; }
+.star-map-telemetry { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px; padding:14px 12px 0; color:#8be9fa; font:9px/1.5 ui-monospace,monospace; letter-spacing:.08em; }
+.star-map-telemetry span:last-child { color:#b1c2d8; letter-spacing:0; }
+.star-map-field { position:relative; aspect-ratio:1; margin:8px 6px 0; isolation:isolate; background-image:linear-gradient(#55d7f009 1px,transparent 1px),linear-gradient(90deg,#55d7f009 1px,transparent 1px); background-size:22px 22px; border-radius:50%; }
+.star-map-field::before,.star-map-field::after { content:''; position:absolute; pointer-events:none; background:#89e8ff17; }
+.star-map-field::before { width:1px; height:100%; left:50%; }
+.star-map-field::after { width:100%; height:1px; top:50%; }
+.star-map-orbit { position:absolute; left:50%; top:50%; border:1px solid #61ddf82b; border-radius:50%; transform:translate(-50%,-50%); pointer-events:none; }
+.star-map-orbit.orbit-0 { width:42%; height:42%; border-style:dashed; border-color:#ba9bff37; }
+.star-map-orbit.orbit-1 { width:64%; height:64%; }
+.star-map-orbit.orbit-2 { width:88%; height:88%; border:3px double #61ddf82b; }
+.star-map-ray { position:absolute; left:50%; top:50%; height:1px; transform-origin:left center; background:linear-gradient(90deg,#86a8ff05,#67d8ff50); z-index:-1; }
+.star-map-core { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:78px; height:78px; display:flex; flex-direction:column; align-items:center; justify-content:center; border:1px solid #9af3ff69; border-radius:50%; background:radial-gradient(circle,#1c4b67,#081728 75%); box-shadow:0 0 20px #47dcff18,inset 0 0 18px #77cbff1c; }
+.star-map-core span { color:#b7f5ff; font-size:23px; line-height:1; }
+.star-map-core strong { margin-top:5px; color:#daf5ff; font-size:10px; letter-spacing:.16em; }
+.star-map-core small { margin-top:3px; color:#839bbb; font:6px ui-monospace,monospace; letter-spacing:.2em; }
+.star-map-node { position:absolute; z-index:2; transform:translate(-50%,-50%); width:38px; height:38px; display:grid; place-content:center; gap:1px; padding:0; border:1px solid #5cc5e150; border-radius:12px 3px; background:#071523; color:#8ccfe2; cursor:pointer; transition:border-color .2s,box-shadow .2s,background .2s; }
+.star-map-node i { font-size:17px; font-style:normal; line-height:1; }
+.star-map-node span { font:8px ui-monospace,monospace; }
+.star-map-node:hover,.star-map-node[aria-pressed=true] { color:#f0e6ff; background:#352657; border-color:#ba9aff; box-shadow:0 0 18px #a278ff60,inset 0 0 10px #ce9dff25; }
+.star-map-hint { margin:0 10px 13px; text-align:center; font-size:10px; color:#92adc4; }
+.star-map-legend { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:0 10px 12px; }
+.star-map-key { display:flex; gap:5px; align-items:center; text-align:left; min-height:38px; padding:6px; color:#9bbacb; border:1px solid #526a851f; border-radius:6px; background:#14243880; cursor:pointer; }
+.star-map-key span { color:#638baf; font:9px ui-monospace,monospace; }
+.star-map-key strong { font-size:10px; line-height:1.45; font-weight:500; }
+.star-map-key[aria-pressed=true] { color:#e5daff; border-color:#a78aff7a; background:#8c62d520; }
+.star-map-key[aria-pressed=true] span { color:#baa3ff; }
+.star-map-node:focus-visible,.star-map-key:focus-visible { outline:2px solid #d5bfff; outline-offset:3px; }
+.star-map-detail { margin:0 10px 12px; border:1px solid #718bb23b; border-top:2px solid #a195fa; background:linear-gradient(135deg,#3a2b5a40,#09253466); border-radius:3px 3px 12px 12px; padding:13px 10px; }
+.star-map-detail-heading { display:flex; gap:9px; align-items:center; }
+.star-map-detail-heading span { color:#c1a8ff; font:17px ui-monospace,monospace; }
+.star-map-detail-heading strong { color:#e4efff; font-size:12px; line-height:1.5; }
+.star-map-detail>p { color:#a0b3cb; font-size:10px; line-height:1.65; margin:9px 0; }
+.star-map-detail>small { display:block; color:#91c9d8; font-size:9px; }
+.star-map-employers { display:flex; flex-wrap:wrap; gap:5px; margin-top:12px; max-height:250px; overflow-y:auto; scrollbar-width:thin; }
+.star-map-employers span { border:1px solid #629bb832; border-radius:4px; padding:5px 7px; color:#bdd3e1; font-size:10px; background:#79baff07; }
+.recruitment-watch-form { position:relative; padding:15px; overflow:hidden; border-color:#489e9870; border-radius:18px 5px; background:linear-gradient(130deg,#0c3238a8,#0a182a 70%); box-shadow:inset 0 1px #92ffde22,0 12px 30px #0002; }
+.watch-console-banner { display:flex; gap:12px; align-items:center; padding-bottom:14px; margin-bottom:3px; border-bottom:1px solid #67dcc529; }
+.watch-console-banner>div:nth-child(2) { display:grid; gap:6px; min-width:0; }
+.watch-console-banner small { color:#76ccbf; font:8px ui-monospace,monospace; letter-spacing:.12em; }
+.watch-console-banner strong { color:#d4fff4; font-size:12px; font-weight:600; }
+.watch-console-banner span[role=status] { color:#88abae; font-size:9px; line-height:1.5; }
+.watch-console-banner em { position:absolute; right:9px; top:7px; font:normal 34px ui-monospace,monospace; color:#94ffe30a; pointer-events:none; }
+.watch-beacon { position:relative; flex:0 0 52px; height:64px; display:grid; place-content:end center; border-bottom:1px solid #6ee6c359; background:radial-gradient(ellipse at 50% 90%,#63ffd62b,transparent 70%); }
+.watch-beacon span { color:#a6ffdb; font-size:31px; line-height:1; text-shadow:0 0 15px #55ffcb55; }
+.watch-beacon b { position:absolute; top:8px; left:21px; color:#a3ffe1; font-size:18px; }
+.watch-beacon i { position:absolute; border:1px solid #76efd656; border-bottom-color:transparent; border-radius:50%; left:50%; top:17px; transform:translate(-50%,-50%); width:31px; height:31px; }
+.watch-beacon i:nth-child(2) { width:46px; height:46px; border-color:#76efd625; border-bottom-color:transparent; }
+.watch-empty-dock { border:1px dashed #5fa09860; padding:13px; border-radius:9px; color:#83aaa9; font-size:10px; line-height:1.8; background:#16343018; }
+.watch-card { position:relative; border-left:2px solid #67bba7; padding-left:15px; background:linear-gradient(110deg,#24584922,#071925); }
+.watch-card::before { content:''; width:5px; height:5px; border-radius:50%; background:#9bbbaf; position:absolute; left:-3px; top:19px; }
+.watch-card.changed { border-left-color:#ffc081; }
+.watch-card.changed::before { background:#ffc081; box-shadow:0 0 8px #ffaa7066; }
+.watch-card.unavailable { border-left-color:#8897a9; }
+.watch-card.unavailable::before { background:#8897a9; }
+@media(prefers-reduced-motion:no-preference) {
+ .star-map-console { animation:starMapReveal .5s ease-out both; }
+ @keyframes starMapReveal { from { opacity:.3; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+}

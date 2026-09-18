@@ -164,7 +164,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   for (const name of ["renderFutureRadarPagination", "syncFutureRadarProgramFilter",
     "renderFutureRadarPrograms", "mergeFutureRadarEvents", "syncFutureRadarSourceFilter",
     "renderFutureRadarSources", "renderFutureRadarRuns", "renderRecruitmentDeadlineAlerts", "renderRecruitmentProfile",
-    "loadRecruitmentMonitors", "renderRecruitmentWatches", "renderHomeRecruitmentAlerts", "renderRecruitmentMonitors", "renderRecruitmentSyncStatus",
+    "loadRecruitmentMonitors", "loadRecruitmentWatches", "renderRecruitmentWatches", "renderHomeRecruitmentAlerts", "renderRecruitmentMonitors", "renderRecruitmentSyncStatus",
     "renderFutureRadarRunAvailability", "applyIncrementalRadarMetrics", "addRecruitmentWatchFromJob", "showToast", "renderMusicUI"]) context[name] = noop;
   vm.createContext(context);
   context.readFutureRadarDashboard = () => context.api("/future-radar/dashboard");

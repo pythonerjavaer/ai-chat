@@ -1,3 +1,4 @@
+import { renderRadarConstellation } from "./radar-constellation.js";
 import DOMPurify from "dompurify";
 import { initRadarPersonal } from "./radar-personal.js";
 import { marked } from "marked";
@@ -642,7 +643,7 @@ function setupRotaryCompasses() {
 
 async function api(path, options = {}) {
   const { preserveAuthOn401 = false, signal: externalSignal, timeoutMs = 15000, ...requestOptions } = options;
-  const isRadarRead = path !== "/recruitment/monitor-pools"
+  const isRadarRead = !["/recruitment/monitor-pools", "/recruitment/watches"].includes(path)
     && (path.startsWith("/future-radar/") || path.startsWith("/recruitment/"))
     && (!options.method || options.method === "GET");
   const readGate = path.startsWith("/future-radar/opportunities") ? radarOpportunityPollingGate : radarPollingGate;
@@ -813,10 +814,8 @@ async function loadHomeRecruitmentAlerts() {
   try {
     const [data, watchData] = await Promise.all([
       api("/recruitment/jobs"),
-      api("/recruitment/watches").catch(() => ({ watches: [] })),
     ]);
     state.recruitmentJobs = data.jobs || [];
-    state.recruitmentWatches = watchData.watches || watchData || [];
     const syncStatus = chatgptSyncFromJobs(data);
     if (syncStatus) renderRecruitmentSyncStatus(syncStatus);
     renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
@@ -3921,15 +3920,36 @@ function recruitmentWatchStatus(watch) {
   return "等待首次建立基线";
 }
 
+async function loadRecruitmentWatches() {
+  const token = state.token;
+  const status = document.getElementById("watch-console-status");
+  if (status) status.textContent = "正在读取已建立哨站";
+  try {
+    const data = await api("/recruitment/watches");
+    if (token !== state.token) return;
+    state.recruitmentWatches = data.watches || [];
+    renderRecruitmentWatches(state.recruitmentWatches);
+  } catch (_) {
+    if (token !== state.token) return;
+    if (status) status.textContent = "哨站状态暂时无法读取";
+    const retry = makeElement("button", "job-watch-button", "重新读取哨站");
+    retry.type = "button";
+    retry.addEventListener("click", () => loadRecruitmentWatches());
+    elements.recruitmentWatchList.replaceChildren(retry);
+  }
+}
+
 function renderRecruitmentWatches(watches = []) {
   elements.recruitmentWatchList.replaceChildren();
+  const status = document.getElementById("watch-console-status");
+  if (status) status.textContent = watches.length ? `${watches.length} 个已建立哨站 · 状态见下方` : "尚未建立哨站";
   if (!watches.length) {
-    elements.recruitmentWatchList.appendChild(makeElement("small", "", "尚未建立企业信号哨站。填写企业名称，即可追踪公开机会池的变化。"));
+    elements.recruitmentWatchList.appendChild(makeElement("div", "watch-empty-dock", "＋ 尚无已建立哨站 · 输入企业名称连接关注目标"));
     return;
   }
   watches.forEach((watch) => {
     const card = document.createElement("article");
-    card.className = `watch-card${watchHasFreshChange(watch) ? " changed" : ""}`;
+    card.className = `watch-card${watchHasFreshChange(watch) ? " changed" : ""}${watch.last_status === "error" ? " unavailable" : ""}`;
     const top = makeElement("div", "watch-card-top");
     const copy = document.createElement("div");
     if (watch.watch_type === "company") {
@@ -3998,7 +4018,7 @@ async function addRecruitmentWatch(event) {
     elements.recruitmentError.textContent = translateError(error.message);
   } finally {
     elements.recruitmentWatchAdd.disabled = false;
-    elements.recruitmentWatchAdd.querySelector("span").textContent = "加入动态雷达";
+    elements.recruitmentWatchAdd.querySelector("span").textContent = "建立信号哨站";
   }
 }
 
@@ -4041,18 +4061,7 @@ async function loadRecruitmentMonitors() {
 }
 
 function renderRecruitmentMonitors(pools = []) {
-  elements.recruitmentMonitorPools.replaceChildren();
-  if (!pools.length) {
-    elements.recruitmentMonitorPools.appendChild(makeElement("p", "", "尚未配置机构名录。"));
-    return;
-  }
-  pools.forEach((pool) => {
-    const card = document.createElement("article");
-    card.className = "recruitment-monitor-card";
-    const employers = (pool.employers || []).join(" · ");
-    card.innerHTML = `<div><strong>${DOMPurify.sanitize(pool.name)}</strong><span>${pool.employers?.length || 0} 个名录机构</span></div><p>${DOMPurify.sanitize(pool.focus || "")}</p><details><summary>查看名录机构</summary><small>${DOMPurify.sanitize(employers)}</small></details>`;
-    elements.recruitmentMonitorPools.appendChild(card);
-  });
+  renderRadarConstellation(elements.recruitmentMonitorPools, pools);
 }
 
 function renderRecruitmentDeadlineAlerts(jobs) {
@@ -4848,20 +4857,18 @@ async function addRecruitmentWatchFromJob(job, button) {
 async function refreshRecruitment() {
   if (!state.token) return null;
   void loadRecruitmentMonitors();
+  void loadRecruitmentWatches();
   let legacyData = null;
   try {
-    const [profile, data, watchData] = await Promise.all([
+    const [profile, data] = await Promise.all([
       api("/recruitment/profile"),
       api("/recruitment/jobs"),
-      api("/recruitment/watches").catch(() => ({ watches: [] })),
     ]);
     legacyData = data;
     state.recruitmentProfile = profile;
     state.recruitmentJobs = data.jobs || [];
-    state.recruitmentWatches = watchData.watches || watchData || [];
     renderRecruitmentProfile(profile);
     renderRecruitmentJobs(state.recruitmentJobs);
-    renderRecruitmentWatches(state.recruitmentWatches);
     renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(state.recruitmentJobs));
     renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
     renderRecruitmentSyncStatus(chatgptSyncFromJobs(data));
