@@ -79,12 +79,12 @@ def test_real_employer_identity_or_explicit_type_wins_over_role_keywords(
     ("Oliver Wyman", "Oliver Wyman 奥纬咨询"),
     ("DWS", "DWS 德意志资管"),
     ("野村证券", "Nomura 野村"),
-    ("中信证券", "中信证券 CITIC Securities"),
-    ("广发证券", "广发证券 GF Securities"),
-    ("申万宏源证券有限公司", "申万宏源 Shenwan Hongyuan"),
+    ("中信证券", "中信证券"),
+    ("广发证券", "广发证券"),
+    ("申万宏源证券有限公司", "申万宏源"),
     ("宝洁", "P&G 宝洁"),
-    ("永赢基金", "永赢基金 Yong Win Fund"),
-    ("恒生指数", "Hang Seng Indexes 恒生指数"),
+    ("永赢基金", "永赢基金"),
+    ("恒生指数", "恒生指数"),
 ])
 def test_directory_display_identities_are_bilingual_and_stable(raw, expected):
     assert canonical_employer_identity(raw) == expected

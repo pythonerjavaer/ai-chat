@@ -209,7 +209,7 @@ EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     # long-lived English brands.  These aliases improve company-level discovery;
     # they do not merge an unlisted subsidiary into its parent or bypass the
     # separate official-page verification gate.
-    "中信证券 CITIC Securities": ("中信证券", "中信证券股份有限公司", "CITIC Securities", "CITICS"),
+    "中信证券": ("中信证券股份有限公司", "CITIC Securities", "CITICS"),
     "中金公司": ("中国国际金融股份有限公司", "China International Capital Corporation", "CICC"),
     "华泰证券": ("华泰证券股份有限公司", "Huatai Securities", "HTSC"),
     "国泰海通": (
@@ -218,8 +218,8 @@ EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "中信建投": ("中信建投证券", "中信建投证券股份有限公司"),
     "招商证券": ("招商证券股份有限公司",),
-    "广发证券 GF Securities": ("广发证券", "广发证券股份有限公司", "GF Securities"),
-    "申万宏源 Shenwan Hongyuan": ("申万宏源", "申万宏源证券", "申万宏源证券有限公司", "Shenwan Hongyuan"),
+    "广发证券": ("广发证券股份有限公司", "GF Securities"),
+    "申万宏源": ("申万宏源证券", "申万宏源证券有限公司", "Shenwan Hongyuan"),
     "银河证券": ("中国银河证券", "中国银河证券股份有限公司"),
     "光大证券": ("光大证券股份有限公司",),
     "东方证券": ("东方证券股份有限公司",),
@@ -240,9 +240,9 @@ EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "国元证券": ("国元证券股份有限公司",),
     "中欧基金": ("中欧基金管理有限公司",),
     "泰康基金": ("泰康基金管理有限公司", "Taikang Fund"),
-    "永赢基金 Yong Win Fund": ("永赢基金", "永赢基金管理有限公司", "Yong Win Fund", "Yongying Fund"),
-    "Hang Seng Indexes 恒生指数": ("恒生指数", "恒生指数有限公司", "Hang Seng Indexes"),
-    "恒生电子 Hundsun": ("恒生电子", "恒生电子股份有限公司", "Hundsun"),
+    "永赢基金": ("永赢基金管理有限公司", "Yong Win Fund", "Yongying Fund"),
+    "恒生指数": ("恒生指数有限公司", "Hang Seng Indexes"),
+    "恒生电子": ("恒生电子股份有限公司", "Hundsun"),
     # The sidebar uses familiar short names; official notices commonly use
     # these legal/brand names.  Alias matching selects a discovery target only,
     # and never bypasses the separate official-page evidence gate.

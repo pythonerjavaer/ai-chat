@@ -46,11 +46,11 @@ test('foreign employer labels use the same English-first bilingual identity ever
   assert.equal(normalizeRadarEmployerLabel('DWS'), 'DWS 德意志资管');
   assert.equal(normalizeRadarEmployerLabel('野村证券'), 'Nomura 野村');
   assert.equal(normalizeRadarEmployerLabel('宝洁'), 'P&G 宝洁');
-  assert.equal(normalizeRadarEmployerLabel('中信证券'), '中信证券 CITIC Securities');
-  assert.equal(normalizeRadarEmployerLabel('广发证券'), '广发证券 GF Securities');
-  assert.equal(normalizeRadarEmployerLabel('申万宏源'), '申万宏源 Shenwan Hongyuan');
-  assert.equal(normalizeRadarEmployerLabel('永赢基金'), '永赢基金 Yong Win Fund');
-  assert.equal(normalizeRadarEmployerLabel('恒生指数'), 'Hang Seng Indexes 恒生指数');
+  assert.equal(normalizeRadarEmployerLabel('中信证券'), '中信证券');
+  assert.equal(normalizeRadarEmployerLabel('广发证券'), '广发证券');
+  assert.equal(normalizeRadarEmployerLabel('申万宏源'), '申万宏源');
+  assert.equal(normalizeRadarEmployerLabel('永赢基金'), '永赢基金');
+  assert.equal(normalizeRadarEmployerLabel('恒生指数'), '恒生指数');
 });
 
 test('star map keeps Bain visible when the consulting sector is rendered', () => {
