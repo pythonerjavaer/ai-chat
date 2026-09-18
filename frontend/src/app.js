@@ -747,8 +747,12 @@ async function authenticate(event) {
   elements.authSubmit.disabled = true;
   elements.authSubmit.querySelector("span").textContent = state.authMode === "register" ? "正在创建…" : "正在验证…";
   try {
+    // Render free instances can take about a minute to wake. Authentication is
+    // the first request after a cold start, so it needs a longer budget than
+    // ordinary UI reads instead of surfacing a false client-side timeout.
     const result = await api(`/auth/${state.authMode}`, {
       method: "POST",
+      timeoutMs: 90_000,
       body: JSON.stringify({
         username: elements.username.value.trim(),
         password: elements.password.value,
