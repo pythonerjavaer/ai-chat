@@ -27,7 +27,11 @@ from backend.future_radar.opportunity_cache import install_opportunity_revision,
 from backend.future_radar.repository import RadarRepository, utc_now
 from backend.future_radar.schema import EMPLOYER_CATEGORY_MIGRATION, migrate
 from backend.recruitment import SCORING_VERSION, SCORING_WEIGHTS, score_job
-from backend.recruitment_directory import employer_category_override, employer_directory_category
+from backend.recruitment_directory import (
+    canonical_employer_identity,
+    employer_category_override,
+    employer_directory_category,
+)
 
 
 @pytest.mark.parametrize("company,employer_type,industry,expected", [
@@ -41,6 +45,8 @@ from backend.recruitment_directory import employer_category_override, employer_d
     ("KPMG Australia", "重点雇主", "咨询/AI", "big_four_professional_services"),
     ("PwC 普华永道", "外资专业服务机构", "咨询", "big_four_professional_services"),
     ("Deloitte", "其他", "其他", "big_four_professional_services"),
+    ("Bain 贝恩", "重点雇主", "咨询", "consumer_foreign_consulting"),
+    ("Oliver Wyman", "重点雇主", "咨询", "consumer_foreign_consulting"),
     ("McKinsey 麦肯锡", "重点雇主", "", "consumer_foreign_consulting"),
     ("Accenture 埃森哲", "外资专业服务机构", "专业服务", "consumer_foreign_consulting"),
     ("万事达卡（Mastercard）", "外资企业", "支付科技/客户管理", "consumer_foreign_consulting"),
@@ -66,6 +72,22 @@ def test_real_employer_identity_or_explicit_type_wins_over_role_keywords(
            "requirements": "职责可以涉及其他行业，不代表雇主行业。"}
     assert normalize_job(raw)["primary_category"] == expected
     assert employer_category_override(raw) == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("贝恩", "Bain 贝恩"),
+    ("Oliver Wyman", "Oliver Wyman 奥纬咨询"),
+    ("DWS", "DWS 德意志资管"),
+    ("野村证券", "Nomura 野村"),
+    ("中信证券", "中信证券 CITIC Securities"),
+    ("广发证券", "广发证券 GF Securities"),
+    ("申万宏源证券有限公司", "申万宏源 Shenwan Hongyuan"),
+    ("宝洁", "P&G 宝洁"),
+    ("永赢基金", "永赢基金 Yong Win Fund"),
+    ("恒生指数", "Hang Seng Indexes 恒生指数"),
+])
+def test_directory_display_identities_are_bilingual_and_stable(raw, expected):
+    assert canonical_employer_identity(raw) == expected
 
 
 @pytest.mark.parametrize("company", [

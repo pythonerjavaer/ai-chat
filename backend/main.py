@@ -89,7 +89,7 @@ from .live_sources import (
     is_priority_campus_listing,
     is_recruitment_program_listing,
 )
-from .recruitment_directory import employer_directory_category
+from .recruitment_directory import canonical_employer_identity, employer_directory_category
 from .config import settings
 from .future_radar.normalization import (
     PRIMARY_CATEGORY_CODES,
@@ -2172,7 +2172,11 @@ def _priority_radar_pools(user_id: int) -> list[dict[str, object]]:
     result = []
     for pool in PERSONAL_MONITOR_POOLS:
         category = pool["primary_category"]
-        employers = set(pool["employers"]) | additions[category]
+        employers = {
+            canonical_employer_identity(employer) or str(employer)
+            for employer in (set(pool["employers"]) | additions[category])
+            if str(employer or "").strip()
+        }
         result.append({
             "id": category,
             "name": pool["name"],

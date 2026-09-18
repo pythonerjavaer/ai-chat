@@ -41,6 +41,30 @@ test('foreign employer labels use the same English-first bilingual identity ever
   assert.equal(normalizeRadarEmployerLabel('瑞银'), 'UBS 瑞银');
   assert.equal(normalizeRadarEmployerLabel('瑞银 UBS'), 'UBS 瑞银');
   assert.equal(normalizeRadarEmployerLabel('UBS'), 'UBS 瑞银');
+  assert.equal(normalizeRadarEmployerLabel('贝恩'), 'Bain 贝恩');
+  assert.equal(normalizeRadarEmployerLabel('Oliver Wyman'), 'Oliver Wyman 奥纬咨询');
+  assert.equal(normalizeRadarEmployerLabel('DWS'), 'DWS 德意志资管');
+  assert.equal(normalizeRadarEmployerLabel('野村证券'), 'Nomura 野村');
+  assert.equal(normalizeRadarEmployerLabel('宝洁'), 'P&G 宝洁');
+  assert.equal(normalizeRadarEmployerLabel('中信证券'), '中信证券 CITIC Securities');
+  assert.equal(normalizeRadarEmployerLabel('广发证券'), '广发证券 GF Securities');
+  assert.equal(normalizeRadarEmployerLabel('申万宏源'), '申万宏源 Shenwan Hongyuan');
+  assert.equal(normalizeRadarEmployerLabel('永赢基金'), '永赢基金 Yong Win Fund');
+  assert.equal(normalizeRadarEmployerLabel('恒生指数'), 'Hang Seng Indexes 恒生指数');
+});
+
+test('star map keeps Bain visible when the consulting sector is rendered', () => {
+  const root = element('div');
+  renderRadarConstellation(root, [{
+    name: '快消、外企与咨询',
+    focus: '咨询与外企机会',
+    employers: ['贝恩', 'Oliver Wyman', 'DWS', 'Nomura'],
+  }], { createElement: element });
+  const labels = descendants(root).map(node => node.textContent);
+  assert.ok(labels.includes('Bain 贝恩'));
+  assert.ok(labels.includes('Oliver Wyman 奥纬咨询'));
+  assert.ok(labels.includes('DWS 德意志资管'));
+  assert.ok(labels.includes('Nomura 野村'));
 });
 
 test('empty priority atlas explains that no employer is available', () => {
