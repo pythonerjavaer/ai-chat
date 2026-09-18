@@ -30,7 +30,7 @@ def test_postgres_url_selects_persistent_backend(monkeypatch):
     options = load_settings()
     assert options.database_backend == "postgres"
     assert options.database_schema == "frostfire"
-    assert options.database_pool_size == 4
+    assert options.database_pool_size == 8
     assert "do-not-print" not in repr(options)
     assert "db.example" not in repr(options)
 
@@ -77,7 +77,7 @@ def test_application_schema_must_be_private_and_valid(monkeypatch, schema):
         load_settings()
 
 
-@pytest.mark.parametrize("size,expected", [("0", 1), ("4", 4), ("99", 12), ("", 4)])
+@pytest.mark.parametrize("size,expected", [("0", 1), ("4", 4), ("99", 12), ("", 8)])
 def test_small_connection_pool(monkeypatch, size, expected):
     monkeypatch.setenv("DATABASE_POOL_SIZE", size)
     assert load_settings().database_pool_size == expected

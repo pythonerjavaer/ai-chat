@@ -35,7 +35,7 @@ class Settings:
     database_backend: str = "sqlite"
     database_url: str = field(default="", repr=False)
     database_schema: str = "frostfire"
-    database_pool_size: int = 4
+    database_pool_size: int = 8
 
 
 def load_settings() -> Settings:
@@ -105,7 +105,11 @@ def load_settings() -> Settings:
         database_backend=database_backend,
         database_url=database_url,
         database_schema=database_schema,
-        database_pool_size=max(1, min(12, int(os.getenv("DATABASE_POOL_SIZE", "4") or "4"))),
+        # A Future Radar run uses a run lease plus source leases while browser
+        # reads and login requests still need a slot. Four connections can be
+        # exhausted by the default worker fan-out before any user request gets
+        # a chance to run.
+        database_pool_size=max(1, min(12, int(os.getenv("DATABASE_POOL_SIZE", "8") or "8"))),
         cors_origins=cors_origins,
         adzuna_app_id=os.getenv("ADZUNA_APP_ID", "").strip(),
         adzuna_app_key=os.getenv("ADZUNA_APP_KEY", "").strip(),
@@ -143,7 +147,7 @@ def load_settings() -> Settings:
         ),
         future_radar_max_workers=max(
             1,
-            min(8, int(os.getenv("FUTURE_RADAR_MAX_WORKERS", "4").strip() or "4")),
+            min(8, int(os.getenv("FUTURE_RADAR_MAX_WORKERS", "1").strip() or "1")),
         ),
         future_radar_ai_model=(
             os.getenv("FUTURE_RADAR_AI_MODEL", "").strip()

@@ -17,7 +17,7 @@ services:
       - key: DATABASE_SCHEMA
         value: frostfire
       - key: DATABASE_POOL_SIZE
-        value: 4
+        value: 8
       - key: OPENAI_API_KEY
         sync: false
       - key: JWT_SECRET
@@ -51,7 +51,7 @@ services:
       - key: FUTURE_RADAR_CLOSE_CONFIRMATIONS
         value: 2
       - key: FUTURE_RADAR_MAX_WORKERS
-        value: 4
+        value: 1
       - key: FUTURE_RADAR_AI_MODEL
         value: gpt-5.4-mini
       - key: RECRUITMENT_INGEST_TOKEN
