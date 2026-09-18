@@ -141,3 +141,34 @@ def test_application_follows_verified_alias_and_does_not_leak_into_cache(harness
     h.client.put(f"{base}/{verified['id']}/application", json={'status': 'not_applied'}, headers=h.auth)
     assert h.client.get(f"{base}/{original['id']}", headers=h.auth).json()['application_status'] == 'not_applied'
     assert h.client.get(base, headers=h.auth).json()['items'][0]['application_status'] == 'not_applied'
+
+
+def test_applied_history_keeps_expired_closed_and_inactive_source_jobs_without_bookmarks(harness):
+    from datetime import date, timedelta
+    h = harness
+    jobs = [
+        h.insert('closed-history', status='closed'),
+        h.insert('expired-history', closing_date=(date.today() - timedelta(days=2)).isoformat()),
+        h.insert('inactive-history'),
+        h.insert('active-history'),
+        h.insert('another-active-history'),
+    ]
+    base = '/api/future-radar/opportunities'
+    for job in jobs:
+        response = h.client.put(f"{base}/{job['id']}/application", json={'status': 'applied'}, headers=h.auth)
+        assert response.status_code == 200, response.text
+    with database.connect() as connection:
+        connection.execute('UPDATE job_sources SET active=0 WHERE job_id=?', (jobs[2]['id'],))
+    query = {'status': 'all', 'application_status': 'applied', 'view': 'jobs',
+             'balanced_only': False, 'priority_only': False, 'page_size': 2}
+    received = []
+    for page in range(1, 4):
+        response = h.client.get(base, params={**query, 'page': page}, headers=h.auth)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload['total'] == 5
+        received.extend(job['id'] for job in payload['items'])
+    assert set(received) == {job['id'] for job in jobs}
+    assert len(received) == 5
+    assert h.client.get('/api/future-radar/saved-jobs', headers=h.auth).json()['items'] == []
+    assert h.client.get(base, headers=h.auth).json()['total'] == 2

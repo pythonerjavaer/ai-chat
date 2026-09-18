@@ -1537,6 +1537,61 @@ class RadarApplicationRequest(BaseModel):
     status: Literal["applied", "not_applied", "planned", "skipped"]
 
 
+class RadarApplicationRecordRequest(BaseModel):
+    """Explicit personal history; an unknown role must remain unknown."""
+
+    model_config = ConfigDict(extra="forbid")
+    company: str = Field(min_length=1, max_length=160)
+    title: str | None = Field(default=None, max_length=240)
+    batch: str | None = Field(default=None, max_length=160)
+    location: str | None = Field(default=None, max_length=160)
+    notes: str | None = Field(default=None, max_length=1000)
+    confirmed_date: date | None = None
+    status: Literal["applied"] = "applied"
+
+    @field_validator("company", "title", "batch", "location", "notes", mode="before")
+    @classmethod
+    def trim_record_text(cls, value):
+        if not isinstance(value, str):
+            return value
+        value = value.strip()
+        if re.search(r"(?:chatgpt\.com|chat\.openai\.com)/(?:c|g)/", value, re.I):
+            raise ValueError("Do not include private conversation links in application records.")
+        return value or None
+
+
+def _validate_application_record_key(record_key: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", record_key):
+        raise HTTPException(status_code=422, detail="Invalid application record key.")
+    return record_key
+
+
+@app.get("/api/future-radar/application-records")
+def radar_application_records(
+    user: User,
+    page: int = Query(default=1, ge=1, le=100_000),
+    page_size: int = Query(default=100, ge=1, le=200),
+) -> dict:
+    from .future_radar import personal
+    return personal.application_records(database.connect, user["id"], page=page, page_size=page_size)
+
+
+@app.put("/api/future-radar/application-records/{record_key}")
+def radar_set_application_record(record_key: str, request: RadarApplicationRecordRequest, user: User) -> dict:
+    from .future_radar import personal
+    return personal.set_application_record(
+        database.connect, user["id"], _validate_application_record_key(record_key),
+        request.model_dump(mode="json"), database.utc_now(),
+    )
+
+
+@app.delete("/api/future-radar/application-records/{record_key}")
+def radar_delete_application_record(record_key: str, user: User) -> dict:
+    from .future_radar import personal
+    personal.delete_application_record(database.connect, user["id"], _validate_application_record_key(record_key))
+    return {"deleted": True}
+
+
 @app.put("/api/future-radar/opportunities/{job_id}/application")
 def radar_set_application(job_id: str, request: RadarApplicationRequest, user: User) -> dict:
     from .future_radar import personal

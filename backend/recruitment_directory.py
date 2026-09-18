@@ -114,7 +114,7 @@ PERSONAL_MONITOR_POOLS = [
             "宝洁", "联合利华", "欧莱雅", "雀巢", "玛氏", "可口可乐", "百事", "耐克", "Babycare",
             "达能", "亿滋", "蒙牛", "伊利", "安踏", "阿迪达斯", "宜家", "LVMH",
             "强生", "星巴克", "麦当劳", "Kearney 科尔尼", "麦肯锡", "波士顿咨询",
-            "Roland Berger", "罗兰贝格", "埃森哲", "Microsoft", "Google",
+            "Roland Berger", "罗兰贝格", "L.E.K. Consulting", "埃森哲", "Microsoft", "Google",
             "Amazon/AWS", "Amazon", "AWS", "Apple", "NVIDIA", "J.P. Morgan",
             "Goldman Sachs", "Morgan Stanley",
             "UBS", "Citi", "HSBC", "BlackRock",

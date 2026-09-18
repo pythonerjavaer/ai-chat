@@ -644,6 +644,7 @@ function setupRotaryCompasses() {
 async function api(path, options = {}) {
   const { preserveAuthOn401 = false, signal: externalSignal, timeoutMs = 15000, ...requestOptions } = options;
   const isRadarRead = !["/recruitment/monitor-pools", "/recruitment/watches"].includes(path)
+    && !path.startsWith("/future-radar/application-records")
     && (path.startsWith("/future-radar/") || path.startsWith("/recruitment/"))
     && (!options.method || options.method === "GET");
   const readGate = path.startsWith("/future-radar/opportunities") ? radarOpportunityPollingGate : radarPollingGate;
@@ -3362,7 +3363,7 @@ function renderFutureRadarRuns(runs = state.futureRadar.runs) {
 }
 
 function activateFutureRadarTab(tab) {
-  const next = ["jobs", "programs", "events", "sources", "runs", "saved"].includes(tab) ? tab : "jobs";
+  const next = ["jobs", "programs", "events", "sources", "runs", "saved", "applied"].includes(tab) ? tab : "jobs";
   state.futureRadar.activeTab = next;
   document.querySelectorAll("[data-radar-tab]").forEach((button) => {
     const active = button.dataset.radarTab === next;
@@ -5359,6 +5360,7 @@ $("studio-open").addEventListener("click", openStudio);
 const personalRadar = initRadarPersonal({
   api, session: () => state.token, host: elements.recruitmentDialog,
   makeCard: createRecruitmentJobCard, toast: showToast,
+  onManualRead: () => radarOpportunityPollingGate.resume({ allowImmediate: true }),
   onApplicationChange: (_id, status) => {
     const page = status === "skipped" || state.futureRadar.filters.application_status ? 1 : state.futureRadar.page;
     loadFutureRadarJobPage(page, true, { scroll: false });
@@ -5389,7 +5391,7 @@ elements.futureRadarReturnToPool?.addEventListener("click", resetFutureRadarFilt
 elements.futureRadarFilterForm.addEventListener("submit", (event) => {
   event.preventDefault();
   readFutureRadarFilters();
-  state.recruitmentTierFilter = "BALANCED";
+  state.recruitmentTierFilter = state.futureRadar.filters.application_status === "applied" ? "ALL" : "BALANCED";
   state.futureRadar.page = 1;
   loadFutureRadarJobPage(1, true);
 });
@@ -5399,6 +5401,7 @@ document.querySelectorAll("[data-radar-tab]").forEach((button) => {
     if (button.dataset.radarTab === "jobs") return resetFutureRadarFilters();
     activateFutureRadarTab(button.dataset.radarTab);
     if (button.dataset.radarTab === "saved") personalRadar.renderSaved();
+    if (button.dataset.radarTab === "applied") personalRadar.showApplied();
   });
 });
 document.addEventListener("visibilitychange", () => {

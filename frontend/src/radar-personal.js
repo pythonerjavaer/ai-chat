@@ -1,14 +1,28 @@
-export function initRadarPersonal({ api, session, host, makeCard, toast, onApplicationChange = () => {} }) {
+import { initApplicationRecords } from './radar-application-records.js';
+
+export function initRadarPersonal({ api, session, host, makeCard, toast, onApplicationChange = () => {}, onManualRead = () => {} }) {
   let saved = new Map();
   let owner = null;
   let timer = null;
   let pending = false;
   let notice = null;
+  let appliedPage = 1;
+  let appliedTotal = 0;
+  let appliedItems = [];
+  let appliedLoading = false;
+  let appliedError = '';
+  let appliedRequest = 0;
+  const appliedPageSize = 50;
   const changingApplications = new Set();
   const panel = document.createElement('section');
   panel.dataset.radarPanel = 'saved';
   panel.className = 'radar-tab-panel hidden';
   host.querySelector('[data-radar-panel="jobs"]').after(panel);
+  const appliedPanel = document.createElement('section');
+  appliedPanel.dataset.radarPanel = 'applied';
+  appliedPanel.className = 'radar-tab-panel hidden';
+  panel.after(appliedPanel);
+  const applicationRecords = initApplicationRecords({ api, session, toast });
 
   function node(tag, text, className = '') {
     const result = document.createElement(tag);
@@ -19,14 +33,14 @@ export function initRadarPersonal({ api, session, host, makeCard, toast, onAppli
   function updateButtons() {
     document.querySelectorAll('[data-save-job]').forEach(button => {
       const active = saved.has(button.dataset.saveJob);
-      button.textContent = active ? '★ 已收藏 · 取消收藏' : '☆ 收藏到报名清单';
+      button.textContent = active ? '★ 已收藏 · 取消收藏' : '☆ 收藏到待报清单';
       button.setAttribute('aria-pressed', String(active));
     });
   }
   function renderSaved() {
-    panel.replaceChildren(node('h3', '我的报名清单'), node('p', '数字越小越先报名。收藏和顺序随账号保存；取消收藏不会删除机会池中的岗位。'));
-    const visibleSaved = [...saved.values()].filter(item => item.job.application_status !== 'skipped');
-    if (!visibleSaved.length) panel.append(node('p', '还没有待报名的收藏岗位。展开企业岗位后，点击“收藏到报名清单”。'));
+    panel.replaceChildren(node('h3', '待报收藏'), node('p', '数字越小越先报名。收藏不代表已报名；标记已投递后移至“已报名”。收藏和顺序随账号保存。'));
+    const visibleSaved = [...saved.values()].filter(item => !['skipped', 'applied'].includes(item.job.application_status));
+    if (!visibleSaved.length) panel.append(node('p', '还没有待报名的收藏岗位。展开企业岗位后，点击“收藏到待报清单”。'));
     visibleSaved.sort((a, b) => a.priority - b.priority).forEach(item => {
       const card = makeCard(item.job);
       if (item.unavailable) card.prepend(node('p', '该岗位目前不在机会池中，以下为收藏时的记录；申请前请核对原公告。'));
@@ -49,8 +63,64 @@ export function initRadarPersonal({ api, session, host, makeCard, toast, onAppli
       label.append(input, button); card.prepend(label); panel.append(card);
     });
   }
+  function renderApplied() {
+    appliedPanel.replaceChildren(node('h3', '已报名'), applicationRecords.panel, node('h4', '机会池中的已投递岗位'), node('p', '显示你已确认投递的岗位，无需先收藏；截止或关闭后仍保留报名记录。这里不受机会池筛选和精选范围限制。'));
+    const refreshButton = node('button', '刷新已报名'); refreshButton.type = 'button';
+    refreshButton.disabled = appliedLoading;
+    refreshButton.addEventListener('click', () => Promise.allSettled([applicationRecords.load(1), loadApplied(appliedPage)]));
+    appliedPanel.append(refreshButton);
+    if (appliedLoading) {
+      const loading = node('p', '正在读取已报名记录…'); loading.setAttribute('role', 'status');
+      appliedPanel.append(loading);
+    }
+    if (appliedError) {
+      const error = node('p', appliedError); error.setAttribute('role', 'alert'); appliedPanel.append(error);
+    }
+    if (!appliedLoading && !appliedError && !appliedTotal) appliedPanel.append(node('p', '暂无已确认的报名记录。岗位卡片中选择“已投递”后，会显示在这里。'));
+    const list = node('div', '', 'recruitment-jobs');
+    appliedItems.forEach(job => {
+      const card = makeCard(job);
+      if (job.status === 'closed') card.prepend(node('p', '招聘已关闭 · 已报名记录保留'));
+      list.append(card);
+    });
+    appliedPanel.append(list);
+    const pages = Math.max(1, Math.ceil(appliedTotal / appliedPageSize));
+    const navigation = node('nav', '', 'radar-pagination'); navigation.setAttribute('aria-label', '已报名分页');
+    const previous = node('button', '← 上一页'); previous.type = 'button'; previous.disabled = appliedLoading || appliedPage <= 1;
+    previous.addEventListener('click', () => loadApplied(appliedPage - 1));
+    const next = node('button', '下一页 →'); next.type = 'button'; next.disabled = appliedLoading || appliedPage >= pages;
+    next.addEventListener('click', () => loadApplied(appliedPage + 1));
+    navigation.append(previous, node('span', `第 ${appliedPage} / ${pages} 页 · 共 ${appliedTotal} 条已报名`), next);
+    appliedPanel.append(navigation);
+  }
+  async function loadApplied(page = 1) {
+    const token = session();
+    if (!token) return;
+    onManualRead();
+    const request = ++appliedRequest;
+    const requestedPage = Math.max(1, page);
+    appliedLoading = true; appliedError = ''; renderApplied();
+    // Personal history deliberately has its own query. Pool filters, balanced
+    // limits and active-only dates must never hide an existing application.
+    const query = new URLSearchParams({ status: 'all', application_status: 'applied', view: 'jobs',
+      compact: 'true', balanced_only: 'false', priority_only: 'false', sort: 'changed',
+      page: String(requestedPage), page_size: String(appliedPageSize) });
+    try {
+      const payload = await api(`/future-radar/opportunities?${query}`, { timeoutMs: 180000 });
+      if (token !== session() || request !== appliedRequest) return;
+      const total = Number(payload.total) || 0;
+      const lastPage = Math.max(1, Math.ceil(total / appliedPageSize));
+      if (requestedPage > lastPage) return loadApplied(lastPage);
+      appliedPage = requestedPage; appliedTotal = total; appliedItems = payload.items || [];
+    } catch (_) {
+      if (token !== session() || request !== appliedRequest) return;
+      appliedError = '已报名记录读取失败，请点击“刷新已报名”重试。';
+    } finally {
+      if (token === session() && request === appliedRequest) { appliedLoading = false; renderApplied(); }
+    }
+  }
   function saveButton(job) {
-    const button = node('button', saved.has(job.id) ? '★ 已收藏 · 取消收藏' : '☆ 收藏到报名清单', 'job-watch-button');
+    const button = node('button', saved.has(job.id) ? '★ 已收藏 · 取消收藏' : '☆ 收藏到待报清单', 'job-watch-button');
     button.type = 'button'; button.dataset.saveJob = job.id;
     button.setAttribute('aria-pressed', String(saved.has(job.id)));
     button.addEventListener('click', async () => {
@@ -62,7 +132,7 @@ export function initRadarPersonal({ api, session, host, makeCard, toast, onAppli
         });
         if (token !== session()) return;
         if (exists) saved.delete(job.id); else saved.set(job.id, { job, priority });
-        updateButtons(); renderSaved(); toast(exists ? '已取消收藏' : '已加入报名清单');
+        updateButtons(); renderSaved(); toast(exists ? '已取消收藏' : '收藏已保存');
       } catch (_) { toast('收藏保存失败，请重试'); }
       finally { button.disabled = false; }
     });
@@ -108,6 +178,7 @@ export function initRadarPersonal({ api, session, host, makeCard, toast, onAppli
         if (saved.has(job.id)) saved.get(job.id).job.application_status = result.application_status;
         updateControls(result.application_status);
         renderSaved();
+        if (!appliedPanel.classList.contains('hidden')) loadApplied(appliedPage);
         toast(`已保存：${labels[result.application_status]}`);
         onApplicationChange(job.id, result.application_status);
       } catch (_) { if (token === session()) toast('投递状态保存失败，请重试'); }
@@ -166,7 +237,13 @@ export function initRadarPersonal({ api, session, host, makeCard, toast, onAppli
   }
   function start() { refresh(); if (!timer) timer = setInterval(refresh, 30000); }
   function stop() { clearInterval(timer); timer = null; }
-  function reset() { stop(); owner = null; saved.clear(); changingApplications.clear(); notice?.close(); notice?.remove(); notice = null; panel.replaceChildren(); }
+  function reset() {
+    stop(); owner = null; saved.clear(); changingApplications.clear();
+    ++appliedRequest; appliedPage = 1; appliedTotal = 0; appliedItems = []; appliedLoading = false; appliedError = '';
+    applicationRecords.reset();
+    notice?.close(); notice?.remove(); notice = null; panel.replaceChildren(); appliedPanel.replaceChildren();
+  }
   host.addEventListener('close', stop);
-  return { saveButton, applicationControl, renderSaved, start, reset };
+  return { saveButton, applicationControl, renderSaved, loadApplied,
+    showApplied: () => Promise.allSettled([applicationRecords.load(1), loadApplied(1)]), start, reset };
 }

@@ -24,7 +24,74 @@ def migrate(connection):
             updated_at TEXT NOT NULL,
             PRIMARY KEY(user_id, job_id)
         );
+        CREATE TABLE IF NOT EXISTS radar_application_records (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            record_key TEXT NOT NULL,
+            company TEXT NOT NULL,
+            title TEXT,
+            batch TEXT,
+            location TEXT,
+            notes TEXT,
+            confirmed_date TEXT,
+            status TEXT NOT NULL DEFAULT 'applied' CHECK(status = 'applied'),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(user_id, record_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_radar_application_records_user_updated
+            ON radar_application_records(user_id, updated_at, record_key);
     """)
+
+
+_APPLICATION_RECORD_FIELDS = (
+    "record_key,company,title,batch,location,notes,confirmed_date,status,created_at,updated_at"
+)
+
+
+def application_records(connect, user_id, *, page=1, page_size=100):
+    """Private application history also covers roles not present in the public pool."""
+    with connect() as connection:
+        total = int(connection.execute(
+            "SELECT COUNT(*) FROM radar_application_records WHERE user_id=?", (user_id,),
+        ).fetchone()[0])
+        rows = connection.execute(
+            f"SELECT {_APPLICATION_RECORD_FIELDS} FROM radar_application_records "
+            "WHERE user_id=? ORDER BY updated_at DESC, record_key LIMIT ? OFFSET ?",
+            (user_id, page_size, (page - 1) * page_size),
+        ).fetchall()
+    return {"items": [dict(row) for row in rows], "total": total, "page": page,
+            "page_size": page_size, "has_more": page * page_size < total}
+
+
+def set_application_record(connect, user_id, record_key, record, now):
+    """Save explicit user history without inferring any public job identity."""
+    with connect() as connection:
+        connection.execute("""
+            INSERT INTO radar_application_records(
+                user_id,record_key,company,title,batch,location,notes,confirmed_date,
+                status,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(user_id,record_key) DO UPDATE SET
+                company=excluded.company, title=excluded.title, batch=excluded.batch,
+                location=excluded.location, notes=excluded.notes,
+                confirmed_date=excluded.confirmed_date, status=excluded.status,
+                updated_at=excluded.updated_at
+        """, (user_id, record_key, record["company"], record.get("title"),
+              record.get("batch"), record.get("location"), record.get("notes"),
+              record.get("confirmed_date"), "applied", now, now))
+        row = connection.execute(
+            f"SELECT {_APPLICATION_RECORD_FIELDS} FROM radar_application_records "
+            "WHERE user_id=? AND record_key=?", (user_id, record_key),
+        ).fetchone()
+    return dict(row)
+
+
+def delete_application_record(connect, user_id, record_key):
+    with connect() as connection:
+        connection.execute(
+            "DELETE FROM radar_application_records WHERE user_id=? AND record_key=?",
+            (user_id, record_key),
+        )
 
 
 def application_states(connect, user_id):

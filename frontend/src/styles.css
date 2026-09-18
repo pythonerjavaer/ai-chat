@@ -2013,3 +2013,16 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
  .star-map-console { animation:starMapReveal .5s ease-out both; }
  @keyframes starMapReveal { from { opacity:.3; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
 }
+
+/* Display groups retain every configured member without crowding the atlas. */
+.star-map-employer-group { flex:1 0 100%; min-width:0; border:1px solid #77b4cc55; border-radius:7px 2px; background:linear-gradient(120deg,#18445545,#20204430); }
+.star-map-group-toggle { padding:9px 10px; color:#d7f3ff; cursor:pointer; font-size:11px; line-height:1.5; }
+.star-map-group-toggle::marker { color:#b39aff; }
+.star-map-group-toggle strong { font-weight:600; overflow-wrap:anywhere; }
+.star-map-group-toggle small { display:inline-block; margin-left:8px; color:#8eb7ca; font-size:9px; font-weight:400; }
+.star-map-group-toggle:hover { background:#8d75d414; }
+.star-map-group-toggle:focus-visible { outline:2px solid #d5bfff; outline-offset:2px; border-radius:5px; }
+.star-map-employer-group[open] .star-map-group-toggle { border-bottom:1px solid #77b4cc25; color:#e7dcff; }
+.star-map-employer-group>p { margin:8px 10px 0; color:#8fa6bd; font-size:9px; line-height:1.6; }
+.star-map-group-members { display:flex; flex-wrap:wrap; gap:5px; padding:9px 10px 11px; margin:0; list-style:none; }
+.star-map-group-members li { border:1px solid #629bb832; border-radius:4px; padding:5px 7px; color:#bdd3e1; font-size:10px; background:#79baff07; overflow-wrap:anywhere; }

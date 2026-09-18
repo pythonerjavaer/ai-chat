@@ -106,6 +106,20 @@ test("real builder and API send the active main-pool GET without blank dates or 
   assert.equal(r.timers[0].cleared, true);
 });
 
+test("a suspended metadata polling gate does not block manually read private application records", async t => {
+  const server = await localServer(t, (_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({items: [{company: 'Example', title: null}], total: 1}));
+  });
+  const r = runtime(server.base);
+  r.context.radarPollingGate = createRadarPollingGate({ read: () => JSON.stringify({suspended: true}), write() {}, locks: () => null });
+  assert.equal(r.context.radarPollingGate.suspended(), true);
+  const data = await r.run("api('/future-radar/application-records?page=1&page_size=100')");
+  assert.equal(data.total, 1);
+  assert.equal(server.requests.length, 1);
+  assert.equal(r.context.radarPollingGate.suspended(), true);
+});
+
 test("a timed-out compatibility read cannot suppress the first real opportunity request", async (t) => {
   const server = await localServer(t, (request, response) => {
     if (request.url === "/api/recruitment/jobs") return;
