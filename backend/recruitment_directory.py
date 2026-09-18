@@ -142,7 +142,7 @@ PERSONAL_MONITOR_POOLS = [
 # separate constellation sector and may be searched when a scan is manually
 # started; they are not represented as GPT-discovered vacancies.
 PERSONAL_RADAR_PINNED_EMPLOYERS = (
-    "泰康基金", "永赢基金", "恒生指数", "恒生电子",
+    "泰康保险集团", "泰康基金", "永赢基金", "恒生指数", "恒生电子",
 )
 
 
