@@ -231,6 +231,8 @@ def test_api_defaults_to_jobs_and_company_aliases_do_not_masquerade_as_job_lists
     import json
     from fastapi.params import Query
     from backend import main
+    from backend.future_radar import personal
+    monkeypatch.setattr(personal, "application_states", lambda _connect, _user: {})
 
     pool.insert("api-one", company="中国联通")
     pool.insert("api-two", company="中国联合网络通信有限公司安徽省分公司")

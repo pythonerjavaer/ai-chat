@@ -175,7 +175,7 @@ const state = {
     runStatusTracking: { quick: false, deep: false },
     terminalSnapshotPromise: null,
     activeRunTypes: new Set(),
-    filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" },
+    filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, application_status: "", verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" },
   },
   pendingLaunch: null,
   activeProduct: null,
@@ -276,6 +276,7 @@ const elements = {
   futureRadarFilterCompany: $("future-radar-filter-company"), futureRadarFilterCity: $("future-radar-filter-city"),
   futureRadarFilterIndustry: $("future-radar-filter-industry"), futureRadarFilterEmployerType: $("future-radar-filter-employer-type"),
   futureRadarFilterProgram: $("future-radar-filter-program"),
+  futureRadarFilterApplication: $("future-radar-filter-application"),
   futureRadarFilterStatus: $("future-radar-filter-status"), futureRadarFilterVerification: $("future-radar-filter-verification"),
   futureRadarFilterSource: $("future-radar-filter-source"), futureRadarFilterEvent: $("future-radar-filter-event"),
   futureRadarFilterSort: $("future-radar-filter-sort"), futureRadarFilterOpeningAfter: $("future-radar-filter-opening-after"),
@@ -2918,7 +2919,7 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
       ? radarNumber(state.futureRadar?.opportunityStats, ["closing_soon"], 0)
       : 0;
     const metricValue = poolUnavailable ? null : code === "CLOSING SOON"
-      ? Math.max(radarNumber(dashboard, paths), opportunityClosingSoon)
+      ? (state.futureRadar?.opportunityStats?.closing_soon == null ? null : opportunityClosingSoon)
       : radarNumber(dashboard, paths);
     const clickable = true;
     const card = makeElement(clickable ? "button" : "article", `radar-metric metric-${code.toLowerCase().replaceAll(" ", "-")}`);
@@ -3143,6 +3144,7 @@ function createFutureRadarOpportunityDetail(job) {
         if (!text) return;
         body.append(makeElement("b", "", label), makeElement("p", "", Array.isArray(text) ? text.join("；") : String(text)));
       });
+      body.appendChild(personalRadar.applicationControl(detail));
       const dates = futureRadarOpportunityDateCopy(detail);
       body.append(makeElement("span", "", dates.opening), makeElement("span", "", dates.closing));
       const primaryUrl = futureRadarPublicOpportunityUrl(detail) || futureRadarPublicOpportunityUrl(job);
@@ -3560,6 +3562,7 @@ function readFutureRadarFilters() {
     employer_type: elements.futureRadarFilterEmployerType.value.trim(),
     program_id: elements.futureRadarFilterProgram.value,
     status: elements.futureRadarFilterStatus.value,
+    application_status: elements.futureRadarFilterApplication?.value || "",
     verification_status: elements.futureRadarFilterVerification.value,
     source_id: elements.futureRadarFilterSource.value,
     event_type: elements.futureRadarFilterEvent.value,
@@ -3573,7 +3576,7 @@ function readFutureRadarFilters() {
 
 function resetFutureRadarFilters() {
   elements.futureRadarFilterForm.reset();
-  state.futureRadar.filters = { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" };
+  state.futureRadar.filters = { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, application_status: "", verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" };
   state.recruitmentTierFilter = "ALL";
   document.querySelectorAll(".recruitment-checks input").forEach(input => { input.checked = false; });
   activateFutureRadarTab("jobs");
@@ -4787,7 +4790,10 @@ function createRecruitmentJobCard(job) {
   if (watchButton.disabled) watchButton.title = "等待官方公开链接核验后可建立监控";
   watchButton.addEventListener("click", () => addRecruitmentWatchFromJob({ ...job, url: jobUrl }, watchButton));
   bottom.appendChild(watchButton);
-  if (job.id) bottom.appendChild(personalRadar.saveButton(job));
+  if (job.id) {
+    bottom.appendChild(personalRadar.saveButton(job));
+    top.appendChild(personalRadar.applicationControl(job));
+  }
   return card;
 }
 
@@ -5327,6 +5333,10 @@ $("studio-open").addEventListener("click", openStudio);
 const personalRadar = initRadarPersonal({
   api, session: () => state.token, host: elements.recruitmentDialog,
   makeCard: createRecruitmentJobCard, toast: showToast,
+  onApplicationChange: (_id, status) => {
+    const page = status === "skipped" || state.futureRadar.filters.application_status ? 1 : state.futureRadar.page;
+    loadFutureRadarJobPage(page, true, { scroll: false });
+  },
 });
 $("recruitment-open").addEventListener("click", openRecruitment);
 $("music-open").addEventListener("click", openMusicDimension);

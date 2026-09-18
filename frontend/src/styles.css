@@ -1945,3 +1945,10 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 [data-radar-panel="saved"] > .job-card { margin: 16px 0; }
 [data-radar-panel="saved"] label { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 [data-radar-panel="saved"] input { width: 90px; padding: 10px; }
+
+.radar-application-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.radar-application-badge { border: 1px solid var(--line); border-radius: 16px; padding: 4px 10px; white-space: nowrap; font-size: 12px; }
+.radar-application-control[data-application-status="applied"] .radar-application-badge { color: #85e7c5; border-color: #438c78; }
+.radar-application-control[data-application-status="skipped"] .radar-application-badge { color: #edbd9b; border-color: #926e58; }
+.radar-application-control select { max-width: 150px; padding: 6px 8px; }
+.job-card-top { flex-wrap: wrap; }

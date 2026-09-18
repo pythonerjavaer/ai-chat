@@ -2132,7 +2132,7 @@ class RadarRepository:
         # Priority/tier/view/company/page changes project the same complete
         # scored set; switching browse scope must not rerun full-pool scoring.
         base_filters = {key: value for key, value in filters.items()
-                        if key not in {"priority_only", "balanced_only", "tier_code", "view", "company_key", "page", "page_size"}}
+                        if key not in {"priority_only", "balanced_only", "tier_code", "view", "company_key", "page", "page_size", "application_status"}}
 
         def build(record_cache_scope=None) -> _PreparedOpportunityPool:
             return self._prepare_opportunity_pool(
@@ -2177,6 +2177,7 @@ class RadarRepository:
         public_url: Callable[[Any], str | None], prepare: Callable[[dict[str, Any]], dict[str, Any]],
         company_aliases: dict[str, str] | None = None, cache_scope: str | None = None,
         input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        application_states: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         filters = filters or {}
         pool = self._prepared_opportunities(
@@ -2184,7 +2185,13 @@ class RadarRepository:
             company_aliases=company_aliases or {}, cache_scope=cache_scope,
             input_sanitizer=input_sanitizer,
         )
-        all_items = pool.items
+        statuses_by_id = {pool.items[pool.aliases[job_id]]["id"]: status
+                          for job_id, status in (application_states or {}).items() if job_id in pool.aliases}
+        application_status = filters.get("application_status")
+        all_items = tuple(item for item in pool.items
+                          if (application_status == "all"
+                              or (statuses_by_id.get(item["id"], "not_applied") == application_status
+                                  if application_status else statuses_by_id.get(item["id"]) != "skipped")))
         today = date.today().isoformat()
         closing_window_end = (date.today() + timedelta(days=15)).isoformat()
         closing_soon = sum(
@@ -2196,6 +2203,13 @@ class RadarRepository:
         items = all_items
         tier_counts = dict(pool.tier_counts)
         category_counts = dict(pool.category_counts)
+        if application_status or len(all_items) != len(pool.items):
+            tier_counts = dict.fromkeys(tier_counts, 0)
+            category_counts = {}
+            for item in all_items:
+                tier_counts[item["tier_bucket"]] += 1
+                category = str(item.get("primary_category") or "uncategorized")
+                category_counts[category] = category_counts.get(category, 0) + 1
         if filters.get("company_key"):
             company_key = filters["company_key"]
             # Balance the complete base pool first. Expanding a company must
@@ -2295,6 +2309,10 @@ class RadarRepository:
                             and str(item["closing_date"]) >= date.today().isoformat()),
                            key=lambda item: (item["closing_date"], str(item.get("id"))))
             result["deadline_opportunities"] = deepcopy(dated[:12])
+        # Personal state is added only to response copies, never shared caches.
+        if application_states is not None:
+            for item in (result["items"] if view == "jobs" else result.get("deadline_opportunities", [])):
+                item["application_status"] = statuses_by_id.get(item["id"], "not_applied")
         return result
 
     def get_prepared_opportunity(
@@ -2302,6 +2320,7 @@ class RadarRepository:
         prepare: Callable[[dict[str, Any]], dict[str, Any]], cache_scope: str,
         company_aliases: dict[str, str] | None = None,
         input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        application_states: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         """Reuse a cached visible winner, including its discovery ID aliases."""
         company_aliases = company_aliases or {}
@@ -2314,7 +2333,11 @@ class RadarRepository:
                 if key[:-1] == prefix:
                     index = pool.aliases.get(job_id)
                     if index is not None:
-                        return pool.items[index]
+                        result = deepcopy(pool.items[index])
+                        if application_states is not None:
+                            result["application_status"] = next((status for alias, status in reversed(list(application_states.items()))
+                                if pool.aliases.get(alias) == index), "not_applied")
+                        return result
                 return None
 
             cached = self._opportunity_cache.find(match)
@@ -2325,10 +2348,14 @@ class RadarRepository:
         row = self.get_opportunity(
             job_id, public_url=public_url, company_aliases=company_aliases,
         )
-        return self._prepare_opportunity_record(
+        result = self._prepare_opportunity_record(
             row, prepare=prepare, input_sanitizer=input_sanitizer,
             record_cache_scope=self._record_cache_scope(prefix),
         ) if row is not None else None
+        if result is not None and application_states is not None:
+            result["application_status"] = next((status for alias, status in reversed(list(application_states.items()))
+                if alias in row["_member_ids"]), "not_applied")
+        return result
 
     def get_opportunity(
         self, job_id: str, *, public_url: Callable[[Any], str | None],

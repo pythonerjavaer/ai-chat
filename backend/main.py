@@ -1439,6 +1439,7 @@ def future_radar_add_review_candidate_to_pool(candidate_id: str, user: User) -> 
 @app.get("/api/future-radar/opportunities")
 def future_radar_opportunities(
     user: User,
+    application_status: Literal["applied", "not_applied", "planned", "skipped", "all"] | None = None,
     page: int = Query(default=1, ge=1, le=100_000),
     page_size: int = Query(default=50, ge=1, le=100),
     status_filter: Literal["active", "open", "closed", "unknown", "all"] = Query(default="active", alias="status"),
@@ -1473,6 +1474,7 @@ def future_radar_opportunities(
     tier selections affect grouping/pagination, not stored records or scoring.
     """
     filters = {
+        "application_status": application_status,
         "status": status_filter, "verification_status": verification_status,
         "company": company, "city": city, "region": region,
         "employer_type": employer_type, "industry": industry,
@@ -1489,7 +1491,9 @@ def future_radar_opportunities(
         "view": view, "company_key": company_key,
     }
     profile = database.get_recruitment_profile(user["id"])
+    from .future_radar import personal
     result = future_radar_service.repository.list_opportunities(
+        application_states=personal.application_states(database.connect, user["id"]),
         page=page, page_size=page_size, filters=filters,
         public_url=_public_reference_url,
         prepare=lambda job: _public_radar_opportunity(job, profile),
@@ -1515,9 +1519,11 @@ def future_radar_opportunities(
 
 @app.get("/api/future-radar/opportunities/{job_id}")
 def future_radar_opportunity(job_id: str, user: User) -> dict:
+    from .future_radar import personal
     profile = database.get_recruitment_profile(user["id"])
     job = future_radar_service.repository.get_prepared_opportunity(
         job_id, public_url=_public_reference_url, company_aliases=_radar_company_aliases(),
+        application_states=personal.application_states(database.connect, user["id"]),
         prepare=lambda item: _public_radar_opportunity(item, profile),
         input_sanitizer=_public_search_update,
         cache_scope=_radar_scoring_scope(user["id"], profile),
@@ -1525,6 +1531,23 @@ def future_radar_opportunity(job_id: str, user: User) -> dict:
     if not job:
         raise HTTPException(status_code=404, detail="Radar opportunity not found.")
     return job
+
+
+class RadarApplicationRequest(BaseModel):
+    status: Literal["applied", "not_applied", "planned", "skipped"]
+
+
+@app.put("/api/future-radar/opportunities/{job_id}/application")
+def radar_set_application(job_id: str, request: RadarApplicationRequest, user: User) -> dict:
+    from .future_radar import personal
+    job = future_radar_service.repository.get_opportunity(
+        job_id, public_url=_public_reference_url, company_aliases=_radar_company_aliases(),
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Radar opportunity not found.")
+    personal.set_application(database.connect, user["id"], job["id"], job["_member_ids"],
+                         request.status, database.utc_now())
+    return {"job_id": job["id"], "application_status": request.status}
 
 
 class RadarSavedJobRequest(BaseModel):
@@ -1546,7 +1569,7 @@ def radar_saved_jobs(user: User) -> dict:
             if exc.status_code != 404:
                 raise
             item["unavailable"] = True
-    return {"items": items}
+    return {"items": [item for item in items if item["job"].get("application_status") != "skipped"]}
 
 
 @app.put("/api/future-radar/saved-jobs/{job_id}")
@@ -1592,7 +1615,8 @@ def radar_notifications(user: User) -> dict:
                 continue
             raise
         seen.add(event["entity_id"])
-        items.append({"event_id": event["id"], "job": job})
+        if job.get("application_status") != "skipped":
+            items.append({"event_id": event["id"], "job": job})
     if not items:
         personal.acknowledge(database.connect, user["id"], through)
     return {"items": items, "through_event_id": through}

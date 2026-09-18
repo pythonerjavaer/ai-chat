@@ -1,9 +1,10 @@
-export function initRadarPersonal({ api, session, host, makeCard, toast }) {
+export function initRadarPersonal({ api, session, host, makeCard, toast, onApplicationChange = () => {} }) {
   let saved = new Map();
   let owner = null;
   let timer = null;
   let pending = false;
   let notice = null;
+  const changingApplications = new Set();
   const panel = document.createElement('section');
   panel.dataset.radarPanel = 'saved';
   panel.className = 'radar-tab-panel hidden';
@@ -24,8 +25,9 @@ export function initRadarPersonal({ api, session, host, makeCard, toast }) {
   }
   function renderSaved() {
     panel.replaceChildren(node('h3', '我的报名清单'), node('p', '数字越小越先报名。收藏和顺序随账号保存；取消收藏不会删除机会池中的岗位。'));
-    if (!saved.size) panel.append(node('p', '还没有收藏岗位。展开企业岗位后，点击“收藏到报名清单”。'));
-    [...saved.values()].sort((a, b) => a.priority - b.priority).forEach(item => {
+    const visibleSaved = [...saved.values()].filter(item => item.job.application_status !== 'skipped');
+    if (!visibleSaved.length) panel.append(node('p', '还没有待报名的收藏岗位。展开企业岗位后，点击“收藏到报名清单”。'));
+    visibleSaved.sort((a, b) => a.priority - b.priority).forEach(item => {
       const card = makeCard(item.job);
       if (item.unavailable) card.prepend(node('p', '该岗位目前不在机会池中，以下为收藏时的记录；申请前请核对原公告。'));
       const label = node('label', '报名顺序 ');
@@ -65,6 +67,56 @@ export function initRadarPersonal({ api, session, host, makeCard, toast }) {
       finally { button.disabled = false; }
     });
     return button;
+  }
+  function applicationControl(job) {
+    const control = node('div', '', 'radar-application-control');
+    control.dataset.applicationJob = job.id;
+    control.dataset.applicationStatus = job.application_status || 'not_applied';
+    const badge = node('span', '', 'radar-application-badge');
+    badge.setAttribute('aria-live', 'polite');
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', `${job.company || ''} ${job.title || ''} 投递状态`);
+    const labels = { not_applied: '未投递', planned: '准备投递', applied: '已投递', skipped: '跳过这个岗位' };
+    for (const [value, text] of Object.entries(labels)) {
+      const option = node('option', text); option.value = value; select.append(option);
+    }
+    const paint = () => {
+      const status = control.dataset.applicationStatus;
+      badge.textContent = labels[status] || labels.not_applied;
+      select.value = status;
+      select.disabled = changingApplications.has(job.id);
+    };
+    control.addEventListener('applicationchange', paint);
+    const updateControls = status => {
+      document.querySelectorAll('[data-application-job]').forEach(item => {
+        if (item.dataset.applicationJob !== job.id) return;
+        if (status) item.dataset.applicationStatus = status;
+        item.dispatchEvent(new Event('applicationchange'));
+      });
+    };
+    select.addEventListener('change', async () => {
+      if (changingApplications.has(job.id)) return;
+      const token = session();
+      const status = select.value;
+      changingApplications.add(job.id); updateControls();
+      try {
+        const result = await api(`/future-radar/opportunities/${encodeURIComponent(job.id)}/application`, {
+          method: 'PUT', body: JSON.stringify({ status }),
+        });
+        if (token !== session()) return;
+        job.application_status = result.application_status;
+        if (saved.has(job.id)) saved.get(job.id).job.application_status = result.application_status;
+        updateControls(result.application_status);
+        renderSaved();
+        toast(`已保存：${labels[result.application_status]}`);
+        onApplicationChange(job.id, result.application_status);
+      } catch (_) { if (token === session()) toast('投递状态保存失败，请重试'); }
+      finally {
+        if (token === session()) { changingApplications.delete(job.id); updateControls(); }
+      }
+    });
+    control.append(badge, select); paint();
+    return control;
   }
   function showNotice(payload) {
     if (notice || !host.open || !payload.items.length) return;
@@ -114,7 +166,7 @@ export function initRadarPersonal({ api, session, host, makeCard, toast }) {
   }
   function start() { refresh(); if (!timer) timer = setInterval(refresh, 30000); }
   function stop() { clearInterval(timer); timer = null; }
-  function reset() { stop(); owner = null; saved.clear(); notice?.close(); notice?.remove(); notice = null; panel.replaceChildren(); }
+  function reset() { stop(); owner = null; saved.clear(); changingApplications.clear(); notice?.close(); notice?.remove(); notice = null; panel.replaceChildren(); }
   host.addEventListener('close', stop);
-  return { saveButton, renderSaved, start, reset };
+  return { saveButton, applicationControl, renderSaved, start, reset };
 }

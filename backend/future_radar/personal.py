@@ -17,7 +17,34 @@ def migrate(connection):
             user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
             event_id INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS radar_applications (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            job_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('planned','applied','skipped')),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(user_id, job_id)
+        );
     """)
+
+
+def application_states(connect, user_id):
+    with connect() as connection:
+        return {row["job_id"]: row["status"] for row in connection.execute(
+            "SELECT job_id,status FROM radar_applications WHERE user_id=? ORDER BY updated_at,job_id", (user_id,),
+        ).fetchall()}
+
+
+def set_application(connect, user_id, job_id, member_ids, status, now):
+    """Keep personal choices separate from shared jobs and ingestion revisions."""
+    with connect() as connection:
+        # A discovery may later be superseded by a verified copy. Replace all
+        # aliases atomically so a newer choice consistently wins.
+        for member_id in set(member_ids) | {job_id}:
+            connection.execute("DELETE FROM radar_applications WHERE user_id=? AND job_id=?",
+                               (user_id, member_id))
+        if status != "not_applied":
+            connection.execute("""INSERT INTO radar_applications(user_id,job_id,status,updated_at)
+                VALUES(?,?,?,?)""", (user_id, job_id, status, now))
 
 
 def saved_jobs(connect, user_id):

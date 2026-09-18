@@ -370,10 +370,21 @@ def test_original_rating_and_pool_survive_postgres_restart_and_relogin(persisten
 
 
 def test_postgres_adopts_existing_chatgpt_candidates_without_network(persistent_app, monkeypatch):
+    import threading
     from fastapi.testclient import TestClient
     from backend.future_radar.adapters import LegacyDatabaseAdapter
 
     app = persistent_app
+    restored = threading.Event()
+    original_restore = app.main.restore_chatgpt_screened_opportunities
+
+    def observe_restore():
+        try:
+            return original_restore()
+        finally:
+            restored.set()
+
+    monkeypatch.setattr(app.main, "restore_chatgpt_screened_opportunities", observe_restore)
     monkeypatch.setattr(app.service, "adapter_factory", lambda _source: LegacyDatabaseAdapter())
     with TestClient(app.main.app):
         request = app.main.RecruitmentIngestJob(
@@ -387,7 +398,9 @@ def test_postgres_adopts_existing_chatgpt_candidates_without_network(persistent_
         assert stored["verification_status"] == "pending"
     # A fresh application startup restores the source-screened row and its
     # missing projection without requiring an API-triggered scan.
+    restored.clear()
     with TestClient(app.main.app):
+        assert restored.wait(5), "Wait for the asynchronous startup projection"
         with app.database.connect() as connection:
             assert connection.execute(
                 "SELECT verification_status FROM recruitment_ingest_candidates WHERE id=?", (stored["id"],)
@@ -397,3 +410,36 @@ def test_postgres_adopts_existing_chatgpt_candidates_without_network(persistent_
         assert app.main.restore_chatgpt_screened_opportunities() == {
             "adopted": 0, "projected": 0, "status": "success",
         }
+
+
+def test_private_application_choices_survive_postgres_restart(persistent_app):
+    from fastapi.testclient import TestClient
+    from backend.future_radar.normalization import normalize_job
+    from backend.future_radar.repository import utc_now
+    app = persistent_app
+    base = '/api/future-radar/opportunities'
+    jobs = []
+    with TestClient(app.main.app) as client:
+        headers, _ = register(client, 'application-owner')
+        other, _ = register(client, 'application-other')
+        source_id = 'legacy-search-discovery'
+        source = app.service.repository.get_source(source_id)
+        for key in ['first', 'second']:
+            item = normalize_job({'external_id': key, 'company': '示例科技', 'title': f'2027校园招聘数据分析岗 {key}',
+                                  'status': 'open', 'verification_status': 'pending', 'tags': ['校园招聘'],
+                                  'official_url': f'https://careers.example.com/campus/{key}'})
+            with app.service.repository.transaction() as connection:
+                saved = app.service.repository.insert_job(connection, item, source_id=source_id, program_id=None, now=utc_now())
+                app.service.repository.link_job_source(connection, job_id=saved['id'], source=source, source_url=item['official_url'],
+                                                      now=utc_now(), verification_role='discovery', evidence=[])
+            jobs.append(saved)
+        for job, status in zip(jobs, ['applied', 'skipped']):
+            response = client.put(f"{base}/{job['id']}/application", headers=headers, json={'status': status})
+            assert response.status_code == 200, response.text
+        assert client.get(base, headers=headers).json()['total'] == 1
+        assert client.get(base, headers=other).json()['total'] == 2
+    with TestClient(app.main.app) as restarted:
+        assert restarted.get(f"{base}/{jobs[0]['id']}", headers=headers).json()['application_status'] == 'applied'
+        skipped = restarted.get(base, params={'application_status': 'skipped'}, headers=headers).json()
+        assert skipped['total'] == 1 and skipped['items'][0]['id'] == jobs[1]['id']
+        assert restarted.get(base, params={'application_status': 'skipped'}, headers=other).json()['total'] == 0

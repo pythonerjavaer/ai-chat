@@ -649,6 +649,8 @@ def test_compact_http_payload_keeps_stats_and_default_legacy_aliases(harness, mo
     # Call only the route function with a synthetic identity: no account is
     # created, no auth endpoint called, no test browser or network used.
     from backend import main
+    from backend.future_radar import personal
+    monkeypatch.setattr(personal, "application_states", lambda _connect, _user: {})
     from fastapi.params import Param
     from inspect import signature
 
