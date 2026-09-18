@@ -2084,6 +2084,12 @@ def public_chatgpt_sync_status() -> dict:
     }
 
 
+@app.get("/api/recruitment/monitor-pools")
+def recruitment_monitor_pools(user: User) -> dict:
+    """Read the configured directory without loading jobs or starting scans."""
+    return {"monitor_pools": PERSONAL_MONITOR_POOLS}
+
+
 @app.get("/api/recruitment/profile")
 def recruitment_profile(user: User) -> dict:
     return public_recruitment_profile(database.get_recruitment_profile(user["id"]))

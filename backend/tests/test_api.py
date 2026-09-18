@@ -955,6 +955,23 @@ def test_ai_space_v2_preflight_local_cache_budget_and_history(monkeypatch):
         assert hidden_history.status_code == 404
 
 
+def test_monitor_directory_does_not_read_jobs_or_start_scan(monkeypatch):
+    with TestClient(main.app) as client:
+        token, _ = register(client, "directory-only")
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("Directory reads must not load jobs or scan")
+
+        monkeypatch.setattr(database, "list_recruitment_jobs", forbidden)
+        monkeypatch.setattr(database, "get_recruitment_profile", forbidden)
+        monkeypatch.setattr(main.future_radar_service, "run", forbidden)
+        response = client.get("/api/recruitment/monitor-pools", headers=auth(token))
+        assert response.status_code == 200
+        assert response.json()["monitor_pools"] == list(main.PERSONAL_MONITOR_POOLS)
+        assert all(pool["employers"] for pool in response.json()["monitor_pools"])
+        assert client.get("/api/recruitment/monitor-pools").status_code == 401
+
+
 def test_recruitment_profile_matching_and_deadline_metadata():
     with TestClient(main.app) as client:
         bootstrap_job = next(
