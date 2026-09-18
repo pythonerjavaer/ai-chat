@@ -1,3 +1,5 @@
+import { normalizeRadarEmployerLabel } from './radar-constellation.js';
+
 const fields = { company: 160, title: 240, batch: 160, location: 160, notes: 1000, confirmed_date: 10 };
 
 export async function prepareApplicationRecords(value) {
@@ -69,7 +71,7 @@ export function initApplicationRecords({ api, session, toast }) {
       page = nextPage; list.replaceChildren();
       for (const record of payload.items || []) {
         const card = node('article', '', 'radar-entity-card');
-        card.append(node('span', '已报名 · 本人确认', 'radar-application-badge'), node('h4', record.company), node('p', record.title || '按单位记录'));
+        card.append(node('span', '已报名 · 本人确认', 'radar-application-badge'), node('h4', normalizeRadarEmployerLabel(record.company)), node('p', record.title || '按单位记录'));
         const meta = [record.batch, record.location, record.confirmed_date ? `确认日期 ${record.confirmed_date}` : ''].filter(Boolean).join(' · ');
         if (meta) card.append(node('p', meta));
         if (record.notes) card.append(node('p', record.notes));

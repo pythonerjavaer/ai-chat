@@ -12,13 +12,13 @@ const DIRECTORY_ALIASES = [
   ['Roland Berger 罗兰贝格', '罗兰贝格', 'Roland Berger'],
   ['L.E.K. Consulting 艾意凯咨询', 'L.E.K. Consulting', 'L.E.K.', 'LEK Consulting', '艾意凯咨询'],
   ['Accenture 埃森哲', '埃森哲', 'Accenture'],
-  ['Amazon / AWS 亚马逊', 'Amazon/AWS', 'Amazon', 'AWS', 'Amazon Web Services', '亚马逊', '亚马逊 Amazon / AWS'],
+  ['Amazon 亚马逊', 'Amazon / AWS 亚马逊', 'Amazon/AWS', 'Amazon', 'AWS', 'Amazon Web Services', '亚马逊', '亚马逊 Amazon / AWS'],
   ['Microsoft 微软', 'Microsoft', '微软'], ['Google 谷歌', 'Google', '谷歌'],
   ['Apple 苹果', 'Apple', '苹果'], ['NVIDIA 英伟达', 'NVIDIA', '英伟达'],
   ['J.P. Morgan 摩根大通', 'J.P. Morgan', '摩根大通', 'JPMorgan'],
   ['Goldman Sachs 高盛', 'Goldman Sachs', '高盛'],
   ['Morgan Stanley 摩根士丹利', 'Morgan Stanley', '摩根士丹利'],
-  ['UBS 瑞银', 'UBS', '瑞银'], ['Citi 花旗', 'Citi', '花旗', 'Citigroup'],
+  ['UBS 瑞银', 'UBS', '瑞银', '瑞银 UBS'], ['Citi 花旗', 'Citi', '花旗', 'Citigroup'],
   ['HSBC 汇丰', 'HSBC', '汇丰'], ['BlackRock 贝莱德', 'BlackRock', '贝莱德', '布莱德'],
   ['中国电子科技集团（中国电科）', '中国电子科技集团', '中国电科'],
   ['大疆 DJI', '大疆', 'DJI', '大疆创新', '深圳市大疆创新科技'],
@@ -35,12 +35,18 @@ const nameKey = name => name.trim().normalize('NFKC').toLocaleLowerCase('en');
 const aliasLabels = new Map(DIRECTORY_ALIASES.flatMap(([label, ...aliases]) =>
   [label, ...aliases].map(alias => [nameKey(alias), label])));
 
+// Normalize older API records to the same bilingual label used by the map.
+export function normalizeRadarEmployerLabel(value) {
+  if (typeof value !== 'string') return value;
+  return aliasLabels.get(nameKey(value)) || value;
+}
+
 export function buildRadarDirectoryView(employers = []) {
   const institutions = new Map();
   for (const original of employers) {
     if (typeof original !== 'string' || !original.trim()) continue;
     const name = original.trim();
-    const label = aliasLabels.get(nameKey(name)) || name;
+    const label = normalizeRadarEmployerLabel(name);
     const key = nameKey(label);
     if (!institutions.has(key)) institutions.set(key, { kind: 'employer', label, aliases: [] });
     const item = institutions.get(key);

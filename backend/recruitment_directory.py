@@ -166,8 +166,8 @@ EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "Roland Berger 罗兰贝格": ("罗兰贝格", "Roland Berger"),
     "L.E.K. Consulting 艾意凯咨询": ("L.E.K.", "LEK Consulting", "艾意凯咨询"),
     "Accenture 埃森哲": ("埃森哲", "Accenture"),
-    "Amazon / AWS 亚马逊": (
-        "Amazon/AWS", "Amazon", "AWS", "Amazon Web Services", "亚马逊",
+    "Amazon 亚马逊": (
+        "Amazon / AWS 亚马逊", "Amazon/AWS", "Amazon", "AWS", "Amazon Web Services", "亚马逊",
     ),
     "Microsoft 微软": ("Microsoft", "微软"),
     "Google 谷歌": ("Google", "谷歌"),

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildRadarDirectoryView, renderRadarConstellation } from './radar-constellation.js';
+import { buildRadarDirectoryView, normalizeRadarEmployerLabel, renderRadarConstellation } from './radar-constellation.js';
 
 function element(tag) {
   return { tag, children: [], style: {}, listeners: {}, textContent: '',
@@ -31,10 +31,16 @@ test('only supplied high-priority employers are rendered', () => {
   }], { createElement: element });
   const nodes = descendants(root);
   assert.equal(nodes.some(node => node.tag === 'details'), false);
-  assert.ok(nodes.some(node => node.textContent === 'Amazon / AWS 亚马逊'));
+  assert.ok(nodes.some(node => node.textContent === 'Amazon 亚马逊'));
   assert.ok(nodes.some(node => node.textContent === '平安银行'));
   assert.ok(!nodes.some(node => node.textContent === '中国平安'));
   assert.ok(nodes.some(node => node.textContent.includes('2 个高优先级单位')));
+});
+
+test('foreign employer labels use the same English-first bilingual identity everywhere', () => {
+  assert.equal(normalizeRadarEmployerLabel('瑞银'), 'UBS 瑞银');
+  assert.equal(normalizeRadarEmployerLabel('瑞银 UBS'), 'UBS 瑞银');
+  assert.equal(normalizeRadarEmployerLabel('UBS'), 'UBS 瑞银');
 });
 
 test('empty priority atlas explains that no employer is available', () => {
