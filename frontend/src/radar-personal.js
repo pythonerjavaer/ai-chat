@@ -101,7 +101,7 @@ export function initRadarPersonal({ api, session, host, makeCard, toast, onAppli
       changingApplications.add(job.id); updateControls();
       try {
         const result = await api(`/future-radar/opportunities/${encodeURIComponent(job.id)}/application`, {
-          method: 'PUT', body: JSON.stringify({ status }),
+          method: 'PUT', body: JSON.stringify({ status }), timeoutMs: 180000,
         });
         if (token !== session()) return;
         job.application_status = result.application_status;

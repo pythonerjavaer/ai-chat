@@ -103,6 +103,7 @@ class _PreparedOpportunityPool:
     tier_counts: dict[str, int]
     category_counts: dict[str, int]
     aliases: dict[str, int]
+    member_ids: tuple[frozenset[str], ...]
 
 
 class RadarRepository:
@@ -1931,7 +1932,8 @@ class RadarRepository:
             for index, row in enumerate(rows)
             for alias in (row["_member_ids"] | row["_member_external_ids"])
         }
-        return _PreparedOpportunityPool(items, tier_counts, category_counts, aliases)
+        return _PreparedOpportunityPool(items, tier_counts, category_counts, aliases,
+                                        tuple(frozenset(row["_member_ids"]) for row in rows))
 
     @staticmethod
     def _opportunity_display_company(
@@ -2321,6 +2323,7 @@ class RadarRepository:
         company_aliases: dict[str, str] | None = None,
         input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         application_states: dict[str, str] | None = None,
+        include_member_ids: bool = False,
     ) -> dict[str, Any] | None:
         """Reuse a cached visible winner, including its discovery ID aliases."""
         company_aliases = company_aliases or {}
@@ -2334,6 +2337,8 @@ class RadarRepository:
                     index = pool.aliases.get(job_id)
                     if index is not None:
                         result = deepcopy(pool.items[index])
+                        if include_member_ids:
+                            result["_member_ids"] = pool.member_ids[index]
                         if application_states is not None:
                             result["application_status"] = next((status for alias, status in reversed(list(application_states.items()))
                                 if pool.aliases.get(alias) == index), "not_applied")
@@ -2352,6 +2357,8 @@ class RadarRepository:
             row, prepare=prepare, input_sanitizer=input_sanitizer,
             record_cache_scope=self._record_cache_scope(prefix),
         ) if row is not None else None
+        if result is not None and include_member_ids:
+            result["_member_ids"] = frozenset(row["_member_ids"])
         if result is not None and application_states is not None:
             result["application_status"] = next((status for alias, status in reversed(list(application_states.items()))
                 if alias in row["_member_ids"]), "not_applied")

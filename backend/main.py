@@ -1540,8 +1540,12 @@ class RadarApplicationRequest(BaseModel):
 @app.put("/api/future-radar/opportunities/{job_id}/application")
 def radar_set_application(job_id: str, request: RadarApplicationRequest, user: User) -> dict:
     from .future_radar import personal
-    job = future_radar_service.repository.get_opportunity(
+    profile = database.get_recruitment_profile(user["id"])
+    job = future_radar_service.repository.get_prepared_opportunity(
         job_id, public_url=_public_reference_url, company_aliases=_radar_company_aliases(),
+        prepare=lambda item: _public_radar_opportunity(item, profile),
+        input_sanitizer=_public_search_update,
+        cache_scope=_radar_scoring_scope(user["id"], profile), include_member_ids=True,
     )
     if not job:
         raise HTTPException(status_code=404, detail="Radar opportunity not found.")
