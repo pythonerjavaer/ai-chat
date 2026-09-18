@@ -971,7 +971,13 @@ def test_monitor_directory_uses_only_gpt_found_employers_without_starting_scan(m
         response = client.get("/api/recruitment/monitor-pools", headers=auth(token))
         assert response.status_code == 200
         pools = response.json()["monitor_pools"]
-        assert {employer for pool in pools for employer in pool["employers"]} == {"平安银行", "新发现单位"}
+        gpt_pool_employers = {
+            employer for pool in pools if pool["id"] != "personal_radar_targets"
+            for employer in pool["employers"]
+        }
+        assert gpt_pool_employers == {"平安银行", "新发现单位"}
+        pinned = next(pool for pool in pools if pool["id"] == "personal_radar_targets")
+        assert pinned["employers"] == list(main.PERSONAL_RADAR_PINNED_EMPLOYERS)
         assert all("中国平安" not in pool["employers"] for pool in pools)
         assert client.get("/api/recruitment/monitor-pools").status_code == 401
 

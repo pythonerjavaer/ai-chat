@@ -78,7 +78,7 @@ PERSONAL_MONITOR_POOLS = [
             "方正证券", "国联民生证券", "平安证券", "中银证券", "东吴证券", "国元证券",
             "中信资产", "东方资产", "中国华融", "易方达", "华夏基金", "嘉实基金",
             "南方基金", "汇添富", "富国基金", "博时基金", "广发基金", "招商基金", "中欧基金",
-            "兴证全球基金", "景顺长城基金", "鹏华基金", "国投证券", "国信证券",
+            "泰康基金", "永赢基金", "兴证全球基金", "景顺长城基金", "鹏华基金", "国投证券", "国信证券",
         ],
     },
     {
@@ -103,7 +103,7 @@ PERSONAL_MONITOR_POOLS = [
             "京东", "小米", "网易", "快手", "滴滴", "携程", "华为", "科大讯飞",
             "同程旅行", "得物", "B站", "金山办公", "小红书", "BytePlus",
             "DJI", "大疆", "中芯国际", "SMIC", "联想", "荣耀", "OPPO", "vivo",
-            "蔚来", "小鹏汽车", "理想汽车", "宁德时代", "比亚迪",
+            "恒生电子", "恒生指数", "蔚来", "小鹏汽车", "理想汽车", "宁德时代", "比亚迪",
         ],
     },
     {
@@ -136,6 +136,14 @@ PERSONAL_MONITOR_POOLS = [
         "employers": ["Deloitte", "德勤", "PwC", "普华永道", "EY", "安永", "KPMG", "毕马威"],
     },
 ]
+
+
+# These are explicit user-selected monitoring targets.  They are shown in a
+# separate constellation sector and may be searched when a scan is manually
+# started; they are not represented as GPT-discovered vacancies.
+PERSONAL_RADAR_PINNED_EMPLOYERS = (
+    "泰康基金", "永赢基金", "恒生指数", "恒生电子",
+)
 
 
 EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
@@ -190,6 +198,10 @@ EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "东吴证券": ("东吴证券股份有限公司",),
     "国元证券": ("国元证券股份有限公司",),
     "中欧基金": ("中欧基金管理有限公司",),
+    "泰康基金": ("泰康基金管理有限公司", "Taikang Fund"),
+    "永赢基金": ("永赢基金管理有限公司", "Yongying Fund"),
+    "恒生指数": ("恒生指数有限公司", "Hang Seng Indexes"),
+    "恒生电子": ("恒生电子股份有限公司", "Hundsun"),
     # The sidebar uses familiar short names; official notices commonly use
     # these legal/brand names.  Alias matching selects a discovery target only,
     # and never bypasses the separate official-page evidence gate.

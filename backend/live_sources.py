@@ -10,7 +10,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from .config import settings
-from .recruitment_directory import PERSONAL_MONITOR_POOLS
+from .recruitment_directory import PERSONAL_MONITOR_POOLS, PERSONAL_RADAR_PINNED_EMPLOYERS
 from .recruitment_watch import WatchFetchError, fetch_watch_page, normalize_public_https_urls
 
 

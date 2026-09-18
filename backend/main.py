@@ -82,6 +82,7 @@ from .live_sources import (
     CORE_LOCATION_MARKERS,
     CURATED_CAMPUS_JOBS,
     PERSONAL_MONITOR_POOLS,
+    PERSONAL_RADAR_PINNED_EMPLOYERS,
     fetch_adzuna_jobs,
     fetch_public_recruitment_sources,
     is_actionable_recruitment_listing,
@@ -2163,6 +2164,12 @@ def _chatgpt_monitor_pools() -> list[dict[str, object]]:
             "focus": "仅展示 ChatGPT 监控中实际出现的开放岗位招聘单位。",
             "employers": sorted(employers, key=str.casefold),
         })
+    result.append({
+        "id": "personal_radar_targets",
+        "name": "本人关注单位",
+        "focus": "你明确加入的监控单位；显示不代表已有 GPT 岗位或当前开放招聘。",
+        "employers": list(PERSONAL_RADAR_PINNED_EMPLOYERS),
+    })
     return result
 
 
