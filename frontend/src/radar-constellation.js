@@ -15,8 +15,8 @@ const DIRECTORY_ALIASES = [
   ['平安证券', '平安证券', '平安证券股份有限公司'],
   ['泰康保险集团', '泰康', '泰康保险', '泰康保险集团股份有限公司'],
 ];
-// The star map never infers a parent/subsidiary relationship.  A legal entity
-// appears only when the GPT monitoring source actually returned a job for it.
+// The star map never infers a parent/subsidiary relationship. It only shows
+// the user's maintained high-priority units in their actual business sector.
 const DIRECTORY_GROUPS = [];
 const nameKey = name => name.trim().normalize('NFKC').toLocaleLowerCase('en');
 const aliasLabels = new Map(DIRECTORY_ALIASES.flatMap(([label, ...aliases]) =>
@@ -51,22 +51,22 @@ export function buildRadarDirectoryView(employers = []) {
   return { entries, institutionCount: institutions.size, groupCount: groups.length };
 }
 
-// The constellation is a view of GPT-found job employers, never the broad watchlist.
+// The constellation is a category view of maintained priorities, never a scan report.
 export function renderRadarConstellation(container, pools, doc = document) {
   const node = (tag, cls, text = '') => {
     const el = doc.createElement(tag); el.className = cls; el.textContent = text; return el;
   };
   container.replaceChildren();
-  if (!pools.length) { container.appendChild(node('p', 'star-map-empty', 'ChatGPT 监控尚未发现可展示的岗位单位。')); return; }
+  if (!pools.length) { container.appendChild(node('p', 'star-map-empty', '尚无可展示的高优先级单位；已报名或收藏后会按行业归入星域。')); return; }
   const directories = pools.map(pool => buildRadarDirectoryView(pool.employers || []));
   const shell = node('section', 'star-map-console');
   const header = node('div', 'star-map-telemetry');
   header.append(node('span', '', 'SECTOR ATLAS'), node('span', '', `${pools.length} 星域 · ${directories.reduce((n, directory) => n + directory.entries.length, 0)} 个展示项`));
   const field = node('div', 'star-map-field');
-  field.setAttribute('role', 'group'); field.setAttribute('aria-label', '雷达星图，查看 ChatGPT 已发现的招聘单位');
+  field.setAttribute('role', 'group'); field.setAttribute('aria-label', '雷达星图，查看按行业归类的高优先级单位');
   for (let i = 0; i < 3; i++) field.appendChild(node('i', `star-map-orbit orbit-${i}`));
   const core = node('div', 'star-map-core');
-  core.append(node('span', '', '◎'), node('strong', '', '星域导航'), node('small', '', 'GPT SIGNALS'));
+  core.append(node('span', '', '◎'), node('strong', '', '星域导航'), node('small', '', 'PRIORITY ATLAS'));
   field.appendChild(core);
   const detail = node('section', 'star-map-detail'); detail.setAttribute('aria-live', 'polite');
   const legend = node('div', 'star-map-legend');
@@ -80,7 +80,7 @@ export function renderRadarConstellation(container, pools, doc = document) {
     const list = node('div', 'star-map-employers');
     function employerLabel(item, tag = 'span') {
       const label = node(tag, '', item.label);
-      label.title = `GPT 岗位中的单位写法：${item.aliases.join('、')}`;
+      label.title = `已维护单位写法：${item.aliases.join('、')}`;
       return label;
     }
     directory.entries.forEach(item => {
@@ -89,7 +89,7 @@ export function renderRadarConstellation(container, pools, doc = document) {
       const group = node('details', 'star-map-employer-group');
       const summary = node('summary', 'star-map-group-toggle');
       summary.append(node('strong', '', item.label), node('small', '', `${item.members.length} 家机构`));
-      if (item.parent) summary.title = `GPT 岗位中的单位写法：${item.parent.aliases.join('、')}`;
+      if (item.parent) summary.title = `已维护单位写法：${item.parent.aliases.join('、')}`;
       const members = node('ul', 'star-map-group-members');
       item.members.forEach(member => members.appendChild(employerLabel(member, 'li')));
       group.append(summary, members);
@@ -97,7 +97,7 @@ export function renderRadarConstellation(container, pools, doc = document) {
     });
     const count = directory.groupCount
       ? `${directory.entries.length} 个招聘单位`
-      : `${directory.institutionCount} 个 GPT 已发现招聘单位`;
+      : `${directory.institutionCount} 个高优先级单位`;
     detail.replaceChildren(title, node('p', '', pool.focus || ''), node('small', '', `${count} · 不代表当前招聘数量`), list);
   }
   pools.forEach((pool, index) => {
@@ -107,7 +107,7 @@ export function renderRadarConstellation(container, pools, doc = document) {
     const star = node('button', 'star-map-node'); star.type = 'button';
     star.style.left = `${x}%`; star.style.top = `${y}%`;
     const directory = directories[index];
-    star.setAttribute('aria-label', `${pool.name}，${directory.institutionCount} 个 GPT 已发现招聘单位`);
+    star.setAttribute('aria-label', `${pool.name}，${directory.institutionCount} 个高优先级单位`);
     star.title = pool.name;
     star.append(node('i', '', '✦'), node('span', '', String(index + 1).padStart(2, '0')));
     const ray = node('i', 'star-map-ray');
@@ -118,6 +118,6 @@ export function renderRadarConstellation(container, pools, doc = document) {
     for (const el of [star, key]) el.addEventListener('click', () => select(index));
     controls.push([star, key]); legend.appendChild(key);
   });
-  shell.append(header, field, node('p', 'star-map-hint', '点亮星域，查看 GPT 已发现的招聘单位'), legend, detail);
+  shell.append(header, field, node('p', 'star-map-hint', '点亮星域，查看按行业归类的高优先级单位'), legend, detail);
   container.appendChild(shell); select(0);
 }

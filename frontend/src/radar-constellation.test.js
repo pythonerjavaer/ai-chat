@@ -22,7 +22,7 @@ test('aliases merge, but the star map never infers a group or subsidiary', () =>
   assert.equal(directory.entries.some(item => item.label === '泰康保险集团'), false);
 });
 
-test('only supplied GPT-found employers are rendered', () => {
+test('only supplied high-priority employers are rendered', () => {
   const root = element('div');
   renderRadarConstellation(root, [{
     name: 'GPT 已发现单位',
@@ -34,11 +34,11 @@ test('only supplied GPT-found employers are rendered', () => {
   assert.ok(nodes.some(node => node.textContent === '亚马逊 / AWS'));
   assert.ok(nodes.some(node => node.textContent === '平安银行'));
   assert.ok(!nodes.some(node => node.textContent === '中国平安'));
-  assert.ok(nodes.some(node => node.textContent.includes('2 个 GPT 已发现招聘单位')));
+  assert.ok(nodes.some(node => node.textContent.includes('2 个高优先级单位')));
 });
 
-test('empty GPT inventory explains that no job employer is available', () => {
+test('empty priority atlas explains that no employer is available', () => {
   const root = element('div');
   renderRadarConstellation(root, [], { createElement: element });
-  assert.equal(root.children[0].textContent, 'ChatGPT 监控尚未发现可展示的岗位单位。');
+  assert.equal(root.children[0].textContent, '尚无可展示的高优先级单位；已报名或收藏后会按行业归入星域。');
 });

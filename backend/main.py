@@ -89,6 +89,7 @@ from .live_sources import (
     is_priority_campus_listing,
     is_recruitment_program_listing,
 )
+from .recruitment_directory import employer_directory_category
 from .config import settings
 from .future_radar.normalization import (
     PRIMARY_CATEGORY_CODES,
@@ -2140,43 +2141,59 @@ def public_chatgpt_sync_status() -> dict:
     }
 
 
-def _chatgpt_monitor_pools() -> list[dict[str, object]]:
-    """Build the star map from actual GPT-found job signals, never the watchlist."""
+def _priority_radar_pools(user_id: int) -> list[dict[str, object]]:
+    """Build category-only star navigation from the user's maintained priorities.
+
+    The atlas is not a ChatGPT ingestion report and it is not a second sentry
+    list.  It keeps explicit high-priority targets, confirmed applications and
+    saved jobs in their real business category, whether or not a new source has
+    found a vacancy this round.
+    """
+    pool_metadata = {pool["primary_category"]: pool for pool in PERSONAL_MONITOR_POOLS}
     category_by_employer = {
         employer: pool["primary_category"]
         for pool in PERSONAL_MONITOR_POOLS
         for employer in pool["employers"]
     }
     names_by_category: dict[str, set[str]] = defaultdict(set)
-    for item in database.list_chatgpt_monitor_employers(ACTIVE_CHATGPT_SOURCE_IDS):
-        company = item["company"]
-        category = category_by_employer.get(company, "gpt_discovered")
-        names_by_category[category].add(company)
-    pool_metadata = {pool["primary_category"]: pool for pool in PERSONAL_MONITOR_POOLS}
+
+    def add(company: object) -> None:
+        name = str(company or "").strip()
+        if not name:
+            return
+        category = category_by_employer.get(name) or employer_directory_category(name)
+        if category in pool_metadata:
+            names_by_category[category].add(name)
+
+    for employer in PERSONAL_RADAR_PINNED_EMPLOYERS:
+        add(employer)
+
+    from .future_radar import personal
+    records = personal.application_records(database.connect, user_id, page=1, page_size=200)
+    for record in records["items"]:
+        add(record.get("company"))
+    for item in personal.saved_jobs(database.connect, user_id):
+        add(item.get("job", {}).get("company"))
+
     result = []
-    for category, employers in sorted(
-        names_by_category.items(), key=lambda entry: (entry[0] == "gpt_discovered", entry[0])
-    ):
-        metadata = pool_metadata.get(category)
+    for pool in PERSONAL_MONITOR_POOLS:
+        category = pool["primary_category"]
+        employers = names_by_category.get(category)
+        if not employers:
+            continue
         result.append({
             "id": category,
-            "name": metadata["name"] if metadata else "GPT 已发现单位",
-            "focus": "仅展示 ChatGPT 监控中实际出现的开放岗位招聘单位。",
+            "name": pool["name"],
+            "focus": "已报名、收藏或明确列为高优先级的单位，按所属行业归入本星域；不代表当前有开放岗位。",
             "employers": sorted(employers, key=str.casefold),
         })
-    result.append({
-        "id": "personal_radar_targets",
-        "name": "本人关注单位",
-        "focus": "你明确加入的监控单位；显示不代表已有 GPT 岗位或当前开放招聘。",
-        "employers": list(PERSONAL_RADAR_PINNED_EMPLOYERS),
-    })
     return result
 
 
 @app.get("/api/recruitment/monitor-pools")
 def recruitment_monitor_pools(user: User) -> dict:
-    """Read GPT-found employers without scanning or showing the broad watchlist."""
-    return {"monitor_pools": _chatgpt_monitor_pools()}
+    """Read the signed-in user's category-based priority atlas without scanning."""
+    return {"monitor_pools": _priority_radar_pools(user["id"])}
 
 
 @app.get("/api/recruitment/profile")

@@ -36,10 +36,10 @@ test('directory failure is visible and retry loads employers independently of jo
   await retry.listeners.click();
   const all = el => [el, ...el.children.flatMap(all)];
   assert.ok(all(container).some(el => el.textContent === '真实机构'));
-  assert.ok(all(container).some(el => el.textContent.includes('1 个 GPT 已发现招聘单位')));
+  assert.ok(all(container).some(el => el.textContent.includes('1 个高优先级单位')));
   assert.deepEqual(requests, ['/recruitment/monitor-pools', '/recruitment/monitor-pools']);
   context.renderRecruitmentMonitors([]);
-  assert.match(container.children[0].textContent, /尚未发现可展示的岗位单位/);
+  assert.match(container.children[0].textContent, /尚无可展示的高优先级单位/);
 });
 test('selecting a star updates the employer list and both navigation controls', () => {
   const root = element('div');

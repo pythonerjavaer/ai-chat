@@ -955,30 +955,30 @@ def test_ai_space_v2_preflight_local_cache_budget_and_history(monkeypatch):
         assert hidden_history.status_code == 404
 
 
-def test_monitor_directory_uses_only_gpt_found_employers_without_starting_scan(monkeypatch):
+def test_monitor_directory_groups_personal_priorities_without_starting_scan(monkeypatch):
     with TestClient(main.app) as client:
-        token, _ = register(client, "directory-only")
+        token, _ = register(client, "directory-priority")
 
         def forbidden(*args, **kwargs):
             raise AssertionError("Directory must not start a scan")
 
-        monkeypatch.setattr(
-            database,
-            "list_chatgpt_monitor_employers",
-            lambda source_ids: [{"company": "平安银行", "industry": ""}, {"company": "新发现单位", "industry": ""}],
-        )
         monkeypatch.setattr(main.future_radar_service, "run", forbidden)
+        created = client.put(
+            "/api/future-radar/application-records/manual-tencent",
+            headers=auth(token),
+            json={"company": "腾讯", "batch": "2027秋招本轮"},
+        )
+        assert created.status_code == 200
         response = client.get("/api/recruitment/monitor-pools", headers=auth(token))
         assert response.status_code == 200
         pools = response.json()["monitor_pools"]
-        gpt_pool_employers = {
-            employer for pool in pools if pool["id"] != "personal_radar_targets"
-            for employer in pool["employers"]
-        }
-        assert gpt_pool_employers == {"平安银行", "新发现单位"}
-        pinned = next(pool for pool in pools if pool["id"] == "personal_radar_targets")
-        assert pinned["employers"] == list(main.PERSONAL_RADAR_PINNED_EMPLOYERS)
-        assert all("中国平安" not in pool["employers"] for pool in pools)
+        ids = {pool["id"] for pool in pools}
+        assert "personal_radar_targets" not in ids
+        assert "gpt_discovered" not in ids
+        internet = next(pool for pool in pools if pool["id"] == "internet_tech")
+        assert "腾讯" in internet["employers"]
+        funds = next(pool for pool in pools if pool["id"] == "securities_public_funds_asset_management")
+        assert {"泰康基金", "永赢基金"}.issubset(funds["employers"])
         assert client.get("/api/recruitment/monitor-pools").status_code == 401
 
 

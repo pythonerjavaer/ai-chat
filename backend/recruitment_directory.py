@@ -138,9 +138,9 @@ PERSONAL_MONITOR_POOLS = [
 ]
 
 
-# These are explicit user-selected monitoring targets.  They are shown in a
-# separate constellation sector and may be searched when a scan is manually
-# started; they are not represented as GPT-discovered vacancies.
+# These are explicit high-priority targets. They appear in their existing
+# business sector beside confirmed applications and saved jobs, never in a
+# separate personal/GPT constellation sector.
 PERSONAL_RADAR_PINNED_EMPLOYERS = (
     "泰康保险集团", "泰康基金", "永赢基金", "恒生指数", "恒生电子",
 )
