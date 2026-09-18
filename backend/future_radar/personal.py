@@ -2,6 +2,8 @@
 
 import json
 
+from ..recruitment_directory import canonical_employer_identity
+
 
 def migrate(connection):
     connection.executescript("""
@@ -48,6 +50,13 @@ _APPLICATION_RECORD_FIELDS = (
 )
 
 
+def _public_application_record(row):
+    """Show maintained group/brand aliases once without collapsing actual subsidiaries."""
+    item = dict(row)
+    item["company"] = canonical_employer_identity(item["company"]) or item["company"]
+    return item
+
+
 def application_records(connect, user_id, *, page=1, page_size=100):
     """Private application history also covers roles not present in the public pool."""
     with connect() as connection:
@@ -59,12 +68,13 @@ def application_records(connect, user_id, *, page=1, page_size=100):
             "WHERE user_id=? ORDER BY updated_at DESC, record_key LIMIT ? OFFSET ?",
             (user_id, page_size, (page - 1) * page_size),
         ).fetchall()
-    return {"items": [dict(row) for row in rows], "total": total, "page": page,
+    return {"items": [_public_application_record(row) for row in rows], "total": total, "page": page,
             "page_size": page_size, "has_more": page * page_size < total}
 
 
 def set_application_record(connect, user_id, record_key, record, now):
     """Save explicit user history without inferring any public job identity."""
+    company = canonical_employer_identity(record["company"]) or record["company"]
     with connect() as connection:
         connection.execute("""
             INSERT INTO radar_application_records(
@@ -76,14 +86,14 @@ def set_application_record(connect, user_id, record_key, record, now):
                 location=excluded.location, notes=excluded.notes,
                 confirmed_date=excluded.confirmed_date, status=excluded.status,
                 updated_at=excluded.updated_at
-        """, (user_id, record_key, record["company"], record.get("title"),
+        """, (user_id, record_key, company, record.get("title"),
               record.get("batch"), record.get("location"), record.get("notes"),
               record.get("confirmed_date"), "applied", now, now))
         row = connection.execute(
             f"SELECT {_APPLICATION_RECORD_FIELDS} FROM radar_application_records "
             "WHERE user_id=? AND record_key=?", (user_id, record_key),
         ).fetchone()
-    return dict(row)
+    return _public_application_record(row)
 
 
 def delete_application_record(connect, user_id, record_key):

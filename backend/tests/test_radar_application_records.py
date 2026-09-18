@@ -47,6 +47,18 @@ def test_records_are_durable_and_idempotent_without_inventing_jobs(harness, monk
     assert detail["application_status"] == "not_applied"
 
 
+def test_records_display_known_brand_aliases_once_but_preserve_actual_subsidiaries(harness):
+    h = harness
+    canonical = h.client.put(BASE + "/blackrock", headers=h.auth, json={"company": "贝莱德"})
+    assert canonical.status_code == 200
+    assert canonical.json()["company"] == "BlackRock"
+    subsidiary = h.client.put(BASE + "/ping-an-bank", headers=h.auth, json={"company": "平安银行"})
+    assert subsidiary.status_code == 200
+    assert subsidiary.json()["company"] == "平安银行"
+    names = {record["company"] for record in h.client.get(BASE, headers=h.auth).json()["items"]}
+    assert names == {"BlackRock", "平安银行"}
+
+
 def test_private_records_never_cross_accounts_and_delete_is_idempotent(harness):
     h = harness
     other_auth, _ = register(h.client, "history-other-user")

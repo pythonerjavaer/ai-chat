@@ -2879,6 +2879,33 @@ def set_system_state(key: str, value: dict[str, Any]) -> None:
         )
 
 
+def list_chatgpt_monitor_employers(source_ids: tuple[str, ...] | list[str]) -> list[dict[str, str]]:
+    """Return only active, non-rejected employers actually extracted from GPT sources.
+
+    This is a display inventory for the radar constellation.  It deliberately
+    does not fall back to the broad employer watchlist: an employer appears
+    only after a configured ChatGPT monitoring source produced a job signal.
+    """
+    selected = tuple(sorted({str(source_id).strip() for source_id in source_ids if str(source_id).strip()}))
+    if not selected:
+        return []
+    placeholders = ",".join("?" for _ in selected)
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT company, industry
+            FROM recruitment_ingest_candidates
+            WHERE source_id IN ({placeholders})
+              AND incoming_status = 'open'
+              AND verification_status IN ('pending', 'source_screened', 'verified')
+            GROUP BY company, industry
+            ORDER BY company COLLATE NOCASE, industry COLLATE NOCASE
+            """,
+            selected,
+        ).fetchall()
+    return [{"company": str(row["company"]), "industry": str(row["industry"] or "")} for row in rows]
+
+
 def list_recruitment_jobs() -> list[dict[str, Any]]:
     from .recruitment_rating import normalize_source_rating
     with connect() as connection:

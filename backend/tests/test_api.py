@@ -955,20 +955,24 @@ def test_ai_space_v2_preflight_local_cache_budget_and_history(monkeypatch):
         assert hidden_history.status_code == 404
 
 
-def test_monitor_directory_does_not_read_jobs_or_start_scan(monkeypatch):
+def test_monitor_directory_uses_only_gpt_found_employers_without_starting_scan(monkeypatch):
     with TestClient(main.app) as client:
         token, _ = register(client, "directory-only")
 
         def forbidden(*args, **kwargs):
-            raise AssertionError("Directory reads must not load jobs or scan")
+            raise AssertionError("Directory must not start a scan")
 
-        monkeypatch.setattr(database, "list_recruitment_jobs", forbidden)
-        monkeypatch.setattr(database, "get_recruitment_profile", forbidden)
+        monkeypatch.setattr(
+            database,
+            "list_chatgpt_monitor_employers",
+            lambda source_ids: [{"company": "平安银行", "industry": ""}, {"company": "新发现单位", "industry": ""}],
+        )
         monkeypatch.setattr(main.future_radar_service, "run", forbidden)
         response = client.get("/api/recruitment/monitor-pools", headers=auth(token))
         assert response.status_code == 200
-        assert response.json()["monitor_pools"] == list(main.PERSONAL_MONITOR_POOLS)
-        assert all(pool["employers"] for pool in response.json()["monitor_pools"])
+        pools = response.json()["monitor_pools"]
+        assert {employer for pool in pools for employer in pool["employers"]} == {"平安银行", "新发现单位"}
+        assert all("中国平安" not in pool["employers"] for pool in pools)
         assert client.get("/api/recruitment/monitor-pools").status_code == 401
 
 

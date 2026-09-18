@@ -2139,10 +2139,37 @@ def public_chatgpt_sync_status() -> dict:
     }
 
 
+def _chatgpt_monitor_pools() -> list[dict[str, object]]:
+    """Build the star map from actual GPT-found job signals, never the watchlist."""
+    category_by_employer = {
+        employer: pool["primary_category"]
+        for pool in PERSONAL_MONITOR_POOLS
+        for employer in pool["employers"]
+    }
+    names_by_category: dict[str, set[str]] = defaultdict(set)
+    for item in database.list_chatgpt_monitor_employers(ACTIVE_CHATGPT_SOURCE_IDS):
+        company = item["company"]
+        category = category_by_employer.get(company, "gpt_discovered")
+        names_by_category[category].add(company)
+    pool_metadata = {pool["primary_category"]: pool for pool in PERSONAL_MONITOR_POOLS}
+    result = []
+    for category, employers in sorted(
+        names_by_category.items(), key=lambda entry: (entry[0] == "gpt_discovered", entry[0])
+    ):
+        metadata = pool_metadata.get(category)
+        result.append({
+            "id": category,
+            "name": metadata["name"] if metadata else "GPT 已发现单位",
+            "focus": "仅展示 ChatGPT 监控中实际出现的开放岗位招聘单位。",
+            "employers": sorted(employers, key=str.casefold),
+        })
+    return result
+
+
 @app.get("/api/recruitment/monitor-pools")
 def recruitment_monitor_pools(user: User) -> dict:
-    """Read the configured directory without loading jobs or starting scans."""
-    return {"monitor_pools": PERSONAL_MONITOR_POOLS}
+    """Read GPT-found employers without scanning or showing the broad watchlist."""
+    return {"monitor_pools": _chatgpt_monitor_pools()}
 
 
 @app.get("/api/recruitment/profile")
