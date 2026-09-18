@@ -41,7 +41,7 @@ def message(label, rows):
     return {"message_digest": digest(label), "rows": rows}
 
 
-def document(messages=None, *, source="chatgpt-radar-01", complete=False):
+def document(messages=None, *, source="chatgpt-radar-07", complete=False):
     return {
         "source_id": source,
         "history_complete": complete,
@@ -84,13 +84,13 @@ def run_main(monkeypatch, value, argv):
     return code, stdout.getvalue(), stderr.getvalue()
 
 
-@pytest.mark.parametrize("source", ["chatgpt-radar-00", "chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-10", "arbitrary", None, [], "https://example.com"])
-def test_only_seven_active_logical_sources(source):
+@pytest.mark.parametrize("source", ["chatgpt-radar-00", "chatgpt-radar-01", "chatgpt-radar-03", "chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-06", "arbitrary", None, [], "https://example.com"])
+def test_only_active_logical_sources(source):
     with pytest.raises(history.HistoryError, match="source_id"):
         history.parse_history(document(source=source))
 
 
-@pytest.mark.parametrize("source", ["chatgpt-radar-01", "chatgpt-radar-02", "chatgpt-radar-03", "chatgpt-radar-06", "chatgpt-radar-07", "chatgpt-radar-08", "chatgpt-radar-09"])
+@pytest.mark.parametrize("source", history.ACTIVE_CHATGPT_SOURCE_IDS)
 def test_every_active_source_accepts_sanitized_rendered_job_entries(source):
     # The browser-side extraction supplies rows, without requiring the source
     # assistant message to be a JSON block or carry a protocol marker.
@@ -104,9 +104,9 @@ def test_script_source_registry_matches_backend_without_retiring_hash_history():
 
     assert tuple(history.ACTIVE_CHATGPT_SOURCE_IDS) == ACTIVE_CHATGPT_SOURCE_IDS
     assert history.HISTORICAL_CHATGPT_SOURCE_IDS == KNOWN_CHATGPT_SOURCE_IDS
-    assert len(history.ALLOWED_SOURCES) == 7
+    assert len(history.ALLOWED_SOURCES) == len(ACTIVE_CHATGPT_SOURCE_IDS)
     assert history.HISTORICAL_CHATGPT_SOURCE_IDS - history.ALLOWED_SOURCES == {
-        "chatgpt-radar-04", "chatgpt-radar-05",
+        "chatgpt-radar-01", "chatgpt-radar-03", "chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-06",
     }
 
 
@@ -165,7 +165,7 @@ def test_same_job_rating_correction_is_incremental_and_keeps_latest_exact_scope(
     assert sent[1]["source_rating"] == corrected_rating
     assert sent[0]["external_id"] == sent[1]["external_id"]
     assert history._content_digest(sent[0]) != history._content_digest(sent[1])
-    state = history.load_ledger(path)["sources"]["chatgpt-radar-01"]
+    state = history.load_ledger(path)["sources"]["chatgpt-radar-07"]
     assert len(state["messages"]) == 2
     assert "source_rating" not in path.read_text()
 
@@ -180,7 +180,7 @@ def test_top_level_private_properties_rejected_without_value_echo(field):
 
 
 @pytest.mark.parametrize("changes", [
-    {"source_id": "chatgpt-radar-06"},
+    {"source_id": "chatgpt-radar-08"},
     {"source_thread_id": "private"},
     {"profile": {"university": "private"}},
     {"requirements": "contact person@example.com"},
@@ -236,7 +236,7 @@ def test_same_digest_with_conflicting_data_is_rejected():
 
 def test_duplicate_json_property_is_rejected_before_source_override():
     with pytest.raises(history.HistoryError):
-        history._json_loads('{"source_id":"chatgpt-radar-01","source_id":"chatgpt-radar-06"}')
+        history._json_loads('{"source_id":"chatgpt-radar-07","source_id":"chatgpt-radar-08"}')
     with pytest.raises(history.HistoryError):
         history._json_loads('{"unknown":NaN}')
 
@@ -252,8 +252,8 @@ def test_newest_first_dedupe_preserves_latest_role_across_transport_chunks():
     emitted = json.dumps([batch.payload for batch in output.batches], ensure_ascii=False)
     assert digest("new") not in emitted
     assert "message_digest" not in emitted
-    assert all(batch.payload["source_id"] == "chatgpt-radar-01" for batch in output.batches)
-    assert all(item["source_id"] == "chatgpt-radar-01" for batch in output.batches for item in batch.payload["jobs"])
+    assert all(batch.payload["source_id"] == "chatgpt-radar-07" for batch in output.batches)
+    assert all(item["source_id"] == "chatgpt-radar-07" for batch in output.batches for item in batch.payload["jobs"])
 
 
 def test_large_single_message_is_batched_without_silently_truncating_at_100():
@@ -280,7 +280,7 @@ def test_large_history_failure_can_resume_with_different_transport_size(monkeypa
     assert code == 4 and not stderr
     assert json.loads(stdout)["successful_batches"] == 1
     assert json.loads(stdout)["history_complete"] is False
-    state = history.load_ledger(path)["sources"]["chatgpt-radar-01"]
+    state = history.load_ledger(path)["sources"]["chatgpt-radar-07"]
     assert state["messages"] == {} and len(state["items"]) == 50
     submit = mock.Mock(side_effect=receipt)
     monkeypatch.setattr(history, "submit_payload", submit)
@@ -430,7 +430,7 @@ def test_partial_failure_advances_only_confirmed_messages_and_retry_only_unsent_
     assert output["completed_messages"] == 1
     assert "do-not-echo" not in stdout
     ledger = history.load_ledger(path)
-    receipts = ledger["sources"]["chatgpt-radar-01"]
+    receipts = ledger["sources"]["chatgpt-radar-07"]
     assert set(receipts["messages"]) == {digest("newest")}
     assert len(receipts["items"]) == 50
     assert receipts["history_complete"] is False
@@ -442,7 +442,7 @@ def test_partial_failure_advances_only_confirmed_messages_and_retry_only_unsent_
     assert json.loads(stdout)["history_complete"] is True
     assert submit.call_count == 1
     assert [j["external_id"] for j in submit.call_args.args[0]["jobs"]] == ["public-ats-26", "public-ats-27", "public-ats-28"]
-    assert set(history.load_ledger(path)["sources"]["chatgpt-radar-01"]["messages"]) == {digest("newest"), digest("older")}
+    assert set(history.load_ledger(path)["sources"]["chatgpt-radar-07"]["messages"]) == {digest("newest"), digest("older")}
 
 
 @pytest.mark.parametrize("response", [
@@ -491,7 +491,7 @@ def test_repeated_history_and_new_message_with_identical_job_do_not_post_again(m
         assert json.loads(stdout)["history_complete"] is False
     keychain.assert_not_called()
     submit.assert_not_called()
-    assert len(history.load_ledger(path)["sources"]["chatgpt-radar-01"]["messages"]) == 2
+    assert len(history.load_ledger(path)["sources"]["chatgpt-radar-07"]["messages"]) == 2
 
 
 def test_source_isolation_and_changed_new_message_are_not_accidentally_skipped(monkeypatch, tmp_path):
@@ -499,11 +499,11 @@ def test_source_isolation_and_changed_new_message_are_not_accidentally_skipped(m
     monkeypatch.setattr(history, "read_keychain_token", lambda: "synthetic")
     submit = mock.Mock(side_effect=receipt)
     monkeypatch.setattr(history, "submit_payload", submit)
-    inputs = [document(), document(source="chatgpt-radar-06"), document([message("newer", [job(requirements="更新的公开资格条件")]), *document()["messages"]])]
+    inputs = [document(), document(source="chatgpt-radar-08"), document([message("newer", [job(requirements="更新的公开资格条件")]), *document()["messages"]])]
     for value in inputs:
         assert run_main(monkeypatch, value, ["--submit", "--ledger-file", str(path)])[0] == 0
     assert submit.call_count == 3
-    assert set(history.load_ledger(path)["sources"]) == {"chatgpt-radar-01", "chatgpt-radar-06"}
+    assert set(history.load_ledger(path)["sources"]) == {"chatgpt-radar-07", "chatgpt-radar-08"}
 
 
 def test_disjoint_older_window_cannot_overwrite_newer_delivered_job(monkeypatch, tmp_path):
@@ -521,7 +521,7 @@ def test_disjoint_older_window_cannot_overwrite_newer_delivered_job(monkeypatch,
     assert result["held_reasons"]["unanchored_history_update"] == 1
     assert submit.call_count == 1
     assert [j["external_id"] for j in submit.call_args.args[0]["jobs"]] == ["public-ats-2"]
-    assert digest("older-page-only") not in history.load_ledger(path)["sources"]["chatgpt-radar-01"]["messages"]
+    assert digest("older-page-only") not in history.load_ledger(path)["sources"]["chatgpt-radar-07"]["messages"]
 
 
 def test_legitimate_empty_rows_heartbeat_advances_only_after_received_zero(monkeypatch, tmp_path):
@@ -533,10 +533,10 @@ def test_legitimate_empty_rows_heartbeat_advances_only_after_received_zero(monke
     code, stdout, stderr = run_main(monkeypatch, value, ["--submit", "--ledger-file", str(path)])
     assert code == 0 and not stderr
     assert submit.call_count == 1
-    assert submit.call_args.args[0] == {"source_id": "chatgpt-radar-01", "jobs": []}
+    assert submit.call_args.args[0] == {"source_id": "chatgpt-radar-07", "jobs": []}
     result = json.loads(stdout)
     assert result["completed_messages"] == 2 and result["history_complete"] is False
-    assert len(history.load_ledger(path)["sources"]["chatgpt-radar-01"]["messages"]) == 2
+    assert len(history.load_ledger(path)["sources"]["chatgpt-radar-07"]["messages"]) == 2
 
 
 def test_all_held_rows_do_not_send_empty_heartbeat_or_advance_message(monkeypatch, tmp_path):
@@ -561,7 +561,7 @@ def test_mixed_held_message_never_claims_full_history_complete(monkeypatch, tmp_
     code, stdout, stderr = run_main(monkeypatch, value, ["--submit", "--ledger-file", str(path)])
     assert code == 0 and not stderr
     assert json.loads(stdout)["history_complete"] is False
-    assert history.load_ledger(path)["sources"]["chatgpt-radar-01"]["messages"] == {}
+    assert history.load_ledger(path)["sources"]["chatgpt-radar-07"]["messages"] == {}
     submit.reset_mock()
     assert run_main(monkeypatch, value, ["--submit", "--ledger-file", str(path)])[0] == 0
     submit.assert_not_called()
@@ -582,7 +582,7 @@ def test_digest_cannot_be_reused_to_smuggle_modified_rows_after_success(monkeypa
 
 
 def test_ledger_rejects_private_or_forged_state_and_symlinks(tmp_path):
-    malformed = {"version": 1, "sources": {"chatgpt-radar-01": {"raw_text": "private"}}}
+    malformed = {"version": 1, "sources": {"chatgpt-radar-07": {"raw_text": "private"}}}
     with pytest.raises(history.HistoryError):
         history._validate_ledger(malformed)
     target = tmp_path / "target.json"

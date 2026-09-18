@@ -63,7 +63,7 @@ def record_heartbeat(source: dict) -> None:
 def test_six_active_sources_are_logical_slots_without_private_metadata():
     sources = main.EXPECTED_CHATGPT_RADAR_SOURCES
     assert [source["source_id"] for source in sources] == [
-        f"chatgpt-radar-{index:02d}" for index in (2, 7, 8, 9, 10, 11)
+        f"chatgpt-radar-{index:02d}" for index in (2, 7, 8, 9, 10, 11, 12, 13)
     ]
     assert all(source["source_thread_id"] is None for source in sources)
     assert all(set(source) == {"source_id", "source_thread_id", "title"} for source in sources)
@@ -80,14 +80,14 @@ def test_seeding_active_six_keeps_retired_sources_and_pending_candidates(sync_db
     for source in old_sources:
         record_heartbeat(source)
     stored = database.upsert_recruitment_ingest_candidate(candidate("chatgpt-radar-05"))
-    before = database.recruitment_sync_status(expected_source_count=6)
+    before = database.recruitment_sync_status(expected_source_count=8)
 
     database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
     database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
-    after = database.recruitment_sync_status(expected_source_count=6)
+    after = database.recruitment_sync_status(expected_source_count=8)
 
-    assert after["source_count"] == 11  # Retired history is not erased.
-    assert after["expected_source_count"] == 6
+    assert after["source_count"] == 13  # Retired history is not erased.
+    assert after["expected_source_count"] == 8
     assert after["connected_source_count"] == 6
     old_by_id = {source["source_id"]: source for source in before["sources"]}
     new_by_id = {source["source_id"]: source for source in after["sources"]}
@@ -102,7 +102,7 @@ def test_seeding_active_six_keeps_retired_sources_and_pending_candidates(sync_db
             (stored["id"],),
         ).fetchone()[0] == 1
     public = main.public_chatgpt_sync_status()
-    assert public["expected_source_count"] == 6
+    assert public["expected_source_count"] == 8
     assert public["connected_source_count"] == 1
     assert public["status"] == "partial"
     assert public["inventory_total"] == 0  # Inactive history does not inflate active transport.
@@ -122,7 +122,7 @@ def test_new_sixth_active_source_heartbeat_is_required_before_all_report_synced(
         headers=headers,
         json={
             "jobs": [],
-            "source_id": "chatgpt-radar-11",
+            "source_id": "chatgpt-radar-13",
             "source_updated_at": "2026-08-30T01:00:00Z",
         },
     )
@@ -130,9 +130,9 @@ def test_new_sixth_active_source_heartbeat_is_required_before_all_report_synced(
     assert response.json()["received"] == 0
     assert response.json()["accepted"] == 0
     status = client.get("/api/recruitment/sync/status", headers=headers).json()
-    assert status["expected_source_count"] == status["connected_source_count"] == 6
-    sixth = next(source for source in status["sources"] if source["source_id"] == "chatgpt-radar-11")
-    assert sixth["title"] == "ChatGPT 监控 11"
+    assert status["expected_source_count"] == status["connected_source_count"] == 8
+    sixth = next(source for source in status["sources"] if source["source_id"] == "chatgpt-radar-13")
+    assert sixth["title"] == "ChatGPT 监控 13"
     assert sixth["last_source_updated_at"] == "2026-08-30T01:00:00+00:00"
     assert sixth["source_ref"] is None
     assert main.public_chatgpt_sync_status()["status"] == "synced"
@@ -233,7 +233,7 @@ def test_sixth_source_discards_thread_compatibility_field_and_marks_source_scree
         ).fetchone()
         assert tuple(stored) == (None, "source_screened", None)
         assert connection.execute("SELECT COUNT(*) FROM recruitment_jobs").fetchone()[0] == 0
-    detailed = database.recruitment_sync_status(expected_source_count=6)
+    detailed = database.recruitment_sync_status(expected_source_count=8)
     assert private_placeholder not in str(detailed)
     assert len([source for source in detailed["sources"] if source["source_id"] == "chatgpt-radar-10"]) == 1
 

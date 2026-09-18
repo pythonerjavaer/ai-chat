@@ -36,7 +36,7 @@ def job(index: int = 1, **overrides):
 
 def browser_message(rows=None, *, message_id="message-42", **overrides):
     value = {
-        "source_id": "chatgpt-radar-01",
+        "source_id": "chatgpt-radar-07",
         "message_id": message_id,
         "rows": [job()] if rows is None else rows,
     }
@@ -67,7 +67,7 @@ def test_builds_discovery_only_sync_without_message_metadata():
     serialized = json.dumps(payload, ensure_ascii=False)
 
     assert payload["version"] == "FROSTFIRE_SYNC_V1"
-    assert payload["source_id"] == "chatgpt-radar-01"
+    assert payload["source_id"] == "chatgpt-radar-07"
     assert payload["snapshot_complete"] is False
     assert len(payload["jobs"]) == 1
     assert payload["jobs"][0]["verification_status"] == "pending"
@@ -207,7 +207,7 @@ def test_dry_run_uses_no_keychain_network_or_cursor_write(monkeypatch, tmp_path)
         "dry_run": True,
         "heartbeat": False,
         "rows": 2,
-        "source_id": "chatgpt-radar-01",
+        "source_id": "chatgpt-radar-07",
         "status": "ready",
     }
     keychain.assert_not_called()
@@ -247,9 +247,9 @@ def test_submit_uses_keychain_and_hash_only_atomic_cursor(monkeypatch, tmp_path)
     assert "token" not in json.dumps(output)
     assert raw_message_id not in cursor_text
     assert "careers.example.com" not in cursor_text
-    assert json.loads(cursor_text)["sources"]["chatgpt-radar-01"][
+    assert json.loads(cursor_text)["sources"]["chatgpt-radar-07"][
         "message_digest"
-    ] == bridge._message_digest("chatgpt-radar-01", raw_message_id)
+    ] == bridge._message_digest("chatgpt-radar-07", raw_message_id)
     assert stat.S_IMODE(cursor.stat().st_mode) == 0o600
     keychain.assert_called_once_with()
     assert submit.call_count == 2
@@ -377,7 +377,7 @@ def test_cursor_rejects_non_hash_state_and_private_source_identifiers(tmp_path):
             {
                 "version": bridge.CURSOR_VERSION,
                 "sources": {
-                    "chatgpt-radar-01": {
+                    "chatgpt-radar-07": {
                         "message_digest": "not-a-hash",
                         "message_id": "must-not-be-retained",
                     }
@@ -410,7 +410,7 @@ def test_oversized_rows_are_rejected_instead_of_truncated():
         bridge.parse_browser_message(value)
 
 
-@pytest.mark.parametrize("source", ["chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-10"])
+@pytest.mark.parametrize("source", ["chatgpt-radar-01", "chatgpt-radar-03", "chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-06", "chatgpt-radar-14"])
 def test_retired_or_unknown_monitor_cannot_submit_new_rows(source):
     with pytest.raises(bridge.BridgeError, match="active"):
         bridge.parse_browser_message(browser_message(source_id=source))

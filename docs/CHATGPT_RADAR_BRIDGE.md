@@ -9,9 +9,9 @@
 
 公网 Web Search 与 Future Radar 的结构化提取默认使用 `gpt-5.4-mini`；聊天产品本身的默认模型仍由独立的 `AI_MODEL` 配置决定。
 
-## 六个活动逻辑来源
+## 已注册的逻辑来源
 
-活动 `source_id` 为 `chatgpt-radar-02`、`chatgpt-radar-07`、`chatgpt-radar-08`、`chatgpt-radar-09`、`chatgpt-radar-10`、`chatgpt-radar-11`，共六个可公开的稳定逻辑槽位。新增来源使用独立槽位 11，不复用无法确认归属的历史槽位。本机自动任务中的页面映射只保留在本地任务配置；私有会话地址、真实会话标识、消息正文和登录信息均不进入 Git、数据库、README、日志或提交 payload。网页内容中的 `source_id` 也不能覆盖本机指定的逻辑来源。
+活动 `source_id` 为 `chatgpt-radar-02`、`chatgpt-radar-07`、`chatgpt-radar-08`、`chatgpt-radar-09`、`chatgpt-radar-10`、`chatgpt-radar-11`、`chatgpt-radar-12`、`chatgpt-radar-13`，共八个可公开的稳定逻辑槽位。新增来源使用独立槽位 11–13，不复用无法确认归属的历史槽位。本机自动任务中的页面映射只保留在本地任务配置；私有会话地址、真实会话标识、消息正文和登录信息均不进入 Git、数据库、README、日志或提交 payload。网页内容中的 `source_id` 也不能覆盖本机指定的逻辑来源。
 
 `chatgpt-radar-01`、`chatgpt-radar-03`、`chatgpt-radar-04`、`chatgpt-radar-05`、`chatgpt-radar-06` 已退出活动监控，新输入不再使用这些槽位；其历史游标、摘要回执、事件、候选与来源记录继续保留，不因调整活动名单而重置。新注册槽位在实际收到成功回执前保持待同步；注册不会伪造已经读取或同步成功。前端优先使用后端返回的 `expected_source_count` 展示活动来源数量。
 
@@ -82,7 +82,7 @@ python3 scripts/frostfire_chatgpt_bridge.py --submit --batch-size 25 \
 
 ### 多消息历史回填（单独的摘要账本）
 
-`scripts/frostfire_chatgpt_history.py` 接收**已经脱敏、按新到旧排序**的单一来源历史。它本身不打开浏览器、不读取会话或 Cookie、不接受完整消息正文。顶层只能有 `source_id`、`history_complete` 和 `messages`；新输入严格限定上述七个活动来源，账本仍识别退役 `04`、`05` 的历史回执。每个消息对象只能有 `message_digest`（事先计算的 64 位小写 SHA-256）和 `rows`（沿用单消息桥接的招聘字段白名单）。必须先在提取端移除个人经历、建议、联系方式、私有链接及未授权内容，摘要不能替代这一步清理。
+`scripts/frostfire_chatgpt_history.py` 接收**已经脱敏、按新到旧排序**的单一来源历史。它本身不打开浏览器、不读取会话或 Cookie、不接受完整消息正文。顶层只能有 `source_id`、`history_complete` 和 `messages`；新输入严格限定上述活动来源，账本仍识别退役 `04`、`05` 的历史回执。每个消息对象只能有 `message_digest`（事先计算的 64 位小写 SHA-256）和 `rows`（沿用单消息桥接的招聘字段白名单）。必须先在提取端移除个人经历、建议、联系方式、私有链接及未授权内容，摘要不能替代这一步清理。
 
 只有确认已读取该来源可访问的全部历史时，提取端才能声明 `history_complete=true`。只读取了已渲染的一部分时必须为 `false`；本脚本不会把这个标志自动改为“已抓完”。没有可用消息、读取失败或结构无效均报错，不发送空心跳。只有显式提供的合法 `rows=[]` 消息可以授权空心跳。
 

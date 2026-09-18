@@ -7,9 +7,11 @@ ACTIVE_CHATGPT_SOURCE_IDS = (
     "chatgpt-radar-09",
     "chatgpt-radar-10",
     "chatgpt-radar-11",
+    "chatgpt-radar-12",
+    "chatgpt-radar-13",
 )
 HISTORICAL_CHATGPT_SOURCE_IDS = frozenset(
-    f"chatgpt-radar-{index:02d}" for index in range(1, 12)
+    f"chatgpt-radar-{index:02d}" for index in range(1, 14)
 )
 RETIRED_CHATGPT_SOURCE_IDS = HISTORICAL_CHATGPT_SOURCE_IDS - set(ACTIVE_CHATGPT_SOURCE_IDS)
 
