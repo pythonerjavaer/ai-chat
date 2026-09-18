@@ -9,17 +9,21 @@ const DIRECTORY_ALIASES = [
   ['大疆 DJI', '大疆', 'DJI', '大疆创新', '深圳市大疆创新科技'],
   ['中芯国际 SMIC', '中芯国际', 'SMIC'],
   ['罗兰贝格 Roland Berger', '罗兰贝格', 'Roland Berger'],
+  ['亚马逊 / AWS', 'Amazon/AWS', 'Amazon', 'AWS', 'Amazon Web Services', '亚马逊', '亚马逊 Amazon / AWS'],
   ['中国平安', '中国平安', '中国平安保险集团', 'Ping An'],
   ['平安科技', '平安科技', '平安科技（深圳）有限公司'],
   ['平安证券', '平安证券', '平安证券股份有限公司'],
+  ['泰康保险集团', '泰康', '泰康保险', '泰康保险集团股份有限公司'],
 ];
-// Related directory entries stay individually visible when expanded. In
-// particular, AWS and tobacco-system labels are not treated as legal aliases.
+// Display aliases are flat. Only distinct institutions form expandable groups;
+// the parent is represented by the heading and never repeated as a child.
 const DIRECTORY_GROUPS = [
-  { label: '中国平安', members: new Set([
-    '中国平安', '平安银行', '平安科技', '平安产险', '平安养老险', '平安理财', '平安证券',
+  { label: '中国平安', parent: '中国平安', members: new Set([
+    '平安银行', '平安科技', '平安产险', '平安养老险', '平安理财', '平安证券',
   ]) },
-  { label: '亚马逊 Amazon / AWS', members: new Set(['Amazon/AWS', 'Amazon', 'AWS']) },
+  { label: '泰康保险集团', parent: '泰康保险集团', members: new Set([
+    '泰康人寿', '泰康养老', '泰康资产', '泰康在线',
+  ]) },
   { label: '国家烟草专卖体系', members: new Set(['国家烟草专卖局', '中国烟草总公司', '中国烟草', '中烟工业']) },
 ];
 const nameKey = name => name.trim().normalize('NFKC').toLocaleLowerCase('en');
@@ -39,9 +43,10 @@ export function buildRadarDirectoryView(employers = []) {
   }
   const groups = DIRECTORY_GROUPS.map(group => ({
     label: group.label,
+    parent: group.parent ? institutions.get(nameKey(group.parent)) : undefined,
     members: [...institutions.values()].filter(item => group.members.has(item.label)),
-  })).filter(group => group.members.length > 1);
-  const groupByMember = new Map(groups.flatMap(group => group.members.map(item => [item, group])));
+  })).filter(group => group.members.length > 1 || (group.parent && group.members.length > 0));
+  const groupByMember = new Map(groups.flatMap(group => [...(group.parent ? [group.parent] : []), ...group.members].map(item => [item, group])));
   const entries = [];
   const insertedGroups = new Set();
   for (const item of institutions.values()) {
@@ -91,10 +96,11 @@ export function renderRadarConstellation(container, pools, doc = document) {
       // Native details/summary preserves Enter/Space operation without JS-only controls.
       const group = node('details', 'star-map-employer-group');
       const summary = node('summary', 'star-map-group-toggle');
-      summary.append(node('strong', '', item.label), node('small', '', `${item.members.length} 个名录名称`));
+      summary.append(node('strong', '', item.label), node('small', '', `${item.members.length} 家机构`));
+      if (item.parent) summary.title = `名录名称：${item.parent.aliases.join('、')}`;
       const members = node('ul', 'star-map-group-members');
       item.members.forEach(member => members.appendChild(employerLabel(member, 'li')));
-      group.append(summary, node('p', '', '同体系归组，保留各机构及业务单元名称'), members);
+      group.append(summary, members);
       list.appendChild(group);
     });
     const count = directory.groupCount
