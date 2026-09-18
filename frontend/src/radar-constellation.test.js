@@ -31,7 +31,7 @@ test('only supplied high-priority employers are rendered', () => {
   }], { createElement: element });
   const nodes = descendants(root);
   assert.equal(nodes.some(node => node.tag === 'details'), false);
-  assert.ok(nodes.some(node => node.textContent === '亚马逊 / AWS'));
+  assert.ok(nodes.some(node => node.textContent === 'Amazon / AWS 亚马逊'));
   assert.ok(nodes.some(node => node.textContent === '平安银行'));
   assert.ok(!nodes.some(node => node.textContent === '中国平安'));
   assert.ok(nodes.some(node => node.textContent.includes('2 个高优先级单位')));
