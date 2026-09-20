@@ -3589,8 +3589,16 @@ function resetFutureRadarFilters() {
   loadFutureRadarJobPage(1, true);
 }
 
-function retryFutureRadarOpportunities(read = null) {
+function resumeFutureRadarReadGates() {
+  // The visible recovery action represents the whole Future Radar surface.
+  // Metadata and opportunities have independent budgets so a slow dashboard
+  // cannot suppress the pool, but a manual retry must release both budgets.
+  radarPollingGate.resume({ allowImmediate: true });
   radarOpportunityPollingGate.resume({ allowImmediate: true });
+}
+
+function retryFutureRadarOpportunities(read = null) {
+  resumeFutureRadarReadGates();
   return read ? read() : loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false });
 }
 
@@ -3868,6 +3876,9 @@ async function runFutureRadarNow(scanType = "quick") {
       body: JSON.stringify({ scan_type: scanType }),
       timeoutMs: 120_000,
     });
+    // A completed manual run proves the service is reachable again. Release
+    // any persisted read suspension before loading its result.
+    resumeFutureRadarReadGates();
     radarPollingGate.invalidateDashboard();
     setFutureRadarActionStatus(`${scanLabel} 已返回，正在刷新岗位池、信源健康与变化记录…`, "running");
     const snapshotReadable = await loadFutureRadarSnapshot();
@@ -4904,6 +4915,9 @@ async function refreshRecruitmentSource() {
       api("/recruitment/watches/refresh", { method: "POST", timeoutMs: 90000 }),
     ]);
     if (results.every((result) => result.status === "rejected")) throw results[0].reason;
+    // At least one explicit synchronization request reached the service, so
+    // let its follow-up reads recover both the metadata and opportunity lanes.
+    resumeFutureRadarReadGates();
     const refreshedData = await refreshRecruitment();
     const jobsOk = results[0].status === "fulfilled";
     const watchesOk = results[1].status === "fulfilled";

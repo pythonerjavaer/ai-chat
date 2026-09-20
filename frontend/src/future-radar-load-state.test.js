@@ -218,7 +218,7 @@ test("first main-pool failure never renders six legacy rows and explicitly offer
   assert.match(r.elements.recruitmentStatus.textContent, /当前筛选 255 个机会/);
 });
 
-test("the visible empty-pool retry resumes a persisted suspension without resuming metadata or creating duplicate reads", async () => {
+test("the visible empty-pool retry resumes both read lanes without creating duplicate reads", async () => {
   const r = runtime();
   await r.run("loadFutureRadarJobPage(1, true)");
   let opportunityTransport = JSON.stringify({ suspended: true, failures: 5, retryAt: Date.now() + 240_000 });
@@ -245,7 +245,7 @@ test("the visible empty-pool retry resumes a persisted suspension without resumi
   assert.equal(await second, true);
   assert.equal(r.state.futureRadar.jobsError, "");
   assert.equal(r.cards().length, 50);
-  assert.throws(() => r.context.radarPollingGate.assertAllowed(), { code: "RADAR_POLL_DEFERRED" });
+  r.context.radarPollingGate.assertAllowed();
   assert.equal(JSON.parse(opportunityTransport).suspended, false);
 });
 
