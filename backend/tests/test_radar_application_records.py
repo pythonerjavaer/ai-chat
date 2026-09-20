@@ -51,12 +51,12 @@ def test_records_display_known_brand_aliases_once_but_preserve_actual_subsidiari
     h = harness
     canonical = h.client.put(BASE + "/blackrock", headers=h.auth, json={"company": "贝莱德"})
     assert canonical.status_code == 200
-    assert canonical.json()["company"] == "BlackRock"
+    assert canonical.json()["company"] == "BlackRock 贝莱德"
     subsidiary = h.client.put(BASE + "/ping-an-bank", headers=h.auth, json={"company": "平安银行"})
     assert subsidiary.status_code == 200
     assert subsidiary.json()["company"] == "平安银行"
     names = {record["company"] for record in h.client.get(BASE, headers=h.auth).json()["items"]}
-    assert names == {"BlackRock", "平安银行"}
+    assert names == {"BlackRock 贝莱德", "平安银行"}
 
 
 def test_private_records_never_cross_accounts_and_delete_is_idempotent(harness):

@@ -20,7 +20,7 @@ const DIRECTORY_ALIASES = [
   ['Goldman Sachs 高盛', 'Goldman Sachs', '高盛'],
   ['Morgan Stanley 摩根士丹利', 'Morgan Stanley', '摩根士丹利'],
   ['UBS 瑞银', 'UBS', '瑞银', '瑞银 UBS'], ['Citi 花旗', 'Citi', '花旗', 'Citigroup'],
-  ['HSBC 汇丰', 'HSBC', '汇丰'], ['BlackRock 贝莱德', 'BlackRock', '贝莱德', '布莱德'],
+  ['HSBC 汇丰', 'HSBC', '汇丰'], ['BlackRock 贝莱德', 'BlackRock', '贝莱德', '布莱德', 'BlackRock 布莱德'],
   ['DWS 德意志资管', 'DWS', '德意志资管', '德意志资产管理'],
   ['Nomura 野村', 'Nomura', '野村', '野村证券'],
   ['P&G 宝洁', '宝洁', 'P&G', 'Procter & Gamble'],

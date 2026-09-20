@@ -45,6 +45,8 @@ test('foreign employer labels use the same English-first bilingual identity ever
   assert.equal(normalizeRadarEmployerLabel('Oliver Wyman'), 'Oliver Wyman 奥纬咨询');
   assert.equal(normalizeRadarEmployerLabel('DWS'), 'DWS 德意志资管');
   assert.equal(normalizeRadarEmployerLabel('野村证券'), 'Nomura 野村');
+  assert.equal(normalizeRadarEmployerLabel('BlackRock 布莱德'), 'BlackRock 贝莱德');
+  assert.equal(normalizeRadarEmployerLabel('布莱德'), 'BlackRock 贝莱德');
   assert.equal(normalizeRadarEmployerLabel('宝洁'), 'P&G 宝洁');
   assert.equal(normalizeRadarEmployerLabel('中信证券'), '中信证券');
   assert.equal(normalizeRadarEmployerLabel('广发证券'), '广发证券');
