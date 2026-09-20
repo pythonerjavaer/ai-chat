@@ -11,7 +11,7 @@
 
 ## 已注册的逻辑来源
 
-活动 `source_id` 为 `chatgpt-radar-02`、`chatgpt-radar-07`、`chatgpt-radar-08`、`chatgpt-radar-09`、`chatgpt-radar-10`、`chatgpt-radar-11`、`chatgpt-radar-12`、`chatgpt-radar-13`，共八个可公开的稳定逻辑槽位。新增来源使用独立槽位 11–13，不复用无法确认归属的历史槽位。本机自动任务中的页面映射只保留在本地任务配置；私有会话地址、真实会话标识、消息正文和登录信息均不进入 Git、数据库、README、日志或提交 payload。网页内容中的 `source_id` 也不能覆盖本机指定的逻辑来源。
+活动 `source_id` 为 `chatgpt-radar-02`、`chatgpt-radar-07`、`chatgpt-radar-08`、`chatgpt-radar-09`、`chatgpt-radar-10`、`chatgpt-radar-11`、`chatgpt-radar-12`、`chatgpt-radar-13`、`chatgpt-radar-14`，共九个可公开的稳定逻辑槽位。槽位 14 专用于两个 2027 届秋招 Excel 名录；私有页面映射仍只保留在本机任务配置。本机自动任务中的页面映射只保留在本地任务配置；私有会话地址、真实会话标识、消息正文和登录信息均不进入 Git、数据库、README、日志或提交 payload。网页内容中的 `source_id` 也不能覆盖本机指定的逻辑来源。
 
 `chatgpt-radar-01`、`chatgpt-radar-03`、`chatgpt-radar-04`、`chatgpt-radar-05`、`chatgpt-radar-06` 已退出活动监控，新输入不再使用这些槽位；其历史游标、摘要回执、事件、候选与来源记录继续保留，不因调整活动名单而重置。新注册槽位在实际收到成功回执前保持待同步；注册不会伪造已经读取或同步成功。前端优先使用后端返回的 `expected_source_count` 展示活动来源数量。
 
@@ -216,7 +216,7 @@ URL 规范化会移除 fragment，并且只清理 `utm_*`、`gclid`、`fbclid`�
 
 ## 状态检查
 
-受保护的 `GET /api/recruitment/sync/status` 使用同一个 `X-Recruitment-Token`，返回来源库存、最近同步时间、来源状态和最近事件；活动预期来源数为七个，详细库存仍包括退役来源及其他兼容来源。面向用户的 ChatGPT 同步摘要只按七个活动来源计算连接进度，退役 `04`、`05` 不计入该进度。已知 ChatGPT 逻辑来源的 `source_ref` 为 `null`，包括仍保留历史记录的退役槽位；其他兼容来源至多返回短哈希引用。状态中不包含真实会话 ID、Token、对话正文或 Cookie。
+受保护的 `GET /api/recruitment/sync/status` 使用同一个 `X-Recruitment-Token`，返回来源库存、最近同步时间、来源状态和最近事件；活动预期来源数为九个，详细库存仍包括退役来源及其他兼容来源。面向用户的 ChatGPT 同步摘要只按九个活动来源计算连接进度；退役槽位不计入该进度。已知 ChatGPT 逻辑来源的 `source_ref` 为 `null`，包括仍保留历史记录的退役槽位；其他兼容来源至多返回短哈希引用。状态中不包含真实会话 ID、Token、对话正文或 Cookie。
 
 计数分成两套，不能混用：
 

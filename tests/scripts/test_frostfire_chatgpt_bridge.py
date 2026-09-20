@@ -410,7 +410,7 @@ def test_oversized_rows_are_rejected_instead_of_truncated():
         bridge.parse_browser_message(value)
 
 
-@pytest.mark.parametrize("source", ["chatgpt-radar-01", "chatgpt-radar-03", "chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-06", "chatgpt-radar-14"])
+@pytest.mark.parametrize("source", ["chatgpt-radar-01", "chatgpt-radar-03", "chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-06", "chatgpt-radar-15"])
 def test_retired_or_unknown_monitor_cannot_submit_new_rows(source):
     with pytest.raises(bridge.BridgeError, match="active"):
         bridge.parse_browser_message(browser_message(source_id=source))

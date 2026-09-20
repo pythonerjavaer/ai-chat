@@ -195,7 +195,7 @@ _NOTES = {
     "subsidiary": "子公司的独立平台价值需另行核验；“核心”“科技”及子公司总部不自动获得集团总部加分。",
     "research_institute": "研究机构不等于集团总部；尚未独立核验其平台资源，保守计算且不加总部分。",
     "third_party": "外包、代理或派遣关系不能继承服务对象或母品牌的完整平台资源。",
-    "unspecified": "招聘实体层级证据不足；未加总部或核心机构分，仍需核验具体用人单位。",
+    "unspecified": "招聘实体层级证据不足；该项按总部与普通子公司的中间值计分，仍需核验具体用人单位。",
 }
 
 
@@ -447,6 +447,10 @@ def _specific_unresolved_units(candidates: list[_Assessment]) -> list[_Assessmen
 def _platform_points(level: str, base: int) -> int:
     if level == "group_headquarters":
         return min(16, base + 2)
+    if level == "unspecified":
+        headquarters = min(16, base + 2)
+        subsidiary = min(base, 10, max(4, base - 3))
+        return (headquarters + subsidiary + 1) // 2
     reductions = {
         "provincial_branch": (3, 4, 16), "city_branch": (5, 4, 16),
         "local_branch": (7, 3, 16), "branch_unspecified": (4, 4, 16),
@@ -534,5 +538,6 @@ def assess_organization(
         "platform_points": points,
         "platform_adjustment": points - base,
         "is_group_headquarters": assessment.level == "group_headquarters",
+        "uncertainty_policy": "midpoint" if assessment.confidence == "unknown" else "evidence_based",
         "note": note,
     }

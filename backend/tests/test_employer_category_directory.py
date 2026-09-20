@@ -28,9 +28,12 @@ from backend.future_radar.repository import RadarRepository, utc_now
 from backend.future_radar.schema import EMPLOYER_CATEGORY_MIGRATION, migrate
 from backend.recruitment import SCORING_VERSION, SCORING_WEIGHTS, score_job
 from backend.recruitment_directory import (
+    EXCEL_EMPLOYER_TARGETS,
+    PERSONAL_MONITOR_POOLS,
     canonical_employer_identity,
     employer_category_override,
     employer_directory_category,
+    excel_employer_priority,
 )
 
 
@@ -137,7 +140,40 @@ def test_existing_search_and_sidebar_exports_use_one_shared_directory():
     assert recruitment_search.EMPLOYER_ALIAS_GROUPS is recruitment_directory.EMPLOYER_ALIAS_GROUPS
     bank_pool = next(pool for pool in live_sources.PERSONAL_MONITOR_POOLS if pool["primary_category"] == "policy_state_banks")
     assert bank_pool["name"] == "银行与政策性金融"
-    assert len(bank_pool["employers"]) == 10
+    assert {"国家开发银行", "渣打银行", "香港金管局"}.issubset(bank_pool["employers"])
+
+
+def test_two_excel_directories_are_complete_and_distributed_into_the_sector_atlas():
+    assert len(EXCEL_EMPLOYER_TARGETS) == 296
+    assert sum(target["selected_priority"] is not None for target in EXCEL_EMPLOYER_TARGETS) == 110
+    listed = {
+        employer
+        for pool in PERSONAL_MONITOR_POOLS
+        for employer in pool["employers"]
+    }
+    assert all(target["company"] in listed for target in EXCEL_EMPLOYER_TARGETS)
+    consumer = next(
+        set(pool["employers"])
+        for pool in PERSONAL_MONITOR_POOLS
+        if pool["primary_category"] == "consumer_foreign_consulting"
+    )
+    assert {"汇丰银行", "高盛", "贝莱德"}.issubset(consumer)
+
+
+@pytest.mark.parametrize("company,source,priority,tier", [
+    ("泰康基金", "selected", 2, "T1.5"),
+    ("北京农商银行", "complete", 3, "T2.5"),
+    ("Hillhouse 高瓴资本", "complete", 2, "T2"),
+])
+def test_excel_directory_weights_selected_targets_more_than_complete_only_targets(
+    company, source, priority, tier,
+):
+    assert excel_employer_priority(company) == {
+        "company": canonical_employer_identity(company),
+        "source": source,
+        "priority": priority,
+        "institution_tier": tier,
+    }
 
 
 @pytest.fixture(params=["sqlite", "postgres"])

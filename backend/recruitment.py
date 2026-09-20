@@ -10,6 +10,7 @@ from .recruitment_rating import resolve_source_ratings
 from .recruitment_directory import (
     canonical_employer_identity,
     employer_category_override,
+    excel_employer_priority,
     monitored_employer_identities,
 )
 
@@ -134,7 +135,7 @@ SCORING_WEIGHTS = {
     "career_value": 20,
     "job_conditions": 23,
 }
-SCORING_VERSION = "future-radar-job-ranking-v4.3-platform-first-fit-bounded"
+SCORING_VERSION = "future-radar-job-ranking-v4.4-workbook-weight-midpoint-unknown"
 
 TIER_TARGET_SCORES = {
     "T0": 92,
@@ -732,6 +733,8 @@ def _organization_assessment(job: dict[str, Any]) -> dict[str, Any]:
         points, band = 13, "重点平台基准"
     elif institution_tier == "T2":
         points, band = 11, "监控机构基准"
+    elif institution_tier == "T2.5":
+        points, band = 10, "扩展监控机构基准"
     elif _company_matches_any(scoring_company, ELITE_PLATFORM_MARKERS):
         points, band = 14, "头部平台基准"
     elif _company_matches_any(scoring_company, STRONG_PLATFORM_MARKERS):
@@ -895,18 +898,35 @@ def _worse_tier(left: str, right: str) -> str:
 
 def _institution_identity_calibration(company: str) -> tuple[str | None, str]:
     """Resolve one identity once for both platform points and institution tier."""
+    workbook_priority = excel_employer_priority(company)
+
+    def weighted(tier: str, band: str) -> tuple[str, str]:
+        if not workbook_priority:
+            return tier, band
+        workbook_tier = str(workbook_priority["institution_tier"])
+        if _TIER_ORDER.index(workbook_tier) < _TIER_ORDER.index(tier):
+            source = "精选版" if workbook_priority["source"] == "selected" else "完整版"
+            return workbook_tier, f"{source}秋招名录优先级 {workbook_priority['priority']}"
+        return tier, band
+
     if _company_matches_any(company, INSTITUTION_T0_MARKERS):
-        return "T0", "政策性金融/核心金融基础设施"
+        return weighted("T0", "政策性金融/核心金融基础设施")
     if _company_matches_any(company, INSTITUTION_T05_MARKERS):
-        return "T0.5", "准终极平台"
+        return weighted("T0.5", "准终极平台")
     if _company_matches_any(company, INSTITUTION_T1_MARKERS):
-        return "T1", "核心主申平台"
+        return weighted("T1", "核心主申平台")
     if _company_matches_any(company, INSTITUTION_T15_MARKERS):
-        return "T1.5", "高质量重点平台"
+        return weighted("T1.5", "高质量重点平台")
     if _company_matches_any(company, ELITE_PLATFORM_MARKERS):
-        return "T1", "头部平台"
+        return weighted("T1", "头部平台")
     if _company_matches_any(company, STRONG_PLATFORM_MARKERS):
-        return "T2", "重点监控平台"
+        return weighted("T2", "重点监控平台")
+    if workbook_priority:
+        source = "精选版" if workbook_priority["source"] == "selected" else "完整版"
+        return (
+            str(workbook_priority["institution_tier"]),
+            f"{source}秋招名录优先级 {workbook_priority['priority']}",
+        )
     canonical = canonical_employer_identity(company)
     if canonical and canonical in monitored_employer_identities():
         # This is an exact identity from the maintained left-hand monitor

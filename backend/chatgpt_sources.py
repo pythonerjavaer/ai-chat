@@ -1,9 +1,12 @@
 """Logical monitoring slots only; private source mappings stay on the host."""
 
 ACTIVE_CHATGPT_SOURCE_IDS = tuple(
-    f"chatgpt-radar-{index:02d}" for index in (2, 7, 8, 9, 10, 11, 12, 13)
+    f"chatgpt-radar-{index:02d}" for index in (2, 7, 8, 9, 10, 11, 12, 13, 14)
 )
+CHATGPT_SOURCE_TITLES = {
+    "chatgpt-radar-14": "ChatGPT 秋招双表监控",
+}
 # Retired slots remain recognizable for historical provenance and redaction.
 KNOWN_CHATGPT_SOURCE_IDS = frozenset(
-    f"chatgpt-radar-{index:02d}" for index in range(1, 14)
+    f"chatgpt-radar-{index:02d}" for index in range(1, 15)
 )

@@ -4,7 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
-test("the bridge defaults to seven sources and uses the server count for its title, orbit and progress", () => {
+test("the bridge defaults to nine sources and uses the server count for its title, orbit and progress", () => {
   const start = appSource.indexOf("function renderRecruitmentSyncStatus(");
   const end = appSource.indexOf("\nfunction radarCollection", start);
   assert.notEqual(start, -1);
@@ -26,8 +26,8 @@ test("the bridge defaults to seven sources and uses the server count for its tit
     renderer,
   ].join("\n"), context);
   vm.runInContext("renderRecruitmentSyncStatus(null)", context);
-  assert.equal(nodes.get("[data-sync-title]").textContent, "7 个 ChatGPT 监控源");
-  assert.equal(orbit.children.length, 7);
+  assert.equal(nodes.get("[data-sync-title]").textContent, "9 个 ChatGPT 监控源");
+  assert.equal(orbit.children.length, 9);
   vm.runInContext('renderRecruitmentSyncStatus({ expected_source_count: 9, connected_source_count: 8, status: "synced", last_synced_at: "2026-09-05T00:00:00Z" })', context);
   assert.equal(nodes.get("[data-sync-title]").textContent, "9 个 ChatGPT 监控源");
   assert.equal(nodes.get(".recruitment-sync-footer b").textContent, "8 / 9 源已回传");

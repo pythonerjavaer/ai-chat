@@ -37,7 +37,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import database
-from .chatgpt_sources import ACTIVE_CHATGPT_SOURCE_IDS, KNOWN_CHATGPT_SOURCE_IDS
+from .chatgpt_sources import (
+    ACTIVE_CHATGPT_SOURCE_IDS,
+    CHATGPT_SOURCE_TITLES,
+    KNOWN_CHATGPT_SOURCE_IDS,
+)
 from .chatgpt_screening import SOURCE_SCREENED, chatgpt_screening_eligible
 from .recruitment_rating import SourceRating, merge_source_ratings
 from .recruitment_limits import MAX_MONITOR_BATCH_ITEMS
@@ -159,7 +163,9 @@ EXPECTED_CHATGPT_RADAR_SOURCES = [
     {
         "source_id": source_id,
         "source_thread_id": None,
-        "title": f"ChatGPT 监控 {int(source_id.rsplit('-', 1)[1])}",
+        "title": CHATGPT_SOURCE_TITLES.get(
+            source_id, f"ChatGPT 监控 {int(source_id.rsplit('-', 1)[1])}"
+        ),
     }
     for source_id in ACTIVE_CHATGPT_SOURCE_IDS
 ]

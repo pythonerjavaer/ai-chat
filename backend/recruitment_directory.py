@@ -7,10 +7,24 @@ same maintained scopes rather than inventing another employer-ranking list.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
+
+
+def _load_excel_employer_targets() -> tuple[dict[str, Any], ...]:
+    payload = json.loads(
+        Path(__file__).with_name("recruitment_excel_targets.json").read_text(encoding="utf-8")
+    )
+    if payload.get("schema_version") != 1 or not isinstance(payload.get("employers"), list):
+        raise RuntimeError("invalid recruitment Excel target directory")
+    return tuple(payload["employers"])
+
+
+EXCEL_EMPLOYER_TARGETS = _load_excel_employer_targets()
 
 
 PERSONAL_MONITOR_POOLS = [
@@ -139,6 +153,41 @@ PERSONAL_MONITOR_POOLS = [
 ]
 
 
+def _merge_excel_targets_into_monitor_pools() -> None:
+    pools = {str(pool["primary_category"]): pool for pool in PERSONAL_MONITOR_POOLS}
+    existing_categories: dict[str, set[str]] = {}
+    for pool in PERSONAL_MONITOR_POOLS:
+        category = str(pool["primary_category"])
+        for employer in pool["employers"]:
+            for key in _legal_identity_keys(employer):
+                existing_categories.setdefault(key, set()).add(category)
+    alias_categories: dict[str, set[str]] = {}
+    for canonical, aliases in EMPLOYER_ALIAS_GROUPS.items():
+        forms = (canonical, *aliases)
+        matched = set().union(*(
+            existing_categories.get(key, set())
+            for form in forms for key in _legal_identity_keys(form)
+        ))
+        if len(matched) == 1:
+            for form in forms:
+                for key in _legal_identity_keys(form):
+                    alias_categories.setdefault(key, set()).update(matched)
+    for target in EXCEL_EMPLOYER_TARGETS:
+        company = str(target.get("company") or "").strip()
+        matched = set().union(*(
+            alias_categories.get(key, set()) | existing_categories.get(key, set())
+            for key in _legal_identity_keys(company)
+        ))
+        category = (
+            next(iter(matched)) if len(matched) == 1
+            else str(target.get("category") or "").strip()
+        )
+        if not company or category not in pools:
+            raise RuntimeError(f"invalid recruitment Excel employer target: {target!r}")
+        if company not in pools[category]["employers"]:
+            pools[category]["employers"].append(company)
+
+
 # These are explicit high-priority targets. They appear in their existing
 # business sector beside confirmed applications and saved jobs, never in a
 # separate personal/GPT constellation sector.
@@ -148,6 +197,8 @@ PERSONAL_RADAR_PINNED_EMPLOYERS = (
 
 
 EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
+    "中国进出口银行": ("进出口银行",),
+    "中国农业发展银行": ("农业发展银行",),
     "国家烟草专卖局": ("中国烟草总公司", "中国烟草", "中烟工业"),
     "中国电子科技集团": ("中国电科",),
     "大疆": ("DJI", "大疆创新", "深圳市大疆创新科技"),
@@ -178,9 +229,14 @@ EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "J.P. Morgan 摩根大通": ("J.P. Morgan", "摩根大通", "JPMorgan"),
     "Goldman Sachs 高盛": ("Goldman Sachs", "高盛"),
     "Morgan Stanley 摩根士丹利": ("Morgan Stanley", "摩根士丹利"),
-    "UBS 瑞银": ("UBS", "瑞银"),
-    "Citi 花旗": ("Citi", "花旗", "Citigroup"),
-    "HSBC 汇丰": ("HSBC", "汇丰"),
+    "UBS 瑞银": ("UBS", "瑞银", "瑞士银行"),
+    "Citi 花旗": ("Citi", "花旗", "花旗银行", "Citigroup"),
+    "HSBC 汇丰": ("HSBC", "汇丰", "汇丰银行"),
+    "Standard Chartered 渣打银行": ("Standard Chartered", "渣打", "渣打银行"),
+    "DBS 星展银行": ("DBS", "星展", "星展银行"),
+    "Hang Seng Bank 恒生银行": ("Hang Seng Bank", "恒生银行"),
+    "Deutsche Bank 德意志银行": ("Deutsche Bank", "德意志银行"),
+    "Barclays 巴克莱银行": ("Barclays", "巴克莱", "巴克莱银行"),
     "BlackRock 贝莱德": ("BlackRock", "贝莱德", "布莱德"),
     "DWS 德意志资管": ("DWS", "德意志资管", "德意志资产管理"),
     "Nomura 野村": ("Nomura", "野村", "野村证券"),
@@ -199,6 +255,37 @@ EMPLOYER_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "Johnson & Johnson 强生": ("强生", "Johnson & Johnson", "J&J"),
     "Starbucks 星巴克": ("星巴克", "Starbucks"),
     "McDonald's 麦当劳": ("麦当劳", "McDonald's", "McDonalds"),
+    "WTW 韦莱韬悦": ("WTW", "Willis Towers Watson", "韦莱韬悦"),
+    "Mercer 美世": ("Mercer", "美世"),
+    "Aon 怡安": ("Aon", "怡安", "怡安翰威特", "Aon Hewitt"),
+    "Meta Facebook": ("Meta", "Facebook", "Facebook/Meta"),
+    "Intel 英特尔": ("Intel", "英特尔"),
+    "Cisco 思科": ("Cisco", "思科"),
+    "SAP 思爱普": ("SAP", "思爱普"),
+    "Oracle 甲骨文": ("Oracle", "甲骨文"),
+    "Tesla 特斯拉": ("Tesla", "特斯拉"),
+    "BMW 宝马集团": ("BMW", "宝马", "宝马集团"),
+    "Siemens 西门子": ("Siemens", "西门子"),
+    "GE 通用电气": ("GE", "General Electric", "通用电气"),
+    "Bosch 博世": ("Bosch", "博世"),
+    "Daimler 戴姆勒": ("Daimler", "戴姆勒"),
+    "Pfizer 辉瑞": ("Pfizer", "辉瑞"),
+    "Novartis 诺华": ("Novartis", "诺华"),
+    "Bayer 拜耳": ("Bayer", "拜耳"),
+    "MSD 默沙东": ("MSD", "Merck Sharp & Dohme", "默沙东"),
+    "Hillhouse 高瓴资本": ("Hillhouse", "高瓴", "高瓴资本"),
+    "HongShan 红杉中国": ("HongShan", "红杉中国", "红杉资本"),
+    "CDH 鼎晖投资": ("CDH", "鼎晖", "鼎晖投资"),
+    "Hony Capital 弘毅投资": ("Hony Capital", "弘毅", "弘毅投资"),
+    "Carlyle 凯雷投资集团": ("Carlyle", "凯雷", "凯雷投资集团"),
+    "Blackstone 黑石集团": ("Blackstone", "黑石", "黑石集团"),
+    "Baring Private Equity Asia 霸菱亚洲": ("Baring Private Equity Asia", "BPEA", "霸菱亚洲"),
+    "Warburg Pincus 华平投资集团": ("Warburg Pincus", "华平投资", "华平投资集团"),
+    "Tiger Global 老虎环球基金": ("Tiger Global", "老虎环球", "老虎环球基金"),
+    "Fidelity 富达": ("Fidelity", "富达", "富达基金"),
+    "景林资产": ("上海景林",),
+    "重阳投资": ("上海重阳投资",),
+    "高毅资产": ("上海高毅资产",),
     "BytePlus": ("BytePlus（字节跳动）",),
     "天翼云": ("天翼云科技有限公司",),
     "联通数科": ("联通数字科技有限公司",),
@@ -359,6 +446,9 @@ def _legal_identity_keys(value: Any) -> set[str]:
     return result
 
 
+_merge_excel_targets_into_monitor_pools()
+
+
 @lru_cache(maxsize=1)
 def _canonical_employer_index() -> dict[str, str]:
     """Map maintained public aliases to one stable employer identity.
@@ -420,6 +510,46 @@ def canonical_employer_identity(company: Any) -> str:
     if not raw or len(raw) > 500 or _IDENTITY_NOISE.search(raw):
         return ""
     return _cached_canonical_employer_identity(raw)
+
+
+_SELECTED_EXCEL_TIERS = {1: "T1", 2: "T1.5", 3: "T2"}
+_COMPLETE_EXCEL_TIERS = {1: "T1.5", 2: "T2", 3: "T2.5"}
+
+
+@lru_cache(maxsize=1)
+def _excel_target_index() -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for target in EXCEL_EMPLOYER_TARGETS:
+        raw = str(target["company"])
+        canonical = canonical_employer_identity(raw) or raw
+        selected_priority = target.get("selected_priority")
+        complete_priority = int(target["complete_priority"])
+        source = "selected" if selected_priority is not None else "complete"
+        priority = int(selected_priority) if selected_priority is not None else complete_priority
+        tier = (
+            _SELECTED_EXCEL_TIERS[priority]
+            if source == "selected"
+            else _COMPLETE_EXCEL_TIERS[priority]
+        )
+        current = result.get(canonical)
+        candidate = {
+            "company": canonical,
+            "source": source,
+            "priority": priority,
+            "institution_tier": tier,
+        }
+        if current is None or source == "selected" or int(current["priority"]) > priority:
+            result[canonical] = candidate
+    return result
+
+
+def excel_employer_priority(company: Any) -> dict[str, Any] | None:
+    """Return the maintained workbook weight for one exact employer identity."""
+    canonical = canonical_employer_identity(company)
+    if not canonical:
+        return None
+    target = _excel_target_index().get(canonical)
+    return dict(target) if target else None
 
 
 @lru_cache(maxsize=4096)

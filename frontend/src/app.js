@@ -60,7 +60,7 @@ const STORAGE_KEYS = {
   photonCreations: "bingyan_photon_creations",
 };
 const WORKSPACE_ORDER = ["legal", "general", "finance"];
-const CHATGPT_MONITOR_SOURCE_COUNT = 7;
+const CHATGPT_MONITOR_SOURCE_COUNT = 9;
 const RECRUITMENT_REFRESH_LABEL = "同步候选源 ↻";
 const FUTURE_RADAR_POLL_INTERVAL_MS = 30_000;
 const FUTURE_RADAR_RUN_STATUS_POLL_MS = RADAR_STATUS_INTERVAL_MS;

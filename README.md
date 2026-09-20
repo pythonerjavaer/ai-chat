@@ -40,13 +40,13 @@
 - 首页截止预警：登录后直接显示 7 天内到期的已核验机会，无需先打开未来雷达；截止日当天及更早的岗位不会从岗位 API 返回。只有原公告明确标注的截止日期才会触发预警。
 - 我的官网变化雷达：每个账号可添加最多 12 个公开 HTTPS 企业招聘页和关注关键词。抓取前会拒绝账号信息、本机/内网/保留地址、非标准 HTTPS 端口和不安全跳转，并限制响应类型、大小与超时。
 - 官网变化检测完全使用可见文本规范化、SHA-256 指纹和确定性关键词匹配，不把招聘网页发送给模型，也不消耗 OpenAI Token。首次检查只建立基线；服务清醒时会定时比较变化，用户也可手动刷新。最近变化会在应用首页持续显示“去核对”提醒，直到用户标记为已核对。
-- 动态监控接收 API：受 `RECRUITMENT_INGEST_TOKEN` 保护，供另行部署并获得授权的外部任务写入结构化校招岗位。每次 HTTP 请求最多 100 个岗位，监控运行没有总条数配额；提交器用 `--batch-size` 控制请求大小，默认 25、最大 100，连续处理全部更新。也支持 `{"jobs":[],"source_id":"chatgpt-radar-01","source_updated_at":"<ISO 8601>"}` 空结果心跳；批次和岗位均拒绝未声明字段。七个活动逻辑来源为 `chatgpt-radar-01`、`02`、`03`、`06`、`07`、`08`、`09`；退役 `04`、`05` 停止新增监控，但保留历史游标、事件与候选。契约记录稳定条目/外部 ID、来源更新时间和简短证据，并提供只含聚合状态的同步状态接口；真实会话 ID 不提交、不入库、不进 Git。可选 `source_thread_id` 只用于兼容其他来源，服务端至多保留不可逆短哈希。当前仓库仍不包含一个永不休眠、覆盖全网的外部采集服务。
-- 七源本机只读桥接：用户已经登录的本机浏览器可由 Codex 自动任务读取页面中**当前可见的助手消息 DOM**，只提取招聘表格或具体岗位条目及真实公开 HTTPS 锚点，不要求原消息采用 JSON 格式；引用标记缺少链接时须读取实际锚点，不能猜测 URL。脱敏字段交给 `scripts/frostfire_chatgpt_bridge.py` 分批并维护本机哈希游标。桥接不读取 Cookie、Authorization、隐藏接口、页面存储或完整会话，也不向 ChatGPT 发送消息；Render 服务端不会登录或直接访问这些私有会话。浏览器结果提交到 `/api/recruitment/ingest` 后，服务端核对公司、校招、岗位、日期与关闭状态并保留结果；有有效公开招聘链接的未确认线索可直接进入登录后的统一机会池，不冒充“官网已确认”，明确拒绝、关闭和过期条目不会进入默认列表。
+- 动态监控接收 API：受 `RECRUITMENT_INGEST_TOKEN` 保护，供另行部署并获得授权的外部任务写入结构化校招岗位。每次 HTTP 请求最多 100 个岗位，监控运行没有总条数配额；提交器用 `--batch-size` 控制请求大小，默认 25、最大 100，连续处理全部更新。也支持 `{"jobs":[],"source_id":"chatgpt-radar-14","source_updated_at":"<ISO 8601>"}` 空结果心跳；批次和岗位均拒绝未声明字段。当前九个活动逻辑来源由 `backend/chatgpt_sources.py` 统一维护，其中 `chatgpt-radar-14` 专用于两个 2027 届秋招 Excel 名录；退役来源停止新增监控，但保留历史游标、事件与候选。契约记录稳定条目/外部 ID、来源更新时间和简短证据，并提供只含聚合状态的同步状态接口；真实会话 ID 不提交、不入库、不进 Git。可选 `source_thread_id` 只用于兼容其他来源，服务端至多保留不可逆短哈希。当前仓库仍不包含一个永不休眠、覆盖全网的外部采集服务。
+- 九源本机只读桥接：用户已经登录的本机浏览器可由 Codex 自动任务读取页面中**当前可见的助手消息 DOM**，只提取招聘表格或具体岗位条目及真实公开 HTTPS 锚点，不要求原消息采用 JSON 格式；引用标记缺少链接时须读取实际锚点，不能猜测 URL。脱敏字段交给 `scripts/frostfire_chatgpt_bridge.py` 分批并维护本机哈希游标。桥接不读取 Cookie、Authorization、隐藏接口、页面存储或完整会话，也不向 ChatGPT 发送消息；Render 服务端不会登录或直接访问这些私有会话。浏览器结果提交到 `/api/recruitment/ingest` 后，服务端核对公司、校招、岗位、日期与关闭状态并保留结果；有有效公开招聘链接的未确认线索可直接进入登录后的统一机会池，不冒充“官网已确认”，明确拒绝、关闭和过期条目不会进入默认列表。
 - 多消息历史回填：`scripts/frostfire_chatgpt_history.py` 接收已脱敏的多条招聘记录，按稳定岗位 ID 去重，默认每次 HTTP 请求 25 条，可用 `--batch-size` 调整至 1–100 条，持续处理所有更新。单个输入页保留 10,000 行及字节安全边界，超出后分页续传，不作为每轮监控的总量配额。所有批次先经过真实 ingest dry-run，提交仅从本机 Keychain 读取接收 Token。成功回执写入仓库外的纯摘要账本，中断后只补未确认条目，重试可以调整请求大小；不相交的旧历史片段不能覆盖已提交的新版本。未遍历完整来源时保留 `history_complete=false`，不把“本批处理完毕”称为“全部历史已同步”。
 - 原始来源评级：可选 `source_rating` 原样保留明确的 T 级、数值分数、理由及岗位／公司作用范围，并记录来源。具体岗位评级可应用于该岗位，公司评级仅作公司参考；缺失评分或仅有 P 类优先级时不臆造 T 级。评级修正参与内容哈希和增量更新，冲突来源保留待核对。来源评级与官网核验状态独立，不能使待核验线索变成“官网已确认”。
 - 公众号与公开索引：五个公众号逻辑来源在 Deep Scan 中通过 OpenAI 公网 Web Search 做 discovery，不直接抓取微信公众号后台，也不绕过微信登录、验证码或反爬。国务院国资委招聘列表（含公开移动版 fallback）和银行招聘网由确定性解析器生成最小文章线索；公开 RSS/Atom 与用户提供的公开文章也可产生 discovery。有效公开招聘线索可直接查看，企业官方招聘 HTTPS 页面核验用于增加“官网已确认”标记，而不是阻止用户查看发现。
 - 指定 ChatGPT 监控对话已由用户用于筛选岗位，其有效条目以 `source_screened`（ChatGPT 已筛选）直接入池，不等待官网再次读取成功；原有符合条件的 pending 数据会本地迁移，保留 ID、来源日期与评级。`source_screened` 与官网 `verified` 分开计数，不冒充官方确认。明确过期、关闭或不安全记录不显示为当前开放岗位，历史仍持久保存。其他来源继续按原官网核验规则处理。外部 `evidence` 仅保留单行招聘事实短句（最多 12 条、每条 1–280 字符），不包含邮箱、电话号码或私人对话。稳定身份去重与旧版本不能覆盖新版本的规则不变。
-- 外部监控 OpenAPI 契约见 [`docs/RECRUITMENT_INGEST_OPENAPI.yaml`](docs/RECRUITMENT_INGEST_OPENAPI.yaml)，七源桥接、Secret、heartbeat 与幂等说明见 [`docs/CHATGPT_RADAR_BRIDGE.md`](docs/CHATGPT_RADAR_BRIDGE.md)。契约已指向 `https://frostfire-ai.onrender.com`；发送方只能配置 Render 生成的接收 Token，不能写入 ChatGPT Cookie 或 OpenAI API Key。
+- 外部监控 OpenAPI 契约见 [`docs/RECRUITMENT_INGEST_OPENAPI.yaml`](docs/RECRUITMENT_INGEST_OPENAPI.yaml)，九源桥接、Secret、heartbeat 与幂等说明见 [`docs/CHATGPT_RADAR_BRIDGE.md`](docs/CHATGPT_RADAR_BRIDGE.md)。契约已指向 `https://frostfire-ai.onrender.com`；发送方只能配置 Render 生成的接收 Token，不能写入 ChatGPT Cookie 或 OpenAI API Key。
 - 订阅能力的服务端边界：已有 Free/Pro 权益模型、额度查询和一个默认关闭的 Apple 交易校验入口；未配置交易校验时接口明确拒绝，不会把演示按钮伪装成已完成收款。
 - 三档反事实压力舱（Base / Downside / Breakpoint）、未知事项雷达、证据锁链和输入版本分析指纹；情景明确标注为推演而非预测。
 - PDF、DOCX、TXT、Markdown、CSV、JSON 上传；使用 OpenAI Embeddings 建立私人文档索引。
@@ -289,7 +289,7 @@ npm run ios:open
 | `DELETE` | `/api/recruitment/watches/{watch_id}` | 删除个人官网监控 |
 | `POST` | `/api/recruitment/refresh` | 使用已配置的官方/授权岗位源刷新数据 |
 | `POST` | `/api/recruitment/ingest` | 使用 `X-Recruitment-Token` 接收每个 HTTP 请求最多 100 个校招岗位或一个空结果来源心跳；多请求处理全量更新 |
-| `GET` | `/api/recruitment/sync/status` | 使用 `X-Recruitment-Token` 查询七个活动来源最新事件计数、历史候选库存与最近事件 |
+| `GET` | `/api/recruitment/sync/status` | 使用 `X-Recruitment-Token` 查询九个活动来源最新事件计数、历史候选库存与最近事件 |
 | `GET` | `/api/future-radar/dashboard` | Future Radar 汇总、来源健康、最近运行与事件游标 |
 | `GET` | `/api/future-radar/opportunities` | 登录用户统一机会池：已核验岗位与有效公开招聘线索；全量去重、筛选、均衡精选/重点/T 级投影、计数和分页 |
 | `GET` | `/api/future-radar/opportunities/{job_id}` | 单个机会、来源标签、核验状态与脱敏出处 |

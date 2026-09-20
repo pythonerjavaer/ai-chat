@@ -43,6 +43,19 @@ def test_hierarchy_points_decrease_with_identical_role_evidence():
     assert [assess(company)["platform_points"] for company in employers] == [15, 10, 8, 6]
 
 
+def test_unknown_hiring_entity_uses_headquarters_subsidiary_midpoint_instead_of_zero():
+    result = assess_organization(
+        {"company": "信息不足的香港招聘主体", "title": "数据产品经理"},
+        base_platform_points=14,
+        platform_band="top",
+    )
+    assert result["level"] == "unspecified"
+    assert result["confidence"] == "unknown"
+    assert result["platform_points"] == 13
+    assert result["uncertainty_policy"] == "midpoint"
+    assert "中间值" in result["note"]
+
+
 @pytest.mark.parametrize("company", [
     "中国联通上海市分公司", "中国电信北京市分公司", "示例集团重庆市分公司",
     "示例银行天津市分行", "示例集团河北分公司", "示例集团河南省公司",

@@ -52,6 +52,16 @@ def test_group_legal_name_and_brand_have_same_platform_baseline():
     assert brand["organization_assessment"]["base_platform_points"] == legal["organization_assessment"]["base_platform_points"]
 
 
+def test_selected_excel_target_receives_a_stronger_baseline_than_complete_only_target():
+    selected = score_job(opportunity("泰康基金", employer_type="公募基金"), {})
+    complete_only = score_job(opportunity("北京农商银行", employer_type="商业银行"), {})
+    assert selected["institution_tier_code"] == "T1.5"
+    assert complete_only["institution_tier_code"] == "T2.5"
+    assert selected["organization_assessment"]["base_platform_points"] > complete_only["organization_assessment"]["base_platform_points"]
+    assert "精选版秋招名录" in selected["institution_reason"]
+    assert "完整版秋招名录" in complete_only["institution_reason"]
+
+
 def test_major_options_are_not_three_career_functions():
     base = opportunity("中国电信河北省分公司", title="综合事务专员", responsibilities="办理内部流程与会议安排。", requirements="面向应届毕业生。")
     full_major_list = {**base, "requirements": "金融、会计、计算机、人工智能、数据科学、战略管理等相关专业均可申请。"}

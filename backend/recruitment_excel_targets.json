@@ -1,0 +1,1785 @@
+{
+  "schema_version": 1,
+  "source_labels": {
+    "complete": "2027届傅饶秋招网申报考指南（完整版）(1).xlsx",
+    "selected": "2027届傅饶秋招网申报考指南（精选版）(1).xlsx"
+  },
+  "employers": [
+    {
+      "company": "国家开发银行",
+      "category": "policy_state_banks",
+      "complete_priority": 1,
+      "selected_priority": 1
+    },
+    {
+      "company": "进出口银行",
+      "category": "policy_state_banks",
+      "complete_priority": 1,
+      "selected_priority": 1
+    },
+    {
+      "company": "农业发展银行",
+      "category": "policy_state_banks",
+      "complete_priority": 1,
+      "selected_priority": 1
+    },
+    {
+      "company": "中国银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "工商银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "建设银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "农业银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "交通银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "邮储银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "招商银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "民生银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "中信银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "兴业银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "光大银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "平安银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "浦发银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "广发银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "华夏银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "广发香港",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "招行香港分行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "民生香港",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "北京农商银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "江苏银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "浙商银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "徽商银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "渤海银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "宁波银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "厦门银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "汇丰银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "渣打银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "花旗银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "星展银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "恒生银行",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "瑞士银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "德意志银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "巴克莱银行",
+      "category": "policy_state_banks",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "中金公司",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 1,
+      "selected_priority": 1
+    },
+    {
+      "company": "中信证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 1,
+      "selected_priority": 1
+    },
+    {
+      "company": "华泰证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "国泰君安",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "广发证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "招商证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "申万宏源",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "中信建投",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "国信证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "光大证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "财通证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "海通证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "国金证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "东方证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "银河证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "东北证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "西南证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "上海证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "东兴证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "天风证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "方正证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "兴业证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "平安证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "华创证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "中泰证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "国海证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "东海证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "太平洋证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "民生证券",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "易方达基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 1,
+      "selected_priority": 1
+    },
+    {
+      "company": "华夏基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 1,
+      "selected_priority": 1
+    },
+    {
+      "company": "嘉实基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 1,
+      "selected_priority": 1
+    },
+    {
+      "company": "广发基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "南方基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "富国基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "博时基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "汇添富基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "招商基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "泰康基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "工银瑞信基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "银华基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "鹏华基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "天弘基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "中银基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "建信基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "交银施罗德基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "上投摩根基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "海富通基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "兴证全球基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "景顺长城基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "长盛基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "新华基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "大成基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "华安基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "农银汇理",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "泰达宏利",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "光大保德信基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "国海富兰克林基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "浦银安盛基金",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "中信信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "中诚信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "建信信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "平安信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "兴业信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "华润信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "外贸信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "中融信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "五矿信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "中航信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "交银信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "北方信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "山东信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "粤财信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "昆仑信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "华能信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "大业信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "长安信托",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "中国人保",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "中国人寿",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "平安保险",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "太平洋保险",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "泰康保险",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 2,
+      "selected_priority": 1
+    },
+    {
+      "company": "泰康科技",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "东方资产",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "新华保险",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "友邦保险",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "阳光保险",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "中国太平",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "人保资产",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "泰康资产",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 2,
+      "selected_priority": 1
+    },
+    {
+      "company": "太平资产",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "太保资产",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "阳光资管",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "华泰资产",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "平安资产",
+      "category": "insurance_integrated_finance",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "腾讯",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": 1
+    },
+    {
+      "company": "字节跳动",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "阿里巴巴",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "拼多多",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "百度",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "京东",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "京东科技",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "美团",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "携程",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "小米",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "华为",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "智元机器人",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "联想",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "网易",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "快手",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "滴滴",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "360",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "爱奇艺",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "搜狐",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "新浪",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "完美世界",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "旷视科技",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "科大讯飞",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "商汤科技",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "海康威视",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "蚂蚁金服",
+      "category": "internet_tech",
+      "complete_priority": 1,
+      "selected_priority": 1
+    },
+    {
+      "company": "京东金融",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "陆金所",
+      "category": "internet_tech",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "平安科技",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "度小满",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "腾讯金融",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "百度金融",
+      "category": "internet_tech",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "中国电信",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "中国移动",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 1
+    },
+    {
+      "company": "中国联通",
+      "category": "state_tech_telecom",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "天翼云",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 1
+    },
+    {
+      "company": "移动研究院",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "国家能源集团",
+      "category": "state_energy_resources",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "国家电网",
+      "category": "state_energy_resources",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "南方电网",
+      "category": "state_energy_resources",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "国家管网",
+      "category": "state_energy_resources",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "国家电投",
+      "category": "state_energy_resources",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "中国华电",
+      "category": "state_energy_resources",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "中国华能",
+      "category": "state_energy_resources",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "中国电科",
+      "category": "state_energy_resources",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "中国电子",
+      "category": "state_energy_resources",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "中国石油",
+      "category": "state_energy_resources",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "中国石化",
+      "category": "state_energy_resources",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "中海油",
+      "category": "state_energy_resources",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "中国烟草",
+      "category": "tobacco_monopoly",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "中国黄金",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "中粮集团",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "武汉金融控股集团",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "招商局集团",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "中国铁塔",
+      "category": "state_tech_telecom",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "中国华录集团",
+      "category": "state_tech_telecom",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "通用技术集团",
+      "category": "state_tech_telecom",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "华润置地",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "中国铁建",
+      "category": "state_tech_telecom",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "一汽-大众",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "招商局集团（香港总部）",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "中银香港BOCHK",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "香港中旅集团",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "建信金科",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "平安银行金融科技",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "招银网络科技",
+      "category": "state_tech_telecom",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "德勤",
+      "category": "big_four_professional_services",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "普华永道",
+      "category": "big_four_professional_services",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "安永",
+      "category": "big_four_professional_services",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "毕马威",
+      "category": "big_four_professional_services",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "麦肯锡",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "BCG波士顿咨询",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "贝恩",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "科尔尼",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "埃森哲",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "罗兰贝格",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "韦莱韬悦",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "美世",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "怡安翰威特",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "谷歌",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "亚马逊",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "微软",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "Apple",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "Facebook/Meta",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "IBM",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "英特尔",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "思科",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "SAP",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "Oracle",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "联合利华",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 3
+    },
+    {
+      "company": "宝洁",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 3
+    },
+    {
+      "company": "可口可乐",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 3
+    },
+    {
+      "company": "欧莱雅",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 3
+    },
+    {
+      "company": "玛氏",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 3
+    },
+    {
+      "company": "强生",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": 3
+    },
+    {
+      "company": "特斯拉",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "宝马集团",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "西门子",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "通用电气",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "ABB",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "博世",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "戴姆勒",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "辉瑞",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "诺华",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "拜耳",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "默沙东",
+      "category": "consumer_foreign_consulting",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "高瓴资本",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "红杉资本",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "鼎晖投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "弘毅投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "中信产业基金",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "中信资本",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "复星资本",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "华兴资本",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "凯雷投资集团",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "KKR",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "黑石集团",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "霸菱亚洲",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "华平投资集团",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "厚朴投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "新天域资本",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "远毅资本",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "景林资产",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "重阳投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "高毅资产",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "淡水泉",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "拾贝投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "乐瑞资产",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "源乐晟",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "星石投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "清和泉",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "泓澄投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "翼虎投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "朱雀投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "巨杉资产",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "华夏未来资本",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "昆吾九鼎",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "北京鼎萨",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "北京和聚",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "北京鸿道",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "上海景林",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "上海信璞投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "上海重阳投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "上海高毅资产",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "上海涌金投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "北京云程泰",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "北京鹏扬",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "北京清流泉",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "观富资产",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "华夏财富创新投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "远东投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "北京神农投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "世坤投资",
+      "category": "quant_private_hedge",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "老虎环球基金",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "高盛",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "摩根士丹利",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "摩根大通",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "贝莱德",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": 2
+    },
+    {
+      "company": "富达",
+      "category": "quant_private_hedge",
+      "complete_priority": 2,
+      "selected_priority": null
+    },
+    {
+      "company": "上交所",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "深交所",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "北交所",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "港交所",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": 3
+    },
+    {
+      "company": "香港金管局",
+      "category": "policy_state_banks",
+      "complete_priority": 3,
+      "selected_priority": null
+    },
+    {
+      "company": "银行间交易商协会",
+      "category": "securities_public_funds_asset_management",
+      "complete_priority": 3,
+      "selected_priority": null
+    }
+  ]
+}
