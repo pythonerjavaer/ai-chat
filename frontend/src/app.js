@@ -175,6 +175,7 @@ const state = {
     runStatusPollPending: { quick: false, deep: false },
     runStatusTracking: { quick: false, deep: false },
     terminalSnapshotPromise: null,
+    manualRecoveryPromise: null,
     activeRunTypes: new Set(),
     filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, application_status: "", verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" },
   },
@@ -2912,7 +2913,7 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
     ["CLOSED", "已关闭", ["closed", "closed_jobs", "counts.closed", "counts.closed_jobs", "metrics.closed"]],
     ["PROGRAMS", "招聘项目", ["programs", "program_count", "counts.programs", "counts.recruitment_programs"]],
     ["CLOSING SOON", "即将截止", ["closing_soon", "closing_soon_jobs", "counts.closing_soon"]],
-    ["DISCOVERED", "待核验来源记录", ["pending", "pending_jobs", "counts.pending", "counts.pending_verification"]],
+    ["DISCOVERED", "待核验及已筛选记录", ["discovered", "counts.discovered", "pending", "pending_jobs", "counts.pending", "counts.pending_verification"]],
     ["VERIFIED", "官网确认记录", ["verified", "verified_jobs", "counts.verified"]],
   ];
   elements.futureRadarDashboard.replaceChildren();
@@ -2923,9 +2924,10 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
     const opportunityClosingSoon = code === "CLOSING SOON"
       ? radarNumber(state.futureRadar?.opportunityStats, ["closing_soon"], 0)
       : 0;
+    const dashboardValue = valueAtPaths(dashboard, paths);
     const metricValue = poolUnavailable ? null : code === "CLOSING SOON"
       ? (state.futureRadar?.opportunityStats?.closing_soon == null ? null : opportunityClosingSoon)
-      : radarNumber(dashboard, paths);
+      : dashboardValue == null ? null : radarNumber(dashboard, paths);
     const clickable = true;
     const card = makeElement(clickable ? "button" : "article", `radar-metric metric-${code.toLowerCase().replaceAll(" ", "-")}`);
     if (clickable) {
@@ -3599,7 +3601,17 @@ function resumeFutureRadarReadGates() {
 
 function retryFutureRadarOpportunities(read = null) {
   resumeFutureRadarReadGates();
-  return read ? read() : loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false });
+  if (read) return read();
+  if (state.futureRadar.manualRecoveryPromise) return state.futureRadar.manualRecoveryPromise;
+  // The visible retry repairs the complete Radar surface. This refreshes the
+  // dashboard counts as well as the pool and coalesces repeated clicks.
+  const recovery = loadFutureRadarSnapshot().finally(() => {
+    if (state.futureRadar.manualRecoveryPromise === recovery) {
+      state.futureRadar.manualRecoveryPromise = null;
+    }
+  });
+  state.futureRadar.manualRecoveryPromise = recovery;
+  return recovery;
 }
 
 async function loadFutureRadarJobPage(page, force = false, { scroll = true, delayMs = 0 } = {}) {

@@ -2590,6 +2590,8 @@ class RadarRepository:
                     SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open,
                     SUM(CASE WHEN verification_status='verified' THEN 1 ELSE 0 END) AS verified,
                     SUM(CASE WHEN verification_status='pending' THEN 1 ELSE 0 END) AS pending,
+                    SUM(CASE WHEN verification_status='source_screened' THEN 1 ELSE 0 END) AS source_screened,
+                    SUM(CASE WHEN verification_status='conflicted' THEN 1 ELSE 0 END) AS conflicted,
                     SUM(CASE WHEN status='open' AND closing_date>? AND closing_date<=? THEN 1 ELSE 0 END) AS closing_soon
                 FROM radar_jobs
                 """, (today.isoformat(), soon)
@@ -2628,6 +2630,9 @@ class RadarRepository:
             }
             for row in active_run_rows
         ]
+        pending = int(job_counts["pending"] or 0)
+        source_screened = int(job_counts["source_screened"] or 0)
+        conflicted = int(job_counts["conflicted"] or 0)
         return {
             "counts": {
                 "new": event_counts.get("NEW", 0),
@@ -2636,7 +2641,10 @@ class RadarRepository:
                 "reopened": event_counts.get("REOPENED", 0),
                 "programs": programs,
                 "closing_soon": int(job_counts["closing_soon"] or 0),
-                "pending": int(job_counts["pending"] or 0),
+                "pending": pending,
+                "source_screened": source_screened,
+                "conflicted": conflicted,
+                "discovered": pending + source_screened + conflicted,
                 "verified": int(job_counts["verified"] or 0),
                 "open_jobs": int(job_counts["open"] or 0),
                 "total_jobs": int(job_counts["total"] or 0),

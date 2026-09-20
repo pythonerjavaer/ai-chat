@@ -239,7 +239,9 @@ test("the visible empty-pool retry resumes both read lanes without creating dupl
   const first = retry.listeners.click();
   const second = retry.listeners.click();
   await new Promise(setImmediate);
-  assert.equal(r.calls.length, before + 1);
+  const recoveryCalls = r.calls.slice(before);
+  assert.equal(recoveryCalls.filter((path) => path.startsWith("/future-radar/opportunities?")).length, 1);
+  assert.equal(recoveryCalls.length, 6);
   finish(r.payload);
   assert.equal(await first, true);
   assert.equal(await second, true);
@@ -247,6 +249,15 @@ test("the visible empty-pool retry resumes both read lanes without creating dupl
   assert.equal(r.cards().length, 50);
   r.context.radarPollingGate.assertAllowed();
   assert.equal(JSON.parse(opportunityTransport).suspended, false);
+});
+
+test("dashboard metrics distinguish an unread snapshot from real zero counts", () => {
+  const r = runtime();
+  r.run("renderFutureRadarDashboard({})");
+  const unread = descendants(r.elements.futureRadarDashboard)
+    .filter((element) => element.tag === "strong")
+    .map((element) => element.textContent);
+  assert.deepEqual(unread, Array(7).fill("—"));
 });
 
 test("a partial dashboard snapshot is not successful when opportunities failed", async () => {

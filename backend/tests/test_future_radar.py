@@ -859,6 +859,23 @@ def test_frostfire_sync_v1_is_idempotent_and_rejects_key_reuse(radar_service):
         FrostFireSyncV1.model_validate({**payload, "cookie": "must-not-be-accepted"})
 
 
+def test_dashboard_counts_source_screened_records_as_discovered(radar_service):
+    payload = FrostFireSyncV1.model_validate({
+        "version": "FROSTFIRE_SYNC_V1",
+        "source_id": "dashboard-screened-source",
+        "jobs": [sample_job("dashboard-screened")],
+    }).model_dump(mode="json")
+    radar_service.sync(payload)
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE radar_jobs SET verification_status='source_screened' WHERE external_id=?",
+            ("dashboard-screened",),
+        )
+    counts = radar_service.repository.dashboard()["counts"]
+    assert counts["source_screened"] == 1
+    assert counts["discovered"] == 1
+
+
 def test_sync_processes_all_records_across_hundred_item_transport_chunks(radar_service):
     for start, count in ((0, 100), (100, 13)):
         payload = FrostFireSyncV1.model_validate({
