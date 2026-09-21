@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -13,6 +14,7 @@ from .discovery.base import DiscoveryProviderUnavailable, WechatDiscoveryProvide
 from .models import DiscoveredArticle
 from .normalizer import normalize_wechat_url
 from .repository import WechatTitleRepository, queries_for
+from ..repository import utc_now
 from ...memory_observability import log_memory_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,52 @@ class WechatTitleService:
         self.connector = connector or WechatArticleConnector()
         self.parser = parser or self.connector.parse
         self._discovery_lock = asyncio.Lock()
+        self._scan_start_lock = asyncio.Lock()
+        self._scan_task: asyncio.Task | None = None
+
+    async def start_discovery(self, provider: WechatDiscoveryProvider, *, trigger_type: str = 'manual',
+                              respect_cooldown: bool = True) -> dict:
+        """Persist a scan run and return immediately; one process owns the scan."""
+        async with self._scan_start_lock:
+            active = await asyncio.to_thread(self.repository.active_scan_run)
+            if active:
+                return {'scan_id': active['id'], 'status': 'already_running'}
+            sources = [item for item in await asyncio.to_thread(self.repository.list_sources) if item['enabled']]
+            rss = log_memory_checkpoint(logger, 'wechat_scan_run', 'queued', trigger_type=trigger_type)
+            scan_id = 'wechat-scan-' + uuid.uuid4().hex
+            await asyncio.to_thread(self.repository.create_scan_run, scan_id, trigger_type,
+                                    total_sources=len(sources), start_rss_mb=rss)
+            self._scan_task = asyncio.create_task(
+                self._run_discovery(scan_id, provider, respect_cooldown=respect_cooldown),
+                name=scan_id,
+            )
+            return {'scan_id': scan_id, 'status': 'running'}
+
+    async def _run_discovery(self, scan_id: str, provider: WechatDiscoveryProvider, *, respect_cooldown: bool) -> None:
+        started = time.monotonic()
+        try:
+            result = await self.discover_now(provider, respect_cooldown=respect_cooldown, scan_id=scan_id)
+            counts = result.get('counts', {})
+            status = 'success' if result.get('status') == 'available' else 'partial'
+            if result.get('status') in {'unavailable', 'degraded'}:
+                status = 'failed' if not result.get('accounts') else 'partial'
+            await asyncio.to_thread(self.repository.update_scan_run, scan_id,
+                status=status, finished_at=utc_now(), current_source=None,
+                raw_candidates=counts.get('raw_candidates', 0),
+                deduplicated_candidates=counts.get('deduplicated_candidates', 0),
+                accepted_articles=counts.get('discovered', 0), new_articles=counts.get('new', 0),
+                leads_created=counts.get('leads', 0), duplicates=counts.get('duplicate', 0),
+                failed_count=counts.get('failed', 0),
+                error_message=None if status == 'success' else result.get('notice'),
+                end_rss_mb=log_memory_checkpoint(logger, 'wechat_scan_run', 'finished', duration_ms=round((time.monotonic()-started)*1000)),
+            )
+        except Exception as exc:
+            await asyncio.to_thread(self.repository.update_scan_run, scan_id,
+                status='failed', finished_at=utc_now(), current_source=None, failed_count=1,
+                error_message='公开搜索本轮未完成。',
+                end_rss_mb=log_memory_checkpoint(logger, 'wechat_scan_run', 'failed'),
+            )
+            logger.exception('wechat_scan_run_failed', extra={'scan_id': scan_id})
 
     async def import_article(self, url: str, *, expected_source_name: str | None = None,
                              force_refresh: bool = False) -> dict:
@@ -143,7 +191,8 @@ class WechatTitleService:
             'ai_calls': 0, 'model_tokens_used': 0,
         }
 
-    async def discover_now(self, provider: WechatDiscoveryProvider, *, respect_cooldown: bool = True) -> dict:
+    async def discover_now(self, provider: WechatDiscoveryProvider, *, respect_cooldown: bool = True,
+                           scan_id: str | None = None) -> dict:
         provider_name = getattr(provider, 'name', provider.__class__.__name__)
         if self._discovery_lock.locked():
             return {
@@ -158,7 +207,7 @@ class WechatTitleService:
         async with self._discovery_lock:
             try:
                 return await self._discover_now_unlocked(
-                    provider, respect_cooldown=respect_cooldown,
+                    provider, respect_cooldown=respect_cooldown, scan_id=scan_id,
                 )
             finally:
                 log_memory_checkpoint(
@@ -168,6 +217,7 @@ class WechatTitleService:
 
     async def _discover_now_unlocked(
         self, provider: WechatDiscoveryProvider, *, respect_cooldown: bool = True,
+        scan_id: str | None = None,
     ) -> dict:
         provider_name = getattr(provider, 'name', provider.__class__.__name__)
         state = await asyncio.to_thread(self.repository.get_provider_state, provider_name)
@@ -187,6 +237,9 @@ class WechatTitleService:
         accounts: list[dict] = []
         try:
             for source in sources:
+                if scan_id:
+                    await asyncio.to_thread(self.repository.update_scan_run, scan_id,
+                                            current_source=source['source_name'], completed_sources=counts['accounts_scanned'])
                 candidates: list[dict] = []
                 discovered: list[DiscoveredArticle] = []
                 executed_queries, cached_queries = [], 0
@@ -259,6 +312,12 @@ class WechatTitleService:
                         self.repository.save_discovery_debug, provider_name, source, candidates,
                     )
                 accounts.append(account)
+                if scan_id:
+                    await asyncio.to_thread(self.repository.update_scan_run, scan_id,
+                        completed_sources=counts['accounts_scanned'], raw_candidates=counts['raw_candidates'],
+                        deduplicated_candidates=counts['deduplicated_candidates'], accepted_articles=counts['discovered'],
+                        new_articles=counts['new'], leads_created=counts['leads'], duplicates=counts['duplicate'],
+                        failed_count=counts['failed'])
         except DiscoveryProviderUnavailable as exc:
             counts['failed'] += 1
             provider_state = await asyncio.to_thread(

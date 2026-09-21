@@ -83,11 +83,35 @@ def migrate_wechat_titles(connection: Any, ensure_column: Callable) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_wechat_discovery_debug_recent
             ON wechat_discovery_debug(provider, scanned_at DESC);
+        CREATE TABLE IF NOT EXISTS wechat_scan_runs (
+            id TEXT PRIMARY KEY,
+            trigger_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            current_source TEXT,
+            total_sources INTEGER NOT NULL DEFAULT 0,
+            completed_sources INTEGER NOT NULL DEFAULT 0,
+            raw_candidates INTEGER NOT NULL DEFAULT 0,
+            deduplicated_candidates INTEGER NOT NULL DEFAULT 0,
+            accepted_articles INTEGER NOT NULL DEFAULT 0,
+            new_articles INTEGER NOT NULL DEFAULT 0,
+            leads_created INTEGER NOT NULL DEFAULT 0,
+            duplicates INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT,
+            start_rss_mb REAL,
+            end_rss_mb REAL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_wechat_scan_runs_recent
+            ON wechat_scan_runs(started_at DESC);
     ''')
     for name, declaration in {
         'query': 'TEXT', 'found_by_queries': "TEXT NOT NULL DEFAULT '[]'", 'duplicate_of': 'TEXT',
     }.items():
         ensure_column(connection, 'wechat_discovery_debug', name, declaration)
+    ensure_column(connection, 'recruitment_title_leads', 'lead_type', "TEXT NOT NULL DEFAULT 'unknown'")
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, datetime('now'))",
         ('future_radar_v5_wechat_titles',),

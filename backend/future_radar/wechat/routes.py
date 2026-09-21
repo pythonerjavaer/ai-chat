@@ -101,17 +101,25 @@ def create_wechat_router(service: WechatTitleService, *, current_user: Callable,
     async def monitor(user=Depends(consented_user)) -> dict:
         return await run_wechat_monitor(service)
 
-    @router.post('/discover')
+    @router.post('/discover/run', status_code=202)
+    async def discover_run(user=Depends(consented_user)) -> dict:
+        if discovery_provider is None:
+            raise HTTPException(503, '当前部署未配置公众号公开搜索 Provider。')
+        return await service.start_discovery(discovery_provider, trigger_type='manual')
+
+    @router.get('/discover/runs/{scan_id}')
+    def discover_run_status(scan_id: str, user=Depends(current_user)) -> dict:
+        result = service.repository.get_scan_run(scan_id)
+        if result is None:
+            raise HTTPException(404, '未找到该公众号扫描记录。')
+        return result
+
+    # Compatibility endpoint for clients still using the first Beta release.
+    @router.post('/discover', status_code=202)
     async def discover(user=Depends(consented_user)) -> dict:
         if discovery_provider is None:
             raise HTTPException(503, '当前部署未配置公众号公开搜索 Provider。')
-        try:
-            return await service.discover_now(discovery_provider)
-        except DiscoveryCooldown as exc:
-            raise HTTPException(
-                429, '公开搜索刚刚运行过，请在冷却结束后再试。',
-                headers={'Retry-After': str(exc.retry_after)},
-            ) from None
+        return await service.start_discovery(discovery_provider, trigger_type='manual')
 
     @router.get('/discover/debug')
     def discovery_debug(_: object = Depends(admin_auth), limit: int = Query(100, ge=1, le=200)) -> dict:

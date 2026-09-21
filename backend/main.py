@@ -551,8 +551,8 @@ async def wechat_public_discovery_loop() -> None:
     while True:
         await asyncio.sleep(24 * 60 * 60)
         try:
-            await wechat_title_service.discover_now(
-                wechat_discovery_provider, respect_cooldown=False,
+            await wechat_title_service.start_discovery(
+                wechat_discovery_provider, trigger_type='scheduled', respect_cooldown=False,
             )
         except asyncio.CancelledError:
             raise
@@ -566,6 +566,8 @@ async def lifespan(_: FastAPI):
     database.init_db()
     future_radar_service.seed_registry()
     wechat_title_service.repository.seed_watchlist()
+    wechat_title_service.repository.interrupt_stale_scan_runs()
+    wechat_title_service.repository.backfill_lead_types()
     database.ensure_recruitment_ingest_sources(EXPECTED_CHATGPT_RADAR_SOURCES)
     database.purge_legacy_recruitment_samples()
     tasks: list[asyncio.Task] = [asyncio.create_task(

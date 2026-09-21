@@ -10,6 +10,7 @@ from typing import Any
 from ..repository import RadarRepository, utc_now
 from .normalizer import metadata_fingerprint, normalize_wechat_url
 from .discovery.search import build_discovery_queries
+from .classifier import classify_lead_type
 
 WATCHLIST = (
     ('国央校招', 'https://mp.weixin.qq.com/s/2YRjkdejWz-AAOcpoS85WA'),
@@ -45,6 +46,7 @@ def public_article(row: dict) -> dict:
         'source_name_detection': row['source_name_detection'],
         'metadata_fingerprint': row['metadata_fingerprint'],
         'verification_status': 'unverified', 'lead_id': row.get('lead_id'),
+        'lead_type': row.get('lead_type') or 'unknown',
         'related_title_count': int(row.get('related_title_count') or 0),
     }
 
@@ -75,6 +77,51 @@ class WechatTitleRepository(RadarRepository):
         with self.transaction() as connection:
             for name, seed in WATCHLIST:
                 self._ensure_source(connection, name, seed, watch=True)
+
+    def backfill_lead_types(self) -> None:
+        """One idempotent local-rule backfill for leads created before labels."""
+        with self.transaction() as connection:
+            rows = connection.execute("SELECT id,title FROM recruitment_title_leads WHERE lead_type IS NULL OR lead_type='unknown'").fetchall()
+            for row in rows:
+                connection.execute("UPDATE recruitment_title_leads SET lead_type=?,updated_at=? WHERE id=?",
+                                   (classify_lead_type(row['title']), utc_now(), row['id']))
+
+    def create_scan_run(self, scan_id: str, trigger_type: str, *, total_sources: int, start_rss_mb: float) -> dict:
+        now = utc_now()
+        with self.transaction() as connection:
+            connection.execute('''INSERT INTO wechat_scan_runs
+                (id,trigger_type,status,started_at,total_sources,start_rss_mb,updated_at)
+                VALUES (?,?, 'running', ?,?,?,?)''',
+                (scan_id, trigger_type, now, total_sources, start_rss_mb, now))
+        return self.get_scan_run(scan_id) or {}
+
+    def active_scan_run(self) -> dict | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute("SELECT * FROM wechat_scan_runs WHERE status IN ('queued','running') ORDER BY started_at DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
+
+    def get_scan_run(self, scan_id: str) -> dict | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute('SELECT * FROM wechat_scan_runs WHERE id=?', (scan_id,)).fetchone()
+        return dict(row) if row else None
+
+    def update_scan_run(self, scan_id: str, **values: Any) -> None:
+        allowed = {'status','finished_at','current_source','total_sources','completed_sources','raw_candidates',
+                   'deduplicated_candidates','accepted_articles','new_articles','leads_created','duplicates',
+                   'failed_count','error_message','end_rss_mb'}
+        values = {key: value for key, value in values.items() if key in allowed}
+        if not values:
+            return
+        values['updated_at'] = utc_now()
+        assignments = ','.join(f'{key}=?' for key in values)
+        with self.transaction() as connection:
+            connection.execute(f'UPDATE wechat_scan_runs SET {assignments} WHERE id=?', [*values.values(), scan_id])
+
+    def interrupt_stale_scan_runs(self) -> None:
+        now = utc_now()
+        with self.transaction() as connection:
+            connection.execute("""UPDATE wechat_scan_runs SET status='failed',finished_at=?,error_message=?,updated_at=?
+                WHERE status IN ('queued','running')""", (now, '服务重启，扫描已中断。', now))
 
     def add_source(self, name: str, seed: str | None, enabled: bool) -> dict:
         seed = normalize_wechat_url(seed) if seed else None
@@ -260,12 +307,12 @@ class WechatTitleRepository(RadarRepository):
                     'SELECT id FROM recruitment_title_leads WHERE source_document_id=?', (article_id,)
                 ).fetchone())
                 connection.execute('''INSERT INTO recruitment_title_leads
-                    (id,source_document_id,title,source_name,source_url,created_at,updated_at)
-                    VALUES (?,?,?,?,?,?,?) ON CONFLICT(source_document_id) DO UPDATE SET
+                    (id,source_document_id,title,source_name,source_url,lead_type,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(source_document_id) DO UPDATE SET
                     title=excluded.title,source_name=excluded.source_name,source_url=excluded.source_url,
-                    updated_at=excluded.updated_at''',
-                    (lead_id, article_id, title, expected_source, discovery_url, now, now))
-            row = connection.execute('''SELECT a.*,l.id lead_id,0 related_title_count
+                    lead_type=excluded.lead_type,updated_at=excluded.updated_at''',
+                    (lead_id, article_id, title, expected_source, discovery_url, classify_lead_type(title), now, now))
+            row = connection.execute('''SELECT a.*,l.id lead_id,l.lead_type,0 related_title_count
                 FROM source_articles a LEFT JOIN recruitment_title_leads l ON l.source_document_id=a.id
                 WHERE a.id=?''', (article_id,)).fetchone()
         return {**public_article(dict(row)), 'is_new': not bool(existing),
@@ -273,7 +320,7 @@ class WechatTitleRepository(RadarRepository):
 
     def get_by_url(self, url: str) -> dict | None:
         with closing(self._connect()) as connection:
-            row = connection.execute('''SELECT a.*, l.id lead_id FROM source_articles a
+            row = connection.execute('''SELECT a.*, l.id lead_id,l.lead_type FROM source_articles a
                 LEFT JOIN recruitment_title_leads l ON l.source_document_id=a.id
                 WHERE a.platform='wechat' AND (a.normalized_url=? OR a.id IN
                   (SELECT source_document_id FROM wechat_article_url_aliases WHERE normalized_url=?))''', (url, url)).fetchone()
@@ -360,11 +407,11 @@ class WechatTitleRepository(RadarRepository):
                     'SELECT id FROM recruitment_title_leads WHERE source_document_id=?', (article_id,)
                 ).fetchone())
                 connection.execute('''INSERT INTO recruitment_title_leads
-                    (id,source_document_id,title,source_name,source_url,created_at,updated_at)
-                    VALUES (?,?,?,?,?,?,?) ON CONFLICT(source_document_id) DO UPDATE SET
+                    (id,source_document_id,title,source_name,source_url,lead_type,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(source_document_id) DO UPDATE SET
                     title=excluded.title,source_name=excluded.source_name,source_url=excluded.source_url,
-                    updated_at=excluded.updated_at
-                ''', (lead_id, article_id, title, publisher or None, url, now, now))
+                    lead_type=excluded.lead_type,updated_at=excluded.updated_at
+                ''', (lead_id, article_id, title, publisher or None, url, classify_lead_type(title), now, now))
             elif successful:
                 connection.execute("DELETE FROM recruitment_title_leads WHERE source_document_id=? AND status='unverified'",
                                    (article_id,))
@@ -390,7 +437,7 @@ class WechatTitleRepository(RadarRepository):
         where = ' AND '.join(predicates)
         with closing(self._connect()) as connection:
             total = connection.execute(f'SELECT COUNT(*) count FROM source_articles a WHERE {where}', params).fetchone()['count']
-            rows = connection.execute(f'''SELECT a.*, l.id lead_id,
+            rows = connection.execute(f'''SELECT a.*, l.id lead_id,l.lead_type,
                 CASE WHEN a.metadata_fingerprint IS NULL THEN 0 ELSE
                 (SELECT COUNT(*)-1 FROM source_articles b WHERE b.platform='wechat'
                  AND b.metadata_fingerprint=a.metadata_fingerprint) END related_title_count

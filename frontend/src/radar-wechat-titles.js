@@ -39,7 +39,7 @@ export function wechatFetchStatusCopy(value) {
 }
 
 export function initWechatTitleRadar({ root, api, make, formatTime, errorCopy = error => error.message }) {
-  const state = { payload: null, sources: null, sourcesError: "", page: 1, sourceName: "", relevance: "", fromDate: "", toDate: "", urls: "", expectedSource: "", forceRefresh: false, loading: false, importing: false, discovering: false, error: "", importError: "", discoveryResult: null, result: null, requestId: 0, session: 0 };
+  const state = { payload: null, sources: null, sourcesError: "", page: 1, sourceName: "", relevance: "", fromDate: "", toDate: "", urls: "", expectedSource: "", forceRefresh: false, loading: false, importing: false, discovering: false, error: "", importError: "", discoveryResult: null, scanRun: null, result: null, requestId: 0, session: 0, pollTimer: null };
   const action = (label, callback, disabled = false) => {
     const button = make("button", "radar-source-filter", label); button.type = "button"; button.disabled = disabled; button.addEventListener("click", callback); return button;
   };
@@ -98,14 +98,15 @@ export function initWechatTitleRadar({ root, api, make, formatTime, errorCopy = 
   function renderDiscovery() {
     const provider = state.sources?.provider_state || {};
     const status = { available: "正常", degraded: "本轮未完成", unavailable: "暂不可用" }[provider.status] || "尚未探测";
-    const counts = state.discoveryResult?.counts || provider.last_counts || {};
+    const counts = state.scanRun || state.discoveryResult?.counts || provider.last_counts || {};
     const panel = make("section", "radar-title-discovery");
     const top = make("div", "radar-entity-top");
     top.append(make("strong", "", "公众号自动发现 · Beta"), make("span", `radar-status-badge ${provider.status === "available" ? "success" : "warning"}`, status));
     panel.append(top, make("p", "radar-entity-meta", `Provider：搜狗微信公开搜索 · 最后扫描 ${formatTime(provider.last_scan_at, "尚未扫描")}`));
-    panel.append(make("p", "radar-entity-meta", `本轮：发现 ${counts.discovered ?? "—"} · 新增 ${counts.new ?? "—"} · 重复 ${counts.duplicate ?? "—"} · 相关 ${counts.related ?? "—"}`));
+    if (state.scanRun?.status === "running") panel.append(make("p", "radar-action-status", `公众号扫描中… ${counts.completed_sources ?? 0} / ${counts.total_sources ?? 5} 个公众号 · 当前 ${counts.current_source || "准备中"}`));
+    else panel.append(make("p", "radar-entity-meta", `本轮：原始候选 ${counts.raw_candidates ?? "—"} · 去重 ${counts.deduplicated_candidates ?? "—"} · 接受文章 ${counts.accepted_articles ?? counts.discovered ?? "—"} · 新增 ${counts.new_articles ?? counts.new ?? "—"} · Lead ${counts.leads_created ?? counts.leads ?? "—"} · 重复 ${counts.duplicates ?? counts.duplicate ?? "—"} · 失败 ${counts.failed_count ?? counts.failed ?? "—"}`));
     if (provider.failure_reason) panel.append(make("p", "radar-load-error", provider.failure_reason));
-    panel.append(action(state.discovering ? "正在公开搜索…" : "立即扫描", discoverNow, state.discovering || state.loading || state.importing));
+    panel.append(action(state.discovering ? "公众号扫描中…" : "立即扫描", discoverNow, state.discovering || state.loading || state.importing));
     panel.append(make("p", "radar-entity-meta", "每天低频扫描五个观察账号；只使用公开搜索，不登录微信、不使用 Cookie、不调用付费 API。访问受限时自动停止，手动 URL 导入不受影响。"));
     root.append(panel);
   }
@@ -132,7 +133,8 @@ export function initWechatTitleRadar({ root, api, make, formatTime, errorCopy = 
     (payload.items || []).forEach(item => {
       const card = make("article", "radar-entity-card radar-title-card"); const top = make("div", "radar-entity-top");
       const relevant = ["relevant", "possible"].includes(item.relevance_status);
-      top.append(make("span", "radar-source-type", item.source_name || "公众号名称未知"), make("span", "radar-status-badge warning", relevant ? "招聘线索 · 待官网核验" : wechatFetchStatusCopy(item.fetch_status)));
+      const leadType = { direct_opportunity: "具体招聘", roundup: "招聘汇总", advice: "求职攻略", unknown: "未分类" }[item.lead_type] || "未分类";
+      top.append(make("span", "radar-source-type", item.source_name || "公众号名称未知"), make("span", "radar-status-badge warning", relevant ? `${leadType} · 待官网核验` : wechatFetchStatusCopy(item.fetch_status)));
       const title = make("h4"); const url = wechatDiscoveryUrl(item.url);
       if (url) { const link = make("a", "radar-title-link", item.title || "标题未能读取"); link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer"; title.append(link); } else title.append(make("span", "", item.title || "标题未能读取"));
       card.append(top, title, make("p", "radar-entity-meta", `发布时间 ${formatTime(item.published_at, "未知")} · 发现 ${formatTime(item.discovered_at, "时间未知")}`));
@@ -187,14 +189,24 @@ export function initWechatTitleRadar({ root, api, make, formatTime, errorCopy = 
     if (state.discovering) return;
     const session = state.session; state.discovering = true; state.importError = ""; render();
     try {
-      state.discoveryResult = await api("/sources/wechat/discover", { method: "POST", timeoutMs: 180_000 });
+      const started = await api("/sources/wechat/discover/run", { method: "POST", timeoutMs: 15_000 });
       if (session !== state.session) return;
-      await load();
+      state.scanRun = { ...started, status: started.status === "already_running" ? "running" : started.status };
+      render(); await pollScan(started.scan_id, session);
     } catch (error) {
       if (session === state.session) state.importError = `公开搜索未启动：${errorCopy(error)}`;
     } finally {
       if (session === state.session) { state.discovering = false; render(); }
     }
   }
-  return { open: load, reset() { state.session += 1; state.requestId += 1; Object.assign(state, { payload: null, sources: null, sourcesError: "", urls: "", expectedSource: "", forceRefresh: false, result: null, discoveryResult: null, error: "", importError: "", importing: false, discovering: false, loading: false, page: 1, sourceName: "", relevance: "", fromDate: "", toDate: "" }); root?.replaceChildren(); } };
+  async function pollScan(scanId, session) {
+    while (session === state.session) {
+      const run = await api(`/sources/wechat/discover/runs/${encodeURIComponent(scanId)}`, { timeoutMs: 15_000 });
+      if (session !== state.session) return;
+      state.scanRun = run; render();
+      if (!["queued", "running"].includes(run.status)) { state.discoveryResult = { counts: run }; state.discovering = false; await load(); return; }
+      await new Promise(resolve => { state.pollTimer = setTimeout(resolve, 3000); });
+    }
+  }
+  return { open: load, reset() { state.session += 1; state.requestId += 1; if (state.pollTimer) clearTimeout(state.pollTimer); Object.assign(state, { payload: null, sources: null, sourcesError: "", urls: "", expectedSource: "", forceRefresh: false, result: null, discoveryResult: null, scanRun: null, error: "", importError: "", importing: false, discovering: false, loading: false, page: 1, sourceName: "", relevance: "", fromDate: "", toDate: "" }); root?.replaceChildren(); } };
 }

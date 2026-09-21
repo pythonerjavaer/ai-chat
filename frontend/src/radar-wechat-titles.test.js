@@ -54,18 +54,21 @@ test("opening the title tab only reads saved metadata and cannot trigger crawlin
   assert.ok(f.button("立即扫描"));
 });
 
-test("manual discovery trigger uses one explicit endpoint and renders provider outcome", async () => {
+test("manual discovery starts an async run and polls its durable outcome", async () => {
   const f = fixture(); await open(f);
   const pending = f.button("立即扫描").dispatch("click");
   const request = f.requests.at(-1);
-  assert.equal(request.url, "/sources/wechat/discover");
+  assert.equal(request.url, "/sources/wechat/discover/run");
   assert.equal(request.method, "POST");
-  request.resolve({status: "unavailable", counts: {discovered: 0, new: 0, duplicate: 0, related: 0}});
+  request.resolve({scan_id: "run-1", status: "running"});
+  await tick();
+  assert.equal(f.requests.at(-1).url, "/sources/wechat/discover/runs/run-1");
+  f.requests.at(-1).resolve({id: "run-1", status: "success", total_sources: 5, completed_sources: 5, raw_candidates: 20, deduplicated_candidates: 10, accepted_articles: 2, new_articles: 2, leads_created: 1, duplicates: 0, failed_count: 0});
   await tick();
   f.requests.at(-2).resolve({items: [], provider_state: {status: "unavailable", last_counts: {discovered: 0}, failure_reason: "公开搜索访问受限。"}});
   f.requests.at(-1).resolve({items: [], total: 0, page: 1, page_size: 30});
   await pending;
-  assert.match(f.root.textContent, /公开搜索访问受限/);
+  assert.match(f.root.textContent, /Lead 1/);
   assert.match(f.root.textContent, /不使用 Cookie/);
 });
 

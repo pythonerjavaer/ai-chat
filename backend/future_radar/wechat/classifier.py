@@ -37,6 +37,26 @@ NEGATIVE_RULES = {
 }
 _CURRENT_COHORT = re.compile(r"2027\s*(?:届|年(?:度)?)?")
 
+# A lead remains an early signal regardless of this label.  The label only
+# prevents a reading guide or a multi-employer roundup from looking like one
+# concrete application opportunity in the UI.
+LEAD_TYPE_RULES = {
+    "advice": ("怎么选", "攻略", "备考", "经验", "面试", "笔试", "交流群"),
+    "roundup": ("汇总", "合集", "盘点", "各大", "多家", "一览", "秋招爆了", "岗位表", "大型银行"),
+}
+
+
+def classify_lead_type(title: str) -> str:
+    """Classify a saved recruitment signal without network or model calls."""
+    text = re.sub(r"\s+", "", str(title or "")).casefold()
+    if any(token in text for token in LEAD_TYPE_RULES["advice"]):
+        return "advice"
+    if any(token in text for token in LEAD_TYPE_RULES["roundup"]):
+        return "roundup"
+    if any(token in text for token in ("校园招聘", "招聘公告", "招聘启动", "招聘正式启动", "招聘简章", "招聘计划")):
+        return "direct_opportunity"
+    return "unknown"
+
 
 class TitleClassifier(ABC):
     @abstractmethod
