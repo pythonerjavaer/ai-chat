@@ -20,7 +20,9 @@ from backend.future_radar.wechat.models import WechatArticleMetadata
 from backend.future_radar.wechat.normalizer import normalize_wechat_url
 from backend.future_radar.wechat.repository import WATCHLIST, WechatTitleRepository
 from backend.future_radar.wechat.routes import create_wechat_router
-from backend.future_radar.wechat.service import WechatTitleService, run_wechat_monitor
+from backend.future_radar.wechat.service import DiscoveryCooldown, WechatTitleService, run_wechat_monitor
+from backend.future_radar.wechat.discovery.base import DiscoveryProviderUnavailable
+from backend.future_radar.wechat.models import DiscoveredArticle
 
 
 @pytest.fixture
@@ -94,7 +96,7 @@ def test_additive_migration_preserves_legacy_rows_and_seed_preferences(title_rep
     assert {source["source_name"] for source in sources} == {name for name, _ in WATCHLIST}
     assert len(sources) == 5
     assert next(source for source in sources if source["source_name"] == "国聘")["enabled"] is False
-    assert all(source["discovery_status"] == "provider_pending" for source in sources)
+    assert all(source["discovery_status"] == "unavailable" for source in sources)
     # Both old paid/body sources and new title-only watchlist records stay out
     # of the scheduler/manual Quick or Deep source families.
     enabled = legacy.list_sources(enabled=True)
@@ -353,3 +355,50 @@ def test_one_click_watchlist_import_preserves_each_configured_account(title_repo
     assert count(title_repo, "source_articles") == count(title_repo, "recruitment_title_leads") == 5
     replay = asyncio.run(service.import_watchlist_seeds())
     assert (replay["new"], replay["duplicate"], len(parser.calls)) == (0, 5, 5)
+
+
+def test_duplicate_discovery_and_cache_do_not_duplicate_pending_leads(title_repo):
+    calls = []
+    class Provider:
+        name = 'sogou_wechat'
+        async def discover(self, source):
+            calls.append(source['source_name'])
+            return [DiscoveredArticle(
+                url='https://weixin.sogou.com/link?url=one',
+                discovery_url='https://weixin.sogou.com/link?url=one',
+                title='国聘2027届校园招聘启动', source_name=source['source_name'],
+                expected_source_name=source['source_name'], provider=self.name,
+            )]
+    for source in title_repo.list_sources():
+        title_repo.add_source(source['source_name'], source['seed_url'], source['source_name'] == '国聘')
+    service = WechatTitleService(title_repo, parser=Parser())
+    first = asyncio.run(service.discover_now(Provider(), respect_cooldown=False))
+    second = asyncio.run(service.discover_now(Provider(), respect_cooldown=False))
+    assert first['counts']['new'] == 1
+    assert second['counts']['duplicate'] == 1 and second['counts']['cached_accounts'] == 1
+    assert calls == ['国聘']
+    assert count(title_repo, 'source_articles') == count(title_repo, 'recruitment_title_leads') == 1
+
+
+def test_provider_failure_does_not_break_manual_import(title_repo):
+    class BlockedProvider:
+        name = 'sogou_wechat'
+        async def discover(self, source):
+            raise DiscoveryProviderUnavailable('公开搜索访问受限（HTTP 403）。')
+    service = WechatTitleService(title_repo, parser=Parser())
+    failed = asyncio.run(service.discover_now(BlockedProvider(), respect_cooldown=False))
+    assert failed['status'] == 'unavailable' and failed['counts']['failed'] == 1
+    manual = asyncio.run(service.import_article('https://mp.weixin.qq.com/s/manual-after-failure'))
+    assert manual['fetch_status'] == 'success' and manual['is_new']
+
+
+def test_discovery_cooldown_blocks_repeated_manual_trigger(title_repo):
+    class EmptyProvider:
+        name = 'sogou_wechat'
+        async def discover(self, source):
+            return []
+    service = WechatTitleService(title_repo, parser=Parser())
+    assert asyncio.run(service.discover_now(EmptyProvider(), respect_cooldown=False))['status'] == 'available'
+    with pytest.raises(DiscoveryCooldown) as error:
+        asyncio.run(service.discover_now(EmptyProvider()))
+    assert error.value.retry_after > 0

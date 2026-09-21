@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .normalizer import validate_wechat_article_url
-from .service import DISCOVERY_NOTICE, WechatTitleService, run_wechat_monitor
+from .discovery.base import WechatDiscoveryProvider
+from .service import DiscoveryCooldown, WechatTitleService, run_wechat_monitor
 
 
 class ArticleImport(BaseModel):
@@ -50,13 +51,17 @@ class SourceRequest(BaseModel):
 
 
 def create_wechat_router(service: WechatTitleService, *, current_user: Callable,
-                         consented_user: Callable, admin_auth: Callable) -> APIRouter:
+                         consented_user: Callable, admin_auth: Callable,
+                         discovery_provider: WechatDiscoveryProvider | None = None) -> APIRouter:
     router = APIRouter(prefix='/api/sources/wechat', tags=['wechat-title-intelligence'])
 
     @router.get('')
     def sources(user=Depends(current_user)) -> dict:
-        return {'items': service.repository.list_sources(), 'discovery_status': 'provider_pending',
-                'notice': DISCOVERY_NOTICE, 'ai_calls': 0}
+        provider_name = getattr(discovery_provider, 'name', 'sogou_wechat')
+        provider_state = service.repository.get_provider_state(provider_name)
+        return {'items': service.repository.list_sources(), 'discovery_status': provider_state['status'],
+                'provider_state': provider_state,
+                'notice': '公开搜索发现为 Beta；不可用时仍可手动导入文章 URL。', 'ai_calls': 0}
 
     @router.post('')
     def add_source(payload: SourceRequest, auth=Depends(admin_auth)) -> dict:
@@ -95,5 +100,17 @@ def create_wechat_router(service: WechatTitleService, *, current_user: Callable,
     @router.post('/monitor')
     async def monitor(user=Depends(consented_user)) -> dict:
         return await run_wechat_monitor(service)
+
+    @router.post('/discover')
+    async def discover(user=Depends(consented_user)) -> dict:
+        if discovery_provider is None:
+            raise HTTPException(503, '当前部署未配置公众号公开搜索 Provider。')
+        try:
+            return await service.discover_now(discovery_provider)
+        except DiscoveryCooldown as exc:
+            raise HTTPException(
+                429, '公开搜索刚刚运行过，请在冷却结束后再试。',
+                headers={'Retry-After': str(exc.retry_after)},
+            ) from None
 
     return router

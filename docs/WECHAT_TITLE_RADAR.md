@@ -29,15 +29,24 @@ HTTP cannot request “only metadata” from WeChat as a dedicated official endp
 
 Title fallback: Open Graph/Twitter metadata → known public title elements → HTML title. Publisher: account-specific metadata → account DOM → explicitly configured expected source (marked `configured`), otherwise null. Page names are marked `page`; no query word is treated as proof of publisher identity. Date parsing accepts reliable zoned publication metadata or a literal known publication timestamp; missing/unzoned/ambiguous dates stay null. Publication time and discovery time are separate.
 
-## Discovery status: provider pending
+## Public-search discovery (Beta)
 
-**自动搜索发现目前没有可靠的零成本 provider，因此暂时使用 manual discovery。**
+`SogouWechatDiscoveryProvider` runs one exact-name query for each of the five configured
+watchlist accounts. It accepts only normalized exact account-name matches and prefers
+results published within 14 days. Results are cached for 24 hours; the manual trigger has
+a 20-minute cooldown and the in-process background task runs once per day.
 
-`ManualDiscoveryProvider` accepts supplied public article URLs. `SearchDiscoveryProvider` is a replaceable abstraction; `build_discovery_queries(source)` constructs queries that are persisted with each account. No paid or unreliable provider is enabled.
+The provider uses ordinary public HTTPS requests and redirects only. It sends no private
+Cookie, requires no login or paid API, and never retries around CAPTCHA, HTTP 403/429, or
+bot verification. Any such response stops the current round, records the provider as
+unavailable, and leaves `ManualDiscoveryProvider` URL imports working.
 
-Investigation found that public search results may expose titles/account names but omit direct article URLs, require access verification during link resolution, and return old publications. That is insufficient for a reliable zero-cost new-article monitor; we do not implement anti-bot workarounds. The five seed URLs are individual historical examples, not account feeds or access to full history.
+If a public result cannot resolve to an `mp.weixin.qq.com` URL, its title, exact source name,
+publication time when present, and Sogou discovery URL are retained as an unverified pending
+discovery lead. The five seed URLs remain individual historical examples, not account feeds.
 
-`run_wechat_monitor(service, provider)` is scheduler-independent. Without a configured lawful provider it returns `provider_pending` and makes no requests. No background task, recurring Codex automation, Cron Job, Redis or Celery is installed. An existing scheduler can call it later after a provider is implemented and authorized. Render Free sleeping means in-process scheduling is not guaranteed; a paid Render Cron would also violate the zero-cost default, so none is provisioned.
+Render Free sleeping means an in-process daily task is best-effort rather than a guaranteed
+wall-clock cron. No paid Render Cron, recurring Codex automation, Redis or Celery is required.
 
 ## HTTP API
 
@@ -50,9 +59,10 @@ Prefix: `/api/sources/wechat`. Read endpoints require the existing bearer token;
 | POST | `/api/sources/wechat/article` | Import one `url`, optional `expected_source_name` and `force_refresh` |
 | POST | `/api/sources/wechat/articles/import` | Import `urls` (1–50), same optional fields; returns total/success/new/duplicate/failed/items |
 | POST | `/api/sources/wechat/articles/import-watchlist` | One-click import of every enabled configured historical seed, preserving each account name |
+| POST | `/api/sources/wechat/discover` | Run one cooldown-protected low-frequency public-search discovery pass |
 | GET | `/api/sources/wechat/articles` | `source_name`, `relevance_status`, `from_date`, `to_date`, `page`, `page_size` |
 | GET | `/api/sources/wechat/articles/review` | Paginated `possible` title list for occasional manual review |
-| POST | `/api/sources/wechat/monitor` | Current explicit `provider_pending` result; does not claim to scan accounts |
+| POST | `/api/sources/wechat/monitor` | Backward-compatible manual-provider monitor contract |
 
 Example single request JSON:
 
@@ -79,7 +89,7 @@ A relevant/possible title creates only an `unverified` lead. Later official comp
 No `OPENAI_API_KEY`, WeChat AppID/AppSecret, search key or model installation is needed for this module. Existing JWT and database configuration requirements still apply. If a paid chat/embedding action is requested without a model provider, it reports unavailable; local features stay usable.
 
 ```sh
-python -m pytest backend/tests/test_wechat_connector.py backend/tests/test_wechat_title_service.py backend/tests/test_optional_model_provider.py
+python -m pytest backend/tests/test_wechat_connector.py backend/tests/test_wechat_title_service.py backend/tests/test_sogou_wechat_discovery.py backend/tests/test_optional_model_provider.py
 cd frontend
 npm test
 npm run build

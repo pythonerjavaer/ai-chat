@@ -23,6 +23,9 @@ class ManualDiscoveryProvider(WechatDiscoveryProvider):
         for url in urls:
             canonical = normalize_wechat_url(url)
             if canonical not in seen:
-                result.append(DiscoveredArticle(url=canonical, expected_source_name=expected))
+                result.append(DiscoveredArticle(
+                    url=canonical, discovery_url=canonical, article_url=canonical,
+                    expected_source_name=expected, source_name=expected, provider="manual",
+                ))
                 seen.add(canonical)
         return result

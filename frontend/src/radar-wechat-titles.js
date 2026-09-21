@@ -14,6 +14,13 @@ export function wechatArticleUrl(value) {
   } catch { return ""; }
 }
 
+export function wechatDiscoveryUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && ["mp.weixin.qq.com", "weixin.sogou.com"].includes(url.hostname) && !url.username && !url.password ? url.href : "";
+  } catch { return ""; }
+}
+
 export function parseWechatImportUrls(value) {
   const urls = String(value || "").split(/\s+/).map(url => url.trim()).filter(Boolean);
   if (!urls.length) throw new Error("请先粘贴至少一条公开文章链接。");
@@ -32,7 +39,7 @@ export function wechatFetchStatusCopy(value) {
 }
 
 export function initWechatTitleRadar({ root, api, make, formatTime, errorCopy = error => error.message }) {
-  const state = { payload: null, sources: null, sourcesError: "", page: 1, sourceName: "", relevance: "", fromDate: "", toDate: "", urls: "", expectedSource: "", forceRefresh: false, loading: false, importing: false, error: "", importError: "", result: null, requestId: 0, session: 0 };
+  const state = { payload: null, sources: null, sourcesError: "", page: 1, sourceName: "", relevance: "", fromDate: "", toDate: "", urls: "", expectedSource: "", forceRefresh: false, loading: false, importing: false, discovering: false, error: "", importError: "", discoveryResult: null, result: null, requestId: 0, session: 0 };
   const action = (label, callback, disabled = false) => {
     const button = make("button", "radar-source-filter", label); button.type = "button"; button.disabled = disabled; button.addEventListener("click", callback); return button;
   };
@@ -88,15 +95,28 @@ export function initWechatTitleRadar({ root, api, make, formatTime, errorCopy = 
     details.append(make("p", "radar-entity-meta", "这些入口是历史文章，不是公众号文章列表；不能据此获取该账号全部新文章。"));
     root.append(details);
   }
+  function renderDiscovery() {
+    const provider = state.sources?.provider_state || {};
+    const status = { available: "正常", degraded: "本轮未完成", unavailable: "暂不可用" }[provider.status] || "尚未探测";
+    const counts = state.discoveryResult?.counts || provider.last_counts || {};
+    const panel = make("section", "radar-title-discovery");
+    const top = make("div", "radar-entity-top");
+    top.append(make("strong", "", "公众号自动发现 · Beta"), make("span", `radar-status-badge ${provider.status === "available" ? "success" : "warning"}`, status));
+    panel.append(top, make("p", "radar-entity-meta", `Provider：搜狗微信公开搜索 · 最后扫描 ${formatTime(provider.last_scan_at, "尚未扫描")}`));
+    panel.append(make("p", "radar-entity-meta", `本轮：发现 ${counts.discovered ?? "—"} · 新增 ${counts.new ?? "—"} · 重复 ${counts.duplicate ?? "—"} · 相关 ${counts.related ?? "—"}`));
+    if (provider.failure_reason) panel.append(make("p", "radar-load-error", provider.failure_reason));
+    panel.append(action(state.discovering ? "正在公开搜索…" : "立即扫描", discoverNow, state.discovering || state.loading || state.importing));
+    panel.append(make("p", "radar-entity-meta", "每天低频扫描五个观察账号；只使用公开搜索，不登录微信、不使用 Cookie、不调用付费 API。访问受限时自动停止，手动 URL 导入不受影响。"));
+    root.append(panel);
+  }
   function render() {
     if (!root) return;
     root.replaceChildren(); root.setAttribute("aria-busy", String(state.loading || state.importing));
     const heading = make("header", "radar-candidate-heading"); const identity = make("div");
     identity.append(make("span", "overline", "WECHAT TITLE RADAR"), make("h3", "", "微信公众号情报源"), make("p", "", "粘贴公开文章链接，读取标题、公众号与可靠的发布时间，再用本地规则识别招聘线索。文章不会直接成为已核验岗位。"));
     heading.append(identity, action("刷新记录", load, state.loading || state.importing)); root.append(heading);
-    root.append(make("p", "radar-title-boundary", "手动导入 · 仅保存元信息 · 不使用付费 API · 不消耗模型 Token"));
-    root.append(make("p", "radar-action-status", "自动搜索发现尚无可靠的零成本渠道，当前使用手动链接导入。历史文章入口不能列出账号的全部新文章；同步 ChatGPT 时也不会自动逐篇读取文章链接。"));
-    renderImportForm(); renderSources();
+    root.append(make("p", "radar-title-boundary", "公开搜索发现 + 手动导入 · 仅保存元信息 · 不使用付费 API · 不消耗模型 Token"));
+    renderDiscovery(); renderImportForm(); renderSources();
     const toolbar = make("div", "radar-title-filters");
     toolbar.append(selectControl("公众号", state.sourceName, [["", "全部公众号"], ...(state.sources?.items || []).map(source => [source.source_name, source.source_name])], value => { state.sourceName = value; state.page = 1; return load(); }));
     toolbar.append(selectControl("标题相关性", state.relevance, [["", "全部标题"], ["relevant", "招聘相关"], ["possible", "可能相关"], ["irrelevant", "不相关"]], value => { state.relevance = value; state.page = 1; return load(); }));
@@ -113,7 +133,7 @@ export function initWechatTitleRadar({ root, api, make, formatTime, errorCopy = 
       const card = make("article", "radar-entity-card radar-title-card"); const top = make("div", "radar-entity-top");
       const relevant = ["relevant", "possible"].includes(item.relevance_status);
       top.append(make("span", "radar-source-type", item.source_name || "公众号名称未知"), make("span", "radar-status-badge warning", relevant ? "招聘线索 · 待官网核验" : wechatFetchStatusCopy(item.fetch_status)));
-      const title = make("h4"); const url = wechatArticleUrl(item.url);
+      const title = make("h4"); const url = wechatDiscoveryUrl(item.url);
       if (url) { const link = make("a", "radar-title-link", item.title || "标题未能读取"); link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer"; title.append(link); } else title.append(make("span", "", item.title || "标题未能读取"));
       card.append(top, title, make("p", "radar-entity-meta", `发布时间 ${formatTime(item.published_at, "未知")} · 发现 ${formatTime(item.discovered_at, "时间未知")}`));
       const relevance = { relevant: "招聘相关", possible: "可能相关", irrelevant: "不相关" }[item.relevance_status] || "未分类";
@@ -163,5 +183,18 @@ export function initWechatTitleRadar({ root, api, make, formatTime, errorCopy = 
       if (session === state.session) { state.importing = false; render(); }
     }
   }
-  return { open: load, reset() { state.session += 1; state.requestId += 1; Object.assign(state, { payload: null, sources: null, sourcesError: "", urls: "", expectedSource: "", forceRefresh: false, result: null, error: "", importError: "", importing: false, loading: false, page: 1, sourceName: "", relevance: "", fromDate: "", toDate: "" }); root?.replaceChildren(); } };
+  async function discoverNow() {
+    if (state.discovering) return;
+    const session = state.session; state.discovering = true; state.importError = ""; render();
+    try {
+      state.discoveryResult = await api("/sources/wechat/discover", { method: "POST", timeoutMs: 180_000 });
+      if (session !== state.session) return;
+      await load();
+    } catch (error) {
+      if (session === state.session) state.importError = `公开搜索未启动：${errorCopy(error)}`;
+    } finally {
+      if (session === state.session) { state.discovering = false; render(); }
+    }
+  }
+  return { open: load, reset() { state.session += 1; state.requestId += 1; Object.assign(state, { payload: null, sources: null, sourcesError: "", urls: "", expectedSource: "", forceRefresh: false, result: null, discoveryResult: null, error: "", importError: "", importing: false, discovering: false, loading: false, page: 1, sourceName: "", relevance: "", fromDate: "", toDate: "" }); root?.replaceChildren(); } };
 }

@@ -568,6 +568,9 @@ button.recruitment-sync-badge { cursor: pointer; }
 .recruitment-sync-footer { color: #65818b; font-size: 7px; }
 .recruitment-sync-footer b { color: #76bdc5; font-size: 7px; font-weight: 750; }
 .radar-title-boundary { margin: 8px 0 12px; color: #9fe4ca; font-size: 10px; line-height: 1.6; }
+.radar-title-discovery { display: grid; gap: 8px; margin: 12px 0; padding: 14px; border: 1px solid rgba(97,224,191,.24); border-radius: 12px; background: linear-gradient(135deg, rgba(8,42,48,.72), rgba(13,28,45,.55)); }
+.radar-title-discovery .radar-entity-top, .radar-title-discovery p { margin: 0; }
+.radar-title-discovery > button { justify-self: start; }
 .radar-title-import { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; margin: 14px 0; padding: 15px; border: 1px solid rgba(116,216,226,.2); border-radius: 12px; background: rgba(7,27,37,.5); }
 .radar-title-import > label:first-child { grid-column: 1 / -1; }
 .radar-title-import > button { justify-self: start; }

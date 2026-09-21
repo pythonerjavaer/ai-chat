@@ -9,12 +9,19 @@ from typing import Any
 
 from .classifier import classify_recruitment_title
 from .connector import WechatArticleConnector
-from .discovery.base import WechatDiscoveryProvider
+from .discovery.base import DiscoveryProviderUnavailable, WechatDiscoveryProvider
+from .models import DiscoveredArticle
 from .normalizer import normalize_wechat_url
 from .repository import WechatTitleRepository
 
 logger = logging.getLogger(__name__)
 DISCOVERY_NOTICE = '自动搜索发现目前没有可靠的零成本 provider，因此暂时使用 manual discovery。Seed 只是一篇文章，不是公众号文章列表。'
+
+
+class DiscoveryCooldown(RuntimeError):
+    def __init__(self, retry_after: int):
+        self.retry_after = max(1, retry_after)
+        super().__init__('公众号公开搜索仍在冷却期。')
 
 
 class WechatTitleService:
@@ -125,6 +132,89 @@ class WechatTitleService:
             'notice': '已导入观察名单中的已知历史文章入口；这不代表已发现公众号后续新文章。',
             'ai_calls': 0, 'model_tokens_used': 0,
         }
+
+    async def discover_now(self, provider: WechatDiscoveryProvider, *, respect_cooldown: bool = True) -> dict:
+        provider_name = getattr(provider, 'name', provider.__class__.__name__)
+        state = await asyncio.to_thread(self.repository.get_provider_state, provider_name)
+        if respect_cooldown and state.get('cooldown_until'):
+            from datetime import datetime, timezone
+            try:
+                remaining = int((datetime.fromisoformat(state['cooldown_until']) - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError):
+                remaining = 0
+            if remaining > 0:
+                raise DiscoveryCooldown(remaining)
+        sources = [source for source in await asyncio.to_thread(self.repository.list_sources) if source['enabled']]
+        counts = {'discovered': 0, 'new': 0, 'duplicate': 0, 'related': 0, 'failed': 0,
+                  'accounts_scanned': 0, 'cached_accounts': 0}
+        accounts: list[dict] = []
+        try:
+            for source in sources:
+                query_key = source['source_name'].strip().casefold()
+                cached = await asyncio.to_thread(
+                    self.repository.cache_get, provider_name, source['id'], query_key,
+                )
+                if cached is None:
+                    discovered = await provider.discover(source)
+                    serialized = [item.model_dump(mode='json') if hasattr(item, 'model_dump') else dict(item)
+                                  for item in discovered]
+                    await asyncio.to_thread(
+                        self.repository.cache_set, provider_name, source['id'], query_key, serialized,
+                    )
+                    from_cache = False
+                else:
+                    discovered = [DiscoveredArticle.model_validate(item) for item in cached]
+                    from_cache = True
+                    counts['cached_accounts'] += 1
+                account = {'source_name': source['source_name'], 'discovered': len(discovered),
+                           'new': 0, 'duplicate': 0, 'related': 0, 'cached': from_cache}
+                counts['accounts_scanned'] += 1
+                counts['discovered'] += len(discovered)
+                for found in discovered:
+                    direct = found.article_url
+                    result = None
+                    if direct:
+                        result = await self.import_article(direct, expected_source_name=source['source_name'])
+                    if not result or result.get('fetch_status') != 'success':
+                        data = found.model_dump(mode='json')
+                        classification = classify_recruitment_title(found.title or '').model_dump(mode='json')
+                        result = await asyncio.to_thread(
+                            self.repository.save_discovery, data, classification, source['source_name'],
+                        )
+                    key = 'new' if result.get('is_new') else 'duplicate'
+                    account[key] += 1
+                    counts[key] += 1
+                    if result.get('relevance_status') in {'relevant', 'possible'}:
+                        account['related'] += 1
+                        counts['related'] += 1
+                accounts.append(account)
+        except DiscoveryProviderUnavailable as exc:
+            counts['failed'] += 1
+            provider_state = await asyncio.to_thread(
+                self.repository.set_provider_state, provider_name, status='unavailable',
+                counts=counts, failure_reason=str(exc),
+            )
+            return {'status': 'unavailable', 'provider': provider_name, 'accounts': accounts,
+                    'counts': counts, 'provider_state': provider_state,
+                    'notice': '公开搜索暂不可用；手动 URL 导入仍可正常使用。',
+                    'ai_calls': 0, 'model_tokens_used': 0}
+        except Exception:
+            logger.exception('wechat_discovery_failed', extra={'provider': provider_name})
+            counts['failed'] += 1
+            provider_state = await asyncio.to_thread(
+                self.repository.set_provider_state, provider_name, status='degraded',
+                counts=counts, failure_reason='公开搜索本轮处理失败。',
+            )
+            return {'status': 'degraded', 'provider': provider_name, 'accounts': accounts,
+                    'counts': counts, 'provider_state': provider_state,
+                    'notice': '公开搜索本轮未完成；手动 URL 导入仍可正常使用。',
+                    'ai_calls': 0, 'model_tokens_used': 0}
+        provider_state = await asyncio.to_thread(
+            self.repository.set_provider_state, provider_name, status='available', counts=counts,
+        )
+        return {'status': 'available', 'provider': provider_name, 'accounts': accounts,
+                'counts': counts, 'provider_state': provider_state,
+                'ai_calls': 0, 'model_tokens_used': 0}
 
 
 async def run_wechat_monitor(service: WechatTitleService, provider: WechatDiscoveryProvider | None = None) -> dict:

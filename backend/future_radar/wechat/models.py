@@ -45,3 +45,10 @@ class DiscoveredArticle(BaseModel):
 
     url: str
     expected_source_name: str | None = None
+    title: str | None = None
+    source_name: str | None = None
+    discovery_url: str | None = None
+    article_url: str | None = None
+    published_at: datetime | None = None
+    discovered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    provider: str = "manual"

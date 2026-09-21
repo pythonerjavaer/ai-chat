@@ -91,15 +91,125 @@ class WechatTitleRepository(RadarRepository):
                 (SELECT COUNT(*) FROM source_articles a WHERE a.source_id=s.id AND a.platform='wechat'
                  AND a.fetch_status='success' AND a.first_seen_at>=?) new_articles
                 FROM monitor_sources s WHERE s.title_radar_account=1 ORDER BY s.created_at,s.name''', (recent,)).fetchall()
+        state = self.get_provider_state('sogou_wechat')
         return [{
             'id': row['id'], 'platform': 'wechat', 'source_name': row['name'],
             'seed_url': row['url'], 'enabled': bool(row['title_radar_enabled']),
-            'discovery_method': 'manual', 'discovery_status': 'provider_pending',
+            'discovery_method': 'public_search', 'discovery_status': state['status'],
             'discovery_queries': json.loads(row['query_config']).get('queries', []),
             'last_checked_at': row['last_checked_at'], 'last_status': row['status'],
             'total_articles': row['total_articles'],
             'new_articles': row['new_articles'],
         } for row in rows]
+
+    def get_provider_state(self, provider: str) -> dict:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                'SELECT * FROM wechat_discovery_provider_state WHERE provider=?', (provider,)
+            ).fetchone()
+        if not row:
+            return {
+                'provider': provider, 'status': 'unavailable', 'last_scan_at': None,
+                'last_success_at': None, 'last_failure_at': None,
+                'failure_reason': '尚未在当前部署环境探测。', 'cooldown_until': None,
+                'last_counts': {},
+            }
+        result = dict(row)
+        result['last_counts'] = json.loads(result.get('last_counts') or '{}')
+        return result
+
+    def set_provider_state(self, provider: str, *, status: str, counts: dict,
+                           failure_reason: str | None = None,
+                           cooldown_minutes: int = 20) -> dict:
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        cooldown = (now_dt + timedelta(minutes=cooldown_minutes)).isoformat()
+        success = now if status == 'available' else None
+        failure = now if status != 'available' else None
+        with self.transaction() as connection:
+            connection.execute('''INSERT INTO wechat_discovery_provider_state
+                (provider,status,last_scan_at,last_success_at,last_failure_at,failure_reason,
+                 cooldown_until,last_counts,updated_at) VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(provider) DO UPDATE SET status=excluded.status,
+                  last_scan_at=excluded.last_scan_at,
+                  last_success_at=COALESCE(excluded.last_success_at,wechat_discovery_provider_state.last_success_at),
+                  last_failure_at=COALESCE(excluded.last_failure_at,wechat_discovery_provider_state.last_failure_at),
+                  failure_reason=excluded.failure_reason,cooldown_until=excluded.cooldown_until,
+                  last_counts=excluded.last_counts,updated_at=excluded.updated_at''',
+                (provider, status, now, success, failure, failure_reason, cooldown,
+                 _json(counts), now))
+        return self.get_provider_state(provider)
+
+    def cache_get(self, provider: str, source_id: str, query_key: str) -> list[dict] | None:
+        now = utc_now()
+        with closing(self._connect()) as connection:
+            row = connection.execute('''SELECT result_json FROM wechat_discovery_cache
+                WHERE provider=? AND source_id=? AND query_key=? AND expires_at>?''',
+                (provider, source_id, query_key, now)).fetchone()
+        return json.loads(row['result_json']) if row else None
+
+    def cache_set(self, provider: str, source_id: str, query_key: str,
+                  items: list[dict], *, hours: int = 24) -> None:
+        now_dt = datetime.now(timezone.utc)
+        with self.transaction() as connection:
+            connection.execute('''INSERT INTO wechat_discovery_cache
+                (provider,source_id,query_key,expires_at,result_json,updated_at)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(provider,source_id,query_key) DO UPDATE SET
+                expires_at=excluded.expires_at,result_json=excluded.result_json,updated_at=excluded.updated_at''',
+                (provider, source_id, query_key, (now_dt + timedelta(hours=hours)).isoformat(),
+                 _json(items), now_dt.isoformat()))
+
+    def save_discovery(self, item: dict, classification: dict, expected_source: str) -> dict:
+        """Persist title metadata even when public redirect resolution is unavailable."""
+        now = item.get('discovered_at') or utc_now()
+        source_id = account_id(expected_source)
+        published = item.get('published_at')
+        identity = _json([expected_source.strip().casefold(), item.get('title') or '',
+                          str(published or '')[:10]])
+        external_id = 'sogou-discovery-' + hashlib.sha256(identity.encode()).hexdigest()[:32]
+        article_id = 'wechat-article-' + hashlib.sha256((source_id + external_id).encode()).hexdigest()[:32]
+        discovery_url = item.get('discovery_url') or item.get('url')
+        title = item.get('title') or ''
+        with self.transaction() as connection:
+            existing = connection.execute(
+                'SELECT id FROM source_articles WHERE source_id=? AND article_external_id=?',
+                (source_id, external_id),
+            ).fetchone()
+            fingerprint = metadata_fingerprint(expected_source, title) if title else None
+            content_hash = hashlib.sha256(_json([title, expected_source, published]).encode()).hexdigest()
+            connection.execute('''INSERT INTO source_articles
+                (id,source_id,article_external_id,publisher,article_title,article_url,publish_time,
+                 content_hash,is_recruitment,classification,first_seen_at,last_seen_at,created_at,
+                 platform,normalized_url,fetch_status,fetch_error,relevance_score,matched_keywords,
+                 source_name_detection,metadata_fingerprint,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'wechat',NULL,'discovered',NULL,?,?,
+                        'page',?,?)
+                ON CONFLICT(id) DO UPDATE SET article_url=excluded.article_url,
+                  article_title=excluded.article_title,publish_time=COALESCE(excluded.publish_time,source_articles.publish_time),
+                  last_seen_at=excluded.last_seen_at,classification=excluded.classification,
+                  is_recruitment=excluded.is_recruitment,relevance_score=excluded.relevance_score,
+                  matched_keywords=excluded.matched_keywords,updated_at=excluded.updated_at''',
+                (article_id, source_id, external_id, expected_source, title, discovery_url, published,
+                 content_hash, int(classification['relevance_status'] in ('relevant', 'possible')),
+                 classification['relevance_status'], now, now, now, classification['relevance_score'],
+                 _json(classification['matched_keywords']), fingerprint, now))
+            lead_id = 'title-lead-' + article_id.removeprefix('wechat-article-')
+            lead_created = False
+            if title and classification['relevance_status'] in ('relevant', 'possible'):
+                lead_created = not bool(connection.execute(
+                    'SELECT id FROM recruitment_title_leads WHERE source_document_id=?', (article_id,)
+                ).fetchone())
+                connection.execute('''INSERT INTO recruitment_title_leads
+                    (id,source_document_id,title,source_name,source_url,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?) ON CONFLICT(source_document_id) DO UPDATE SET
+                    title=excluded.title,source_name=excluded.source_name,source_url=excluded.source_url,
+                    updated_at=excluded.updated_at''',
+                    (lead_id, article_id, title, expected_source, discovery_url, now, now))
+            row = connection.execute('''SELECT a.*,l.id lead_id,0 related_title_count
+                FROM source_articles a LEFT JOIN recruitment_title_leads l ON l.source_document_id=a.id
+                WHERE a.id=?''', (article_id,)).fetchone()
+        return {**public_article(dict(row)), 'is_new': not bool(existing),
+                'lead_created': lead_created, 'cached': bool(existing)}
 
     def get_by_url(self, url: str) -> dict | None:
         with closing(self._connect()) as connection:

@@ -100,6 +100,7 @@ from .config import settings
 from .future_radar.wechat.repository import WechatTitleRepository
 from .future_radar.wechat.service import WechatTitleService
 from .future_radar.wechat.routes import create_wechat_router
+from .future_radar.wechat.discovery.sogou import SogouWechatDiscoveryProvider
 from .future_radar.normalization import (
     PRIMARY_CATEGORY_CODES,
     canonicalize_url as canonicalize_radar_url,
@@ -536,6 +537,20 @@ async def restore_chatgpt_screened_opportunities_in_background() -> None:
         logger.exception("ChatGPT-screened opportunity restore failed; deferred to the next startup")
 
 
+async def wechat_public_discovery_loop() -> None:
+    """One low-frequency public-search pass per day; failures never affect manual import."""
+    while True:
+        await asyncio.sleep(24 * 60 * 60)
+        try:
+            await wechat_title_service.discover_now(
+                wechat_discovery_provider, respect_cooldown=False,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Scheduled WeChat public discovery failed safely")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.init_db()
@@ -546,6 +561,7 @@ async def lifespan(_: FastAPI):
     tasks: list[asyncio.Task] = [asyncio.create_task(
         restore_chatgpt_screened_opportunities_in_background()
     )]
+    tasks.append(asyncio.create_task(wechat_public_discovery_loop()))
     first_refresh_complete = asyncio.Event()
     if settings.recruitment_refresh_minutes > 0:
         tasks.append(asyncio.create_task(
@@ -575,6 +591,7 @@ PRIVACY_VERSION = "2026-08-22.2"
 
 app = FastAPI(title="Bingyan API", version="5.0.0", lifespan=lifespan)
 wechat_title_service = WechatTitleService(WechatTitleRepository(database.connect))
+wechat_discovery_provider = SogouWechatDiscoveryProvider()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -1058,6 +1075,7 @@ def admin_usage(
 app.include_router(create_wechat_router(
     wechat_title_service, current_user=current_user,
     consented_user=require_privacy_consent, admin_auth=require_admin_dashboard_token,
+    discovery_provider=wechat_discovery_provider,
 ))
 
 

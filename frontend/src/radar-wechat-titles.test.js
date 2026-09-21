@@ -24,7 +24,7 @@ function fixture() {
 }
 async function open(f, items = []) {
   const pending = f.controller.open();
-  f.requests.at(-2).resolve({ items: [{ source_name: "国聘", seed_url: "https://mp.weixin.qq.com/s/seed", enabled: true, total_articles: 1, new_articles: 1 }], discovery_status: "provider_pending" });
+  f.requests.at(-2).resolve({ items: [{ source_name: "国聘", seed_url: "https://mp.weixin.qq.com/s/seed", enabled: true, total_articles: 1, new_articles: 1 }], discovery_status: "unavailable", provider_state: { provider: "sogou_wechat", status: "unavailable", last_counts: {}, failure_reason: "尚未在当前部署环境探测。" } });
   f.requests.at(-1).resolve({items, total: items.length, page: 1, page_size: 30});
   await pending;
 }
@@ -47,11 +47,26 @@ test("opening the title tab only reads saved metadata and cannot trigger crawlin
   await open(f, [{title: "2027校园招聘", source_name: null, source_name_detection: null, url: "https://mp.weixin.qq.com/s/a", published_at: null, discovered_at: "2026-09-21", relevance_status: "relevant", relevance_score: 95, fetch_status: "success", matched_keywords: ["校园招聘"]}]);
   assert.deepEqual(f.requests.map(r => r.url), ["/sources/wechat", "/sources/wechat/articles?page=1&page_size=30"]);
   assert.ok(f.requests.every(r => !r.method));
-  assert.match(f.root.textContent, /自动搜索发现尚无可靠的零成本渠道/);
+  assert.match(f.root.textContent, /公众号自动发现 · Beta/);
   assert.match(f.root.textContent, /公众号名称未知/);
   assert.match(f.root.textContent, /发布时间 未知/);
   assert.match(f.root.textContent, /待官网核验/);
-  assert.ok(!f.button("发现公开标题"));
+  assert.ok(f.button("立即扫描"));
+});
+
+test("manual discovery trigger uses one explicit endpoint and renders provider outcome", async () => {
+  const f = fixture(); await open(f);
+  const pending = f.button("立即扫描").dispatch("click");
+  const request = f.requests.at(-1);
+  assert.equal(request.url, "/sources/wechat/discover");
+  assert.equal(request.method, "POST");
+  request.resolve({status: "unavailable", counts: {discovered: 0, new: 0, duplicate: 0, related: 0}});
+  await tick();
+  f.requests.at(-2).resolve({items: [], provider_state: {status: "unavailable", last_counts: {discovered: 0}, failure_reason: "公开搜索访问受限。"}});
+  f.requests.at(-1).resolve({items: [], total: 0, page: 1, page_size: 30});
+  await pending;
+  assert.match(f.root.textContent, /公开搜索访问受限/);
+  assert.match(f.root.textContent, /不使用 Cookie/);
 });
 
 test("batch import reports each failure, uses configured provenance only by choice, and never forces a refresh by default", async () => {

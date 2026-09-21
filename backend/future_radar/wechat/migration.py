@@ -41,6 +41,29 @@ def migrate_wechat_titles(connection: Any, ensure_column: Callable) -> None:
             source_document_id TEXT NOT NULL,
             FOREIGN KEY (source_document_id) REFERENCES source_articles(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS wechat_discovery_provider_state (
+            provider TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'unavailable',
+            last_scan_at TEXT,
+            last_success_at TEXT,
+            last_failure_at TEXT,
+            failure_reason TEXT,
+            cooldown_until TEXT,
+            last_counts TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS wechat_discovery_cache (
+            provider TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            query_key TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            result_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (provider, source_id, query_key),
+            FOREIGN KEY (source_id) REFERENCES monitor_sources(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_wechat_discovery_cache_expiry
+            ON wechat_discovery_cache(expires_at);
     ''')
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, datetime('now'))",
