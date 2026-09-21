@@ -234,3 +234,6 @@ URL 规范化会移除 fragment，并且只清理 `utm_*`、`gclid`、`fbclid`�
 - Free Web Service 不是 24/7 采集器，也不能保证严格整点执行、全网覆盖或即时通知。
 
 当前 Render 部署已使用持久 PostgreSQL，启动配置也禁止在 Render 上静默回退到临时 SQLite。升级和重新登录不清空岗位、候选、评级或同步记录；过期／确认关闭的岗位退出当前列表，历史保留。持久数据库并不让本机同步桥成为常驻服务，严格的连续调度仍需可靠的运行环境。
+# 2026-09-21 公众号抓取停用决定
+
+公众号抓取已按用户要求停用；ChatGPT 数据导入不得再附带公众号抓取。已知的公开文章地址及恢复条件保存在 [WECHAT_SOURCES_PAUSED.md](WECHAT_SOURCES_PAUSED.md)。本机 Codex 多源自动同步仍保持暂停。

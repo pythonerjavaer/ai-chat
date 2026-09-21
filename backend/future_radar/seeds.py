@@ -526,7 +526,10 @@ VERIFIED_OFFICIAL_SOURCES = (
 def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
     for source_id, name, public_article_url in WECHAT_PUBLIC_ARTICLE_ANCHORS:
-        discovery_adapter = "wechat_web_search" if web_search_enabled else "discovery_limited"
+        # User paused all built-in WeChat collection on 2026-09-21.
+        # Keep provenance and public anchors, but neither enabling AI nor a
+        # redeploy may silently restart these accounts.
+        discovery_adapter = "discovery_limited"
         sources.append({
             "id": source_id,
             "name": name,
@@ -536,7 +539,7 @@ def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
             "domain": "mp.weixin.qq.com",
             "account_name": name,
             "account_id": None,
-            "enabled": True,
+            "enabled": False,
             "priority": 70,
             "trust_level": "discovery",
             "interval_minutes": WECHAT_DISCOVERY_INTERVAL_MINUTES,
@@ -549,7 +552,7 @@ def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
             },
             "query_config": {"recruitment_year": 2027, "scope": "campus"},
             "region_config": {"timezone": "Asia/Shanghai", "regions": ["中国大陆", "香港"]},
-            "status": "pending" if web_search_enabled else "discovery_limited",
+            "status": "disabled",
             "verification_status": "unverified",
         })
     for source_id, name in RETIRED_WECHAT_SOURCE_NAMES:

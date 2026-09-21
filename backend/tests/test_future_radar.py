@@ -948,6 +948,7 @@ def test_semantically_irrelevant_html_and_whitespace_changes_do_not_emit_updated
 
 def test_wechat_discovery_limited_is_reported_without_fabricated_success(radar_service):
     source_id = "wechat-guoyang-campus"
+    radar_service.repository.patch_source(source_id, {"enabled": True})
     run = radar_service.run(source_ids=[source_id], force=True)
     assert run["status"] == "failed"
     assert run["sources_succeeded"] == 0
@@ -997,16 +998,16 @@ def test_reseed_reconciles_stale_errors_for_limited_sources_without_claiming_suc
     radar_service.repository.update_source_error("official-zofund-campus-2027", "real fetch failure")
     radar_service.seed_registry()
     source = radar_service.repository.get_source(source_id)
-    assert source["status"] == "discovery_limited"
+    assert source["status"] == "disabled"
+    assert source["enabled"] is False
     assert source["last_success_at"] is None
     assert radar_service.repository.get_source("official-zofund-campus-2027")["status"] == "error"
     assert radar_service.repository.dashboard()["sources"]["errors"] == 1
 
-    # Enabling a provider requires a fresh check; neither old error nor
-    # manufactured success should survive the configuration change.
+    # General AI availability must not reactivate user-paused accounts.
     radar_service.web_search_enabled = True
     radar_service.seed_registry()
-    assert radar_service.repository.get_source(source_id)["status"] == "pending"
+    assert radar_service.repository.get_source(source_id)["status"] == "disabled"
 
 
 def test_public_source_does_not_resurrect_historical_errors_after_recovery(radar_service):
@@ -1022,7 +1023,7 @@ def test_public_source_does_not_resurrect_historical_errors_after_recovery(radar
     assert public["can_retry_without_ai"] is True
     limited = _public_radar_source(radar_service.repository.get_source("wechat-guoyang-campus"))
     assert limited["can_retry_without_ai"] is False
-    assert limited["last_error"]
+    assert "last_error" not in limited
 
 
 def test_registry_reseed_purges_mock_source_jobs_programs_and_events(radar_service):
@@ -2437,7 +2438,7 @@ def test_due_sources_skip_unconfigured_discovery_placeholders(radar_service):
     explicit = radar_service.repository.due_sources(
         source_ids=["wechat-guoyang-campus"]
     )
-    assert [source["id"] for source in explicit] == ["wechat-guoyang-campus"]
+    assert explicit == []
 
 
 def test_future_radar_startup_waits_for_first_upstream_refresh(
