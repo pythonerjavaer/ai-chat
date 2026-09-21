@@ -70,6 +70,7 @@ from .recruitment import (
     job_matches_profile, score_job, semantic_employer_categories,
 )
 from .future_radar.opportunity_cache import scoring_scope
+from .memory_observability import log_memory_checkpoint
 from .recruitment_search import (
     WEB_SEARCH_SOURCE,
     WEB_SEARCH_STATE_KEY,
@@ -332,6 +333,10 @@ def refresh_recruitment_sources(
     global _recruitment_source_last_count, _recruitment_source_last_refresh
     if not _recruitment_source_refresh_lock.acquire(blocking=False):
         raise RecruitmentRefreshBusy("Recruitment source refresh is already running.")
+    memory_before = log_memory_checkpoint(
+        logger, "recruitment_source_refresh", "before",
+        include_web_search=include_web_search,
+    )
     try:
         # The five-source snapshot is restored separately and only after each
         # official page passes a fresh verification.  Re-upserting it here
@@ -398,6 +403,10 @@ def refresh_recruitment_sources(
             _recruitment_source_last_count = len(jobs)
         return len(jobs)
     finally:
+        log_memory_checkpoint(
+            logger, "recruitment_source_refresh", "after", before_mb=memory_before,
+            include_web_search=include_web_search,
+        )
         _recruitment_source_refresh_lock.release()
 
 
@@ -553,6 +562,7 @@ async def wechat_public_discovery_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    startup_rss = log_memory_checkpoint(logger, "app_startup", "before")
     database.init_db()
     future_radar_service.seed_registry()
     wechat_title_service.repository.seed_watchlist()
@@ -573,6 +583,10 @@ async def lifespan(_: FastAPI):
         tasks.append(asyncio.create_task(
             future_radar_refresh_loop(first_refresh_complete)
         ))
+    log_memory_checkpoint(
+        logger, "app_startup", "after", before_mb=startup_rss,
+        background_tasks=len(tasks),
+    )
     try:
         yield
     finally:
@@ -1599,6 +1613,9 @@ def future_radar_opportunities(
     The API default remains the complete matching pool. Priority, balance and
     tier selections affect grouping/pagination, not stored records or scoring.
     """
+    memory_before = log_memory_checkpoint(
+        logger, "job_pool_read", "before", page=page, page_size=page_size, view=view,
+    )
     filters = {
         "application_status": application_status,
         "status": status_filter, "verification_status": verification_status,
@@ -1640,7 +1657,12 @@ def future_radar_opportunities(
     result.update(_radar_search_metadata())
     # These public records contain only JSON-compatible primitives. Avoid
     # FastAPI recursively encoding the same large compatibility lists again.
-    return JSONResponse(content=result)
+    response = JSONResponse(content=result)
+    log_memory_checkpoint(
+        logger, "job_pool_read", "after", before_mb=memory_before,
+        page=page, page_size=page_size, view=view, total=result.get("total"),
+    )
+    return response
 
 
 @app.get("/api/future-radar/opportunities/{job_id}")
@@ -1746,15 +1768,38 @@ class RadarNotificationAck(BaseModel):
 @app.get("/api/future-radar/saved-jobs")
 def radar_saved_jobs(user: User) -> dict:
     from .future_radar import personal
+    memory_before = log_memory_checkpoint(logger, "saved_jobs_read", "before")
     items = personal.saved_jobs(database.connect, user["id"])
+    application_states = personal.application_states(database.connect, user["id"])
+    profile = database.get_recruitment_profile(user["id"])
     for item in items:
-        try:
-            item["job"] = future_radar_opportunity(item["job"]["id"], user)
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
+        # A saved row already contains its public snapshot. Refresh only the
+        # exact database record; the former detail route scanned and scored
+        # the complete opportunity pool once per saved item.
+        current = future_radar_service.repository.get_job(item["job"]["id"])
+        if current is None:
             item["unavailable"] = True
-    return {"items": [item for item in items if item["job"].get("application_status") != "skipped"]}
+        else:
+            snapshot = item["job"]
+            refreshed = _public_radar_opportunity(current, profile)
+            for key in (
+                "display_company_key", "display_company_name",
+                "display_company_grouping",
+            ):
+                if key in snapshot and key not in refreshed:
+                    refreshed[key] = snapshot[key]
+            item["job"] = refreshed
+        item["job"]["application_status"] = application_states.get(
+            item["job"]["id"], item["job"].get("application_status", "not_applied")
+        )
+    result = {"items": [
+        item for item in items if item["job"].get("application_status") != "skipped"
+    ]}
+    log_memory_checkpoint(
+        logger, "saved_jobs_read", "after", before_mb=memory_before,
+        saved_count=len(result["items"]),
+    )
+    return result
 
 
 @app.put("/api/future-radar/saved-jobs/{job_id}")
@@ -1787,24 +1832,33 @@ def radar_unsave_job(job_id: str, user: User) -> dict:
 @app.get("/api/future-radar/notifications")
 def radar_notifications(user: User) -> dict:
     from .future_radar import personal
+    memory_before = log_memory_checkpoint(logger, "notification_read", "before")
     events, through = personal.pending_events(database.connect, user["id"])
+    application_states = personal.application_states(database.connect, user["id"])
+    profile = database.get_recruitment_profile(user["id"])
     items = []
     seen = set()
     for event in events:
         if event["entity_id"] in seen:
             continue
-        try:
-            job = future_radar_opportunity(event["entity_id"], user)
-        except HTTPException as exc:
-            if exc.status_code == 404:
-                continue
-            raise
+        current = future_radar_service.repository.get_job(event["entity_id"])
+        if current is None:
+            continue
+        job = _public_radar_opportunity(current, profile)
+        job["application_status"] = application_states.get(
+            job["id"], "not_applied",
+        )
         seen.add(event["entity_id"])
         if job.get("application_status") != "skipped":
             items.append({"event_id": event["id"], "job": job})
     if not items:
         personal.acknowledge(database.connect, user["id"], through)
-    return {"items": items, "through_event_id": through}
+    result = {"items": items, "through_event_id": through}
+    log_memory_checkpoint(
+        logger, "notification_read", "after", before_mb=memory_before,
+        event_count=len(events), item_count=len(items),
+    )
+    return result
 
 
 @app.post("/api/future-radar/notifications/ack")

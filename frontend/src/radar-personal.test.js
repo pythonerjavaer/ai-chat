@@ -141,6 +141,28 @@ test('saved candidates exclude already-applied and skipped bookmarks', async t =
   assert.match(text(f.panel('saved')), /收藏不代表已报名/);
 });
 
+test('idle polling refreshes notifications without repeatedly loading saved jobs', async t => {
+  const previousSetInterval = globalThis.setInterval;
+  const previousClearInterval = globalThis.clearInterval;
+  let tick;
+  globalThis.setInterval = callback => { tick = callback; return 7; };
+  globalThis.clearInterval = () => {};
+  t.after(() => {
+    globalThis.setInterval = previousSetInterval;
+    globalThis.clearInterval = previousClearInterval;
+  });
+  const f = fixture(t);
+  f.personal.start();
+  f.requests.find(request => request.url.endsWith('/saved-jobs')).resolve({items: []});
+  f.requests.find(request => request.url.endsWith('/notifications')).resolve({items: []});
+  await new Promise(resolve => setImmediate(resolve));
+  const before = f.requests.length;
+  tick();
+  assert.equal(f.requests.length, before + 1);
+  assert.match(f.requests.at(-1).url, /\/notifications$/);
+  f.requests.at(-1).resolve({items: []});
+});
+
 test('failed applied-history reads show a retryable error and preserve confirmed records', async t => {
   const f = fixture(t);
   let pending = f.personal.loadApplied(); f.accept({total: 1, items: [{id: 'retained'}]}); await pending;

@@ -11,7 +11,8 @@ import pytest
 from backend.future_radar.wechat.discovery.base import DiscoveryProviderUnavailable
 from backend.future_radar.wechat.discovery.manual import ManualDiscoveryProvider
 from backend.future_radar.wechat.discovery.sogou import (
-    SogouWechatDiscoveryProvider, exact_source_match, parse_sogou_results,
+    MAX_SEARCH_RESPONSE_BYTES, SogouWechatDiscoveryProvider,
+    exact_source_match, parse_sogou_results,
 )
 
 
@@ -80,6 +81,10 @@ def test_captcha_marks_provider_unavailable():
 
 def test_403_marks_provider_unavailable():
     assert_unavailable(403, "denied")
+
+
+def test_oversized_search_page_marks_provider_unavailable():
+    assert_unavailable(200, '<ul class="news-list">' + 'x' * MAX_SEARCH_RESPONSE_BYTES)
 
 
 def test_manual_provider_remains_available_after_sogou_failure():

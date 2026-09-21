@@ -1,5 +1,6 @@
 from backend.tests.test_radar_opportunities import harness  # noqa: F401
 from backend import database
+import pytest
 
 
 def event(h, job, run='done'):
@@ -11,13 +12,18 @@ def event(h, job, run='done'):
         )
 
 
-def test_saved_jobs_are_account_owned_and_ordered(harness):
+def test_saved_jobs_are_account_owned_and_ordered(harness, monkeypatch):
     h = harness
     a, b = h.insert('one'), h.insert('two')
     base = '/api/future-radar/saved-jobs'
     for job, priority in [(a, 9), (b, 2)]:
         response = h.client.put(base + '/' + job['id'], json={'priority': priority}, headers=h.auth)
         assert response.status_code == 200, response.text
+    original_rows = h.service.repository._opportunity_rows
+    monkeypatch.setattr(
+        h.service.repository, "_opportunity_rows",
+        lambda **_kwargs: pytest.fail("saved jobs must not rebuild the complete opportunity pool"),
+    )
     items = h.client.get(base, headers=h.auth).json()['items']
     assert [item['job']['id'] for item in items] == [b['id'], a['id']]
     other = h.client.post('/api/auth/register', json={
@@ -30,11 +36,12 @@ def test_saved_jobs_are_account_owned_and_ordered(harness):
     assert h.client.patch(base + '/' + a['id'], json={'priority': 1}, headers=h.auth).status_code == 200
     assert h.client.get(base, headers=h.auth).json()['items'][0]['job']['id'] == a['id']
     assert h.client.delete(base + '/' + a['id'], headers=h.auth).status_code == 200
+    monkeypatch.setattr(h.service.repository, "_opportunity_rows", original_rows)
     assert h.client.get('/api/future-radar/opportunities/' + a['id'], headers=h.auth).status_code == 200
     assert h.client.get(base).status_code in (401, 403)
 
 
-def test_notifications_persist_until_ack_and_do_not_skip_new_arrivals(harness):
+def test_notifications_persist_until_ack_and_do_not_skip_new_arrivals(harness, monkeypatch):
     h = harness
     base = '/api/future-radar/notifications'
     old = h.insert('old')
@@ -42,6 +49,10 @@ def test_notifications_persist_until_ack_and_do_not_skip_new_arrivals(harness):
     assert h.client.get(base, headers=h.auth).json()['items'] == []
     first = h.insert('first', verification_status='source_screened')
     event(h, first)
+    monkeypatch.setattr(
+        h.service.repository, "_opportunity_rows",
+        lambda **_kwargs: pytest.fail("notifications must not rebuild the complete opportunity pool"),
+    )
     notice = h.client.get(base, headers=h.auth).json()
     assert [i['job']['id'] for i in notice['items']] == [first['id']]
     assert h.client.get(base, headers=h.auth).json() == notice

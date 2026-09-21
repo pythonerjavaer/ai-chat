@@ -13,6 +13,7 @@ from .discovery.base import DiscoveryProviderUnavailable, WechatDiscoveryProvide
 from .models import DiscoveredArticle
 from .normalizer import normalize_wechat_url
 from .repository import WechatTitleRepository
+from ...memory_observability import log_memory_checkpoint
 
 logger = logging.getLogger(__name__)
 DISCOVERY_NOTICE = '自动搜索发现目前没有可靠的零成本 provider，因此暂时使用 manual discovery。Seed 只是一篇文章，不是公众号文章列表。'
@@ -31,6 +32,7 @@ class WechatTitleService:
         self.repository = repository
         self.connector = connector or WechatArticleConnector()
         self.parser = parser or self.connector.parse
+        self._discovery_lock = asyncio.Lock()
 
     async def import_article(self, url: str, *, expected_source_name: str | None = None,
                              force_refresh: bool = False) -> dict:
@@ -64,6 +66,9 @@ class WechatTitleService:
 
     async def import_batch(self, urls: list[str], *, expected_source_name: str | None = None,
                            force_refresh: bool = False) -> dict:
+        memory_before = log_memory_checkpoint(
+            logger, "wechat_batch_import", "before", item_count=len(urls),
+        )
         # Five independent requests maximum; equivalent URLs share one task.
         semaphore = asyncio.Semaphore(5)
         async def one(url: str) -> dict:
@@ -95,11 +100,16 @@ class WechatTitleService:
             seen.add(key)
             results.append(result)
         successful = [item for item in results if item.get('fetch_status') == 'success']
-        return {'total': len(results), 'success': len(successful),
-                'new': sum(bool(item['is_new']) for item in successful),
-                'duplicate': sum(not item['is_new'] for item in successful),
-                'failed': len(results) - len(successful), 'items': results,
-                'ai_calls': 0, 'model_tokens_used': 0}
+        result = {'total': len(results), 'success': len(successful),
+                  'new': sum(bool(item['is_new']) for item in successful),
+                  'duplicate': sum(not item['is_new'] for item in successful),
+                  'failed': len(results) - len(successful), 'items': results,
+                  'ai_calls': 0, 'model_tokens_used': 0}
+        log_memory_checkpoint(
+            logger, "wechat_batch_import", "after", before_mb=memory_before,
+            item_count=len(urls), success=result['success'],
+        )
+        return result
 
     async def import_watchlist_seeds(self, *, force_refresh: bool = False) -> dict:
         """Import every enabled configured seed with its account provenance.
@@ -134,6 +144,31 @@ class WechatTitleService:
         }
 
     async def discover_now(self, provider: WechatDiscoveryProvider, *, respect_cooldown: bool = True) -> dict:
+        provider_name = getattr(provider, 'name', provider.__class__.__name__)
+        if self._discovery_lock.locked():
+            return {
+                'status': 'already_running', 'provider': provider_name,
+                'accounts': [], 'counts': {},
+                'notice': '公众号公开搜索已有一轮正在运行；本次未重复启动。',
+                'ai_calls': 0, 'model_tokens_used': 0,
+            }
+        memory_before = log_memory_checkpoint(
+            logger, "wechat_discovery", "before", provider=provider_name,
+        )
+        async with self._discovery_lock:
+            try:
+                return await self._discover_now_unlocked(
+                    provider, respect_cooldown=respect_cooldown,
+                )
+            finally:
+                log_memory_checkpoint(
+                    logger, "wechat_discovery", "after", before_mb=memory_before,
+                    provider=provider_name,
+                )
+
+    async def _discover_now_unlocked(
+        self, provider: WechatDiscoveryProvider, *, respect_cooldown: bool = True,
+    ) -> dict:
         provider_name = getattr(provider, 'name', provider.__class__.__name__)
         state = await asyncio.to_thread(self.repository.get_provider_state, provider_name)
         if respect_cooldown and state.get('cooldown_until'):

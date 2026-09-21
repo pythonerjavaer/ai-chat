@@ -216,26 +216,35 @@ export function initRadarPersonal({ api, session, host, makeCard, toast, onAppli
     dialog.addEventListener('cancel', event => { event.preventDefault(); if (reviewed) close.click(); });
     dialog.append(view, body, close, error); document.body.append(dialog); notice = dialog; dialog.showModal();
   }
-  async function refresh() {
+  async function refresh({ bookmarks = true, notifications = true } = {}) {
     const token = session();
     if (!token || !host.open || document.hidden || pending) return;
     if (owner !== token) { saved = new Map(); owner = token; }
     pending = true;
     try {
-      const [bookmarks, notifications] = await Promise.allSettled([
-        api('/future-radar/saved-jobs'), api('/future-radar/notifications'),
+      const [bookmarkResult, notificationResult] = await Promise.allSettled([
+        bookmarks ? api('/future-radar/saved-jobs') : Promise.resolve(null),
+        notifications ? api('/future-radar/notifications') : Promise.resolve(null),
       ]);
       if (token !== session()) return;
-      if (bookmarks.status === 'fulfilled') {
-        saved = new Map(bookmarks.value.items.map(item => [item.job.id, item]));
+      if (bookmarks && bookmarkResult.status === 'fulfilled') {
+        saved = new Map(bookmarkResult.value.items.map(item => [item.job.id, item]));
         updateButtons();
         // Do not overwrite a priority value while the user is editing it.
         if (!panel.contains(document.activeElement)) renderSaved();
       }
-      if (notifications.status === 'fulfilled') showNotice(notifications.value);
+      if (notifications && notificationResult.status === 'fulfilled') {
+        showNotice(notificationResult.value);
+      }
     } finally { pending = false; }
   }
-  function start() { refresh(); if (!timer) timer = setInterval(refresh, 30000); }
+  function start() {
+    refresh();
+    // Saved jobs change only through explicit user actions and are updated in
+    // local state immediately. Poll only new notifications after the initial
+    // read so an idle open Radar cannot rebuild bookmark details forever.
+    if (!timer) timer = setInterval(() => refresh({ bookmarks: false }), 60000);
+  }
   function stop() { clearInterval(timer); timer = null; }
   function reset() {
     stop(); owner = null; saved.clear(); changingApplications.clear();

@@ -16,6 +16,7 @@ from ..models import DiscoveredArticle
 from .base import DiscoveryProviderUnavailable, WechatDiscoveryProvider
 
 SEARCH_URL = "https://weixin.sogou.com/weixin"
+MAX_SEARCH_RESPONSE_BYTES = 2 * 1024 * 1024
 _BLOCK_MARKERS = ("antispider", "请输入验证码", "用户您好，我们的系统检测到您网络中存在异常访问请求")
 
 
@@ -134,13 +135,28 @@ class SogouWechatDiscoveryProvider(WechatDiscoveryProvider):
     @staticmethod
     async def _request(url: str, **kwargs: Any) -> httpx.Response:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
-            return await client.get(url, **kwargs)
+            async with client.stream("GET", url, **kwargs) as response:
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > MAX_SEARCH_RESPONSE_BYTES:
+                        raise DiscoveryProviderUnavailable("公开搜索响应超过安全大小限制。")
+                    body.extend(chunk)
+                headers = {
+                    key: value for key, value in response.headers.items()
+                    if key.casefold() not in {"content-encoding", "content-length"}
+                }
+                return httpx.Response(
+                    response.status_code, headers=headers, content=bytes(body),
+                    request=httpx.Request("GET", str(response.url)),
+                )
 
     @staticmethod
     def _validate_response(response: Any) -> str:
         status = int(response.status_code)
         final_url = str(response.url)
         document = response.text
+        if len(document.encode("utf-8", errors="ignore")) > MAX_SEARCH_RESPONSE_BYTES:
+            raise DiscoveryProviderUnavailable("公开搜索响应超过安全大小限制。")
         lowered = (final_url + "\n" + document[:12000]).casefold()
         if status in {403, 429} or any(marker.casefold() in lowered for marker in _BLOCK_MARKERS):
             raise DiscoveryProviderUnavailable(f"公开搜索访问受限（HTTP {status}）。")

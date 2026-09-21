@@ -152,12 +152,24 @@ class WechatTitleRepository(RadarRepository):
                   items: list[dict], *, hours: int = 24) -> None:
         now_dt = datetime.now(timezone.utc)
         with self.transaction() as connection:
+            connection.execute(
+                'DELETE FROM wechat_discovery_cache WHERE expires_at<=?',
+                (now_dt.isoformat(),),
+            )
             connection.execute('''INSERT INTO wechat_discovery_cache
                 (provider,source_id,query_key,expires_at,result_json,updated_at)
                 VALUES (?,?,?,?,?,?) ON CONFLICT(provider,source_id,query_key) DO UPDATE SET
                 expires_at=excluded.expires_at,result_json=excluded.result_json,updated_at=excluded.updated_at''',
                 (provider, source_id, query_key, (now_dt + timedelta(hours=hours)).isoformat(),
-                 _json(items), now_dt.isoformat()))
+                 _json(items[:50]), now_dt.isoformat()))
+            # The current watchlist creates five stable keys. Keep a hard
+            # database bound as protection if administrators add sources.
+            keys = connection.execute('''SELECT provider,source_id,query_key
+                FROM wechat_discovery_cache ORDER BY updated_at DESC''').fetchall()
+            for stale in keys[100:]:
+                connection.execute('''DELETE FROM wechat_discovery_cache
+                    WHERE provider=? AND source_id=? AND query_key=?''',
+                    (stale['provider'], stale['source_id'], stale['query_key']))
 
     def save_discovery(self, item: dict, classification: dict, expected_source: str) -> dict:
         """Persist title metadata even when public redirect resolution is unavailable."""

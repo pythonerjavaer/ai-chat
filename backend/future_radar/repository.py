@@ -114,7 +114,12 @@ class RadarRepository:
         # freshness: active tier browsing need not rebuild thousands of scores
         # every five minutes. New/closed jobs still invalidate immediately.
         self._opportunity_cache = BoundedScoringCache(
-            ttl_seconds=30 * 60, refresh_on_hit=True,
+            # A production pool of roughly 3,700 scored rows is larger than
+            # the old 32 MiB default. Rejecting that single entry made every
+            # poll rebuild the entire pool. Retain one user-scoped projection
+            # and evict it when another scope replaces it.
+            max_entries=1, max_bytes=72 * 1024 * 1024,
+            max_inflight=2, ttl_seconds=30 * 60, refresh_on_hit=True,
         )
         # A new source observation invalidates the pool projection, but its
         # thousands of unchanged jobs need not all be scored again. Retain

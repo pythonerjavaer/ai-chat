@@ -402,3 +402,31 @@ def test_discovery_cooldown_blocks_repeated_manual_trigger(title_repo):
     with pytest.raises(DiscoveryCooldown) as error:
         asyncio.run(service.discover_now(EmptyProvider()))
     assert error.value.retry_after > 0
+
+
+def test_manual_and_scheduled_discovery_cannot_overlap(title_repo):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowProvider:
+        name = 'sogou_wechat'
+
+        async def discover(self, source):
+            started.set()
+            await release.wait()
+            return []
+
+    async def scenario():
+        service = WechatTitleService(title_repo, parser=Parser())
+        running = asyncio.create_task(
+            service.discover_now(SlowProvider(), respect_cooldown=False)
+        )
+        await started.wait()
+        duplicate = await service.discover_now(SlowProvider(), respect_cooldown=False)
+        release.set()
+        completed = await running
+        return duplicate, completed
+
+    duplicate, completed = asyncio.run(scenario())
+    assert duplicate['status'] == 'already_running'
+    assert completed['status'] == 'available'
