@@ -2671,6 +2671,7 @@ class RadarRepository:
                     SUM(CASE WHEN enabled=1 AND status='healthy' THEN 1 ELSE 0 END) AS healthy,
                     SUM(CASE WHEN enabled=1 AND status='error' THEN 1 ELSE 0 END) AS errors
                 FROM monitor_sources
+                WHERE source_type <> 'wechat_public'
                 """
             ).fetchone()
             last_run = connection.execute(

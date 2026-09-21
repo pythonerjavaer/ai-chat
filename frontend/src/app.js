@@ -166,6 +166,8 @@ const state = {
     sourcesLoaded: false,
     sourceHealthFilter: "all",
     sourceRetrying: null,
+    sourceRetryFeedback: "",
+    sourcesRequestId: 0,
     runs: [],
     activeTab: "jobs",
     lastEventId: null,
@@ -3353,7 +3355,7 @@ function renderFutureRadarSources(sources = state.futureRadar.sources) {
   const counts = sourceHealthCounts(sources);
   const toolbar = makeElement("div", "radar-source-controls");
   toolbar.setAttribute("aria-label", "按信源状态筛选");
-  for (const [filter, label] of [["all", "全部信源"], ["error", "仅异常"], ["limited", "受限"], ["healthy", "健康"], ["pending", "待核验"]]) {
+  for (const [filter, label] of [["all", "全部信源"], ["error", "仅异常"], ["limited", "受限"], ["partial", "部分完成"], ["healthy", "健康"], ["pending", "待核验"]]) {
     const button = makeElement("button", "radar-source-filter", `${label} ${counts[filter]}`);
     button.type = "button";
     button.setAttribute("aria-pressed", String(state.futureRadar.sourceHealthFilter === filter));
@@ -3373,7 +3375,9 @@ function renderFutureRadarSources(sources = state.futureRadar.sources) {
   });
   toolbar.appendChild(refresh);
   elements.futureRadarSources.appendChild(toolbar);
-  elements.futureRadarSources.appendChild(makeElement("p", "radar-entity-meta", "健康＝最近读取成功；异常＝最近读取失败；受限＝尚无可用读取渠道；待核验＝尚未确认。"));
+  if (state.futureRadar.sourceRetryFeedback) elements.futureRadarSources.appendChild(makeElement("p", "radar-entity-meta", state.futureRadar.sourceRetryFeedback));
+  elements.futureRadarSources.appendChild(makeElement("p", "radar-entity-meta", "健康＝最近读取成功；异常＝最近读取失败；受限＝读取渠道受限；部分完成＝只读取了部分页面；待核验＝尚未确认。"));
+  elements.futureRadarSources.appendChild(makeElement("p", "radar-entity-meta", "这里检查招聘信息读取渠道。公众号不单列；导入的公众号文章保留在对应招聘信息的来源中。"));
   if (!sources.length) {
     elements.futureRadarSources.appendChild(makeElement("div", "empty-list", "Source Registry 尚未返回可展示的信源。"));
     return;
@@ -3382,11 +3386,12 @@ function renderFutureRadarSources(sources = state.futureRadar.sources) {
   if (!visibleSources.length) elements.futureRadarSources.appendChild(makeElement("div", "empty-list", "当前没有符合此状态的信源。点击“全部信源”可返回完整列表。"));
   visibleSources.forEach((source) => {
     const status = sourceHealthStatus(source);
+    const group = sourceHealthGroup(source);
     const card = makeElement("article", "radar-entity-card source-card");
     const top = makeElement("div", "radar-entity-top");
     top.append(
       makeElement("span", "radar-source-type", String(source.source_type || source.platform || "public_source").replaceAll("_", " ")),
-      makeElement("span", `radar-status-badge ${radarStatusClass(status)}`, radarStatusCopy(status)),
+      makeElement("span", `radar-status-badge ${["limited", "partial", "pending"].includes(group) ? "warning" : group}`, radarStatusCopy(status)),
     );
     card.append(
       top,
@@ -3426,7 +3431,10 @@ function renderFutureRadarSources(sources = state.futureRadar.sources) {
 }
 
 async function refreshFutureRadarSources() {
+  resumeFutureRadarReadGates();
+  const requestId = ++state.futureRadar.sourcesRequestId;
   const payload = await api("/future-radar/sources?enabled=true");
+  if (requestId !== state.futureRadar.sourcesRequestId) return;
   state.futureRadar.sources = payload.items || payload.sources || [];
   state.futureRadar.sourcesLoaded = true;
   renderFutureRadarSources();
@@ -3436,14 +3444,17 @@ async function refreshFutureRadarSources() {
 async function retryFutureRadarSource(source) {
   if (state.futureRadar.sourceRetrying) return;
   state.futureRadar.sourceRetrying = source.id;
+  state.futureRadar.sourceRetryFeedback = `正在重新核验：${source.name}。`;
   renderFutureRadarSources();
   try {
-    await api("/future-radar/run", { method: "POST", body: JSON.stringify({scan_type: "quick", source_ids: [source.id]}), timeoutMs: 120_000 });
+    const run = await api("/future-radar/run", { method: "POST", body: JSON.stringify({scan_type: "quick", source_ids: [source.id]}), timeoutMs: 120_000 });
+    state.futureRadar.sourceRetryFeedback = `${source.name}：${futureRadarRunSuccessCopy(run, state.futureRadar.totalJobs)}`;
     await refreshFutureRadarSources();
     const current = state.futureRadar.sources.find((item) => item.id === source.id);
     showToast(`${source.name}：${radarStatusCopy(sourceHealthStatus(current))}`, 6500);
   } catch (error) {
-    showToast(futureRadarRunErrorCopy(error, "quick"), 6500);
+    state.futureRadar.sourceRetryFeedback = `${source.name}：${futureRadarRunErrorCopy(error, "quick")}`;
+    showToast(state.futureRadar.sourceRetryFeedback, 6500);
   } finally {
     state.futureRadar.sourceRetrying = null;
     renderFutureRadarSources();
@@ -3822,13 +3833,14 @@ async function loadFutureRadarSnapshot() {
   // of slower source/program/run metadata. It shares the filter request owner.
   const jobs = loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false });
   const jobsRequestId = state.futureRadar.jobsRequestId;
+  const sourcesRequestId = state.futureRadar.sourcesRequestId = (state.futureRadar.sourcesRequestId || 0) + 1;
   const requests = [
     ["dashboard", readFutureRadarDashboard()],
     ["jobs", jobs],
     ["programs", api("/future-radar/programs")],
     ["events", api("/future-radar/events?limit=50")],
     ["sources", api("/future-radar/sources?enabled=true").then((payload) => {
-      if (sessionToken === state.token && snapshotRequestId === state.futureRadar.snapshotRequestId) {
+      if (sessionToken === state.token && snapshotRequestId === state.futureRadar.snapshotRequestId && sourcesRequestId === state.futureRadar.sourcesRequestId) {
         state.futureRadar.sources = radarCollection(payload, ["sources"]);
         state.futureRadar.sourcesLoaded = true;
         syncFutureRadarSourceFilter();
@@ -3862,11 +3874,8 @@ async function loadFutureRadarSnapshot() {
       mergeFutureRadarEvents(radarCollection(payload, ["events", "changes"]), payload);
       renderFutureRadarEvents();
     } else if (key === "sources") {
-      state.futureRadar.sources = radarCollection(payload, ["sources"]);
-      state.futureRadar.sourcesLoaded = true;
-      syncFutureRadarSourceFilter();
-      renderFutureRadarSources();
-      renderFutureRadarDashboard();
+      // Already rendered independently above. Never replay an old snapshot
+      // over a newer targeted retry while waiting for slow opportunity reads.
     } else if (key === "runs") {
       state.futureRadar.runs = radarCollection(payload, ["runs"]);
       renderFutureRadarRuns();

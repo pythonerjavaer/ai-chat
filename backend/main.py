@@ -1005,6 +1005,7 @@ _PUBLIC_RADAR_ERROR_MESSAGES = {
     "AI_PROVIDER_UNAVAILABLE": "AI 补漏暂时不可用；确定性官网信源仍会继续扫描。",
     "SOURCE_UNAVAILABLE": "公开信源暂时无法访问，稍后会自动重试。",
     "SOURCE_FAILED": "该信源本轮扫描未完成，稍后会自动重试。",
+    "STORAGE_UNAVAILABLE": "冰焰数据库暂时无法完成本轮核验；这不表示招聘官网失效，请稍后重试。",
     "SOURCE_BUSY": "该信源正在由另一轮扫描处理，本轮已安全跳过。",
     "PROGRAM_REJECTED": "候选项目未通过结构或安全校验。",
     "JOB_REJECTED": "候选岗位未通过结构或安全校验。",
@@ -1056,7 +1057,9 @@ def _public_radar_source(source: dict) -> dict:
     if source.get("status") == "discovery_limited":
         item["last_error"] = _PUBLIC_RADAR_ERROR_MESSAGES["DISCOVERY_LIMITED"]
     elif source.get("status") == "error" and source.get("last_error_at"):
-        if (str(source.get("platform") or "").casefold() == "openai"
+        if source.get("last_error") == _PUBLIC_RADAR_ERROR_MESSAGES["STORAGE_UNAVAILABLE"]:
+            item["last_error"] = _PUBLIC_RADAR_ERROR_MESSAGES["STORAGE_UNAVAILABLE"]
+        elif (str(source.get("platform") or "").casefold() == "openai"
               or source.get("adapter_config", {}).get("adapter") == "wechat_web_search"):
             safe_provider_messages = {
                 _PUBLIC_RADAR_ERROR_MESSAGES[code]

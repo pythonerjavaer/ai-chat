@@ -60,6 +60,8 @@ def _safe_source_failure(
     detail, so the original exception is used only for classification and is
     never persisted or returned by the API.
     """
+    if isinstance(exc, sqlite3.DatabaseError):
+        return "STORAGE_UNAVAILABLE", "冰焰数据库暂时无法完成本轮核验；这不表示招聘官网失效，请稍后重试。"
     adapter = str(
         source.get("adapter_config", {}).get("adapter")
         or source.get("source_type")
@@ -373,12 +375,14 @@ class FutureRadarService:
                         code, message = _safe_source_failure(source, exc)
                         logger.warning(
                             "Future Radar source failed run_id=%s source_id=%s "
-                            "adapter=%s failure_code=%s error_type=%s",
+                            "adapter=%s failure_code=%s error_type=%s sqlstate=%s",
                             run["id"],
                             source["id"],
                             source.get("adapter_config", {}).get("adapter") or source.get("source_type"),
                             code,
                             type(exc).__name__,
+                            (re.search(r"SQLSTATE ([A-Z0-9]{5})", str(exc)).group(1)
+                             if re.search(r"SQLSTATE ([A-Z0-9]{5})", str(exc)) else "unavailable"),
                         )
                         if not self._is_scoped_bridge(source):
                             self.repository.update_source_error(source["id"], message)

@@ -975,10 +975,20 @@ def test_dashboard_counts_only_enabled_sources_and_does_not_call_limited_discove
     )
 
     dashboard = radar_service.repository.dashboard()
-    enabled = radar_service.repository.list_sources(enabled=True)
+    enabled = [source for source in radar_service.repository.list_sources(enabled=True)
+               if source["source_type"] != "wechat_public"]
     assert dashboard["sources"]["total"] == len(enabled)
     assert dashboard["sources"]["enabled"] == len(enabled)
     assert dashboard["sources"]["errors"] == 1
+
+
+def test_storage_failure_does_not_blame_recruitment_endpoint():
+    from backend.future_radar.service import _safe_source_failure
+    code, message = _safe_source_failure({}, sqlite3.OperationalError("private database detail"))
+    assert code == "STORAGE_UNAVAILABLE"
+    assert "数据库" in message
+    assert "private" not in message
+    assert main._public_radar_source({"status": "error", "last_error_at": "2026-09-21T00:00:00Z", "last_error": message})["last_error"] == message
 
 
 def test_reseed_reconciles_stale_errors_for_limited_sources_without_claiming_success(radar_service):

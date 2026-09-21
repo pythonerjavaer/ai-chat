@@ -537,6 +537,9 @@ export function futureRadarAiSearchNotice(value = {}) {
 }
 
 export function futureRadarSourceErrorCopy(source = {}) {
+  if (String(source.last_error || "").startsWith("冰焰数据库暂时无法完成本轮核验")) {
+    return "冰焰数据库暂时无法完成本轮核验；这不表示招聘官网失效，请稍后重试。";
+  }
   return futureRadarAiSearchNotice(source)
     || "最近一次信源检查未完成；已核验岗位池仍保留，底层错误详情仅记录在服务端。";
 }
