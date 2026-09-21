@@ -306,7 +306,7 @@ test("manual Radar refresh reads the lightweight dashboard before slow compatibi
   const r = runtime({ fail: false });
   await r.run("refreshRecruitment()");
   assert.equal(r.calls[0], "/future-radar/dashboard");
-  assert.equal(r.requestOptions[0].timeoutMs, 12000);
+  assert.equal(r.requestOptions[0].timeoutMs, 60000);
 });
 
 test("deadline alerts include ChatGPT-screened source dates without calling them official", () => {

@@ -4930,13 +4930,14 @@ async function refreshRecruitment() {
   // A manual Radar open should paint the small database aggregate before any
   // compatibility or full-pool request. This is a plain server read: it does
   // not run a scan, call a model, or consume OpenAI tokens.
-  try {
-    const dashboard = await api("/future-radar/dashboard", { timeoutMs: 12000 });
-    state.futureRadar.dashboard = dashboard;
-    renderFutureRadarDashboard(dashboard);
-  } catch (_) {
-    renderFutureRadarDashboard(state.futureRadar.dashboard || {});
-  }
+  // Render free instances can need tens of seconds to establish the first
+  // database connection, so let this continue in parallel with the full pool.
+  void api("/future-radar/dashboard", { timeoutMs: 60000 })
+    .then((dashboard) => {
+      state.futureRadar.dashboard = dashboard;
+      renderFutureRadarDashboard(dashboard);
+    })
+    .catch(() => renderFutureRadarDashboard(state.futureRadar.dashboard || {}));
   void loadRecruitmentMonitors();
   void loadRecruitmentWatches();
   let legacyData = null;
