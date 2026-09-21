@@ -278,8 +278,7 @@ def test_search_provider_is_abstract_and_queries_do_not_fetch():
     with pytest.raises(TypeError):
         SearchDiscoveryProvider()
     queries = build_discovery_queries({"source_name": "国聘"})
-    assert 'site:mp.weixin.qq.com "国聘" "2027"' in queries
-    assert 'site:mp.weixin.qq.com "国聘" "校园招聘"' in queries
+    assert queries == ["国聘", "国聘 2027", "国聘 校园招聘", "国聘 秋招"]
 
 
 def test_connector_keeps_discovery_separate_from_fetch():

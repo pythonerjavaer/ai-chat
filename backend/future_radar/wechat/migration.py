@@ -84,6 +84,10 @@ def migrate_wechat_titles(connection: Any, ensure_column: Callable) -> None:
         CREATE INDEX IF NOT EXISTS idx_wechat_discovery_debug_recent
             ON wechat_discovery_debug(provider, scanned_at DESC);
     ''')
+    for name, declaration in {
+        'query': 'TEXT', 'found_by_queries': "TEXT NOT NULL DEFAULT '[]'", 'duplicate_of': 'TEXT',
+    }.items():
+        ensure_column(connection, 'wechat_discovery_debug', name, declaration)
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, datetime('now'))",
         ('future_radar_v5_wechat_titles',),

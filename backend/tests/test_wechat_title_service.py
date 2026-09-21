@@ -23,6 +23,7 @@ from backend.future_radar.wechat.routes import create_wechat_router
 from backend.future_radar.wechat.service import DiscoveryCooldown, WechatTitleService, run_wechat_monitor
 from backend.future_radar.wechat.discovery.base import DiscoveryProviderUnavailable
 from backend.future_radar.wechat.models import DiscoveredArticle
+from backend.future_radar.wechat.discovery.search import build_discovery_queries
 
 
 @pytest.fixture
@@ -118,6 +119,43 @@ def test_discovery_debug_is_bounded_and_keeps_only_scalar_candidate_fields(title
     assert saved["items"][0]["raw_title"] == "国聘 2027 届校园招聘"
     assert saved["items"][0]["accepted"] is True
     assert saved["items"][0]["rejection_reason"] == "resolve_failed"
+
+
+def test_multi_query_scan_merges_same_article_and_caches_each_query(title_repo):
+    with title_repo.transaction() as connection:
+        connection.execute("UPDATE monitor_sources SET title_radar_enabled=0 WHERE name<>?", ("国聘",))
+
+    class Provider:
+        name = "sogou_wechat"
+        def __init__(self): self.calls = []
+        async def discover_with_debug(self, source, *, query=None):
+            self.calls.append(query)
+            article = DiscoveredArticle(
+                url=f"https://weixin.sogou.com/link?query={query}",
+                discovery_url=f"https://weixin.sogou.com/link?query={query}",
+                title="国聘 2027 校园招聘启动", source_name="国聘",
+                expected_source_name="国聘", published_at=datetime(2026, 9, 22, tzinfo=timezone.utc),
+                found_by_queries=[query], provider="sogou_wechat",
+            )
+            return [article], [{
+                "query": query, "found_by_queries": [query], "raw_title": article.title,
+                "raw_source_name": "国聘", "normalized_source_name": "国聘", "raw_date": "1789948800",
+                "published_at": article.published_at, "discovery_url": article.discovery_url,
+                "resolved_wechat_url": None, "accepted": True, "rejection_reason": "accepted",
+            }]
+
+    provider, service = Provider(), WechatTitleService(title_repo)
+    first = asyncio.run(service.discover_now(provider, respect_cooldown=False))
+    assert provider.calls == build_discovery_queries("国聘")
+    assert first["accounts"][0]["raw_candidates"] == 4
+    assert first["accounts"][0]["deduplicated_candidates"] == 1
+    assert first["accounts"][0]["discovered"] == 1
+    assert first["accounts"][0]["leads"] == 1
+    debug = title_repo.list_discovery_debug()["items"]
+    assert any(len(item["found_by_queries"]) == 4 for item in debug)
+    second = asyncio.run(service.discover_now(provider, respect_cooldown=False))
+    assert len(provider.calls) == 4
+    assert second["accounts"][0]["cached_queries"] == 4
 
 
 def test_normalized_url_cache_is_idempotent_and_never_creates_fake_jobs(title_repo):
@@ -392,7 +430,7 @@ def test_duplicate_discovery_and_cache_do_not_duplicate_pending_leads(title_repo
     second = asyncio.run(service.discover_now(Provider(), respect_cooldown=False))
     assert first['counts']['new'] == 1
     assert second['counts']['duplicate'] == 1 and second['counts']['cached_accounts'] == 1
-    assert calls == ['国聘']
+    assert calls == ['国聘'] * 4
     assert count(title_repo, 'source_articles') == count(title_repo, 'recruitment_title_leads') == 1
 
 

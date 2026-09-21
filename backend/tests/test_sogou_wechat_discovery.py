@@ -14,6 +14,7 @@ from backend.future_radar.wechat.discovery.sogou import (
     MAX_SEARCH_RESPONSE_BYTES, SogouWechatDiscoveryProvider,
     exact_source_match, parse_sogou_candidates, parse_sogou_results,
 )
+from backend.future_radar.wechat.discovery.search import build_discovery_queries
 
 
 def result_html(source: str = "国聘", *, epoch: int = 1789948800, title: str = "国聘2027届校园招聘启动") -> str:
@@ -42,6 +43,10 @@ def test_sogou_parse_publish_time():
 
 def test_exact_account_match():
     assert exact_source_match(" 银行招聘网 ", "银行招聘网")
+
+
+def test_multiple_recruitment_queries_keep_base_query():
+    assert build_discovery_queries("国聘") == ["国聘", "国聘 2027", "国聘 校园招聘", "国聘 秋招"]
 
 
 def test_similar_account_rejected():
@@ -91,6 +96,18 @@ def test_normal_redirect_resolution():
         return SimpleNamespace(status_code=200, url="https://mp.weixin.qq.com/s/public-final", text="")
     result = asyncio.run(SogouWechatDiscoveryProvider(requester).discover({"source_name": "国聘"}))
     assert result[0].article_url == "https://mp.weixin.qq.com/s/public-final"
+
+
+def test_query_is_recorded_on_discovery_candidates():
+    async def requester(url, **kwargs):
+        if kwargs.get("params"):
+            return SimpleNamespace(status_code=200, url=url, text=result_html())
+        return SimpleNamespace(status_code=200, url=url, text="ordinary public redirect page")
+    items, candidates = asyncio.run(SogouWechatDiscoveryProvider(requester).discover_with_debug(
+        {"source_name": "国聘"}, query="国聘 校园招聘",
+    ))
+    assert items[0].found_by_queries == ["国聘 校园招聘"]
+    assert candidates[0]["query"] == "国聘 校园招聘"
 
 
 def assert_unavailable(status, text):

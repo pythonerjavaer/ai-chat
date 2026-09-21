@@ -204,12 +204,13 @@ class SogouWechatDiscoveryProvider(WechatDiscoveryProvider):
         items, _ = await self.discover_with_debug(source_account)
         return items
 
-    async def discover_with_debug(self, source_account: Mapping[str, Any], *, window_days: int = 14) -> tuple[list[DiscoveredArticle], list[dict[str, Any]]]:
+    async def discover_with_debug(self, source_account: Mapping[str, Any], *, window_days: int = 14,
+                                  query: str | None = None) -> tuple[list[DiscoveredArticle], list[dict[str, Any]]]:
         source_name = str(source_account.get("source_name") or source_account.get("name") or "").strip()
         if not source_name:
             return []
         try:
-            response = await self.requester(SEARCH_URL, params={"type": "2", "query": source_name, "page": "1"})
+            response = await self.requester(SEARCH_URL, params={"type": "2", "query": query or source_name, "page": "1"})
         except DiscoveryProviderUnavailable:
             raise
         except (httpx.TimeoutException, httpx.NetworkError):
@@ -217,8 +218,12 @@ class SogouWechatDiscoveryProvider(WechatDiscoveryProvider):
         document = self._validate_response(response)
         candidates = parse_sogou_candidates(document, source_name, window_days=window_days)
         items = parse_sogou_results(document, source_name, window_days=window_days)
-        by_url = {item.discovery_url: item for item in items}
+        executed_query = query or source_name
+        for candidate in candidates:
+            candidate["query"] = executed_query
+            candidate["found_by_queries"] = [executed_query]
         for item in items:
+            item.found_by_queries = [executed_query]
             item.article_url = await self.resolve_article_url(item.discovery_url or item.url)
             candidate = next((row for row in candidates if row["discovery_url"] == item.discovery_url), None)
             if candidate is not None:

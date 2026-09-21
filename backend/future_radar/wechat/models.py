@@ -52,3 +52,4 @@ class DiscoveredArticle(BaseModel):
     published_at: datetime | None = None
     discovered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     provider: str = "manual"
+    found_by_queries: list[str] = Field(default_factory=list)

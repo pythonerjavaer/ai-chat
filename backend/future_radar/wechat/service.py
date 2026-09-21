@@ -12,7 +12,7 @@ from .connector import WechatArticleConnector
 from .discovery.base import DiscoveryProviderUnavailable, WechatDiscoveryProvider
 from .models import DiscoveredArticle
 from .normalizer import normalize_wechat_url
-from .repository import WechatTitleRepository
+from .repository import WechatTitleRepository, queries_for
 from ...memory_observability import log_memory_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -180,36 +180,49 @@ class WechatTitleService:
             if remaining > 0:
                 raise DiscoveryCooldown(remaining)
         sources = [source for source in await asyncio.to_thread(self.repository.list_sources) if source['enabled']]
-        counts = {'discovered': 0, 'new': 0, 'duplicate': 0, 'related': 0, 'failed': 0,
+        counts = {'discovered': 0, 'raw_candidates': 0, 'deduplicated_candidates': 0,
+                  'source_matched': 0, 'new': 0, 'duplicate': 0, 'related': 0, 'failed': 0,
+                  'leads': 0,
                   'accounts_scanned': 0, 'cached_accounts': 0}
         accounts: list[dict] = []
         try:
             for source in sources:
-                # Parser revisions must not reuse a cached empty result from
-                # an older HTML shape.  This remains one bounded 24h entry per
-                # watchlist account.
-                query_key = source['source_name'].strip().casefold() + '|sogou-v2'
-                cached = await asyncio.to_thread(
-                    self.repository.cache_get, provider_name, source['id'], query_key,
-                )
                 candidates: list[dict] = []
-                if cached is None:
-                    if hasattr(provider, 'discover_with_debug'):
-                        discovered, candidates = await provider.discover_with_debug(source)
+                discovered: list[DiscoveredArticle] = []
+                executed_queries, cached_queries = [], 0
+                for query in queries_for(source['source_name']):
+                    # Cache by account + exact query.  A parser revision is in
+                    # the key so an old single-query empty cache is never used.
+                    query_key = source['source_name'].strip().casefold() + '|sogou-v3|' + query.casefold()
+                    cached = await asyncio.to_thread(self.repository.cache_get, provider_name, source['id'], query_key)
+                    if cached is None:
+                        if hasattr(provider, 'discover_with_debug'):
+                            query_items, query_candidates = await provider.discover_with_debug(source, query=query)
+                        else:
+                            query_items, query_candidates = await provider.discover(source), []
+                        payload = {'items': [item.model_dump(mode='json') for item in query_items],
+                                   'candidates': [self._serialize_candidate(row) for row in query_candidates]}
+                        await asyncio.to_thread(self.repository.cache_set, provider_name, source['id'], query_key, payload)
                     else:
-                        discovered = await provider.discover(source)
-                    serialized = [item.model_dump(mode='json') if hasattr(item, 'model_dump') else dict(item)
-                                  for item in discovered]
-                    await asyncio.to_thread(
-                        self.repository.cache_set, provider_name, source['id'], query_key, serialized,
-                    )
-                    from_cache = False
-                else:
-                    discovered = [DiscoveredArticle.model_validate(item) for item in cached]
-                    from_cache = True
+                        payload = cached if isinstance(cached, dict) else {'items': cached, 'candidates': []}
+                        query_items = [DiscoveredArticle.model_validate(item) for item in payload.get('items', [])]
+                        query_candidates = payload.get('candidates', [])
+                        cached_queries += 1
+                    executed_queries.append(query)
+                    candidates.extend(query_candidates)
+                    discovered.extend(query_items)
+                candidates, discovered = self._merge_query_results(candidates, discovered)
+                counts['raw_candidates'] += len(candidates)
+                counts['deduplicated_candidates'] += sum(1 for item in candidates if not item.get('duplicate_of'))
+                counts['source_matched'] += sum(1 for item in candidates if item.get('rejection_reason') in {'accepted', 'resolve_failed', 'duplicate'})
+                if cached_queries:
                     counts['cached_accounts'] += 1
-                account = {'source_name': source['source_name'], 'discovered': len(discovered),
-                           'new': 0, 'duplicate': 0, 'related': 0, 'cached': from_cache}
+                account = {'source_name': source['source_name'], 'queries': executed_queries,
+                           'raw_candidates': len(candidates),
+                           'deduplicated_candidates': sum(1 for item in candidates if not item.get('duplicate_of')),
+                           'source_matched': sum(1 for item in candidates if item.get('rejection_reason') in {'accepted', 'resolve_failed', 'duplicate'}),
+                           'discovered': len(discovered), 'new': 0, 'duplicate': 0, 'related': 0, 'leads': 0,
+                           'cached': cached_queries == len(executed_queries), 'cached_queries': cached_queries}
                 counts['accounts_scanned'] += 1
                 counts['discovered'] += len(discovered)
                 for found in discovered:
@@ -235,6 +248,9 @@ class WechatTitleService:
                     if result.get('relevance_status') in {'relevant', 'possible'}:
                         account['related'] += 1
                         counts['related'] += 1
+                    if result.get('lead_created'):
+                        account['leads'] += 1
+                        counts['leads'] += 1
                 if candidates:
                     # Save a second bounded snapshot only when final ingest
                     # changed a decision (typically duplicate).  This keeps
@@ -270,6 +286,50 @@ class WechatTitleService:
         return {'status': 'available', 'provider': provider_name, 'accounts': accounts,
                 'counts': counts, 'provider_state': provider_state,
                 'ai_calls': 0, 'model_tokens_used': 0}
+
+    @staticmethod
+    def _serialize_candidate(candidate: dict) -> dict:
+        value = dict(candidate)
+        published = value.get('published_at')
+        if hasattr(published, 'isoformat'):
+            value['published_at'] = published.isoformat()
+        return value
+
+    @staticmethod
+    def _candidate_key(candidate: dict) -> str:
+        if candidate.get('resolved_wechat_url'):
+            return 'wechat:' + candidate['resolved_wechat_url']
+        # Sogou tokens vary by query, so the raw result URL is only a fallback.
+        return '|'.join(('meta', candidate.get('normalized_source_name') or '',
+                         (candidate.get('raw_title') or '').strip().casefold(),
+                         str(candidate.get('published_at') or '')[:25]))
+
+    @classmethod
+    def _merge_query_results(cls, candidates: list[dict], items: list[DiscoveredArticle]) -> tuple[list[dict], list[DiscoveredArticle]]:
+        masters: dict[str, dict] = {}
+        for candidate in candidates:
+            candidate.setdefault('found_by_queries', [candidate.get('query')] if candidate.get('query') else [])
+            key = cls._candidate_key(candidate)
+            existing = masters.get(key)
+            if existing is None:
+                masters[key] = candidate
+                continue
+            existing['found_by_queries'] = list(dict.fromkeys(existing['found_by_queries'] + candidate['found_by_queries']))
+            candidate['found_by_queries'] = existing['found_by_queries']
+            candidate['duplicate_of'] = key
+            if candidate.get('accepted'):
+                candidate['accepted'] = False
+                candidate['rejection_reason'] = 'duplicate'
+        merged: dict[str, DiscoveredArticle] = {}
+        for item in items:
+            candidate_key = '|'.join(('meta', (item.source_name or '').strip().casefold(),
+                                      (item.title or '').strip().casefold(), str(item.published_at or '')[:25]))
+            existing = merged.get(candidate_key)
+            if existing is None:
+                merged[candidate_key] = item
+            else:
+                existing.found_by_queries = list(dict.fromkeys(existing.found_by_queries + item.found_by_queries))
+        return candidates, list(merged.values())
 
 
 async def run_wechat_monitor(service: WechatTitleService, provider: WechatDiscoveryProvider | None = None) -> dict:

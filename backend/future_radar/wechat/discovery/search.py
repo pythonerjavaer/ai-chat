@@ -16,10 +16,10 @@ def build_discovery_queries(source: dict[str, Any] | str) -> list[str]:
     name = re.sub(r"\s+", " ", str(name)).replace('"', "").strip()[:160]
     if not name:
         return []
-    return [
-        f'site:mp.weixin.qq.com "{name}" "{term}"'
-        for term in ("2027", "2027届", "校园招聘", "招聘", "秋招")
-    ]
+    # Keep the plain account query: it remains useful for announcements that
+    # use no recruitment vocabulary.  The three topical queries improve
+    # recall without turning this into broad search crawling.
+    return [name, *(f"{name} {term}" for term in ("2027", "校园招聘", "秋招"))]
 
 
 class SearchDiscoveryProvider(WechatDiscoveryProvider):

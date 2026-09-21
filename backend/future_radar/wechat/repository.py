@@ -149,8 +149,18 @@ class WechatTitleRepository(RadarRepository):
         return json.loads(row['result_json']) if row else None
 
     def cache_set(self, provider: str, source_id: str, query_key: str,
-                  items: list[dict], *, hours: int = 24) -> None:
+                  items: list[dict] | dict, *, hours: int = 24) -> None:
         now_dt = datetime.now(timezone.utc)
+        # Multi-query discovery stores only two small structured arrays.  Keep
+        # the historical list contract for older callers and hard-bound both
+        # new arrays before serializing.
+        if isinstance(items, dict):
+            stored_items: list[dict] | dict = {
+                'items': list(items.get('items') or [])[:50],
+                'candidates': list(items.get('candidates') or [])[:20],
+            }
+        else:
+            stored_items = items[:50]
         with self.transaction() as connection:
             connection.execute(
                 'DELETE FROM wechat_discovery_cache WHERE expires_at<=?',
@@ -161,7 +171,7 @@ class WechatTitleRepository(RadarRepository):
                 VALUES (?,?,?,?,?,?) ON CONFLICT(provider,source_id,query_key) DO UPDATE SET
                 expires_at=excluded.expires_at,result_json=excluded.result_json,updated_at=excluded.updated_at''',
                 (provider, source_id, query_key, (now_dt + timedelta(hours=hours)).isoformat(),
-                 _json(items[:50]), now_dt.isoformat()))
+                 _json(stored_items), now_dt.isoformat()))
             # The current watchlist creates five stable keys. Keep a hard
             # database bound as protection if administrators add sources.
             keys = connection.execute('''SELECT provider,source_id,query_key
@@ -172,29 +182,30 @@ class WechatTitleRepository(RadarRepository):
                     (stale['provider'], stale['source_id'], stale['query_key']))
 
     def save_discovery_debug(self, provider: str, source: dict, candidates: list[dict]) -> None:
-        """Persist at most 20 scalar decisions per account; never HTML or DOM."""
+        """Persist bounded scalar decisions per account; never HTML or DOM."""
         now = utc_now()
         source_id, source_name = source['id'], source['source_name']
         with self.transaction() as connection:
-            for offset, candidate in enumerate(candidates[:20]):
+            for offset, candidate in enumerate(candidates[:100]):
                 identity = _json([provider, source_id, now, offset, candidate.get('discovery_url')])
                 record_id = 'wechat-debug-' + hashlib.sha256(identity.encode()).hexdigest()[:32]
                 published = candidate.get('published_at')
                 connection.execute('''INSERT INTO wechat_discovery_debug
                     (id,provider,source_id,source_name,scanned_at,raw_title,raw_source_name,
                      normalized_source_name,raw_date,published_at,discovery_url,resolved_wechat_url,
-                     accepted,rejection_reason)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
+                     accepted,rejection_reason,query,found_by_queries,duplicate_of)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
                     record_id, provider, source_id, source_name, now,
                     candidate.get('raw_title'), candidate.get('raw_source_name'),
                     candidate.get('normalized_source_name'), candidate.get('raw_date'),
                     published.isoformat() if hasattr(published, 'isoformat') else published,
                     candidate.get('discovery_url'), candidate.get('resolved_wechat_url'),
                     int(bool(candidate.get('accepted'))), candidate.get('rejection_reason') or 'invalid_result',
+                    candidate.get('query'), _json(candidate.get('found_by_queries') or []), candidate.get('duplicate_of'),
                 ))
             # Keep a small durable audit window across all providers/accounts.
             stale = connection.execute('''SELECT id FROM wechat_discovery_debug
-                ORDER BY scanned_at DESC,id DESC''').fetchall()[200:]
+                ORDER BY scanned_at DESC,id DESC''').fetchall()[500:]
             for row in stale:
                 connection.execute('DELETE FROM wechat_discovery_debug WHERE id=?', (row['id'],))
 
@@ -202,10 +213,11 @@ class WechatTitleRepository(RadarRepository):
         with closing(self._connect()) as connection:
             rows = connection.execute('''SELECT provider,source_name,scanned_at,raw_title,
                 raw_source_name,normalized_source_name,raw_date,published_at,discovery_url,
-                resolved_wechat_url,accepted,rejection_reason
+                resolved_wechat_url,accepted,rejection_reason,query,found_by_queries,duplicate_of
                 FROM wechat_discovery_debug WHERE provider=?
                 ORDER BY scanned_at DESC,id DESC LIMIT ?''', (provider, min(max(limit, 1), 200))).fetchall()
-        return {'items': [{**dict(row), 'accepted': bool(row['accepted'])} for row in rows]}
+        return {'items': [{**dict(row), 'accepted': bool(row['accepted']),
+                           'found_by_queries': json.loads(row['found_by_queries'] or '[]')} for row in rows]}
 
     def save_discovery(self, item: dict, classification: dict, expected_source: str) -> dict:
         """Persist title metadata even when public redirect resolution is unavailable."""
