@@ -54,8 +54,41 @@ def isolated_health_database(monkeypatch, tmp_path):
 
 def probe_app():
     app = FastAPI()
-    app.get("/api/health")(main.health)
+    app.get("/api/health")(main.health_endpoint)
     return app
+
+
+def test_health_http_endpoint_does_not_wait_for_saturated_business_worker_pool(monkeypatch):
+    import anyio.to_thread
+    import httpx
+
+    monkeypatch.setattr(main, "health", lambda: {"status": "ok"})
+
+    async def scenario():
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        previous = limiter.total_tokens
+        limiter.total_tokens = 1
+        try:
+            # Occupy the entire default limiter, exactly where ordinary sync
+            # request handlers queue; health must still reach its DB probe.
+            async with limiter:
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=probe_app()), base_url="http://test") as client:
+                    response = await asyncio.wait_for(client.get("/api/health"), timeout=1)
+                    assert response.status_code == 200
+                    assert response.json() == {"status": "ok"}
+        finally:
+            limiter.total_tokens = previous
+
+    asyncio.run(scenario())
+
+
+def test_health_http_endpoint_still_reports_real_database_failure(monkeypatch):
+    def fail():
+        raise HTTPException(status_code=503, detail="Database is unavailable.")
+
+    monkeypatch.setattr(main, "health", fail)
+    with TestClient(probe_app()) as client:
+        assert client.get("/api/health").status_code == 503
 
 
 def test_full_application_pool_does_not_make_real_health_fail(isolated_health_database):
@@ -125,11 +158,10 @@ def test_slow_scan_preflight_does_not_block_event_loop(monkeypatch):
     monkeypatch.setattr(main, "future_radar_service", SimpleNamespace(
         repository=SimpleNamespace(get_source=get_source, manual_scan_sources=select), run=run,
     ))
-    monkeypatch.setattr(
-        main,
-        "_reverify_pending_recruitment_candidates_safely",
-        lambda **_kwargs: {"status": "success", "claimed": 0},
-    )
+    def unrelated_verification(**_kwargs):
+        pytest.fail("a targeted retry must not run the unrelated candidate queue")
+
+    monkeypatch.setattr(main, "_reverify_pending_recruitment_candidates_safely", unrelated_verification)
     monkeypatch.setattr(main, "_public_radar_run", lambda result: result)
 
     async def scenario():

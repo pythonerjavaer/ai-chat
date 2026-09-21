@@ -917,7 +917,24 @@ def prepare_chat(
     return session, messages, sources
 
 
+_HEALTH_CHECK_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="health-probe")
+
+
 @app.get("/api/health")
+async def health_endpoint() -> dict:
+    # Sync FastAPI endpoints share the business worker limiter. A reserved
+    # database connection alone does not help when a probe waits behind slow
+    # opportunity queries before it even reaches connect_health().
+    try:
+        return await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(_HEALTH_CHECK_EXECUTOR, health),
+            timeout=3.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Database health probe exceeded the dedicated 3-second budget")
+        raise HTTPException(status_code=503, detail="Database health check timed out.") from None
+
+
 def health() -> dict:
     started = time.perf_counter()
     try:
@@ -1031,10 +1048,15 @@ def _public_radar_source(source: dict) -> dict:
         "last_error_at", "consecutive_failures", "created_at", "updated_at",
     )
     item = {key: source.get(key) for key in allowed}
-    if source.get("last_error_at"):
-        if source.get("status") == "discovery_limited":
-            item["last_error"] = _PUBLIC_RADAR_ERROR_MESSAGES["DISCOVERY_LIMITED"]
-        elif (str(source.get("platform") or "").casefold() == "openai"
+    item["can_retry_without_ai"] = bool(
+        source.get("enabled")
+        and future_radar_service.repository._manual_scan_family(source) == "quick"
+        and not source.get("adapter_config", {}).get("ai_extract")
+    )
+    if source.get("status") == "discovery_limited":
+        item["last_error"] = _PUBLIC_RADAR_ERROR_MESSAGES["DISCOVERY_LIMITED"]
+    elif source.get("status") == "error" and source.get("last_error_at"):
+        if (str(source.get("platform") or "").casefold() == "openai"
               or source.get("adapter_config", {}).get("adapter") == "wechat_web_search"):
             safe_provider_messages = {
                 _PUBLIC_RADAR_ERROR_MESSAGES[code]
@@ -1939,10 +1961,14 @@ async def run_future_radar(
         # Run the independent verification queue only after the Radar service
         # acquired and released its authoritative run/source locks. A busy
         # Radar request therefore performs no external candidate fetches.
-        verification_retry = await asyncio.to_thread(
-            _reverify_pending_recruitment_candidates_safely,
-            limit=100 if scan_type == "deep" else 40,
-        )
+        # A targeted source repair should finish with that source, without
+        # waiting for unrelated candidate pages or expanding the scan scope.
+        verification_retry = {"status": "skipped", "reason": "targeted_source_scan"}
+        if not payload.source_ids:
+            verification_retry = await asyncio.to_thread(
+                _reverify_pending_recruitment_candidates_safely,
+                limit=100 if scan_type == "deep" else 40,
+            )
         result["verification_retry"] = verification_retry
         return _public_radar_run(result) or {}
     except RadarRunBusy as exc:

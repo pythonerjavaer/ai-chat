@@ -1,4 +1,5 @@
 import { renderRadarConstellation } from "./radar-constellation.js";
+import { sourceHealthCounts, sourceHealthGroup, sourceHealthStatus, sourceHealthExplanation, filterSourcesByHealth } from "./radar-source-health.js";
 import DOMPurify from "dompurify";
 import { initRadarPersonal } from "./radar-personal.js";
 import { marked } from "marked";
@@ -162,6 +163,9 @@ const state = {
     programs: [],
     events: [],
     sources: [],
+    sourcesLoaded: false,
+    sourceHealthFilter: "all",
+    sourceRetrying: null,
     runs: [],
     activeTab: "jobs",
     lastEventId: null,
@@ -2977,9 +2981,11 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   const lastScan = valueAtPaths(dashboard, ["last_scan_at", "last_radar_scan", "last_scan.started_at", "last_run.started_at", "latest_run.started_at"]);
   const lastSuccess = valueAtPaths(dashboard, ["last_success_at", "last_successful_scan", "last_run.finished_at", "latest_success.finished_at"]);
   const derivedHealthy = state.futureRadar.sources.filter((source) => radarStatusClass(source.status || source.health) === "healthy").length;
-  const healthy = radarNumber(dashboard, ["healthy_sources", "sources_healthy", "sources.healthy", "source_health.healthy"], derivedHealthy);
-  const total = radarNumber(dashboard, ["total_sources", "sources_total", "sources.total", "source_health.total"], state.futureRadar.sources.length);
-  const errors = radarNumber(dashboard, ["error_sources", "sources_with_errors", "sources.errors", "source_health.errors"], Math.max(0, total - healthy));
+  const sourceCounts = sourceHealthCounts(state.futureRadar.sources);
+  const healthy = state.futureRadar.sourcesLoaded ? sourceCounts.healthy : radarNumber(dashboard, ["healthy_sources", "sources_healthy", "sources.healthy", "source_health.healthy"], derivedHealthy);
+  const total = state.futureRadar.sourcesLoaded ? sourceCounts.all : radarNumber(dashboard, ["total_sources", "sources_total", "sources.total", "source_health.total"], state.futureRadar.sources.length);
+  const errors = state.futureRadar.sourcesLoaded ? sourceCounts.error
+    : radarNumber(dashboard, ["error_sources", "sources_with_errors", "sources.errors", "source_health.errors"], 0);
   elements.futureRadarLastScan.textContent = formatRadarTime(lastScan, "等待首次扫描");
   elements.futureRadarLastSuccess.textContent = formatRadarTime(lastSuccess, "尚无成功记录");
   elements.futureRadarSourceHealth.textContent = `${healthy.toLocaleString("zh-CN")} / ${total.toLocaleString("zh-CN")} 健康`;
@@ -2997,6 +3003,7 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
           ? "自动雷达扫描中"
           : "雷达正在扫描";
   elements.futureRadarLiveState.className = `radar-live-state ${liveClass}`;
+  elements.futureRadarLiveState.dataset.sourceFilter = errors > 0 ? "error" : "all";
   const liveCopy = running ? runningCopy : errors > 0 ? `${errors} 个信源异常` : total > 0 ? "情报链路在线" : "等待雷达状态";
   elements.futureRadarLiveState.replaceChildren(
     makeElement("i"),
@@ -3343,12 +3350,38 @@ function renderFutureRadarEvents(events = state.futureRadar.events) {
 function renderFutureRadarSources(sources = state.futureRadar.sources) {
   if (!elements.futureRadarSources) return;
   elements.futureRadarSources.replaceChildren();
+  const counts = sourceHealthCounts(sources);
+  const toolbar = makeElement("div", "radar-source-controls");
+  toolbar.setAttribute("aria-label", "按信源状态筛选");
+  for (const [filter, label] of [["all", "全部信源"], ["error", "仅异常"], ["limited", "受限"], ["healthy", "健康"], ["pending", "待核验"]]) {
+    const button = makeElement("button", "radar-source-filter", `${label} ${counts[filter]}`);
+    button.type = "button";
+    button.setAttribute("aria-pressed", String(state.futureRadar.sourceHealthFilter === filter));
+    button.addEventListener("click", () => {
+      state.futureRadar.sourceHealthFilter = filter;
+      renderFutureRadarSources();
+    });
+    toolbar.appendChild(button);
+  }
+  const refresh = makeElement("button", "radar-source-filter", "刷新信源状态");
+  refresh.type = "button";
+  refresh.addEventListener("click", async () => {
+    refresh.disabled = true;
+    try { await refreshFutureRadarSources(); }
+    catch { showToast("信源状态暂时无法读取，请稍后重试。"); }
+    finally { refresh.disabled = false; }
+  });
+  toolbar.appendChild(refresh);
+  elements.futureRadarSources.appendChild(toolbar);
+  elements.futureRadarSources.appendChild(makeElement("p", "radar-entity-meta", "健康＝最近读取成功；异常＝最近读取失败；受限＝尚无可用读取渠道；待核验＝尚未确认。"));
   if (!sources.length) {
     elements.futureRadarSources.appendChild(makeElement("div", "empty-list", "Source Registry 尚未返回可展示的信源。"));
     return;
   }
-  sources.forEach((source) => {
-    const status = source.status || source.health || (source.enabled === false ? "disabled" : "pending");
+  const visibleSources = filterSourcesByHealth(sources, state.futureRadar.sourceHealthFilter);
+  if (!visibleSources.length) elements.futureRadarSources.appendChild(makeElement("div", "empty-list", "当前没有符合此状态的信源。点击“全部信源”可返回完整列表。"));
+  visibleSources.forEach((source) => {
+    const status = sourceHealthStatus(source);
     const card = makeElement("article", "radar-entity-card source-card");
     const top = makeElement("div", "radar-entity-top");
     top.append(
@@ -3370,9 +3403,51 @@ function renderFutureRadarSources(sources = state.futureRadar.sources) {
     } else if (String(source.source_type || "") === "wechat_public") {
       card.appendChild(makeElement("p", "radar-source-article muted", "最近文章：尚无可验证的公开文章信号"));
     }
-    if (source.last_error) card.appendChild(makeElement("p", "radar-source-error", futureRadarSourceErrorCopy(source)));
+    card.appendChild(makeElement("p", "radar-entity-meta", sourceHealthExplanation(source)));
+    if (sourceHealthGroup(source) === "error" && source.last_error) card.appendChild(makeElement("p", "radar-source-error", futureRadarSourceErrorCopy(source)));
+    const actions = makeElement("div", "radar-source-controls");
+    if (/^https:\/\//i.test(source.url || "")) {
+      const link = makeElement("a", "radar-official-link", "打开信源原文 ↗");
+      link.href = source.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      actions.appendChild(link);
+    }
+    if (source.can_retry_without_ai) {
+      const retry = makeElement("button", "radar-source-filter", state.futureRadar.sourceRetrying === source.id ? "正在核验…" : "重新核验（不调用 AI）");
+      retry.type = "button";
+      retry.disabled = Boolean(state.futureRadar.sourceRetrying);
+      retry.addEventListener("click", () => retryFutureRadarSource(source));
+      actions.appendChild(retry);
+    }
+    card.appendChild(actions);
     elements.futureRadarSources.appendChild(card);
   });
+}
+
+async function refreshFutureRadarSources() {
+  const payload = await api("/future-radar/sources?enabled=true");
+  state.futureRadar.sources = payload.items || payload.sources || [];
+  state.futureRadar.sourcesLoaded = true;
+  renderFutureRadarSources();
+  renderFutureRadarDashboard(state.futureRadar.dashboard || {});
+}
+
+async function retryFutureRadarSource(source) {
+  if (state.futureRadar.sourceRetrying) return;
+  state.futureRadar.sourceRetrying = source.id;
+  renderFutureRadarSources();
+  try {
+    await api("/future-radar/run", { method: "POST", body: JSON.stringify({scan_type: "quick", source_ids: [source.id]}), timeoutMs: 120_000 });
+    await refreshFutureRadarSources();
+    const current = state.futureRadar.sources.find((item) => item.id === source.id);
+    showToast(`${source.name}：${radarStatusCopy(sourceHealthStatus(current))}`, 6500);
+  } catch (error) {
+    showToast(futureRadarRunErrorCopy(error, "quick"), 6500);
+  } finally {
+    state.futureRadar.sourceRetrying = null;
+    renderFutureRadarSources();
+  }
 }
 
 function renderFutureRadarRuns(runs = state.futureRadar.runs) {
@@ -3752,7 +3827,16 @@ async function loadFutureRadarSnapshot() {
     ["jobs", jobs],
     ["programs", api("/future-radar/programs")],
     ["events", api("/future-radar/events?limit=50")],
-    ["sources", api("/future-radar/sources?enabled=true")],
+    ["sources", api("/future-radar/sources?enabled=true").then((payload) => {
+      if (sessionToken === state.token && snapshotRequestId === state.futureRadar.snapshotRequestId) {
+        state.futureRadar.sources = radarCollection(payload, ["sources"]);
+        state.futureRadar.sourcesLoaded = true;
+        syncFutureRadarSourceFilter();
+        renderFutureRadarSources();
+        renderFutureRadarDashboard(state.futureRadar.dashboard || {});
+      }
+      return payload;
+    })],
     ["runs", api("/future-radar/runs")],
   ];
   const results = await Promise.allSettled(requests.map(([, request]) => request));
@@ -3779,8 +3863,10 @@ async function loadFutureRadarSnapshot() {
       renderFutureRadarEvents();
     } else if (key === "sources") {
       state.futureRadar.sources = radarCollection(payload, ["sources"]);
+      state.futureRadar.sourcesLoaded = true;
       syncFutureRadarSourceFilter();
       renderFutureRadarSources();
+      renderFutureRadarDashboard();
     } else if (key === "runs") {
       state.futureRadar.runs = radarCollection(payload, ["runs"]);
       renderFutureRadarRuns();
@@ -5493,12 +5579,18 @@ document.querySelectorAll("[data-radar-tab]").forEach((button) => {
   button.addEventListener("click", () => {
     if (button.dataset.radarTab === "jobs") return resetFutureRadarFilters();
     activateFutureRadarTab(button.dataset.radarTab);
+    if (button.dataset.radarTab === "sources") {
+      state.futureRadar.sourceHealthFilter = "all";
+      renderFutureRadarSources();
+    }
     if (button.dataset.radarTab === "saved") personalRadar.renderSaved();
     if (button.dataset.radarTab === "applied") personalRadar.showApplied();
   });
 });
 elements.futureRadarLiveState?.addEventListener("click", () => {
+  state.futureRadar.sourceHealthFilter = elements.futureRadarLiveState.dataset.sourceFilter || "all";
   activateFutureRadarTab("sources");
+  renderFutureRadarSources();
   document.querySelector('[data-radar-panel="sources"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
 });
 document.addEventListener("visibilitychange", () => {

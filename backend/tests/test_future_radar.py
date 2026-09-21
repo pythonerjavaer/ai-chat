@@ -981,6 +981,40 @@ def test_dashboard_counts_only_enabled_sources_and_does_not_call_limited_discove
     assert dashboard["sources"]["errors"] == 1
 
 
+def test_reseed_reconciles_stale_errors_for_limited_sources_without_claiming_success(radar_service):
+    source_id = "wechat-guoyang-campus"
+    radar_service.repository.update_source_error(source_id, "old provider failure")
+    radar_service.repository.update_source_error("official-zofund-campus-2027", "real fetch failure")
+    radar_service.seed_registry()
+    source = radar_service.repository.get_source(source_id)
+    assert source["status"] == "discovery_limited"
+    assert source["last_success_at"] is None
+    assert radar_service.repository.get_source("official-zofund-campus-2027")["status"] == "error"
+    assert radar_service.repository.dashboard()["sources"]["errors"] == 1
+
+    # Enabling a provider requires a fresh check; neither old error nor
+    # manufactured success should survive the configuration change.
+    radar_service.web_search_enabled = True
+    radar_service.seed_registry()
+    assert radar_service.repository.get_source(source_id)["status"] == "pending"
+
+
+def test_public_source_does_not_resurrect_historical_errors_after_recovery(radar_service):
+    from backend.main import _public_radar_source
+
+    source_id = "official-zofund-campus-2027"
+    radar_service.repository.update_source_error(source_id, "secret-error-sentinel")
+    radar_service.repository.update_source_success(source_id, content_hash="healthy")
+    source = radar_service.repository.get_source(source_id)
+    assert source["last_error_at"] is not None
+    public = _public_radar_source(source)
+    assert "last_error" not in public
+    assert public["can_retry_without_ai"] is True
+    limited = _public_radar_source(radar_service.repository.get_source("wechat-guoyang-campus"))
+    assert limited["can_retry_without_ai"] is False
+    assert limited["last_error"]
+
+
 def test_registry_reseed_purges_mock_source_jobs_programs_and_events(radar_service):
     radar_service.repository.patch_source("mock-future-radar", {"enabled": True})
     seeded = radar_service.run(

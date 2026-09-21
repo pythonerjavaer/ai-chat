@@ -168,6 +168,8 @@ class RadarRepository:
                         verification_status=excluded.verification_status,
                         status=CASE
                             WHEN excluded.enabled=0 THEN 'disabled'
+                            WHEN excluded.status='discovery_limited' THEN 'discovery_limited'
+                            WHEN monitor_sources.status='discovery_limited' THEN 'pending'
                             WHEN monitor_sources.status='disabled' THEN 'pending'
                             ELSE monitor_sources.status
                         END,

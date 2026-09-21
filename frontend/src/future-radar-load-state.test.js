@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { sourceHealthCounts } from "./radar-source-health.js";
 import { createRadarPollingGate } from "./radar-polling.js";
 import {
   DEFAULT_FUTURE_RADAR_STATUS, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, TIER_CODES, buildFutureRadarJobsQuery,
@@ -152,6 +153,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
       return null;
     },
     radarStatusClass: () => "pending",
+    sourceHealthCounts,
     futureRadarActiveRunTypes: () => [],
     futureRadarProfileReload: { request() {} },
     FUTURE_RADAR_SCAN_TYPES: ["quick", "deep"],
@@ -788,6 +790,23 @@ test("a cancelled background poll cannot repaint a new T selection or its comple
   assert.equal(r.cards()[0], newCard);
   assert.equal(tierButton(r, "T2")["aria-pressed"], "true");
   assert.equal(r.state.futureRadar.jobsError, "");
+});
+
+test("source health loads and counts errors before a slow opportunity pool finishes", async () => {
+  const r = runtime({ fail: false });
+  const pool = deferred();
+  r.controls.opportunityHandler = () => pool.promise;
+  r.controls.apiHandler = (path) => path === "/future-radar/sources?enabled=true"
+    ? { items: [{ id: "broken", status: "error" }, { id: "ok", status: "healthy" }, { id: "wechat", status: "discovery_limited" }] }
+    : undefined;
+  const snapshot = r.run("loadFutureRadarSnapshot()");
+  await new Promise(setImmediate);
+  assert.equal(r.state.futureRadar.sourcesLoaded, true);
+  assert.equal(r.state.futureRadar.jobsLoading, true);
+  assert.match(r.elements.futureRadarLiveState.textContent, /1 个信源异常/);
+  assert.equal(r.elements.futureRadarLiveState.dataset.sourceFilter, "error");
+  pool.resolve(tierPayload("T2"));
+  await snapshot;
 });
 
 test("initial opportunities render before slow metadata, whose completion cannot repaint a later selection", async () => {

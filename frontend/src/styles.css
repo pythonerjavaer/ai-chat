@@ -414,6 +414,11 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .radar-live-state.running { color: #91e8ff; border-color: rgba(95,220,246,.25); }
 .radar-live-state.running i { animation: signalBeacon 1.2s ease-in-out infinite; }
 .radar-live-state.warning { color: #ffd08a; border-color: rgba(255,188,91,.22); }
+.radar-source-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.radar-source-filter { padding: 8px 12px; border: 1px solid rgba(111,203,218,.25); border-radius: 10px; color: #ccecf1; background: rgba(8,25,35,.8); font: inherit; cursor: pointer; }
+.radar-source-filter[aria-pressed="true"] { color: #91e8ff; border-color: #69cadb; background: rgba(32,133,148,.24); }
+.radar-source-filter:focus-visible { outline: 2px solid #91e8ff; outline-offset: 2px; }
+.radar-source-filter:disabled { opacity: .6; cursor: wait; }
 .radar-dashboard { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; margin-bottom: 11px; }
 .radar-metric-note { margin: -4px 0 10px; color: #79919c; font-size: 10px; line-height: 1.5; }
 .radar-metric { position: relative; min-width: 0; display: grid; gap: 2px; padding: 9px 8px; overflow: hidden; border: 1px solid rgba(130,218,228,.11); border-radius: 10px; background: rgba(6,23,32,.34); }
