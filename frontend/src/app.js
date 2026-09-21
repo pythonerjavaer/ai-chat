@@ -1,5 +1,7 @@
 import { renderRadarConstellation } from "./radar-constellation.js";
 import { sourceHealthCounts, sourceHealthGroup, sourceHealthStatus, sourceHealthExplanation, filterSourcesByHealth } from "./radar-source-health.js";
+import { initWechatTitleRadar } from "./radar-wechat-titles.js";
+import { initBridgeDetails } from "./radar-bridge-details.js";
 import DOMPurify from "dompurify";
 import { initRadarPersonal } from "./radar-personal.js";
 import { marked } from "marked";
@@ -897,6 +899,8 @@ function applyUser() {
 
 function endFutureRadarSession(expired = false) {
   personalRadar.reset();
+  wechatTitleRadar.reset();
+  bridgeDetails.reset();
   radarPollingGate.clearSession();
   radarOpportunityPollingGate.clearSession();
   stopFutureRadarPolling();
@@ -2523,7 +2527,10 @@ function ensureRecruitmentSyncPanel() {
   heading.dataset.syncTitle = "true";
   title.append(eyebrow, heading);
   identity.append(orbit, title);
-  const badge = makeElement("span", "recruitment-sync-badge pending", "等待同步");
+  const badge = makeElement("button", "recruitment-sync-badge pending", "等待同步 · 查看");
+  badge.type = "button";
+  badge.title = "查看各监控来源的同步状态";
+  badge.addEventListener("click", () => showFutureRadarBridgeDetails("overview"));
   badge.dataset.syncBadge = "true";
   header.append(identity, badge);
 
@@ -2540,9 +2547,12 @@ function ensureRecruitmentSyncPanel() {
     ["尚未入池信号", "pending", "—"],
     ["未通过核验信号", "rejected", "—"],
   ].forEach(([label, key, value]) => {
-    const metric = document.createElement("article");
+    const metric = document.createElement("button");
+    metric.type = "button";
+    metric.title = key === "last-sync" ? "查看最近同步与来源明细" : `查看${label}的具体记录`;
     metric.dataset.syncMetric = key;
-    metric.append(makeElement("small", "", label), makeElement("strong", "", value));
+    metric.append(makeElement("small", "", `${label} ↗`), makeElement("strong", "", value));
+    metric.addEventListener("click", () => showFutureRadarBridgeDetails(key === "last-sync" ? "overview" : key));
     metrics.appendChild(metric);
   });
   const footer = makeElement("footer", "recruitment-sync-footer");
@@ -2635,7 +2645,7 @@ function renderRecruitmentSyncStatus(rawStatus) {
   panel.querySelector("[data-sync-title]").textContent = `${expected} 个 ChatGPT 监控源`;
   const badge = panel.querySelector("[data-sync-badge]");
   badge.className = `recruitment-sync-badge ${visualState}`;
-  badge.textContent = resolvedBadgeCopy;
+  badge.textContent = `${resolvedBadgeCopy} · 查看`;
   const metricValues = {
     "last-sync": formatSyncTime(lastSyncedAt),
     source_screened: inventoryScreened == null ? "—" : Number(inventoryScreened).toLocaleString("zh-CN"),
@@ -2675,6 +2685,7 @@ function renderRecruitmentSyncStatus(rawStatus) {
         ? `${expected} / ${expected} 已同步`
         : `${Math.min(connected, expected)} / ${expected} 源已回传`;
   state.recruitmentSyncStatus = status;
+  if (state.futureRadar.activeTab === "bridge") bridgeDetails.refreshOverview();
   // The ChatGPT bridge can finish long before the full opportunity pool on a
   // sleeping free instance. Paint its stored NEW/UPDATED/CLOSED counters now
   // instead of leaving the dashboard blank until the slowest request ends.
@@ -3017,53 +3028,15 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   elements.futureRadarLiveState.setAttribute("aria-label", `${liveCopy}；点击查看信源健康详情`);
 }
 
+function showFutureRadarBridgeDetails(filter = "overview") {
+  activateFutureRadarTab("bridge");
+  const loading = bridgeDetails.open(filter);
+  document.querySelector('[data-radar-panel="bridge"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
+  return loading;
+}
+
 async function showFutureRadarCandidateReview() {
-  activateFutureRadarTab("jobs");
-  elements.recruitmentJobs.replaceChildren(makeElement("div", "empty-list", "正在读取待核验与未通过信号…"));
-  try {
-    const payload = await api("/future-radar/review-candidates?review_status=all&limit=200");
-    const items = payload.items || [];
-    const fragment = document.createDocumentFragment();
-    fragment.appendChild(makeElement("div", "recruitment-disclaimer", payload.notice || "可查看公开链接并手动加入机会池。"));
-    if (!items.length) fragment.appendChild(makeElement("div", "empty-list", "目前没有需要你人工决定的公开候选。"));
-    items.forEach((item) => {
-      const card = makeElement("article", "job-card radar-review-candidate");
-      const meta = [item.city, item.industry, item.closing_date ? `截止 ${item.closing_date}` : "截止时间待确认"].filter(Boolean).join(" · ");
-      card.append(
-        makeElement("h4", "", `${item.company || "招聘机构"}｜${item.title || "岗位待确认"}`),
-        makeElement("p", "job-meta", meta),
-        makeElement("p", "", `${item.review_status_label || "待处理"}：${item.review_reason || "需要你查看公开链接后决定"}`),
-      );
-      if (item.official_url) {
-        const link = makeElement("a", "radar-official-link", "打开公开招聘链接 ↗");
-        link.href = item.official_url;
-        link.target = "_blank";
-        link.rel = "noreferrer";
-        card.appendChild(link);
-      }
-      const add = makeElement("button", "job-watch-button", "加入机会池");
-      add.type = "button";
-      add.addEventListener("click", async () => {
-        add.disabled = true;
-        add.textContent = "正在加入…";
-        try {
-          const result = await api(`/future-radar/review-candidates/${encodeURIComponent(item.id)}/add-to-pool`, { method: "POST" });
-          showToast(result.notice || "已加入机会池。", 4500);
-          await loadFutureRadarJobPage(1, true, { scroll: false });
-          await showFutureRadarCandidateReview();
-        } catch (error) {
-          add.disabled = false;
-          add.textContent = "加入机会池";
-          showToast(translateError(error.message), 4500);
-        }
-      });
-      card.appendChild(add);
-      fragment.appendChild(card);
-    });
-    elements.recruitmentJobs.replaceChildren(fragment);
-  } catch (error) {
-    elements.recruitmentJobs.replaceChildren(makeElement("div", "empty-list", `候选清单暂时无法读取：${translateError(error.message)}`));
-  }
+  return showFutureRadarBridgeDetails("needs_review");
 }
 
 function showFutureRadarMetric(code) {
@@ -3490,7 +3463,7 @@ function renderFutureRadarRuns(runs = state.futureRadar.runs) {
 }
 
 function activateFutureRadarTab(tab) {
-  const next = ["jobs", "programs", "events", "sources", "runs", "saved", "applied"].includes(tab) ? tab : "jobs";
+  const next = ["jobs", "programs", "events", "sources", "runs", "saved", "applied", "wechat", "bridge"].includes(tab) ? tab : "jobs";
   state.futureRadar.activeTab = next;
   document.querySelectorAll("[data-radar-tab]").forEach((button) => {
     const active = button.dataset.radarTab === next;
@@ -5545,6 +5518,17 @@ elements.messageInput.addEventListener("keydown", (event) => {
 });
 $("composer-upload").addEventListener("click", () => elements.documentInput.click());
 $("studio-open").addEventListener("click", openStudio);
+const wechatTitleRadar = initWechatTitleRadar({
+  root: $("future-radar-wechat-titles"), api, make: makeElement, formatTime: formatRadarTime,
+  errorCopy: error => translateError(error.message),
+});
+const bridgeDetails = initBridgeDetails({
+  root: $("future-radar-bridge-details"), api, make: makeElement, formatTime: formatRadarTime,
+  getSyncStatus: () => state.recruitmentSyncStatus,
+  errorCopy: error => translateError(error.message),
+  onManualRead: resumeFutureRadarReadGates,
+  onAdded: () => loadFutureRadarJobPage(1, true, { scroll: false }),
+});
 const personalRadar = initRadarPersonal({
   api, session: () => state.token, host: elements.recruitmentDialog,
   makeCard: createRecruitmentJobCard, toast: showToast,
@@ -5592,6 +5576,8 @@ document.querySelectorAll("[data-radar-tab]").forEach((button) => {
       state.futureRadar.sourceHealthFilter = "all";
       renderFutureRadarSources();
     }
+    if (button.dataset.radarTab === "wechat") wechatTitleRadar.open();
+    if (button.dataset.radarTab === "bridge") bridgeDetails.open();
     if (button.dataset.radarTab === "saved") personalRadar.renderSaved();
     if (button.dataset.radarTab === "applied") personalRadar.showApplied();
   });

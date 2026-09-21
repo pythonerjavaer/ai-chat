@@ -18,8 +18,7 @@ services:
         value: frostfire
       - key: DATABASE_POOL_SIZE
         value: 8
-      - key: OPENAI_API_KEY
-        sync: false
+      # OPENAI_API_KEY is optional; add only for explicitly enabled cloud features.
       - key: JWT_SECRET
         generateValue: true
       - key: AI_MODEL
@@ -37,7 +36,7 @@ services:
       - key: RECRUITMENT_REFRESH_MINUTES
         value: 1440
       - key: RECRUITMENT_WEB_SEARCH_ENABLED
-        value: true
+        value: false
       - key: RECRUITMENT_WEB_SEARCH_MODEL
         value: gpt-5.4-mini
       - key: RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES

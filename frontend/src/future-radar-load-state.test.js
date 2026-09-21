@@ -96,6 +96,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   elements.futureRadarFilterForm = { reset() {} };
   const noop = () => {};
   const context = {
+    wechatTitleRadar: { reset() {} }, bridgeDetails: { reset() {} },
     personalRadar: { reset() {}, start() {}, saveButton: () => new Element("button"), applicationControl: () => new Element("div") },
     AbortController, URLSearchParams,
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),

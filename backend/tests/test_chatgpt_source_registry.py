@@ -289,3 +289,113 @@ def test_browser_bridge_accepts_new_source_and_uses_an_independent_digest():
     old_digest = bridge.parse_browser_message({**message, "source_id": "chatgpt-radar-02"})[1]
     assert digest != old_digest
     assert "logical-message-1" not in str(batches)
+
+
+def test_chatgpt_inventory_drilldown_has_exact_totals_and_stable_pages(sync_db):
+    database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
+    database.ensure_recruitment_ingest_sources([
+        {"source_id": "chatgpt-radar-01", "title": "Retired source"},
+        {"source_id": "manual-review-fixture", "title": "Manual source"},
+    ])
+    expected = {"source_screened": [], "verified": [], "pending": [], "rejected": []}
+
+    def store(source_id, suffix, verification_status, *, closed=False):
+        stored = database.upsert_recruitment_ingest_candidate(candidate(
+            source_id, external_id=suffix,
+            title=f"校园招聘分析师 {suffix}",
+            official_url=f"https://careers.example.com/jobs/{suffix}",
+            status="closed" if closed else "open",
+        ))
+        database.set_recruitment_ingest_candidate_verification(
+            stored["id"], verification_status, "not_campus" if verification_status == "rejected" else None,
+        )
+        return stored["id"]
+
+    for status, count in (("source_screened", 2), ("verified", 3), ("pending", 4), ("rejected", 1)):
+        for index in range(count):
+            expected[status].append(store("chatgpt-radar-02", f"{status}-{index}", status))
+        store("chatgpt-radar-07", f"closed-{status}", status, closed=True)
+    store("chatgpt-radar-01", "retired", "pending")
+    store("manual-review-fixture", "non-chatgpt", "pending")
+    # An orphan does not contribute to registered-source inventories either.
+    store("unregistered-source", "orphan", "pending")
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE recruitment_ingest_candidates SET last_seen_at=?",
+            ("2026-09-21T00:00:00+00:00",),
+        )
+
+    source_ids = tuple(main.EXPECTED_CHATGPT_SOURCE_IDS)
+    inventory = main.public_chatgpt_sync_status()
+    for label, stored_status in (
+        ("source_screened", "source_screened"), ("accepted", "verified"),
+        ("pending", "pending"), ("rejected", "rejected"),
+    ):
+        page = database.paginate_recruitment_ingest_review_candidates(
+            statuses=(label,), source_ids=source_ids, limit=1,
+        )
+        assert page["total"] == inventory[f"inventory_{label}"] == len(expected[stored_status])
+        assert len(page["items"]) == 1
+        assert page["items"][0]["verification_status"] == stored_status
+        assert page["has_more"] is (len(expected[stored_status]) > 1)
+
+    all_statuses = ("source_screened", "accepted", "pending", "rejected")
+    collected = []
+    for offset in range(0, 10, 3):
+        page = database.paginate_recruitment_ingest_review_candidates(
+            statuses=all_statuses, source_ids=source_ids, limit=3, offset=offset,
+        )
+        assert page["total"] == inventory["inventory_total"] == 10
+        assert (page["limit"], page["offset"]) == (3, offset)
+        collected.extend(item["id"] for item in page["items"])
+    assert collected == sorted((item for ids in expected.values() for item in ids), reverse=True)
+    assert len(set(collected)) == 10
+    assert page["has_more"] is False
+    empty = database.paginate_recruitment_ingest_review_candidates(
+        statuses=all_statuses, source_ids=source_ids, limit=3, offset=100,
+    )
+    assert empty["items"] == [] and empty["total"] == 10 and empty["has_more"] is False
+    needs_review = database.paginate_recruitment_ingest_review_candidates(
+        source_ids=source_ids, limit=2,
+    )
+    assert needs_review["total"] == inventory["inventory_pending"] + inventory["inventory_rejected"] == 5
+    assert sum(inventory["reason_counts"]["rejected"].values()) == 1
+    assert database.list_recruitment_ingest_review_candidates(
+        statuses=all_statuses, source_ids=source_ids, limit=3, offset=3,
+    ) == database.paginate_recruitment_ingest_review_candidates(
+        statuses=all_statuses, source_ids=source_ids, limit=3, offset=3,
+    )["items"]
+    assert database.paginate_recruitment_ingest_review_candidates(source_ids=[])["total"] == 0
+
+
+@pytest.mark.parametrize("arguments", [
+    {"statuses": ()}, {"statuses": ("anything",)}, {"limit": 0}, {"limit": 201},
+    {"offset": -1}, {"offset": 1.5}, {"source_ids": [f"source-{index}" for index in range(101)]},
+])
+def test_candidate_drilldown_rejects_invalid_scope_and_pagination(arguments):
+    with pytest.raises(ValueError):
+        database.paginate_recruitment_ingest_review_candidates(**arguments)
+
+
+def test_clickable_signal_api_matches_inventory_without_leaking_source_identity(sync_db):
+    database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
+    for index in range(3):
+        item = database.upsert_recruitment_ingest_candidate(candidate(
+            'chatgpt-radar-02', external_id=f'clickable-{index}',
+            title=f'校园招聘分析师{index}', official_url=f'https://careers.example.com/jobs/{index}',
+        ))
+        with database.connect() as connection:
+            connection.execute("UPDATE recruitment_ingest_candidates SET verification_status='rejected', verification_reason='not_campus' WHERE id=?", (item['id'],))
+    main.app.dependency_overrides[main.current_user] = lambda: {'id': 123}
+    try:
+        with TestClient(main.app, raise_server_exceptions=True) as client:
+            response = client.get('/api/future-radar/review-candidates?review_status=rejected&source_scope=chatgpt&limit=2&offset=0')
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body['total'] == main.public_chatgpt_sync_status()['inventory_rejected'] == 3
+            assert len(body['items']) == 2 and body['has_more']
+            assert all(item['review_reason'] == '未识别到明确的校园招聘信息' for item in body['items'])
+            assert 'source_key' not in response.text and 'source_thread_id' not in response.text
+            assert 'chatgpt-radar-02' not in response.text
+    finally:
+        main.app.dependency_overrides.pop(main.current_user, None)

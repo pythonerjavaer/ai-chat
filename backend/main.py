@@ -46,6 +46,8 @@ from .chatgpt_screening import SOURCE_SCREENED, chatgpt_screening_eligible
 from .recruitment_rating import SourceRating, merge_source_ratings
 from .recruitment_limits import MAX_MONITOR_BATCH_ITEMS
 from .ai_service import (
+    ModelUnavailableError,
+    require_model_client,
     build_messages,
     create_embeddings,
     extract_document,
@@ -95,6 +97,9 @@ from .live_sources import (
 )
 from .recruitment_directory import canonical_employer_identity, employer_directory_category
 from .config import settings
+from .future_radar.wechat.repository import WechatTitleRepository
+from .future_radar.wechat.service import WechatTitleService
+from .future_radar.wechat.routes import create_wechat_router
 from .future_radar.normalization import (
     PRIMARY_CATEGORY_CODES,
     canonicalize_url as canonicalize_radar_url,
@@ -216,7 +221,11 @@ def enforce_watch_create_rate(user_id: int) -> None:
 
 
 def enforce_model_request_rate(user_id: int, units: int) -> None:
-    """Bound expensive OpenAI-backed actions for this single-process demo."""
+    """Require the optional model and bound costly calls in this process."""
+    try:
+        require_model_client()
+    except ModelUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     now = time.monotonic()
     safe_units = max(1, int(units))
     with _model_rate_guard:
@@ -531,6 +540,7 @@ async def restore_chatgpt_screened_opportunities_in_background() -> None:
 async def lifespan(_: FastAPI):
     database.init_db()
     future_radar_service.seed_registry()
+    wechat_title_service.repository.seed_watchlist()
     database.ensure_recruitment_ingest_sources(EXPECTED_CHATGPT_RADAR_SOURCES)
     database.purge_legacy_recruitment_samples()
     tasks: list[asyncio.Task] = [asyncio.create_task(
@@ -564,6 +574,7 @@ PRIVACY_VERSION = "2026-08-22.2"
 
 
 app = FastAPI(title="Bingyan API", version="5.0.0", lifespan=lifespan)
+wechat_title_service = WechatTitleService(WechatTitleRepository(database.connect))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -997,6 +1008,12 @@ def admin_usage(
     return database.aggregate_admin_usage(hours, bucket_minutes)
 
 
+app.include_router(create_wechat_router(
+    wechat_title_service, current_user=current_user,
+    consented_user=require_privacy_consent, admin_auth=require_admin_dashboard_token,
+))
+
+
 _PUBLIC_RADAR_ERROR_MESSAGES = {
     "COMPANY_SEARCH_INCOMPLETE": "部分企业搜索未完成；已取得的发现保留在机会池，详情见覆盖统计。",
     "DISCOVERY_LIMITED": "该信源尚未配置可合法访问的公开入口。",
@@ -1204,6 +1221,14 @@ def _public_review_candidate(candidate: dict) -> dict:
     item["review_reason"] = _REVIEW_REASON_LABELS.get(reason, "需要你查看公开链接后决定")
     item["review_status_label"] = _SEARCH_UPDATE_LABELS.get(
         str(item.get("verification_status") or "pending"), "等待处理"
+    )
+    item["review_status"] = item.get("verification_status") or "pending"
+    item["source_name"] = CHATGPT_SOURCE_TITLES.get(candidate.get("source_id"), "公开招聘来源")
+    deadline = candidate.get("verified_closing_date") or candidate.get("closing_date")
+    item["can_add_to_pool"] = (
+        item["review_status"] in {"pending", "rejected"} and bool(item["official_url"])
+        and candidate.get("incoming_status") != "closed"
+        and (not deadline or str(deadline) > date.today().isoformat())
     )
     return item
 
@@ -1413,8 +1438,10 @@ def future_radar_search_update(job_id: str, user: User) -> dict:
 @app.get("/api/future-radar/review-candidates")
 def future_radar_review_candidates(
     user: User,
-    review_status: Literal["pending", "rejected", "all"] = Query(default="all"),
+    review_status: Literal["pending", "rejected", "source_screened", "accepted", "verified", "needs_review", "all"] = Query(default="needs_review"),
     limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    source_scope: Literal["chatgpt", "all"] = Query(default="all"),
 ) -> dict:
     """List candidates that did not enter the public pool automatically.
 
@@ -1422,17 +1449,18 @@ def future_radar_review_candidates(
     it never reveals private ChatGPT/source identifiers or diagnostic payloads.
     """
     del user
-    statuses = ("pending", "rejected") if review_status == "all" else (review_status,)
-    items = [
-        _public_review_candidate(item)
-        for item in database.list_recruitment_ingest_review_candidates(
-            statuses=statuses, limit=limit,
-        )
-    ]
+    statuses = {
+        "all": ("source_screened", "accepted", "pending", "rejected"),
+        "needs_review": ("pending", "rejected"),
+    }.get(review_status, (review_status,))
+    result = database.paginate_recruitment_ingest_review_candidates(
+        statuses=statuses, limit=limit, offset=offset,
+        source_ids=tuple(EXPECTED_CHATGPT_SOURCE_IDS) if source_scope == "chatgpt" else None,
+    )
     return {
-        "items": items,
-        "total": len(items),
-        "notice": "这些是未自动进入机会池的公开招聘候选。你可打开公开链接后手动加入；手动加入不会伪装成官网核验。",
+        **result,
+        "items": [_public_review_candidate(item) for item in result["items"]],
+        "notice": "已筛选来自聊天筛选；已核验来自官网证据；尚未入池与未通过记录保留具体原因。未通过不等于信源故障，也不一定表示岗位不存在。",
     }
 
 
@@ -2166,6 +2194,20 @@ def public_chatgpt_sync_status() -> dict:
         "expected_source_count": len(EXPECTED_CHATGPT_RADAR_SOURCES),
         "connected_source_count": connected,
         "last_synced_at": last_synced_at,
+        "sources": [
+            {
+                "title": CHATGPT_SOURCE_TITLES.get(source.get("source_id"), "ChatGPT 监控源"),
+                "last_seen_at": source.get("last_seen_at"),
+                "status": (
+                    "synced" if source.get("last_seen_at") and (
+                        source.get("status") != "error" or source.get("latest_rejected", 0)
+                    ) else "error" if source.get("status") == "error" else "pending"
+                ),
+                **{key: int(source.get(f"inventory_{key}", 0))
+                   for key in ("source_screened", "accepted", "pending", "rejected")},
+            }
+            for source in sources
+        ],
         # Keep event-scoped review counts separate so clients do not mistake a
         # normal rejected candidate for a broken source connection.
         "latest_verification_counts": {

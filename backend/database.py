@@ -2397,33 +2397,102 @@ def unprojected_chatgpt_screened_candidates(*, limit: int = 100) -> list[str]:
     return result
 
 
+def _recruitment_review_candidate_filter(
+    statuses: tuple[str, ...],
+    source_ids: list[str] | tuple[str, ...] | None,
+) -> tuple[str, tuple[Any, ...]]:
+    allowed_statuses = {"pending", "rejected", "source_screened", "verified", "accepted"}
+    if not statuses or any(item not in allowed_statuses for item in statuses):
+        raise ValueError("statuses must contain pending, rejected, source_screened, verified or accepted.")
+    normalized_statuses = tuple(dict.fromkeys(
+        "verified" if item == "accepted" else item for item in statuses
+    ))
+    placeholders = ",".join("?" for _ in normalized_statuses)
+    where = f"c.verification_status IN ({placeholders}) AND c.incoming_status <> 'closed'"
+    parameters: list[Any] = list(normalized_statuses)
+    if source_ids is not None:
+        ids = list(dict.fromkeys(str(value).strip() for value in source_ids if str(value).strip()))
+        if len(ids) > 100:
+            raise ValueError("source_ids must contain at most 100 values.")
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            # Inventory counters join by source_key. Use the same membership
+            # here so retired sources and unregistered/orphaned candidates do
+            # not make a badge and its drilldown disagree.
+            where += (
+                " AND c.source_key IN (SELECT source_key FROM recruitment_ingest_sources "
+                f"WHERE source_id IN ({placeholders}))"
+            )
+            parameters.extend(ids)
+        else:
+            where += " AND 1=0"
+    return where, tuple(parameters)
+
+
+def _validate_recruitment_review_page(limit: int, offset: int) -> None:
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+        raise ValueError("limit must be between 1 and 200.")
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        raise ValueError("offset must be a nonnegative integer.")
+
+
 def list_recruitment_ingest_review_candidates(
     *,
     statuses: tuple[str, ...] = ("pending", "rejected"),
+    source_ids: list[str] | tuple[str, ...] | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Return a bounded, operator-facing review list without source secrets.
 
     The caller is responsible for public-field redaction.  Conversation IDs and
     source credentials deliberately stay out of this query's public projection.
     """
-    if not statuses or any(item not in {"pending", "rejected"} for item in statuses):
-        raise ValueError("statuses must only contain pending or rejected.")
-    if not 1 <= limit <= 200:
-        raise ValueError("limit must be between 1 and 200.")
-    placeholders = ",".join("?" for _ in statuses)
+    _validate_recruitment_review_page(limit, offset)
+    where, parameters = _recruitment_review_candidate_filter(statuses, source_ids)
     with connect() as connection:
         rows = connection.execute(
             f"""
-            SELECT * FROM recruitment_ingest_candidates
-            WHERE verification_status IN ({placeholders})
-              AND incoming_status <> 'closed'
-            ORDER BY last_seen_at DESC, id DESC
-            LIMIT ?
+            SELECT c.* FROM recruitment_ingest_candidates c
+            WHERE {where}
+            ORDER BY c.last_seen_at DESC, c.id DESC
+            LIMIT ? OFFSET ?
             """,
-            (*statuses, limit),
+            (*parameters, limit, offset),
         ).fetchall()
     return [_decode_recruitment_ingest_candidate(row) for row in rows]
+
+
+def paginate_recruitment_ingest_review_candidates(
+    *,
+    statuses: tuple[str, ...] = ("pending", "rejected"),
+    source_ids: list[str] | tuple[str, ...] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Read one candidate page and an exact count using identical predicates.
+
+    ``accepted`` is the inventory's display name for stored ``verified`` rows.
+    An explicit empty source scope returns no records. Returned rows still need
+    the API's public-field projection before leaving the server.
+    """
+    _validate_recruitment_review_page(limit, offset)
+    where, parameters = _recruitment_review_candidate_filter(statuses, source_ids)
+    with connect() as connection:
+        total = int(connection.execute(
+            f"SELECT COUNT(*) FROM recruitment_ingest_candidates c WHERE {where}",
+            parameters,
+        ).fetchone()[0])
+        rows = connection.execute(
+            f"SELECT c.* FROM recruitment_ingest_candidates c WHERE {where} "
+            "ORDER BY c.last_seen_at DESC, c.id DESC LIMIT ? OFFSET ?",
+            (*parameters, limit, offset),
+        ).fetchall()
+    items = [_decode_recruitment_ingest_candidate(row) for row in rows]
+    return {
+        "items": items, "total": total, "limit": limit, "offset": offset,
+        "has_more": offset + len(items) < total,
+    }
 
 
 def add_recruitment_ingest_candidate_to_pool(candidate_id: str) -> dict[str, Any] | None:
@@ -2650,6 +2719,7 @@ def recruitment_ingest_verification_reason_counts(
         SELECT verification_status, verification_reason, COUNT(*) AS total
         FROM recruitment_ingest_candidates
         WHERE verification_status IN ('pending', 'rejected')
+          AND incoming_status <> 'closed'
     """
     parameters: list[Any] = []
     if normalized_source_ids:
@@ -2747,6 +2817,7 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
                    SUM(CASE WHEN verification_status = 'pending' THEN 1 ELSE 0 END) pending,
                    SUM(CASE WHEN verification_status = 'rejected' THEN 1 ELSE 0 END) rejected
             FROM recruitment_ingest_candidates
+            WHERE incoming_status <> 'closed'
             GROUP BY source_key
             """
         ).fetchall()

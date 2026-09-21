@@ -560,11 +560,33 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 @keyframes bridgeBadgePulse { 50% { opacity: .58; } }
 .recruitment-sync-description { position: relative; z-index: 1; margin: 0; color: #8da9b2; font-size: 8px; line-height: 1.55; }
 .recruitment-sync-metrics { position: relative; z-index: 1; display: grid; grid-template-columns: 1.4fr repeat(4, minmax(0, .72fr)); gap: 7px; }
-.recruitment-sync-metrics article { min-width: 0; display: grid; gap: 4px; padding: 8px 9px; border: 1px solid rgba(126,216,224,.1); border-radius: 9px; background: rgba(3,14,22,.24); }
+.recruitment-sync-metrics button { min-width: 0; display: grid; gap: 4px; padding: 8px 9px; text-align: left; cursor: pointer; border: 1px solid rgba(126,216,224,.1); border-radius: 9px; background: rgba(3,14,22,.24); }
+.recruitment-sync-metrics button:hover, .recruitment-sync-metrics button:focus-visible, button.recruitment-sync-badge:hover, button.recruitment-sync-badge:focus-visible { border-color: rgba(126,216,224,.55); outline-color: #7bd7e3; }
+button.recruitment-sync-badge { cursor: pointer; }
 .recruitment-sync-metrics small { color: #6f8b96; font-size: 7px; }
 .recruitment-sync-metrics strong { overflow: hidden; color: #daf8f7; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .recruitment-sync-footer { color: #65818b; font-size: 7px; }
 .recruitment-sync-footer b { color: #76bdc5; font-size: 7px; font-weight: 750; }
+.radar-title-boundary { margin: 8px 0 12px; color: #9fe4ca; font-size: 10px; line-height: 1.6; }
+.radar-title-import { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; margin: 14px 0; padding: 15px; border: 1px solid rgba(116,216,226,.2); border-radius: 12px; background: rgba(7,27,37,.5); }
+.radar-title-import > label:first-child { grid-column: 1 / -1; }
+.radar-title-import > button { justify-self: start; }
+.radar-title-import label, .radar-title-filters label { display: grid; gap: 6px; color: #91aeb8; font-size: 10px; }
+.radar-title-import textarea, .radar-title-import select, .radar-title-filters select, .radar-title-filters input { box-sizing: border-box; width: 100%; min-width: 0; padding: 10px; border: 1px solid rgba(106,202,221,.24); border-radius: 9px; background: #081b25; color: #d9f3f7; font: inherit; font-size: 11px; }
+.radar-title-import textarea { resize: vertical; line-height: 1.6; }
+.radar-title-import .radar-title-toggle { display: flex; gap: 8px; align-items: center; }
+.radar-title-toggle input { width: 16px; height: 16px; accent-color: #91cbe0; }
+.radar-title-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
+.radar-title-coverage { margin: 12px 0; padding: 12px; border: 1px solid rgba(116,216,226,.15); border-radius: 10px; background: rgba(8,29,39,.4); }
+.radar-title-coverage summary { color: #a9d4df; font-size: 11px; cursor: pointer; }
+.radar-title-source { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 0; border-bottom: 1px solid rgba(116,216,226,.1); }
+.radar-title-source strong { color: #d9f3f7; font-size: 11px; }
+.radar-title-source .radar-entity-meta { margin: 0; }
+.radar-title-link { color: #cbf3f9; text-decoration: underline; text-decoration-color: rgba(150,222,235,.35); text-underline-offset: 3px; overflow-wrap: anywhere; }
+.radar-title-link:hover { color: #fff; }
+.radar-title-card h4 { font-size: 14px; line-height: 1.6; }
+.radar-title-score { margin: 6px 0; color: #ffd299; font-size: 10px; line-height: 1.6; }
+.radar-title-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0; }
 .recruitment-disclaimer { margin-bottom: 16px; padding: 9px 11px; color: #8498a8; border: 1px solid rgba(121,196,224,.12); border-radius: 9px; background: rgba(73,182,218,.045); font-size: 9px; line-height: 1.5; }
 .recruitment-deadline-alerts { display: grid; gap: 8px; margin: 0 0 16px; padding: 12px; border: 1px solid rgba(255,170,91,.35); border-radius: 12px; background: rgba(255,121,53,.08); }
 .recruitment-deadline-alerts:empty { display: none; }
@@ -1813,7 +1835,9 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
   .source-status { min-height: 40px; }
   .recruitment-sync-panel { padding: 13px; }
   .recruitment-sync-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .recruitment-sync-metrics article:first-child { grid-column: 1 / -1; }
+  .recruitment-sync-metrics button:first-child { grid-column: 1 / -1; }
+  .radar-title-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .radar-title-import { grid-template-columns: minmax(0, 1fr); }
   .job-tier-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 

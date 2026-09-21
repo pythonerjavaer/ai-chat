@@ -34,7 +34,7 @@
 - 多源职位身份：Workday 链接在招聘站点、雇主、完整职位号和届次相符时合并展示，语言、标题写法或城市待确认不会导致同一职位重复出现；保留所有来源与原 ID 的详情入口。不同职位号、招聘单位、地区专项或项目范围不会仅因共用招聘首页而合并。
 - 统一机会池：登录后默认使用 `/api/future-radar/opportunities`，合并已核验岗位、聊天线索和搜索发现；“官网已确认／聊天线索／搜索发现／信息有差异”只说明来源和核验状态，不是查看门槛。具体雇主发布的当届校招或管培项目也可作为“招聘项目”查看；未细分到具体岗位时不生成岗位 T 级，不把项目虚构成多条职位。按企业别名、具体岗位、城市和届别去重，保留出处并优先采用已核验记录；全量匹配后统计 T 级、筛选和分页，不仅筛当前页。默认隐藏已关闭、当天截止、过期、明确非校招或被拒绝的记录；未知日期不等于过期。非空受控同步提交后立即尝试刷新本地投影，不调用 AI；遇到运行锁时保留数据，交由下一次 Quick Scan 更新。页面打开时每 30 秒轻量刷新。原 `/api/future-radar/jobs` 仍为已核验岗位兼容接口，`/api/future-radar/search-updates` 保留搜索档案接口，不再要求用户切换到独立候选池。
 - 动态源适配器：服务启动后按 `RECRUITMENT_REFRESH_MINUTES`（默认 30 分钟）扫描国聘网、国资小新、银行招聘网等公开招聘页面，并支持配置 Adzuna API 凭证。公开来源会先做校招标题、重点雇主等规则过滤；写入 Future Radar 的有效公开招聘线索可以在登录后的主池查看，保留真实的来源与核验状态。
-- 可选 OpenAI 公网搜索补漏：设置 `RECRUITMENT_WEB_SEARCH_ENABLED=true` 后，服务按 `RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES`（默认 360 分钟）搜索十类重点雇主及五个公众号逻辑来源的公开网页索引。公众号路径使用 `wechat_web_search` 发现已经被公网索引的公开文章与官方招聘入口，并不是读取微信公众号后台、登录后历史或私有接口。结果会过滤非目标届别、社招、当天截止/过期/尚未开放条目、搜索结果页和社交媒体链接；模型提交的日期只有在官方页出现同一日期时才会采用。网页搜索与 Future Radar 结构化提取默认使用 `gpt-5.4-mini`，每次调用记录工具次数和实际 Token，并产生 OpenAI API 费用。
+- 可选 OpenAI 公网搜索补漏：设置 `RECRUITMENT_WEB_SEARCH_ENABLED=true` 后，服务按 `RECRUITMENT_WEB_SEARCH_INTERVAL_MINUTES`（默认 360 分钟）搜索十类重点雇主的公开网页索引。旧公众号 `wechat_web_search` 路径已暂停；新的公众号标题模块独立运行，不调用此付费路径。结果会过滤非目标届别、社招、当天截止/过期/尚未开放条目、搜索结果页和社交媒体链接；模型提交的日期只有在官方页出现同一日期时才会采用。网页搜索与 Future Radar 结构化提取默认使用 `gpt-5.4-mini`，每次调用记录工具次数和实际 Token，并产生 OpenAI API 费用。
 - 行动卡片准入：主池展示带可点击公开 HTTPS 申请或公告链接，并有公司、岗位与校招语义的机会。无链接、通用招聘导航、明确非校招、被拒绝、当天截止及已过期岗位不会默认展示；不会仅因地点待确认、官网使用 JavaScript 或未完成核验而拒绝一条有效线索。来源标注日期与官网已确认日期分别展示；未知截止日期不触发截止预警。
 - 受控同步已核验快照：仓库只保存经受控同步接收、并由服务端重新核验的公开岗位字段，不保存会话 ID、Cookie、接收 Token 或私密聊天内容。Render Free 冷启动后会逐个重新打开官方页面；只有仍通过核验的岗位才恢复，页面已关闭的岗位会下线，临时无法访问的岗位不会在空数据库中盲目恢复。
 - 首页截止预警：登录后直接显示 7 天内到期的已核验机会，无需先打开未来雷达；截止日当天及更早的岗位不会从岗位 API 返回。只有原公告明确标注的截止日期才会触发预警。
@@ -44,7 +44,7 @@
 - 九源本机只读桥接：用户已经登录的本机浏览器可由 Codex 自动任务读取页面中**当前可见的助手消息 DOM**，只提取招聘表格或具体岗位条目及真实公开 HTTPS 锚点，不要求原消息采用 JSON 格式；引用标记缺少链接时须读取实际锚点，不能猜测 URL。脱敏字段交给 `scripts/frostfire_chatgpt_bridge.py` 分批并维护本机哈希游标。桥接不读取 Cookie、Authorization、隐藏接口、页面存储或完整会话，也不向 ChatGPT 发送消息；Render 服务端不会登录或直接访问这些私有会话。浏览器结果提交到 `/api/recruitment/ingest` 后，服务端核对公司、校招、岗位、日期与关闭状态并保留结果；有有效公开招聘链接的未确认线索可直接进入登录后的统一机会池，不冒充“官网已确认”，明确拒绝、关闭和过期条目不会进入默认列表。
 - 多消息历史回填：`scripts/frostfire_chatgpt_history.py` 接收已脱敏的多条招聘记录，按稳定岗位 ID 去重，默认每次 HTTP 请求 25 条，可用 `--batch-size` 调整至 1–100 条，持续处理所有更新。单个输入页保留 10,000 行及字节安全边界，超出后分页续传，不作为每轮监控的总量配额。所有批次先经过真实 ingest dry-run，提交仅从本机 Keychain 读取接收 Token。成功回执写入仓库外的纯摘要账本，中断后只补未确认条目，重试可以调整请求大小；不相交的旧历史片段不能覆盖已提交的新版本。未遍历完整来源时保留 `history_complete=false`，不把“本批处理完毕”称为“全部历史已同步”。
 - 原始来源评级：可选 `source_rating` 原样保留明确的 T 级、数值分数、理由及岗位／公司作用范围，并记录来源。具体岗位评级可应用于该岗位，公司评级仅作公司参考；缺失评分或仅有 P 类优先级时不臆造 T 级。评级修正参与内容哈希和增量更新，冲突来源保留待核对。来源评级与官网核验状态独立，不能使待核验线索变成“官网已确认”。
-- 公众号与公开索引：五个公众号逻辑来源在 Deep Scan 中通过 OpenAI 公网 Web Search 做 discovery，不直接抓取微信公众号后台，也不绕过微信登录、验证码或反爬。国务院国资委招聘列表（含公开移动版 fallback）和银行招聘网由确定性解析器生成最小文章线索；公开 RSS/Atom 与用户提供的公开文章也可产生 discovery。有效公开招聘线索可直接查看，企业官方招聘 HTTPS 页面核验用于增加“官网已确认”标记，而不是阻止用户查看发现。
+- 公众号标题情报：新的零模型依赖连接器支持手动公开文章 URL 导入，仅保存标题元数据并生成待核验线索。免费自动发现 provider 仍待接入，不把 seed 当作账号文章列表。旧付费公众号扫描保持暂停。详见下方 Wechat Recruitment Intelligence 及专门文档。
 - 指定 ChatGPT 监控对话已由用户用于筛选岗位，其有效条目以 `source_screened`（ChatGPT 已筛选）直接入池，不等待官网再次读取成功；原有符合条件的 pending 数据会本地迁移，保留 ID、来源日期与评级。`source_screened` 与官网 `verified` 分开计数，不冒充官方确认。明确过期、关闭或不安全记录不显示为当前开放岗位，历史仍持久保存。其他来源继续按原官网核验规则处理。外部 `evidence` 仅保留单行招聘事实短句（最多 12 条、每条 1–280 字符），不包含邮箱、电话号码或私人对话。稳定身份去重与旧版本不能覆盖新版本的规则不变。
 - 外部监控 OpenAPI 契约见 [`docs/RECRUITMENT_INGEST_OPENAPI.yaml`](docs/RECRUITMENT_INGEST_OPENAPI.yaml)，九源桥接、Secret、heartbeat 与幂等说明见 [`docs/CHATGPT_RADAR_BRIDGE.md`](docs/CHATGPT_RADAR_BRIDGE.md)。契约已指向 `https://frostfire-ai.onrender.com`；发送方只能配置 Render 生成的接收 Token，不能写入 ChatGPT Cookie 或 OpenAI API Key。
 - 订阅能力的服务端边界：已有 Free/Pro 权益模型、额度查询和一个默认关闭的 Apple 交易校验入口；未配置交易校验时接口明确拒绝，不会把演示按钮伪装成已完成收款。
@@ -85,6 +85,14 @@
 - 旧 Render Free SQLite 实例没有账户数据持久化保证；新配置不会自动从旧实例取出数据库。保留旧账号和聊天需要完整 SQLite 备份；只有明确同意重新注册时，才能单独恢复完整公开机会快照并更换登录签名密钥。公开岗位 JSON 不是账号、会话、文档和全部扫描数据的备份。两条迁移路径见 [`docs/PERSISTENT_DATABASE.md`](docs/PERSISTENT_DATABASE.md)。
 
 默认聊天模型为 `gpt-4o-mini`，Embedding 模型为 `text-embedding-3-small`，均可通过环境变量修改；替换的聊天模型必须兼容 OpenAI Chat Completions 与 `max_completion_tokens`。OpenAI API Key 始终只存在于服务端。
+
+## Wechat Recruitment Intelligence
+
+微信公众号情报源复用当前 FastAPI、数据库和雷达界面；支持单条／最多 50 条公开文章 URL 的标题元数据导入、本地规则评分、URL 去重、缓存和待核验线索。没有付费 API 或 OpenAI Key 运行依赖，不采集文章正文，不开启后台监控。自动搜索发现当前为 **provider pending**。
+
+Wechat sources are treated as discovery leads rather than verified job sources.
+
+架构、迁移、接口、观察名单、规则、限制和验证方法见 [`docs/WECHAT_TITLE_RADAR.md`](docs/WECHAT_TITLE_RADAR.md)。已有聊天和 Embedding 的 `OPENAI_API_KEY` 现在是可选配置；未配置时这些云模型功能明确返回不可用，本地雷达仍可启动。
 
 ## 目录结构
 
@@ -154,7 +162,8 @@ cp backend/.env.example backend/.env
 编辑 `backend/.env`：
 
 ```dotenv
-OPENAI_API_KEY=your_openai_api_key
+# 可选：仅云端聊天、Embedding、显式付费搜索需要
+# OPENAI_API_KEY=your_openai_api_key
 JWT_SECRET=replace_with_a_long_random_value
 AI_MODEL=gpt-4o-mini
 EMBEDDING_MODEL=text-embedding-3-small
@@ -217,7 +226,7 @@ Docker 镜像会在构建阶段执行 Vite 生产构建。运行后，`/` 提供
 
 外部数据库让已经写入的数据不依赖 Render 容器生命周期，但不会消除 Free Web Service 的休眠。休眠期间进程内招聘刷新仍不会执行；Supabase Free 自身也存在资源与暂停限制。这里只启用同一 Web Service 内的 Future Radar scheduler，不声称免费组合是 24/7 扫描服务。
 
-部署时必须在 Render 的环境变量页面填写 `DATABASE_URL`、`OPENAI_API_KEY`、`CORS_ORIGINS` 和一个自行保存的强随机 `ADMIN_DASHBOARD_TOKEN`；全新部署的 `JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 可由 Blueprint 生成。迁移已有服务时保留接收凭证 `RECRUITMENT_INGEST_TOKEN`；`JWT_SECRET` 仅在完整保留原用户身份时保持原值，重置账号库时必须主动更换，不能依赖 Blueprint 的生成配置自动轮换。管理员面板入口是 `/?admin=usage`，Token 只保存在当前页面内存。`FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES=30` 只表示清醒进程的调度唤醒间隔；各来源仍按自己的间隔判断是否到期，其中 OpenAI 公共网页补漏默认为 360 分钟。如需零额外模型费用，可将 `RECRUITMENT_WEB_SEARCH_ENABLED` 改为 `false`。Future Radar 的长期运行边界见 [`docs/FUTURE_RADAR.md`](docs/FUTURE_RADAR.md)。
+部署时必须在 Render 的环境变量页面填写 `DATABASE_URL`、`CORS_ORIGINS` 和一个自行保存的强随机 `ADMIN_DASHBOARD_TOKEN`；全新部署的 `JWT_SECRET` 与 `RECRUITMENT_INGEST_TOKEN` 可由 Blueprint 生成。迁移已有服务时保留接收凭证 `RECRUITMENT_INGEST_TOKEN`；`JWT_SECRET` 仅在完整保留原用户身份时保持原值，重置账号库时必须主动更换，不能依赖 Blueprint 的生成配置自动轮换。管理员面板入口是 `/?admin=usage`，Token 只保存在当前页面内存。`FUTURE_RADAR_DEFAULT_INTERVAL_MINUTES=30` 只表示清醒进程的调度唤醒间隔；各来源仍按自己的间隔判断是否到期，其中 OpenAI 公共网页补漏默认为 360 分钟。如需零额外模型费用，可将 `RECRUITMENT_WEB_SEARCH_ENABLED` 改为 `false`。Future Radar 的长期运行边界见 [`docs/FUTURE_RADAR.md`](docs/FUTURE_RADAR.md)。
 
 需要同步 ChatGPT 监控结果时，由本机 Codex 自动任务在用户已登录的浏览器中只读可见助手消息，将脱敏后的结构化行传给 `scripts/frostfire_chatgpt_bridge.py`。脚本先 dry-run，再从 macOS Keychain 读取接收凭证并提交；游标文件只保存逻辑来源和消息摘要，不保存会话地址、消息正文或官方链接。也可继续使用用户主动导出的结构化 JSON 或公开分享快照，但二者都是显式导入，不等于云端账号直连。本机自动同步依赖 Mac、Codex、网络和浏览器登录会话持续可用；Render 不会替它读取私有页面，因此这不是 24/7 云直连。完整边界见 [`docs/CHATGPT_RADAR_BRIDGE.md`](docs/CHATGPT_RADAR_BRIDGE.md)。外部持久数据库与定时同步分别解决保存和导入问题，不消除免费实例的冷启动和漏跑。
 

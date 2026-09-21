@@ -318,6 +318,9 @@ def migrate(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "radar_jobs", "source_ratings", "TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(connection, "radar_jobs", "description", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(connection, "radar_jobs", "responsibilities", "TEXT NOT NULL DEFAULT ''")
+    # Metadata-only connector: existing sources/articles remain untouched.
+    from .wechat.migration import migrate_wechat_titles
+    migrate_wechat_titles(connection, _ensure_column)
     # Run the versioned repair before the older metadata-only backfill, so a
     # repaired empty category always receives its matching semantic hash too.
     _backfill_employer_categories(connection)

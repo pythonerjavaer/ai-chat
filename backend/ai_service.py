@@ -16,7 +16,24 @@ from .space_engine import SpaceRunMode, compile_space_system_prompt
 from .workspaces import DEFAULT_WORKSPACE, WORKSPACES, validate_workspace
 
 
-client = OpenAI(api_key=settings.openai_api_key)
+class ModelUnavailableError(RuntimeError):
+    """A paid capability was requested without an optional model provider."""
+
+
+MODEL_UNAVAILABLE_MESSAGE = (
+    "云端模型功能未配置，当前请求无法执行；登录、招聘标题雷达和其他零 Token 功能仍可使用。"
+)
+# Existing configured deployments keep their client and test injection seam.
+# No SDK client or placeholder credential is created for zero-token deployments.
+client = OpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
+
+
+def require_model_client() -> OpenAI:
+    if client is None:
+        raise ModelUnavailableError(MODEL_UNAVAILABLE_MESSAGE)
+    return client
+
+
 MAX_TOOL_ROUNDS = 3
 RAG_MIN_SIMILARITY = 0.30
 MAX_EXTRACTED_CHARACTERS = 500_000
@@ -190,7 +207,7 @@ def extract_document(filename: str, raw: bytes) -> tuple[str, list[dict[str, Any
 def create_embeddings(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
-    response = client.embeddings.create(
+    response = require_model_client().embeddings.create(
         model=settings.embedding_model,
         input=texts,
     )
@@ -224,7 +241,7 @@ def run_space(
     mode: SpaceRunMode = "lean",
 ) -> tuple[str, dict[str, int]]:
     """Run a custom user-created space with a hard output token ceiling."""
-    response = client.chat.completions.create(
+    response = require_model_client().chat.completions.create(
         model=settings.ai_model,
         messages=[
             {
@@ -375,7 +392,7 @@ Rules:
 烈火证据（金融研究）：
 {_numbered_context(finance_context, 'F')}
 """.strip()
-    response = client.chat.completions.create(
+    response = require_model_client().chat.completions.create(
         model=settings.ai_model,
         messages=[
             {"role": "system", "content": instructions},
@@ -600,7 +617,7 @@ def run_agent(
         }
         if tools_enabled:
             request.update({"tools": tools, "tool_choice": "auto"})
-        response = client.chat.completions.create(
+        response = require_model_client().chat.completions.create(
             **request,
         )
         response_usage = getattr(response, "usage", None)
@@ -655,7 +672,7 @@ def stream_agent(
     usage_totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
     for _ in range(MAX_TOOL_ROUNDS + 1):
-        stream = client.chat.completions.create(
+        stream = require_model_client().chat.completions.create(
             model=settings.ai_model,
             messages=working_messages,
             tools=tools,

@@ -42,8 +42,9 @@ def load_settings() -> Settings:
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
     jwt_secret = os.getenv("JWT_SECRET", "").strip()
 
-    if not openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured.")
+    # Public recruitment sources, title classification, persistence and login
+    # work without a model provider. Paid capabilities validate availability
+    # only when called; absence of a key must not prevent a zero-token app boot.
     if not jwt_secret:
         raise RuntimeError("JWT_SECRET is not configured.")
 
