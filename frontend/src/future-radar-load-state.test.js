@@ -253,7 +253,7 @@ test("the visible empty-pool retry resumes both read lanes without creating dupl
   await new Promise(setImmediate);
   const recoveryCalls = r.calls.slice(before);
   assert.equal(recoveryCalls.filter((path) => path.startsWith("/future-radar/opportunities?")).length, 1);
-  assert.equal(recoveryCalls.length, 6);
+  assert.equal(recoveryCalls.length, 1);
   finish(r.payload);
   assert.equal(await first, true);
   assert.equal(await second, true);

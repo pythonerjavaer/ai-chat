@@ -52,6 +52,14 @@ export function initWechatTitleRadar({ root, api, make, formatTime, errorCopy = 
     const forceLabel = make("label", "radar-title-toggle"); const force = make("input"); force.type = "checkbox"; force.checked = state.forceRefresh;
     force.addEventListener("change", () => { state.forceRefresh = force.checked; }); forceLabel.append(force, make("span", "", "重新读取已保存链接（默认复用缓存）")); form.append(forceLabel);
     const button = make("button", "radar-source-filter", state.importing ? "正在读取标题…" : "导入并识别标题"); button.type = "submit"; button.disabled = state.importing; form.append(button);
+    const watchlistCount = (state.sources?.items || []).filter(source => source.enabled !== false && wechatArticleUrl(source.seed_url)).length;
+    const importWatchlist = action(
+      state.importing ? "正在导入观察名单…" : `一键导入 ${watchlistCount || "—"} 个历史入口`,
+      importWatchlistSeeds,
+      state.importing || watchlistCount === 0,
+    );
+    importWatchlist.className += " radar-title-watchlist-import";
+    form.append(importWatchlist, make("p", "radar-entity-meta", "一次导入观察名单中已配置的历史文章，并保留各自公众号归属；它不会自动发现该公众号之后发布的新文章。"));
     form.addEventListener("submit", event => { event.preventDefault(); return importUrls(); }); root.append(form);
     if (state.importing) root.append(make("p", "radar-loading", "正在逐条读取文章元信息；较大批次可能需要几分钟。页面受限或单条失败不会终止整批。"));
     if (state.importError) { const error = make("p", "radar-load-error", state.importError); error.setAttribute("role", "alert"); root.append(error); }
@@ -138,6 +146,22 @@ export function initWechatTitleRadar({ root, api, make, formatTime, errorCopy = 
       state.result = result; state.page = 1; await load();
     } catch (error) { if (session === state.session) state.importError = `导入请求未完成：${errorCopy(error)}。部分链接可能已经保存；可刷新记录或重新提交，同一链接不会重复入库。`; }
     finally { if (session === state.session) { state.importing = false; render(); } }
+  }
+  async function importWatchlistSeeds() {
+    if (state.importing) return;
+    const session = state.session; state.importing = true; state.importError = ""; state.result = null; render();
+    try {
+      const suffix = state.forceRefresh ? "?force_refresh=true" : "";
+      const result = await api(`/sources/wechat/articles/import-watchlist${suffix}`, {
+        method: "POST", timeoutMs: 300_000,
+      });
+      if (session !== state.session) return;
+      state.result = result; state.page = 1; await load();
+    } catch (error) {
+      if (session === state.session) state.importError = `一键导入未完成：${errorCopy(error)}。已成功保存的入口不会重复入库，可稍后重试。`;
+    } finally {
+      if (session === state.session) { state.importing = false; render(); }
+    }
   }
   return { open: load, reset() { state.session += 1; state.requestId += 1; Object.assign(state, { payload: null, sources: null, sourcesError: "", urls: "", expectedSource: "", forceRefresh: false, result: null, error: "", importError: "", importing: false, loading: false, page: 1, sourceName: "", relevance: "", fromDate: "", toDate: "" }); root?.replaceChildren(); } };
 }

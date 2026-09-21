@@ -70,6 +70,10 @@ def create_wechat_router(service: WechatTitleService, *, current_user: Callable,
     async def articles_import(payload: BatchImport, user=Depends(consented_user)) -> dict:
         return await service.import_batch(**payload.model_dump())
 
+    @router.post('/articles/import-watchlist')
+    async def import_watchlist(force_refresh: bool = False, user=Depends(consented_user)) -> dict:
+        return await service.import_watchlist_seeds(force_refresh=force_refresh)
+
     @router.get('/articles')
     def articles(user=Depends(current_user), page: int = Query(1, ge=1),
                  page_size: int = Query(30, ge=1, le=100), source_name: str | None = None,

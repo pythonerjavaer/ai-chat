@@ -331,3 +331,25 @@ def test_monitor_processes_all_discoveries_and_reports_partial(title_repo):
     assert result['accounts'][0]['total'] == 51
     assert result['accounts'][0]['success'] == 50
     assert len(parser.calls) == 51
+
+
+def test_one_click_watchlist_import_preserves_each_configured_account(title_repo):
+    parser = Parser()
+
+    async def configured_parser(url, expected_source_name=None):
+        parser.calls.append((url, expected_source_name))
+        return metadata(
+            url, source_name=expected_source_name,
+            source_name_detection="configured",
+            title=f"{expected_source_name} 2027届校园招聘",
+        )
+
+    service = WechatTitleService(title_repo, parser=configured_parser)
+    result = asyncio.run(service.import_watchlist_seeds())
+    assert (result["total"], result["success"], result["new"], result["failed"]) == (5, 5, 5, 0)
+    assert result["scope"] == "configured_watchlist_seeds"
+    assert {name for _, name in parser.calls} == {name for name, _ in WATCHLIST}
+    assert {item["source_name"] for item in result["items"]} == {name for name, _ in WATCHLIST}
+    assert count(title_repo, "source_articles") == count(title_repo, "recruitment_title_leads") == 5
+    replay = asyncio.run(service.import_watchlist_seeds())
+    assert (replay["new"], replay["duplicate"], len(parser.calls)) == (0, 5, 5)

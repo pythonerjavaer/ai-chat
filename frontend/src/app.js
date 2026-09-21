@@ -3697,9 +3697,10 @@ function retryFutureRadarOpportunities(read = null) {
   resumeFutureRadarReadGates();
   if (read) return read();
   if (state.futureRadar.manualRecoveryPromise) return state.futureRadar.manualRecoveryPromise;
-  // The visible retry repairs the complete Radar surface. This refreshes the
-  // dashboard counts as well as the pool and coalesces repeated clicks.
-  const recovery = loadFutureRadarSnapshot().finally(() => {
+  // Keep the visible pool recovery focused on the one failed read. Retrying
+  // all dashboard endpoints at once can amplify database pressure precisely
+  // while the service is recovering from a slow query or a rate limit.
+  const recovery = loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false }).finally(() => {
     if (state.futureRadar.manualRecoveryPromise === recovery) {
       state.futureRadar.manualRecoveryPromise = null;
     }

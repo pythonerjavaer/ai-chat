@@ -49,6 +49,7 @@ Prefix: `/api/sources/wechat`. Read endpoints require the existing bearer token;
 | POST | `/api/sources/wechat` | Admin adds/updates an account: `source_name`, optional `seed_url`, `enabled` |
 | POST | `/api/sources/wechat/article` | Import one `url`, optional `expected_source_name` and `force_refresh` |
 | POST | `/api/sources/wechat/articles/import` | Import `urls` (1–50), same optional fields; returns total/success/new/duplicate/failed/items |
+| POST | `/api/sources/wechat/articles/import-watchlist` | One-click import of every enabled configured historical seed, preserving each account name |
 | GET | `/api/sources/wechat/articles` | `source_name`, `relevance_status`, `from_date`, `to_date`, `page`, `page_size` |
 | GET | `/api/sources/wechat/articles/review` | Paginated `possible` title list for occasional manual review |
 | POST | `/api/sources/wechat/monitor` | Current explicit `provider_pending` result; does not claim to scan accounts |

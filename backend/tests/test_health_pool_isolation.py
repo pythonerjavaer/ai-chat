@@ -25,6 +25,13 @@ from backend import database, main, storage
 from backend.future_radar.service import RadarRunBusy
 
 
+@pytest.fixture(autouse=True)
+def reset_health_cache():
+    main._reset_health_cache()
+    yield
+    main._reset_health_cache()
+
+
 @pytest.fixture
 def isolated_health_database(monkeypatch, tmp_path):
     dsn = os.environ.get("FROSTFIRE_TEST_POSTGRES_URL")
@@ -75,20 +82,23 @@ def test_health_http_endpoint_does_not_wait_for_saturated_business_worker_pool(m
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=probe_app()), base_url="http://test") as client:
                     response = await asyncio.wait_for(client.get("/api/health"), timeout=1)
                     assert response.status_code == 200
-                    assert response.json() == {"status": "ok"}
+                    assert response.json() == {"status": "ok", "database_status": "available"}
         finally:
             limiter.total_tokens = previous
 
     asyncio.run(scenario())
 
 
-def test_health_http_endpoint_still_reports_real_database_failure(monkeypatch):
+def test_health_http_endpoint_reports_dependency_failure_without_failing_liveness(monkeypatch):
     def fail():
         raise HTTPException(status_code=503, detail="Database is unavailable.")
 
     monkeypatch.setattr(main, "health", fail)
     with TestClient(probe_app()) as client:
-        assert client.get("/api/health").status_code == 503
+        response = client.get("/api/health")
+        assert response.status_code == 200
+        assert response.json()["status"] == "degraded"
+        assert response.json()["database_status"] == "unavailable"
 
 
 def test_full_application_pool_does_not_make_real_health_fail(isolated_health_database):
@@ -110,7 +120,7 @@ def test_full_application_pool_does_not_make_real_health_fail(isolated_health_da
                 database.connect_health(timeout=0.03)
 
 
-def test_real_database_failure_still_503_not_cached_and_recovers(isolated_health_database, caplog):
+def test_real_database_failure_is_degraded_liveness_and_recovers_after_cache(isolated_health_database, caplog):
     environment = isolated_health_database
     with database.connect_health() as connection:
         pid = connection.execute("SELECT pg_backend_pid()").fetchone()[0]
@@ -120,8 +130,9 @@ def test_real_database_failure_still_503_not_cached_and_recovers(isolated_health
         assert control.execute("SELECT pg_terminate_backend(%s)", (pid,)).fetchone()[0]
     with TestClient(probe_app()) as client:
         failed = client.get("/api/health")
-        assert failed.status_code == 503
-        assert failed.json() == {"detail": "Database is unavailable."}
+        assert failed.status_code == 200
+        assert failed.json()["status"] == "degraded"
+        main._reset_health_cache()
         assert client.get("/api/health").status_code == 200
     assert "purpose=health" in caplog.text
     assert environment.config.database_url not in caplog.text

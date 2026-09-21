@@ -929,6 +929,34 @@ def prepare_chat(
 
 
 _HEALTH_CHECK_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="health-probe")
+_HEALTH_CACHE_LOCK = threading.Lock()
+_HEALTH_CACHE_EXPIRES_AT = 0.0
+_HEALTH_CACHE_PAYLOAD: dict | None = None
+_HEALTH_OK_CACHE_SECONDS = 30.0
+_HEALTH_DEGRADED_CACHE_SECONDS = 15.0
+
+
+def _reset_health_cache() -> None:
+    """Clear the short liveness cache (primarily for isolated tests)."""
+    global _HEALTH_CACHE_EXPIRES_AT, _HEALTH_CACHE_PAYLOAD
+    with _HEALTH_CACHE_LOCK:
+        _HEALTH_CACHE_EXPIRES_AT = 0.0
+        _HEALTH_CACHE_PAYLOAD = None
+
+
+def _cached_health_payload() -> dict | None:
+    with _HEALTH_CACHE_LOCK:
+        if _HEALTH_CACHE_PAYLOAD is None or time.monotonic() >= _HEALTH_CACHE_EXPIRES_AT:
+            return None
+        return dict(_HEALTH_CACHE_PAYLOAD)
+
+
+def _store_health_payload(payload: dict, ttl: float) -> dict:
+    global _HEALTH_CACHE_EXPIRES_AT, _HEALTH_CACHE_PAYLOAD
+    with _HEALTH_CACHE_LOCK:
+        _HEALTH_CACHE_PAYLOAD = dict(payload)
+        _HEALTH_CACHE_EXPIRES_AT = time.monotonic() + ttl
+    return payload
 
 
 @app.get("/api/health")
@@ -936,14 +964,33 @@ async def health_endpoint() -> dict:
     # Sync FastAPI endpoints share the business worker limiter. A reserved
     # database connection alone does not help when a probe waits behind slow
     # opportunity queries before it even reaches connect_health().
+    cached = _cached_health_payload()
+    if cached is not None:
+        return cached
     try:
-        return await asyncio.wait_for(
+        payload = await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(_HEALTH_CHECK_EXECUTOR, health),
             timeout=3.0,
         )
     except asyncio.TimeoutError:
         logger.warning("Database health probe exceeded the dedicated 3-second budget")
-        raise HTTPException(status_code=503, detail="Database health check timed out.") from None
+        # Render uses this route as a process liveness check. A transiently slow
+        # database must not make Render kill a healthy HTTP process, which then
+        # makes the database backlog worse. The payload still exposes degraded
+        # dependency health to the application and operators.
+        return _store_health_payload({
+            "status": "degraded", "version": app.version,
+            "database": getattr(settings, "database_backend", "sqlite"),
+            "database_status": "unavailable",
+        }, _HEALTH_DEGRADED_CACHE_SECONDS)
+    except HTTPException:
+        return _store_health_payload({
+            "status": "degraded", "version": app.version,
+            "database": getattr(settings, "database_backend", "sqlite"),
+            "database_status": "unavailable",
+        }, _HEALTH_DEGRADED_CACHE_SECONDS)
+    payload["database_status"] = "available"
+    return _store_health_payload(payload, _HEALTH_OK_CACHE_SECONDS)
 
 
 def health() -> dict:

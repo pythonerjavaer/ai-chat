@@ -94,6 +94,38 @@ class WechatTitleService:
                 'failed': len(results) - len(successful), 'items': results,
                 'ai_calls': 0, 'model_tokens_used': 0}
 
+    async def import_watchlist_seeds(self, *, force_refresh: bool = False) -> dict:
+        """Import every enabled configured seed with its account provenance.
+
+        This is an explicit user action. A seed is one known historical article,
+        not an account feed and not automatic discovery of later publications.
+        """
+        sources = await asyncio.to_thread(self.repository.list_sources)
+        configured = [
+            source for source in sources
+            if source.get('enabled') and source.get('seed_url')
+        ]
+        semaphore = asyncio.Semaphore(5)
+
+        async def one(source: dict) -> dict:
+            async with semaphore:
+                return await self.import_article(
+                    source['seed_url'], expected_source_name=source['source_name'],
+                    force_refresh=force_refresh,
+                )
+
+        results = await asyncio.gather(*(one(source) for source in configured))
+        successful = [item for item in results if item.get('fetch_status') == 'success']
+        return {
+            'total': len(results), 'success': len(successful),
+            'new': sum(bool(item.get('is_new')) for item in successful),
+            'duplicate': sum(not item.get('is_new') for item in successful),
+            'failed': len(results) - len(successful), 'items': results,
+            'scope': 'configured_watchlist_seeds',
+            'notice': '已导入观察名单中的已知历史文章入口；这不代表已发现公众号后续新文章。',
+            'ai_calls': 0, 'model_tokens_used': 0,
+        }
+
 
 async def run_wechat_monitor(service: WechatTitleService, provider: WechatDiscoveryProvider | None = None) -> dict:
     """Call from an existing scheduler when a lawful discovery provider is configured.

@@ -24,7 +24,7 @@ function fixture() {
 }
 async function open(f, items = []) {
   const pending = f.controller.open();
-  f.requests.at(-2).resolve({ items: [{ source_name: "国聘", total_articles: 1, new_articles: 1 }], discovery_status: "provider_pending" });
+  f.requests.at(-2).resolve({ items: [{ source_name: "国聘", seed_url: "https://mp.weixin.qq.com/s/seed", enabled: true, total_articles: 1, new_articles: 1 }], discovery_status: "provider_pending" });
   f.requests.at(-1).resolve({items, total: items.length, page: 1, page_size: 30});
   await pending;
 }
@@ -78,4 +78,25 @@ test("read errors are not presented as zero article results and account reset di
 
 test("unknown import counters stay unknown rather than fabricated zeroes", () => {
   assert.match(wechatImportSummary({total: 2}), /成功 —，新增 —，重复 —，失败 —/);
+});
+
+test("one-click watchlist import uses configured seeds without pasting URLs", async () => {
+  const f = fixture(); await open(f);
+  const button = f.button("一键导入 1 个历史入口");
+  assert.ok(button);
+  const pending = button.dispatch("click");
+  const request = f.requests.at(-1);
+  assert.equal(request.url, "/sources/wechat/articles/import-watchlist");
+  assert.equal(request.method, "POST");
+  assert.equal(request.body, undefined);
+  request.resolve({
+    total: 1, success: 1, new: 1, duplicate: 0, failed: 0,
+    items: [{url: "https://mp.weixin.qq.com/s/seed", title: "招聘", fetch_status: "success", is_new: true}],
+  });
+  await tick();
+  f.requests.at(-2).resolve({items: [{source_name: "国聘", seed_url: "https://mp.weixin.qq.com/s/seed", enabled: true}]});
+  f.requests.at(-1).resolve({items: [], total: 0, page: 1, page_size: 30});
+  await pending;
+  assert.match(f.root.textContent, /本批 1 条：成功 1，新增 1，重复 0，失败 0/);
+  assert.match(f.root.textContent, /不会自动发现该公众号之后发布的新文章/);
 });
