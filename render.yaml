@@ -55,5 +55,11 @@ services:
         value: gpt-5.4-mini
       - key: RECRUITMENT_INGEST_TOKEN
         generateValue: true
+      - key: FUTURE_RADAR_SYNC_TOKEN
+        generateValue: true
+      - key: PUBLIC_BASE_URL
+        value: https://frostfire-ai.onrender.com
+      - key: ENABLE_FUTURE_RADAR_MCP
+        value: false
       - key: ADMIN_DASHBOARD_TOKEN
         sync: false

@@ -22,6 +22,9 @@ class Settings:
     adzuna_country: str
     recruitment_refresh_minutes: int
     recruitment_ingest_token: str
+    future_radar_sync_token: str
+    public_base_url: str
+    enable_future_radar_mcp: bool
     recruitment_web_search_enabled: bool
     recruitment_web_search_model: str
     recruitment_web_search_interval_minutes: int
@@ -117,6 +120,14 @@ def load_settings() -> Settings:
         adzuna_country=os.getenv("ADZUNA_COUNTRY", "gb").strip() or "gb",
         recruitment_refresh_minutes=max(0, int(os.getenv("RECRUITMENT_REFRESH_MINUTES", "30").strip() or "30")),
         recruitment_ingest_token=os.getenv("RECRUITMENT_INGEST_TOKEN", "").strip(),
+        future_radar_sync_token=os.getenv("FUTURE_RADAR_SYNC_TOKEN", "").strip(),
+        public_base_url=(
+            os.getenv("PUBLIC_BASE_URL", "https://frostfire-ai.onrender.com").strip().rstrip("/")
+            or "https://frostfire-ai.onrender.com"
+        ),
+        enable_future_radar_mcp=os.getenv(
+            "ENABLE_FUTURE_RADAR_MCP", "false"
+        ).strip().lower() in {"1", "true", "yes", "on"},
         recruitment_web_search_enabled=web_search_enabled,
         recruitment_web_search_model=(
             os.getenv("RECRUITMENT_WEB_SEARCH_MODEL", "").strip()

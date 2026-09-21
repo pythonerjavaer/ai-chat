@@ -670,6 +670,8 @@ class FutureRadarService:
                 seen_job_ids.add(job["id"])
                 key = {
                     "NEW": "new_jobs", "UPDATED": "updated_jobs", "VERIFIED": "updated_jobs",
+                    "DEADLINE_CHANGED": "updated_jobs", "JD_CHANGED": "updated_jobs",
+                    "BATCH_CHANGED": "updated_jobs",
                     "CLOSED": "closed_jobs", "REOPENED": "reopened_jobs",
                 }.get(event, "unchanged_jobs")
                 counts[key] += 1
@@ -911,14 +913,7 @@ class FutureRadarService:
                     row = {**existing, "last_seen_at": now, "missing_successes": 0, "updated_at": now}
                 else:
                     kind = "update"
-                    if existing["status"] == "closed" and merged["status"] == "open":
-                        event = "REOPENED"
-                    elif existing["status"] != "closed" and merged["status"] == "closed":
-                        event = "CLOSED"
-                    elif existing["verification_status"] != "verified" and merged["verification_status"] == "verified":
-                        event = "VERIFIED"
-                    else:
-                        event = "UPDATED"
+                    event = self._job_event_type(existing, merged, fields)
                     fields = fields or ["program_id"]
                     row = self.repository.new_job_record(
                         merged, job_id=existing["id"], program_id=program_id or existing.get("program_id"),
@@ -971,14 +966,7 @@ class FutureRadarService:
                 self.repository.touch_job(connection, existing["id"], now)
                 job = self.repository.find_job(connection, item["external_id"]) or existing
             else:
-                if existing["status"] == "closed" and merged["status"] == "open":
-                    event = "REOPENED"
-                elif existing["status"] != "closed" and merged["status"] == "closed":
-                    event = "CLOSED"
-                elif existing["verification_status"] != "verified" and merged["verification_status"] == "verified":
-                    event = "VERIFIED"
-                else:
-                    event = "UPDATED"
+                event = self._job_event_type(existing, merged, fields)
                 job = self.repository.update_job(
                     connection, existing["id"], merged, source_id=source["id"],
                     program_id=program_id or existing.get("program_id"), now=now,
@@ -995,6 +983,26 @@ class FutureRadarService:
             evidence=list(item.get("evidence") or []),
         )
         return job, event
+
+    @staticmethod
+    def _job_event_type(
+        existing: dict[str, Any], merged: dict[str, Any], fields: list[str],
+    ) -> str:
+        """Choose the most useful change event while retaining all changed fields."""
+        if existing["status"] == "closed" and merged["status"] == "open":
+            return "REOPENED"
+        if existing["status"] != "closed" and merged["status"] == "closed":
+            return "CLOSED"
+        if existing["verification_status"] != "verified" and merged["verification_status"] == "verified":
+            return "VERIFIED"
+        changed = set(fields)
+        if "closing_date" in changed:
+            return "DEADLINE_CHANGED"
+        if changed & {"description", "responsibilities", "requirements"}:
+            return "JD_CHANGED"
+        if "program_id" in changed:
+            return "BATCH_CHANGED"
+        return "UPDATED"
 
     @staticmethod
     def _merge_verified(

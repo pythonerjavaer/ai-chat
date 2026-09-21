@@ -22,6 +22,10 @@ SourceType = Literal[
     "openai_web_search", "manual", "other_public_source", "public_feed",
 ]
 ManualScanType = Literal["quick", "deep"]
+MonitorEventType = Literal[
+    "NEW", "UPDATED", "DEADLINE_CHANGED", "REOPENED", "CLOSED",
+    "APPLICATION_DISABLED", "JD_CHANGED", "BATCH_CHANGED",
+]
 
 
 class RadarProgramInput(BaseModel):
@@ -54,10 +58,16 @@ class RadarJobInput(BaseModel):
 
     external_id: str | None = Field(default=None, max_length=180)
     source_rating: SourceRating | None = None
+    tier: str | None = Field(default=None, max_length=16)
+    score: float | None = Field(default=None, ge=0, le=100)
+    recommendation: str | None = Field(default=None, max_length=1_000)
     program_external_id: str | None = Field(default=None, max_length=180)
+    program_name: str | None = Field(default=None, max_length=240)
     company: str = Field(min_length=1, max_length=160)
-    title: str = Field(min_length=1, max_length=280)
+    title: str = Field(default="", max_length=280)
+    job_title: str | None = Field(default=None, max_length=280)
     city: str = Field(default="", max_length=160)
+    location: str | None = Field(default=None, max_length=160)
     region: str = Field(default="", max_length=160)
     employer_type: str = Field(default="", max_length=80)
     industry: str = Field(default="", max_length=120)
@@ -71,14 +81,23 @@ class RadarJobInput(BaseModel):
     )
     official_url: str | None = Field(default=None, pattern=r"^https://", max_length=2_000)
     application_url: str | None = Field(default=None, pattern=r"^https://", max_length=2_000)
+    source_url: str | None = Field(default=None, pattern=r"^https://", max_length=2_000)
+    source_type: str | None = Field(default=None, max_length=80)
     opening_date: date | None = None
     closing_date: date | None = None
+    deadline: date | None = None
     status: Literal["open", "closed", "unknown"] = "open"
+    event_type: MonitorEventType = "NEW"
     verification_status: Literal["pending", "verified", "conflicted", "rejected"] = "pending"
     confidence_score: float = Field(default=0, ge=0, le=1)
     description: str = Field(default="", max_length=8_000)
+    raw_text: str | None = Field(default=None, max_length=8_000)
     responsibilities: str = Field(default="", max_length=8_000)
     requirements: str = Field(default="", max_length=8_000)
+    eligibility: str | None = Field(default=None, max_length=8_000)
+    graduation_window: str | None = Field(default=None, max_length=160)
+    detected_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     tags: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
         default_factory=list, max_length=30
     )
@@ -90,6 +109,28 @@ class RadarJobInput(BaseModel):
     @classmethod
     def evidence_has_no_contacts(cls, values: list[str]) -> list[str]:
         return _validate_evidence(values)
+
+    @model_validator(mode="after")
+    def compatibility_aliases(self):
+        if not self.title and self.job_title:
+            self.title = self.job_title
+        if not self.title:
+            raise ValueError("title or job_title is required")
+        if not self.city and self.location:
+            self.city = self.location
+        if self.closing_date is None and self.deadline is not None:
+            self.closing_date = self.deadline
+        if not self.requirements and self.eligibility:
+            self.requirements = self.eligibility
+        if not self.description and self.raw_text:
+            self.description = self.raw_text
+        if self.official_url is None and self.source_url is not None:
+            self.official_url = self.source_url
+        if self.event_type in {"CLOSED", "APPLICATION_DISABLED"}:
+            self.status = "closed"
+        elif self.event_type == "REOPENED":
+            self.status = "open"
+        return self
 
     @field_validator("primary_category", mode="before")
     @classmethod
@@ -143,6 +184,11 @@ class FrostFireSyncV1(BaseModel):
 
     version: Literal["FROSTFIRE_SYNC_V1"]
     batch_id: str | None = Field(default=None, max_length=180)
+    monitor_run_id: str | None = Field(default=None, max_length=180)
+    source_thread_id: str | None = Field(default=None, max_length=180)
+    generated_at: datetime | None = None
+    source: str | None = Field(default=None, max_length=160)
+    monitor_name: str | None = Field(default=None, max_length=160)
     source_id: str = Field(
         min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
     )

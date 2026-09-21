@@ -114,6 +114,8 @@ from .future_radar.schemas import (
     SourcePatchRequest,
 )
 from .future_radar.service import FutureRadarService, RadarRunBusy, SyncConflict
+from .chatgpt_monitor_ingestion import ChatGPTMonitorIngestionService
+from .future_radar_mcp import build_future_radar_mcp
 from .future_radar.adapters import _public_reference_url, _redact_public_text
 from .security import (
     create_access_token,
@@ -187,6 +189,15 @@ future_radar_service = FutureRadarService(
     web_search_enabled=settings.recruitment_web_search_enabled,
     close_confirmations=settings.future_radar_close_confirmations,
     max_workers=settings.future_radar_max_workers,
+)
+chatgpt_monitor_ingestion_service = ChatGPTMonitorIngestionService(
+    radar=future_radar_service,
+    connect=database.connect,
+)
+future_radar_mcp_server, future_radar_mcp_app = build_future_radar_mcp(
+    chatgpt_monitor_ingestion_service,
+    token=settings.future_radar_sync_token or settings.recruitment_ingest_token,
+    public_base_url=settings.public_base_url,
 )
 
 
@@ -590,7 +601,11 @@ async def lifespan(_: FastAPI):
         background_tasks=len(tasks),
     )
     try:
-        yield
+        if settings.enable_future_radar_mcp:
+            async with future_radar_mcp_server.session_manager.run():
+                yield
+        else:
+            yield
     finally:
         for task in tasks:
             task.cancel()
@@ -1072,6 +1087,23 @@ def require_recruitment_ingest_token(
         raise HTTPException(status_code=503, detail="Recruitment ingest is not configured.")
     if not token or not secrets.compare_digest(token, configured_token):
         raise HTTPException(status_code=401, detail="Invalid recruitment ingest token.")
+
+
+def require_future_radar_sync_token(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme),
+    ],
+) -> None:
+    configured_token = settings.future_radar_sync_token or settings.recruitment_ingest_token
+    if not configured_token:
+        raise HTTPException(status_code=503, detail="Future Radar sync is not configured.")
+    if (
+        not credentials
+        or credentials.scheme.lower() != "bearer"
+        or not secrets.compare_digest(credentials.credentials, configured_token)
+    ):
+        raise HTTPException(status_code=401, detail="Invalid Future Radar sync token.")
 
 
 @app.get("/api/admin/usage")
@@ -2140,6 +2172,22 @@ def sync_future_radar(
     try:
         return future_radar_service.sync(
             request.model_dump(mode="json"), idempotency_key=idempotency_key
+        )
+    except SyncConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/integrations/chatgpt-monitor/sync")
+def sync_chatgpt_monitor(
+    request: FrostFireSyncV1,
+    _: Annotated[None, Depends(require_future_radar_sync_token)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict:
+    try:
+        return chatgpt_monitor_ingestion_service.ingest(
+            request.model_dump(mode="json"), idempotency_key=idempotency_key,
         )
     except SyncConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -4539,6 +4587,8 @@ def chat_stream(request: ChatRequest, user: ConsentedUser) -> StreamingResponse:
 
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if settings.enable_future_radar_mcp:
+    app.mount("/mcp", future_radar_mcp_app, name="future-radar-mcp")
 if FRONTEND_DIST.is_dir():
     app.mount(
         "/",

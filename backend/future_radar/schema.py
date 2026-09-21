@@ -244,6 +244,63 @@ def migrate(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (source_id) REFERENCES monitor_sources(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS monitor_ingestion_runs (
+            id TEXT PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            source_id TEXT NOT NULL,
+            source_thread_ref TEXT,
+            monitor_run_id TEXT,
+            monitor_name TEXT,
+            generated_at TEXT,
+            received_at TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            raw_payload TEXT NOT NULL,
+            processing_status TEXT NOT NULL DEFAULT 'received',
+            processing_error TEXT,
+            result TEXT NOT NULL DEFAULT '{}',
+            processing_time_ms INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS recruitment_monitor_leads (
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL,
+            source_item_key TEXT NOT NULL,
+            company TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            source_url TEXT,
+            status TEXT NOT NULL DEFAULT 'needs_verification',
+            reason TEXT NOT NULL,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(source_id, source_item_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS monitor_ingestion_items (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            raw_item TEXT NOT NULL,
+            processing_status TEXT NOT NULL DEFAULT 'received',
+            processing_error TEXT,
+            result_job_id TEXT,
+            result_lead_id TEXT,
+            final_tier TEXT,
+            tier_score REAL,
+            tier_reasons TEXT NOT NULL DEFAULT '[]',
+            evaluated_at TEXT,
+            rules_version TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(run_id, item_key),
+            FOREIGN KEY (run_id) REFERENCES monitor_ingestion_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY (result_job_id) REFERENCES radar_jobs(id) ON DELETE SET NULL,
+            FOREIGN KEY (result_lead_id) REFERENCES recruitment_monitor_leads(id) ON DELETE SET NULL
+        );
+
         CREATE TABLE IF NOT EXISTS radar_locks (
             lock_name TEXT PRIMARY KEY,
             owner TEXT NOT NULL,
@@ -299,6 +356,14 @@ def migrate(connection: sqlite3.Connection) -> None:
             ON radar_runs(started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_radar_snapshots_retention
             ON radar_source_snapshots(source_id, fetched_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_monitor_ingestion_runs_recent
+            ON monitor_ingestion_runs(received_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_monitor_ingestion_items_status
+            ON monitor_ingestion_items(processing_status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_monitor_ingestion_items_fingerprint
+            ON monitor_ingestion_items(fingerprint);
+        CREATE INDEX IF NOT EXISTS idx_recruitment_monitor_leads_status
+            ON recruitment_monitor_leads(status, updated_at DESC);
         """
     )
     _ensure_column(connection, "monitor_sources", "lease_owner", "TEXT")
