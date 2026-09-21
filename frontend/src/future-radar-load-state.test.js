@@ -322,6 +322,14 @@ test("deadline alerts include ChatGPT-screened source dates without calling them
   assert.match(r.elements.recruitmentDeadlineAlerts.textContent, /官网公司｜研究岗｜3 天后截止｜官网确认/);
 });
 
+test("deadline alert keeps the server count visible while the detailed pool is still loading", () => {
+  const r = runtime();
+  r.state.futureRadar.dashboard = { closing_soon: 56 };
+  r.run("renderRecruitmentDeadlineAlerts([])");
+  assert.match(r.elements.recruitmentDeadlineAlerts.textContent, /已统计 56 个机会将在 15 天内关闭/);
+  assert.match(r.elements.recruitmentDeadlineAlerts.textContent, /完整列表加载后显示名称、日期与来源依据/);
+});
+
 test("a partial dashboard snapshot is not successful when opportunities failed", async () => {
   const r = runtime();
   assert.equal(await r.run("loadFutureRadarSnapshot()"), false);

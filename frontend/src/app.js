@@ -4155,12 +4155,16 @@ function renderRecruitmentDeadlineAlerts(jobs) {
   const dated = datedCandidates.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0);
   const urgentVerified = urgent.filter((job) => recruitmentVerification(job) === "verified").length;
   const urgentScreened = urgent.length - urgentVerified;
+  const dashboardClosingSoon = valueAtPaths(state.futureRadar.dashboard, ["closing_soon", "closing_soon_jobs", "counts.closing_soon"]);
+  const knownClosingSoon = dashboardClosingSoon == null ? null : Number(dashboardClosingSoon);
   const heading = document.createElement("strong");
   heading.textContent = urgent.length
     ? `${companyView ? "当前筛选近期时间窗（最多 12 条）" : "本页时间窗预警"} · ${urgent.length} 个有来源日期的机会将在 15 天内关闭（官网确认 ${urgentVerified} · GPT 待复核 ${urgentScreened}）`
     : dated.length
       ? "时间窗预警 · 暂无 15 天内关闭的有来源日期机会"
-      : "时间窗预警 · 当前已同步公告尚未提供可读取的截止日；后续同步会继续补全";
+      : Number.isFinite(knownClosingSoon) && knownClosingSoon > 0
+        ? `时间窗预警 · 已统计 ${knownClosingSoon} 个机会将在 15 天内关闭；完整列表加载后显示名称、日期与来源依据`
+        : "时间窗预警 · 当前已同步公告尚未提供可读取的截止日；后续同步会继续补全";
   const deadlineFilterActive = Boolean(state.futureRadar.filters.closing_after || state.futureRadar.filters.closing_before || state.futureRadar.filters.sort === "closing");
   const returnToPool = deadlineFilterActive
     ? makeElement("button", "deadline-return-pool", "返回全部机会池（清除筛选）")
