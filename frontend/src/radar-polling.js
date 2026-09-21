@@ -28,17 +28,26 @@ export function createRadarPollingGate({
     // Only counters/timestamps: no account, token, response or source content.
     try { write(JSON.stringify(value)); } catch (_) { /* memory fallback */ }
   };
+  const recoverExpiredSuspension = () => {
+    const value = load();
+    if (value.suspended === true && Number(value.retryAt || 0) <= now()) {
+      const recovered = { ...value, failures: 0, suspended: false, retryAt: 0 };
+      save(recovered);
+      return recovered;
+    }
+    return value;
+  };
   const deferred = (delay, suspended = false) => Object.assign(new Error(suspended
-    ? "自动跟踪已暂停；请稍后点击刷新机会重试。"
+    ? "雷达状态读取已延后；服务恢复后会自动重试。本操作不调用 AI，也不消耗模型 Token。"
     : "服务暂时繁忙，正在等待后重试。"), {
     code: suspended ? "RADAR_POLL_SUSPENDED" : "RADAR_POLL_DEFERRED",
     retryAfter: Math.ceil(delay / 1000),
   });
   const gate = {
-    delay(minimum = 0) { return Math.max(minimum, Number(load().retryAt || 0) - now()); },
-    suspended() { return load().suspended === true; },
+    delay(minimum = 0) { return Math.max(minimum, Number(recoverExpiredSuspension().retryAt || 0) - now()); },
+    suspended() { return recoverExpiredSuspension().suspended === true; },
     assertAllowed() {
-      const value = load();
+      const value = recoverExpiredSuspension();
       if (value.suspended || Number(value.retryAt || 0) > now()) {
         throw deferred(gate.delay(), value.suspended === true);
       }

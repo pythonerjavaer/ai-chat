@@ -2887,7 +2887,7 @@ async function pollFutureRadarRunUntilTerminal(scanType) {
     markFutureRadarRunActive(scanType);
     setFutureRadarLoading(true, "");
     setFutureRadarActionStatus(radarPollingGate.suspended()
-      ? "服务连续不可用，自动跟踪已暂停；请稍后点击刷新机会重试。扫描仍由服务端运行锁管理。"
+      ? "雷达状态读取已延后，服务恢复后会自动重试；只读取服务器状态，不调用 AI，也不消耗模型 Token。"
       : `${scanLabel} 正在等待服务恢复后再次确认；不会重复启动扫描。`, "warning");
     scheduleFutureRadarRunStatusPoll(scanType);
   } finally {
@@ -2920,14 +2920,31 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   // A failed pool read means dashboard zeros are a fallback, not a count.
   // Keep that uncertainty visible instead of presenting a false empty pool.
   const poolUnavailable = Boolean(state.futureRadar?.jobsError);
+  const poolStats = state.futureRadar?.jobsLoaded ? state.futureRadar.opportunityStats || {} : {};
+  const verification = poolStats.verification_status || {};
+  const latestChatSync = state.recruitmentSyncStatus?.latest_ingest_counts || {};
+  const poolMetricFallbacks = {
+    NEW: latestChatSync.new,
+    UPDATED: latestChatSync.updated,
+    CLOSED: latestChatSync.closed,
+    PROGRAMS: poolStats.program_count,
+    "CLOSING SOON": poolStats.closing_soon,
+    DISCOVERED: poolStats.discovered_count
+      ?? ([verification.pending, verification.source_screened, verification.conflicted]
+        .some((value) => value != null)
+        ? Number(verification.pending || 0) + Number(verification.source_screened || 0) + Number(verification.conflicted || 0)
+        : null),
+    VERIFIED: poolStats.verified_count ?? verification.verified,
+  };
   metrics.forEach(([code, label, paths]) => {
-    const opportunityClosingSoon = code === "CLOSING SOON"
-      ? radarNumber(state.futureRadar?.opportunityStats, ["closing_soon"], 0)
-      : 0;
     const dashboardValue = valueAtPaths(dashboard, paths);
-    const metricValue = poolUnavailable ? null : code === "CLOSING SOON"
-      ? (state.futureRadar?.opportunityStats?.closing_soon == null ? null : opportunityClosingSoon)
-      : dashboardValue == null ? null : radarNumber(dashboard, paths);
+    const fallbackValue = poolMetricFallbacks[code];
+    const metricValue = poolUnavailable ? null
+      : code === "CLOSING SOON"
+        ? (fallbackValue == null ? null : Number(fallbackValue))
+        : dashboardValue == null
+          ? (fallbackValue == null ? null : Number(fallbackValue))
+          : radarNumber(dashboard, paths);
     const clickable = true;
     const card = makeElement(clickable ? "button" : "article", `radar-metric metric-${code.toLowerCase().replaceAll(" ", "-")}`);
     if (clickable) {
@@ -3862,7 +3879,12 @@ function startFutureRadarPolling() {
   stopFutureRadarPolling();
   if (!state.token || !elements.recruitmentDialog?.open || document.hidden) return;
   resumeFutureRadarRunStatusPolling();
-  state.futureRadar.pollingTimer = window.setInterval(pollFutureRadarEvents, FUTURE_RADAR_POLL_INTERVAL_MS);
+  state.futureRadar.pollingTimer = window.setInterval(() => {
+    // A transport pause expires automatically. This only resumes stored
+    // server-status reads; it never starts a scan or invokes a model.
+    resumeFutureRadarRunStatusPolling();
+    pollFutureRadarEvents();
+  }, FUTURE_RADAR_POLL_INTERVAL_MS);
 }
 
 async function runFutureRadarNow(scanType = "quick") {

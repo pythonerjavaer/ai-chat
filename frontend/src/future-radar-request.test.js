@@ -112,7 +112,7 @@ test("a suspended metadata polling gate does not block manually read private app
     response.end(JSON.stringify({items: [{company: 'Example', title: null}], total: 1}));
   });
   const r = runtime(server.base);
-  r.context.radarPollingGate = createRadarPollingGate({ read: () => JSON.stringify({suspended: true}), write() {}, locks: () => null });
+  r.context.radarPollingGate = createRadarPollingGate({ read: () => JSON.stringify({suspended: true, retryAt: Number.MAX_SAFE_INTEGER}), write() {}, locks: () => null });
   assert.equal(r.context.radarPollingGate.suspended(), true);
   const data = await r.run("api('/future-radar/application-records?page=1&page_size=100')");
   assert.equal(data.total, 1);

@@ -160,6 +160,39 @@ def test_review_backlog_is_separate_from_transport_state(sync_db):
     assert pending["verification_status"] == "pending"
 
 
+def test_public_sync_status_reports_latest_chat_changes_without_model_work(sync_db):
+    database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
+    database.record_recruitment_ingest_event(
+        source_id="chatgpt-radar-02",
+        source_thread_id=None,
+        title="ChatGPT 监控 2",
+        counts={
+            "received": 9,
+            "new": 4,
+            "updated": 2,
+            "duplicates": 3,
+            "closed": 1,
+            "source_screened": 5,
+        },
+        last_item_id="latest-item",
+        last_source_updated_at="2026-09-21T03:00:00+00:00",
+    )
+
+    detailed = database.recruitment_sync_status(expected_source_count=9)
+    assert detailed["new"] == 4
+    assert detailed["updated"] == 2
+    assert detailed["duplicates"] == 3
+    public = main.public_chatgpt_sync_status()
+    assert public["latest_ingest_counts"] == {
+        "received": 9,
+        "new": 4,
+        "updated": 2,
+        "duplicates": 3,
+        "closed": 1,
+        "source_screened": 5,
+    }
+
+
 def test_normal_rejection_does_not_become_transport_error(sync_db):
     database.ensure_recruitment_ingest_sources(main.EXPECTED_CHATGPT_RADAR_SOURCES)
     for source in main.EXPECTED_CHATGPT_RADAR_SOURCES:

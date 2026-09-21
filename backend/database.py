@@ -2723,6 +2723,10 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
             """
             SELECT sources.*,
                    events.accepted AS latest_accepted,
+                   events.received AS latest_received,
+                   events.new_count AS latest_new,
+                   events.updated_count AS latest_updated,
+                   events.duplicate_count AS latest_duplicates,
                    events.source_screened_count AS latest_source_screened,
                    events.pending_count AS latest_pending,
                    events.rejected_count AS latest_rejected,
@@ -2771,6 +2775,10 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
             row["source_key"], {"accepted": 0, "source_screened": 0, "pending": 0, "rejected": 0}
         )
         latest_counts = {
+            "received": int(row["latest_received"] or 0),
+            "new": int(row["latest_new"] or 0),
+            "updated": int(row["latest_updated"] or 0),
+            "duplicates": int(row["latest_duplicates"] or 0),
             "accepted": int(row["latest_accepted"] or 0),
             "source_screened": int(row["latest_source_screened"] or 0),
             "pending": int(row["latest_pending"] or 0),
@@ -2786,6 +2794,10 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
             "last_source_updated_at": row["last_source_updated_at"],
             "last_item_id": row["last_item_id"],
             **latest_counts,
+            "latest_received": latest_counts["received"],
+            "latest_new": latest_counts["new"],
+            "latest_updated": latest_counts["updated"],
+            "latest_duplicates": latest_counts["duplicates"],
             "latest_accepted": latest_counts["accepted"],
             "latest_source_screened": latest_counts["source_screened"],
             "latest_pending": latest_counts["pending"],
@@ -2805,6 +2817,10 @@ def recruitment_sync_status(*, expected_source_count: int = 0) -> dict[str, Any]
         "expected_source_count": expected_source_count,
         "connected_source_count": sum(source["last_seen_at"] is not None for source in sources),
         "last_synced_at": last_synced_at,
+        "received": sum(source["latest_received"] for source in sources),
+        "new": sum(source["latest_new"] for source in sources),
+        "updated": sum(source["latest_updated"] for source in sources),
+        "duplicates": sum(source["latest_duplicates"] for source in sources),
         "accepted": sum(source["latest_accepted"] for source in sources),
         "source_screened": sum(source["latest_source_screened"] for source in sources),
         "pending": sum(source["latest_pending"] for source in sources),

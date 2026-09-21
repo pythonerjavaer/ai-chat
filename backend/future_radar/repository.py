@@ -2201,6 +2201,9 @@ class RadarRepository:
             and today <= str(item.get("closing_date") or "") <= closing_window_end
             for item in all_items
         )
+        program_count = sum(
+            item.get("listing_kind") == "recruitment_program" for item in all_items
+        )
         balanced_items = self._balanced_opportunities(all_items)
         items = all_items
         tier_counts = dict(pool.tier_counts)
@@ -2286,6 +2289,7 @@ class RadarRepository:
                 "verified_count": verification["verified"],
                 "source_screened_count": verification["source_screened"],
                 "discovered_count": verification["pending"] + verification["conflicted"],
+                "program_count": program_count,
                 "closing_soon": closing_soon,
                 "verification_status": verification, "job_status": statuses,
                 "tier_counts": tier_counts, "category_counts": category_counts,

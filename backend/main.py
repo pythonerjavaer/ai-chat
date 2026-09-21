@@ -2088,6 +2088,12 @@ def public_chatgpt_sync_status() -> dict:
     ]
     connected = sum(source.get("last_seen_at") is not None for source in sources)
     latest_accepted = sum(int(source.get("latest_accepted", 0)) for source in sources)
+    latest_received = sum(int(source.get("latest_received", 0)) for source in sources)
+    latest_new = sum(int(source.get("latest_new", 0)) for source in sources)
+    latest_updated = sum(int(source.get("latest_updated", 0)) for source in sources)
+    latest_duplicates = sum(int(source.get("latest_duplicates", 0)) for source in sources)
+    latest_closed = sum(int(source.get("latest_closed", 0)) for source in sources)
+    latest_source_screened = sum(int(source.get("latest_source_screened", 0)) for source in sources)
     latest_pending = sum(int(source.get("latest_pending", 0)) for source in sources)
     latest_rejected = sum(int(source.get("latest_rejected", 0)) for source in sources)
     inventory_accepted = sum(int(source.get("inventory_accepted", 0)) for source in sources)
@@ -2137,6 +2143,16 @@ def public_chatgpt_sync_status() -> dict:
             "accepted": latest_accepted,
             "pending": latest_pending,
             "rejected": latest_rejected,
+        },
+        # Changes from every configured ChatGPT source's most recent handoff.
+        # Reading these stored counters never invokes a model.
+        "latest_ingest_counts": {
+            "received": latest_received,
+            "new": latest_new,
+            "updated": latest_updated,
+            "duplicates": latest_duplicates,
+            "closed": latest_closed,
+            "source_screened": latest_source_screened,
         },
         "inventory_accepted": inventory_accepted,
         "inventory_source_screened": inventory_source_screened,

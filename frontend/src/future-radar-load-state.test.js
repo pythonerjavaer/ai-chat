@@ -142,7 +142,13 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     eventIdentity: (event) => event.id,
     chatgptSyncFromJobs: () => null,
     translateError: (message) => message,
-    valueAtPaths: () => null,
+    valueAtPaths: (source, paths) => {
+      for (const path of paths) {
+        const value = path.split(".").reduce((current, key) => current?.[key], source);
+        if (value !== undefined && value !== null && value !== "") return value;
+      }
+      return null;
+    },
     radarStatusClass: () => "pending",
     futureRadarActiveRunTypes: () => [],
     futureRadarProfileReload: { request() {} },
@@ -258,6 +264,23 @@ test("dashboard metrics distinguish an unread snapshot from real zero counts", (
     .filter((element) => element.tag === "strong")
     .map((element) => element.textContent);
   assert.deepEqual(unread, Array(7).fill("—"));
+});
+
+test("loaded opportunity and ChatGPT sync statistics fill metrics when dashboard metadata fails", () => {
+  const r = runtime({ existing: true });
+  r.state.recruitmentSyncStatus = { latest_ingest_counts: { new: 7, updated: 2, closed: 1 } };
+  r.state.futureRadar.opportunityStats = {
+    program_count: 3,
+    closing_soon: 4,
+    discovered_count: 10,
+    verified_count: 5,
+    verification_status: { pending: 6, source_screened: 4, verified: 5 },
+  };
+  r.run("renderFutureRadarDashboard({ healthy_sources: 0, total_sources: 0 })");
+  const values = descendants(r.elements.futureRadarDashboard)
+    .filter((element) => element.tag === "strong")
+    .map((element) => element.textContent);
+  assert.deepEqual(values, ["7", "2", "1", "3", "4", "10", "5"]);
 });
 
 test("a partial dashboard snapshot is not successful when opportunities failed", async () => {

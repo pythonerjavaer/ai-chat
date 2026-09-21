@@ -34,12 +34,18 @@ test("network errors back off exponentially, respect Retry-After and cannot rese
   assert.equal(retryAfterMilliseconds("Thu, 01 Jan 1970 00:02:00 GMT", 0), 120000);
 });
 
-test("five consecutive failed attempts suspend automated retries across tabs and reloads", () => {
+test("five consecutive failed attempts pause briefly then recover without a manual click", () => {
   const f = fixture();
-  for (let n = 0; n < 5; n++) { f.gate.failure({ status: 429 }); f.advance(f.gate.delay()); }
+  for (let n = 0; n < 5; n++) {
+    f.gate.failure({ status: 429 });
+    if (n < 4) f.advance(f.gate.delay());
+  }
   assert.equal(f.gate.suspended(), true);
   assert.throws(() => f.another().assertAllowed(), { code: "RADAR_POLL_SUSPENDED" });
-  f.gate.resume(); f.gate.assertAllowed(); assert.equal(f.gate.suspended(), false);
+  f.advance(f.gate.delay());
+  f.another().assertAllowed();
+  assert.equal(f.gate.suspended(), false);
+  assert.equal(f.persisted().failures, 0);
 });
 
 test("explicit retry still respects Retry-After and no account data is persisted", () => {
