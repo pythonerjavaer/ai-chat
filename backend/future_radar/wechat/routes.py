@@ -113,4 +113,10 @@ def create_wechat_router(service: WechatTitleService, *, current_user: Callable,
                 headers={'Retry-After': str(exc.retry_after)},
             ) from None
 
+    @router.get('/discover/debug')
+    def discovery_debug(_: object = Depends(admin_auth), limit: int = Query(100, ge=1, le=200)) -> dict:
+        """Small administrator-only audit of public search candidate decisions."""
+        provider_name = getattr(discovery_provider, 'name', 'sogou_wechat')
+        return service.repository.list_discovery_debug(provider=provider_name, limit=limit)
+
     return router

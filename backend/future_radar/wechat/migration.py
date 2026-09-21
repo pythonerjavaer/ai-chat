@@ -64,6 +64,25 @@ def migrate_wechat_titles(connection: Any, ensure_column: Callable) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_wechat_discovery_cache_expiry
             ON wechat_discovery_cache(expires_at);
+        CREATE TABLE IF NOT EXISTS wechat_discovery_debug (
+            id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            scanned_at TEXT NOT NULL,
+            raw_title TEXT,
+            raw_source_name TEXT,
+            normalized_source_name TEXT,
+            raw_date TEXT,
+            published_at TEXT,
+            discovery_url TEXT,
+            resolved_wechat_url TEXT,
+            accepted INTEGER NOT NULL DEFAULT 0,
+            rejection_reason TEXT NOT NULL,
+            FOREIGN KEY (source_id) REFERENCES monitor_sources(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_wechat_discovery_debug_recent
+            ON wechat_discovery_debug(provider, scanned_at DESC);
     ''')
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, datetime('now'))",

@@ -104,6 +104,22 @@ def test_additive_migration_preserves_legacy_rows_and_seed_preferences(title_rep
     assert title_repo.list_articles()["total"] == 0
 
 
+def test_discovery_debug_is_bounded_and_keeps_only_scalar_candidate_fields(title_repo):
+    source = next(item for item in title_repo.list_sources() if item["source_name"] == "国聘")
+    title_repo.save_discovery_debug("sogou_wechat", source, [{
+        "raw_title": "国聘 2027 届校园招聘", "raw_source_name": "国聘",
+        "normalized_source_name": "国聘", "raw_date": "1789948800",
+        "published_at": datetime(2026, 9, 22, tzinfo=timezone.utc),
+        "discovery_url": "https://weixin.sogou.com/link?url=x",
+        "resolved_wechat_url": None, "accepted": True,
+        "rejection_reason": "resolve_failed",
+    }])
+    saved = title_repo.list_discovery_debug()
+    assert saved["items"][0]["raw_title"] == "国聘 2027 届校园招聘"
+    assert saved["items"][0]["accepted"] is True
+    assert saved["items"][0]["rejection_reason"] == "resolve_failed"
+
+
 def test_normalized_url_cache_is_idempotent_and_never_creates_fake_jobs(title_repo):
     parser = Parser()
     service = WechatTitleService(title_repo, parser=parser)

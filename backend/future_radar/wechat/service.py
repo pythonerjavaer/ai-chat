@@ -185,12 +185,19 @@ class WechatTitleService:
         accounts: list[dict] = []
         try:
             for source in sources:
-                query_key = source['source_name'].strip().casefold()
+                # Parser revisions must not reuse a cached empty result from
+                # an older HTML shape.  This remains one bounded 24h entry per
+                # watchlist account.
+                query_key = source['source_name'].strip().casefold() + '|sogou-v2'
                 cached = await asyncio.to_thread(
                     self.repository.cache_get, provider_name, source['id'], query_key,
                 )
+                candidates: list[dict] = []
                 if cached is None:
-                    discovered = await provider.discover(source)
+                    if hasattr(provider, 'discover_with_debug'):
+                        discovered, candidates = await provider.discover_with_debug(source)
+                    else:
+                        discovered = await provider.discover(source)
                     serialized = [item.model_dump(mode='json') if hasattr(item, 'model_dump') else dict(item)
                                   for item in discovered]
                     await asyncio.to_thread(
@@ -217,11 +224,24 @@ class WechatTitleService:
                             self.repository.save_discovery, data, classification, source['source_name'],
                         )
                     key = 'new' if result.get('is_new') else 'duplicate'
+                    # Candidate debug describes the final outcome too.  A
+                    # deduplicated accepted result is not a fresh lead.
+                    for candidate in candidates:
+                        if candidate.get('discovery_url') == found.discovery_url and not result.get('is_new'):
+                            candidate['accepted'] = False
+                            candidate['rejection_reason'] = 'duplicate'
                     account[key] += 1
                     counts[key] += 1
                     if result.get('relevance_status') in {'relevant', 'possible'}:
                         account['related'] += 1
                         counts['related'] += 1
+                if candidates:
+                    # Save a second bounded snapshot only when final ingest
+                    # changed a decision (typically duplicate).  This keeps
+                    # diagnosis accurate without retaining response bodies.
+                    await asyncio.to_thread(
+                        self.repository.save_discovery_debug, provider_name, source, candidates,
+                    )
                 accounts.append(account)
         except DiscoveryProviderUnavailable as exc:
             counts['failed'] += 1

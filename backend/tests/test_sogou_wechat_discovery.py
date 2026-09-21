@@ -12,7 +12,7 @@ from backend.future_radar.wechat.discovery.base import DiscoveryProviderUnavaila
 from backend.future_radar.wechat.discovery.manual import ManualDiscoveryProvider
 from backend.future_radar.wechat.discovery.sogou import (
     MAX_SEARCH_RESPONSE_BYTES, SogouWechatDiscoveryProvider,
-    exact_source_match, parse_sogou_results,
+    exact_source_match, parse_sogou_candidates, parse_sogou_results,
 )
 
 
@@ -47,6 +47,31 @@ def test_exact_account_match():
 def test_similar_account_rejected():
     assert not exact_source_match("国聘", "XX国聘信息网")
     assert parse_sogou_results(result_html("XX国聘信息网"), "国聘") == []
+
+
+def test_candidate_debug_keeps_source_mismatch_and_raw_fields():
+    candidate = parse_sogou_candidates(result_html("XX国聘信息网"), "国聘")[0]
+    assert candidate["raw_title"] == "国聘2027届校园招聘启动"
+    assert candidate["raw_source_name"] == "XX国聘信息网"
+    assert candidate["normalized_source_name"] == "xx国聘信息网"
+    assert candidate["accepted"] is False
+    assert candidate["rejection_reason"] == "source_name_mismatch"
+
+
+def test_candidate_debug_marks_old_exact_article_out_of_range():
+    candidate = parse_sogou_candidates(
+        result_html(epoch=1_700_000_000), "国聘", now=datetime(2026, 9, 22, tzinfo=timezone.utc),
+    )[0]
+    assert candidate["accepted"] is False
+    assert candidate["rejection_reason"] == "date_out_of_range"
+
+
+def test_result_markup_with_void_thumbnail_and_span_source_is_parsed():
+    page = '''<ul class="news-list"><li><img src="thumb"><div><h3><a href="/link?url=x">招聘标题</a></h3>
+      <div class="s-p"><span class="all-time-y2">国聘</span><script>document.write(timeConvert('1789948800'))</script></div>
+      </div></li></ul>'''
+    rows = parse_sogou_results(page, "国聘", now=datetime(2026, 9, 22, tzinfo=timezone.utc))
+    assert len(rows) == 1 and rows[0].source_name == "国聘"
 
 
 def test_result_without_direct_wechat_url_is_preserved():
