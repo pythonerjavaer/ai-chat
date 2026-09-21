@@ -484,3 +484,27 @@ def test_manual_and_scheduled_discovery_cannot_overlap(title_repo):
     duplicate, completed = asyncio.run(scenario())
     assert duplicate['status'] == 'already_running'
     assert completed['status'] == 'available'
+
+
+def test_lead_type_rules_keep_direct_roundup_and_advice_distinct():
+    from backend.future_radar.wechat.classifier import classify_lead_type
+    assert classify_lead_type("国家电网2027年第一批校园招聘公告") == "direct_opportunity"
+    assert classify_lead_type("各大银行秋招已开，2027银行秋招汇总表") == "roundup"
+    assert classify_lead_type("27银行秋招怎么选岗？速来领取岗位表") == "advice"
+
+
+def test_async_scan_run_persists_status_and_reuses_one_active_run(title_repo):
+    class Provider:
+        name = 'sogou_wechat'
+        async def discover_with_debug(self, source, *, query=None):
+            return [], []
+    async def check():
+        service = WechatTitleService(title_repo)
+        started = await service.start_discovery(Provider(), respect_cooldown=False)
+        duplicate = await service.start_discovery(Provider(), respect_cooldown=False)
+        assert duplicate == {'scan_id': started['scan_id'], 'status': 'already_running'}
+        await service._scan_task
+        return title_repo.get_scan_run(started['scan_id'])
+    run = asyncio.run(check())
+    assert run['status'] == 'success'
+    assert run['completed_sources'] == 5
