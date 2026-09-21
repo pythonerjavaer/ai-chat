@@ -2997,10 +2997,15 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
           ? "自动雷达扫描中"
           : "雷达正在扫描";
   elements.futureRadarLiveState.className = `radar-live-state ${liveClass}`;
+  const liveCopy = running ? runningCopy : errors > 0 ? `${errors} 个信源异常` : total > 0 ? "情报链路在线" : "等待雷达状态";
   elements.futureRadarLiveState.replaceChildren(
     makeElement("i"),
-    document.createTextNode(running ? runningCopy : errors > 0 ? `${errors} 个信源异常` : total > 0 ? "情报链路在线" : "等待雷达状态"),
+    document.createTextNode(`${liveCopy} · 查看`),
   );
+  elements.futureRadarLiveState.title = errors > 0
+    ? `查看 ${errors} 个异常信源的名称、检查时间与错误原因`
+    : "查看信源名称、最近检查时间与当前状态";
+  elements.futureRadarLiveState.setAttribute("aria-label", `${liveCopy}；点击查看信源健康详情`);
 }
 
 async function showFutureRadarCandidateReview() {
@@ -5491,6 +5496,10 @@ document.querySelectorAll("[data-radar-tab]").forEach((button) => {
     if (button.dataset.radarTab === "saved") personalRadar.renderSaved();
     if (button.dataset.radarTab === "applied") personalRadar.showApplied();
   });
+});
+elements.futureRadarLiveState?.addEventListener("click", () => {
+  activateFutureRadarTab("sources");
+  document.querySelector('[data-radar-panel="sources"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
 });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {

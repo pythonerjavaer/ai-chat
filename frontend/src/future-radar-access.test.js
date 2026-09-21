@@ -134,3 +134,10 @@ test("T-tier filters go to the unified backend and detail uses the same pool", (
   assert.match(appSource, /api\(`\/future-radar\/opportunities\/\$\{encodeURIComponent\(job\.id\)\}`,\s*\{\s*timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS/);
   assert.match(indexSource, /id="future-radar-filter-verification"[^>]*><option value="">全部机会/);
 });
+
+test("source-health status is an explicit control that opens its detailed panel", () => {
+  assert.match(indexSource, /<button id="future-radar-live-state"[^>]*type="button"/);
+  assert.match(indexSource, /id="future-radar-live-state"[^>]*title="查看信源健康详情"/);
+  assert.match(appSource, /futureRadarLiveState\?\.addEventListener\("click", \(\) => \{[\s\S]*?activateFutureRadarTab\("sources"\)/);
+  assert.match(appSource, /查看 \$\{errors\} 个异常信源的名称、检查时间与错误原因/);
+});
