@@ -41,6 +41,7 @@ class Element {
   replaceChildren(...nodes) { this.children = [...nodes]; this._text = ""; }
   addEventListener(name, listener) { this.listeners[name] = listener; }
   setAttribute(name, value) { this[name] = value; }
+  querySelector() { return null; }
   get textContent() { return this._text + this.children.map((node) => typeof node === "string" ? node : node.textContent).join(" "); }
   set textContent(value) { this._text = String(value); this.children = []; }
   scrollIntoView() {}
@@ -84,6 +85,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     "futureRadarLiveState", "futureRadarOpportunitySummary", "futureRadarOpportunityCount",
     "futureRadarPagination", "futureRadarPagePrev", "futureRadarPageNext", "futureRadarPageStatus",
     "futureRadarDashboard", "futureRadarLastScan", "futureRadarLastSuccess", "futureRadarSourceHealth",
+    "recruitmentDeadlineAlerts",
     "futureRadarFilterStatus", "futureRadarFilterEvent", "futureRadarFilterVerification", "futureRadarEvents",
     "recruitmentRoles", "recruitmentIndustries", "recruitmentLocations",
     "settingsDialog", "consentDialog", "worldMapDialog", "appView", "authView", "password",
@@ -135,7 +137,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     selectedRecruitmentStarfields: () => [],
     filterRecruitmentByStarfield: (jobs) => filterJobsByStarfields(jobs, []),
     recruitmentJobUrl: futureRadarPublicOpportunityUrl,
-    recruitmentDaysLeft: () => null,
+    recruitmentDaysLeft: (job) => job.days_left ?? null,
     recruitmentScoringFactors: () => [],
     radarStatusCopy: (status) => status,
     formatRadarTime: () => "待记录",
@@ -169,7 +171,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   };
   for (const name of ["renderFutureRadarPagination", "syncFutureRadarProgramFilter",
     "renderFutureRadarPrograms", "mergeFutureRadarEvents", "syncFutureRadarSourceFilter",
-    "renderFutureRadarSources", "renderFutureRadarRuns", "renderRecruitmentDeadlineAlerts", "renderRecruitmentProfile",
+    "renderFutureRadarSources", "renderFutureRadarRuns", "renderRecruitmentProfile",
     "loadRecruitmentMonitors", "loadRecruitmentWatches", "renderRecruitmentWatches", "renderHomeRecruitmentAlerts", "renderRecruitmentMonitors", "renderRecruitmentSyncStatus",
     "renderFutureRadarRunAvailability", "applyIncrementalRadarMetrics", "addRecruitmentWatchFromJob", "showToast", "renderMusicUI"]) context[name] = noop;
   vm.createContext(context);
@@ -188,6 +190,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     extract("function resetFutureRadarFilters(", "\nfunction applyIncrementalRadarMetrics"),
     extract("async function loadFutureRadarSnapshot(", "\nfunction stopFutureRadarPolling"),
     extract("function recruitmentVerification(", "\nfunction recruitmentScoringFactors"),
+    extract("function renderRecruitmentDeadlineAlerts(", "\nfunction selectedRecruitmentStarfields"),
     extract("function selectRecruitmentTier(", "\nasync function addRecruitmentWatchFromJob"),
     extract("async function refreshRecruitment(", "\nasync function refreshRecruitmentSource"),
     extract("async function saveRecruitment(", "\nfunction scheduleRecruitmentAutoFilter"),
@@ -281,6 +284,42 @@ test("loaded opportunity and ChatGPT sync statistics fill metrics when dashboard
     .filter((element) => element.tag === "strong")
     .map((element) => element.textContent);
   assert.deepEqual(values, ["7", "2", "1", "3", "4", "10", "5"]);
+});
+
+test("lightweight dashboard and ChatGPT inventory fill metrics before the full pool returns", () => {
+  const r = runtime();
+  r.state.futureRadar.jobsError = "full pool timed out";
+  r.state.recruitmentSyncStatus = {
+    latest_ingest_counts: { new: 49, updated: 2, closed: 4 },
+    inventory_source_screened: 25,
+    inventory_pending: 2,
+    inventory_accepted: 15,
+  };
+  r.run("renderFutureRadarDashboard({ programs: 8, closing_soon: 45 })");
+  const values = descendants(r.elements.futureRadarDashboard)
+    .filter((element) => element.tag === "strong")
+    .map((element) => element.textContent);
+  assert.deepEqual(values, ["49", "2", "4", "8", "45", "27", "15"]);
+});
+
+test("manual Radar refresh reads the lightweight dashboard before slow compatibility APIs", async () => {
+  const r = runtime({ fail: false });
+  await r.run("refreshRecruitment()");
+  assert.equal(r.calls[0], "/future-radar/dashboard");
+  assert.equal(r.requestOptions[0].timeoutMs, 12000);
+});
+
+test("deadline alerts include ChatGPT-screened source dates without calling them official", () => {
+  const r = runtime();
+  r.context.deadlineJobs = [
+    { company: "官网公司", title: "研究岗", verification_status: "verified", days_left: 3, official_url: "https://careers.example.com/verified" },
+    { company: "GPT 公司", title: "数据岗", verification_status: "source_screened", days_left: 1, official_url: "https://careers.example.com/screened" },
+  ];
+  r.run("renderRecruitmentDeadlineAlerts(deadlineJobs)");
+  assert.match(r.elements.recruitmentDeadlineAlerts.textContent, /2 个有来源日期的机会将在 15 天内关闭/);
+  assert.match(r.elements.recruitmentDeadlineAlerts.textContent, /官网确认 1 · GPT 待复核 1/);
+  assert.match(r.elements.recruitmentDeadlineAlerts.textContent, /GPT 公司｜数据岗｜1 天后截止｜GPT 日期待官网复核/);
+  assert.match(r.elements.recruitmentDeadlineAlerts.textContent, /官网公司｜研究岗｜3 天后截止｜官网确认/);
 });
 
 test("a partial dashboard snapshot is not successful when opportunities failed", async () => {

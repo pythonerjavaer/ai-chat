@@ -2921,12 +2921,22 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
     ["VERIFIED", "官网确认记录", ["verified", "verified_jobs", "counts.verified"]],
   ];
   elements.futureRadarDashboard.replaceChildren();
-  // A failed pool read means dashboard zeros are a fallback, not a count.
-  // Keep that uncertainty visible instead of presenting a false empty pool.
-  const poolUnavailable = Boolean(state.futureRadar?.jobsError);
-  const poolStats = state.futureRadar?.jobsLoaded ? state.futureRadar.opportunityStats || {} : {};
+  // A lightweight dashboard read and the ChatGPT bridge remain valid even if
+  // the much larger opportunity page is still loading or temporarily failed.
+  // Only discard fallbacks derived from a stale opportunity page.
+  const poolStats = state.futureRadar?.jobsLoaded && !state.futureRadar?.jobsError
+    ? state.futureRadar.opportunityStats || {}
+    : {};
   const verification = poolStats.verification_status || {};
   const latestChatSync = state.recruitmentSyncStatus?.latest_ingest_counts || {};
+  const chatDiscoveredParts = [
+    state.recruitmentSyncStatus?.inventory_source_screened,
+    state.recruitmentSyncStatus?.inventory_pending,
+    state.recruitmentSyncStatus?.inventory_conflicted,
+  ];
+  const chatDiscovered = chatDiscoveredParts.some((value) => value != null)
+    ? chatDiscoveredParts.reduce((total, value) => total + Number(value || 0), 0)
+    : null;
   const poolMetricFallbacks = {
     NEW: latestChatSync.new,
     UPDATED: latestChatSync.updated,
@@ -2937,18 +2947,17 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
       ?? ([verification.pending, verification.source_screened, verification.conflicted]
         .some((value) => value != null)
         ? Number(verification.pending || 0) + Number(verification.source_screened || 0) + Number(verification.conflicted || 0)
-        : null),
-    VERIFIED: poolStats.verified_count ?? verification.verified,
+        : chatDiscovered),
+    VERIFIED: poolStats.verified_count
+      ?? verification.verified
+      ?? state.recruitmentSyncStatus?.inventory_accepted,
   };
   metrics.forEach(([code, label, paths]) => {
     const dashboardValue = valueAtPaths(dashboard, paths);
     const fallbackValue = poolMetricFallbacks[code];
-    const metricValue = poolUnavailable ? null
-      : code === "CLOSING SOON"
-        ? (fallbackValue == null ? null : Number(fallbackValue))
-        : dashboardValue == null
-          ? (fallbackValue == null ? null : Number(fallbackValue))
-          : radarNumber(dashboard, paths);
+    const metricValue = dashboardValue == null
+      ? (fallbackValue == null ? null : Number(fallbackValue))
+      : radarNumber(dashboard, paths);
     const clickable = true;
     const card = makeElement(clickable ? "button" : "article", `radar-metric metric-${code.toLowerCase().replaceAll(" ", "-")}`);
     if (clickable) {
@@ -4124,8 +4133,13 @@ function renderRecruitmentDeadlineAlerts(jobs) {
   elements.recruitmentDeadlineAlerts.replaceChildren();
   if (futureRadarSelectionIsPending()) return;
   const reviewJobs = jobs.filter((job) => ["pending", "conflicted", "failed", "unknown"].includes(recruitmentVerification(job)));
-  const verifiedJobs = jobs.filter((job) => recruitmentVerification(job) === "verified").map((job) => ({ ...job, days_left: recruitmentDaysLeft(job) }));
-  const urgent = verifiedJobs
+  // ChatGPT-screened announcements already carry useful source dates. Surface
+  // them immediately and label their evidence level instead of hiding them
+  // until a later official-site verification pass.
+  const datedCandidates = jobs
+    .filter((job) => ["verified", "source_screened"].includes(recruitmentVerification(job)))
+    .map((job) => ({ ...job, days_left: recruitmentDaysLeft(job) }));
+  const urgent = datedCandidates
     .filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 15)
     .sort((left, right) => left.days_left - right.days_left || String(left.company).localeCompare(String(right.company), "zh-CN"));
   const visibleClosingSoon = jobs.filter((job) => {
@@ -4138,13 +4152,15 @@ function renderRecruitmentDeadlineAlerts(jobs) {
     closingMetric.querySelector("span").textContent = "当前列表 15 天内";
     closingMetric.title = `当前机会列表有 ${visibleClosingSoon} 个岗位将在 15 天内截止；点击查看。`;
   }
-  const dated = verifiedJobs.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0);
+  const dated = datedCandidates.filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0);
+  const urgentVerified = urgent.filter((job) => recruitmentVerification(job) === "verified").length;
+  const urgentScreened = urgent.length - urgentVerified;
   const heading = document.createElement("strong");
   heading.textContent = urgent.length
-    ? `${companyView ? "当前筛选近期时间窗（最多 12 条）" : "本页时间窗预警"} · ${urgent.length} 个官网已确认机会将在 15 天内关闭`
+    ? `${companyView ? "当前筛选近期时间窗（最多 12 条）" : "本页时间窗预警"} · ${urgent.length} 个有来源日期的机会将在 15 天内关闭（官网确认 ${urgentVerified} · GPT 待复核 ${urgentScreened}）`
     : dated.length
-      ? "时间窗预警 · 暂无 15 天内关闭的已核验机会"
-      : "时间窗预警 · 暂无原始公告明确标注截止日期，刷新后将自动核验";
+      ? "时间窗预警 · 暂无 15 天内关闭的有来源日期机会"
+      : "时间窗预警 · 当前已同步公告尚未提供可读取的截止日；后续同步会继续补全";
   const deadlineFilterActive = Boolean(state.futureRadar.filters.closing_after || state.futureRadar.filters.closing_before || state.futureRadar.filters.sort === "closing");
   const returnToPool = deadlineFilterActive
     ? makeElement("button", "deadline-return-pool", "返回全部机会池（清除筛选）")
@@ -4159,7 +4175,8 @@ function renderRecruitmentDeadlineAlerts(jobs) {
     item.href = recruitmentJobUrl(job) || "#";
     item.target = "_blank";
     item.rel = "noreferrer";
-    item.textContent = `${job.company}｜${job.title}｜${job.days_left === 0 ? "今天截止" : `${job.days_left} 天后截止`}`;
+    const evidence = recruitmentVerification(job) === "verified" ? "官网确认" : "GPT 日期待官网复核";
+    item.textContent = `${job.company}｜${job.title}｜${job.days_left === 0 ? "今天截止" : `${job.days_left} 天后截止`}｜${evidence}`;
     list.appendChild(item);
   });
   if (urgent.length) {
@@ -4183,7 +4200,7 @@ function renderRecruitmentDeadlineAlerts(jobs) {
   if (reviewJobs.length) {
     const note = document.createElement("small");
     note.className = "recruitment-review-note";
-    note.textContent = `本页另有 ${reviewJobs.length} 个聊天 / 搜索线索直接显示在下方；来源标注的日期会单独注明，不作为已确认截止预警。`;
+    note.textContent = `本页另有 ${reviewJobs.length} 个尚未筛选完成的聊天 / 搜索线索；其日期只在来源可追溯时进入预警。`;
     elements.recruitmentDeadlineAlerts.append(note);
   }
 }
@@ -4910,6 +4927,16 @@ async function addRecruitmentWatchFromJob(job, button) {
 
 async function refreshRecruitment() {
   if (!state.token) return null;
+  // A manual Radar open should paint the small database aggregate before any
+  // compatibility or full-pool request. This is a plain server read: it does
+  // not run a scan, call a model, or consume OpenAI tokens.
+  try {
+    const dashboard = await api("/future-radar/dashboard", { timeoutMs: 12000 });
+    state.futureRadar.dashboard = dashboard;
+    renderFutureRadarDashboard(dashboard);
+  } catch (_) {
+    renderFutureRadarDashboard(state.futureRadar.dashboard || {});
+  }
   void loadRecruitmentMonitors();
   void loadRecruitmentWatches();
   let legacyData = null;
