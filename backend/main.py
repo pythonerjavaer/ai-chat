@@ -1863,7 +1863,7 @@ def future_radar_run_detail(run_id: str, user: User) -> dict:
 
 
 @app.get("/api/future-radar/sources")
-def future_radar_sources(user: User, enabled: bool | None = None) -> dict:
+def future_radar_sources(user: User, enabled: bool | None = True) -> dict:
     del user
     sources = [
         _public_radar_source(source)

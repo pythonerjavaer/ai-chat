@@ -3752,7 +3752,7 @@ async function loadFutureRadarSnapshot() {
     ["jobs", jobs],
     ["programs", api("/future-radar/programs")],
     ["events", api("/future-radar/events?limit=50")],
-    ["sources", api("/future-radar/sources")],
+    ["sources", api("/future-radar/sources?enabled=true")],
     ["runs", api("/future-radar/runs")],
   ];
   const results = await Promise.allSettled(requests.map(([, request]) => request));

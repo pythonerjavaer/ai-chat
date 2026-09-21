@@ -188,6 +188,65 @@ class RadarRepository:
                     ),
                 )
 
+    def purge_development_sources(self) -> None:
+        """Remove non-production source fixtures and the records they created."""
+        source_id = "mock-future-radar"
+        with self.transaction() as connection:
+            mock_job_ids = [
+                str(row["id"])
+                for row in connection.execute(
+                    """
+                    SELECT id FROM radar_jobs
+                    WHERE source_id=? OR external_id LIKE 'mock-2027-job-%'
+                    """,
+                    (source_id,),
+                ).fetchall()
+            ]
+            mock_program_ids = [
+                str(row["id"])
+                for row in connection.execute(
+                    """
+                    SELECT id FROM recruitment_programs
+                    WHERE source_id=? OR external_id LIKE 'mock-program-%'
+                    """,
+                    (source_id,),
+                ).fetchall()
+            ]
+            connection.execute("DELETE FROM radar_events WHERE source_id=?", (source_id,))
+            if mock_job_ids:
+                placeholders = ",".join("?" for _ in mock_job_ids)
+                connection.execute(
+                    f"DELETE FROM radar_events WHERE entity_type='job' AND entity_id IN ({placeholders})",
+                    mock_job_ids,
+                )
+                connection.execute(
+                    f"DELETE FROM radar_jobs WHERE id IN ({placeholders})",
+                    mock_job_ids,
+                )
+            if mock_program_ids:
+                placeholders = ",".join("?" for _ in mock_program_ids)
+                connection.execute(
+                    f"DELETE FROM radar_events WHERE entity_type='program' AND entity_id IN ({placeholders})",
+                    mock_program_ids,
+                )
+                connection.execute(
+                    f"DELETE FROM recruitment_programs WHERE id IN ({placeholders})",
+                    mock_program_ids,
+                )
+            connection.execute("DELETE FROM monitor_sources WHERE id=?", (source_id,))
+            connection.execute(
+                """
+                DELETE FROM radar_companies
+                WHERE name IN ('星河科技','北辰银行','远海能源','霁云咨询','曙光消费')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM radar_jobs WHERE radar_jobs.company_id=radar_companies.id
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM recruitment_programs
+                    WHERE recruitment_programs.company_id=radar_companies.id
+                )
+                """
+            )
+
     @staticmethod
     def decode_source(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
         if row is None:
@@ -2605,10 +2664,10 @@ class RadarRepository:
             ).fetchone()[0])
             source_counts = connection.execute(
                 """
-                SELECT COUNT(*) AS total,
+                SELECT SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END) AS total,
                     SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END) AS enabled,
                     SUM(CASE WHEN enabled=1 AND status='healthy' THEN 1 ELSE 0 END) AS healthy,
-                    SUM(CASE WHEN enabled=1 AND status IN ('error','discovery_limited') THEN 1 ELSE 0 END) AS errors
+                    SUM(CASE WHEN enabled=1 AND status='error' THEN 1 ELSE 0 END) AS errors
                 FROM monitor_sources
                 """
             ).fetchone()

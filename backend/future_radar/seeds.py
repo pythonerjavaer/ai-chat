@@ -354,14 +354,21 @@ VERIFIED_OFFICIAL_SOURCES = (
         "platform": "official_web",
         "company": "中欧基金",
         "source_type": "official_html",
-        "url": "https://zofund.zhiye.com/campus",
+        # The generic campus landing page intermittently stalls at the CDN,
+        # while the official vacancy pages remain directly readable.  Use a
+        # current, concrete vacancy as the deterministic health anchor.
+        "url": "https://zofund.zhiye.com/campusxq?jobId=621132304",
         "priority": 97,
         "trust_level": "verification",
         "interval_minutes": 60,
         "adapter_config": {
             "adapter": "official_html",
             "ai_extract": False,
-            "required_markers": ["中欧基金", "27届校招-信用研究", "27届校招-量化风控"],
+            "required_markers": ["中欧基金", "27届校招-信用研究"],
+            # This anchor is one vacancy, not a complete authoritative list.
+            # Never retire the other configured vacancies merely because they
+            # are not printed on this individual detail page.
+            "snapshot_complete": False,
             "recruitment_year": 2027,
             "recruitment_type": "campus",
             "program_name": "中欧基金 2027 届校园招聘",
@@ -643,19 +650,6 @@ def initial_sources(*, web_search_enabled: bool) -> list[dict[str, Any]]:
             "region_config": {"timezone": "Asia/Shanghai", "regions": ["中国大陆", "香港"]},
             "status": "pending" if web_search_enabled else "disabled",
             "verification_status": "unverified",
-        },
-        {
-            "id": "mock-future-radar",
-            "name": "Future Radar Mock Lifecycle",
-            "platform": "mock",
-            "source_type": "manual",
-            "enabled": False,
-            "priority": 100,
-            "trust_level": "verification",
-            "interval_minutes": 1_440,
-            "adapter_config": {"adapter": "mock", "round": 1},
-            "status": "disabled",
-            "verification_status": "verified",
         },
     ])
     return sources

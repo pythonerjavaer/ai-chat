@@ -140,4 +140,5 @@ test("source-health status is an explicit control that opens its detailed panel"
   assert.match(indexSource, /id="future-radar-live-state"[^>]*title="查看信源健康详情"/);
   assert.match(appSource, /futureRadarLiveState\?\.addEventListener\("click", \(\) => \{[\s\S]*?activateFutureRadarTab\("sources"\)/);
   assert.match(appSource, /查看 \$\{errors\} 个异常信源的名称、检查时间与错误原因/);
+  assert.match(appSource, /api\("\/future-radar\/sources\?enabled=true"\)/);
 });

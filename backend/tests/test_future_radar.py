@@ -110,6 +110,23 @@ def radar_service(tmp_path, monkeypatch):
         max_workers=4,
     )
     service.seed_registry()
+    # The lifecycle adapter remains available for isolated tests, but the
+    # production registry no longer seeds or displays this fixture.
+    service.repository.create_source({
+        "id": "mock-future-radar",
+        "name": "Future Radar Mock Lifecycle",
+        "platform": "mock",
+        "source_type": "manual",
+        "enabled": False,
+        "priority": 100,
+        "trust_level": "verification",
+        "interval_minutes": 1_440,
+        "adapter_config": {"adapter": "mock", "round": 1},
+        "query_config": {},
+        "region_config": {},
+        "status": "disabled",
+        "verification_status": "verified",
+    })
     return service
 
 
@@ -944,6 +961,49 @@ def test_wechat_discovery_limited_is_reported_without_fabricated_success(radar_s
     assert table_count(radar_service, "radar_events") == 0
 
 
+def test_dashboard_counts_only_enabled_sources_and_does_not_call_limited_discovery_an_error(
+    radar_service,
+):
+    radar_service.repository.patch_source(
+        "official-dji-digital-2027", {"enabled": False}
+    )
+    radar_service.repository.update_source_error(
+        "official-pdd-campus-2027", "temporary failure"
+    )
+    radar_service.repository.update_source_limited(
+        "wechat-guoyang-campus", "public discovery is intentionally disabled"
+    )
+
+    dashboard = radar_service.repository.dashboard()
+    enabled = radar_service.repository.list_sources(enabled=True)
+    assert dashboard["sources"]["total"] == len(enabled)
+    assert dashboard["sources"]["enabled"] == len(enabled)
+    assert dashboard["sources"]["errors"] == 1
+
+
+def test_registry_reseed_purges_mock_source_jobs_programs_and_events(radar_service):
+    radar_service.repository.patch_source("mock-future-radar", {"enabled": True})
+    seeded = radar_service.run(
+        trigger_type="test_seed", source_ids=["mock-future-radar"], force=True
+    )
+    assert seeded["new_jobs"] == 10
+    assert radar_service.repository.get_source("mock-future-radar") is not None
+
+    radar_service.seed_registry()
+
+    assert radar_service.repository.get_source("mock-future-radar") is None
+    with radar_service.repository._connect() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM radar_jobs WHERE external_id LIKE 'mock-2027-job-%'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM recruitment_programs WHERE external_id LIKE 'mock-program-%'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM radar_events WHERE source_id='mock-future-radar'"
+        ).fetchone()[0] == 0
+
+
 def test_official_registry_uses_exact_public_markers_and_never_generic_jobs(
     radar_service,
 ):
@@ -961,6 +1021,12 @@ def test_official_registry_uses_exact_public_markers_and_never_generic_jobs(
         "official-zofund-campus-2027",
         "official-citics-headquarters-campus-2027",
     }.issubset(source_ids)
+    zofund = radar_service.repository.get_source("official-zofund-campus-2027")
+    assert zofund["url"] == "https://zofund.zhiye.com/campusxq?jobId=621132304"
+    assert zofund["adapter_config"]["required_markers"] == [
+        "中欧基金", "27届校招-信用研究"
+    ]
+    assert zofund["adapter_config"]["snapshot_complete"] is False
     for source_id in source_ids:
         if not source_id.startswith("official-"):
             continue

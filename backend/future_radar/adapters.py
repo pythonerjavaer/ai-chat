@@ -1107,7 +1107,7 @@ class OfficialHtmlAdapter:
         coverage: dict[str, Any] = {}
         content_hash = page.fingerprint
         normalized_content = page.text[:20_000]
-        snapshot_complete = True
+        snapshot_complete = bool(config.get("snapshot_complete", True))
         status = "healthy"
         if config.get("discover_job_links"):
             # A linked-list crawl is not an authoritative company snapshot;

@@ -225,6 +225,7 @@ class FutureRadarService:
         self.source_lock_ttl_seconds = max(1, int(source_lock_ttl_seconds))
 
     def seed_registry(self) -> None:
+        self.repository.purge_development_sources()
         self.repository.seed_sources(
             initial_sources(web_search_enabled=self.web_search_enabled)
         )
