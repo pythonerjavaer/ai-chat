@@ -17,8 +17,10 @@ test("the bridge defaults to nine sources and uses the server count for its titl
     if (!nodes.has(selector)) nodes.set(selector, {});
     return nodes.get(selector);
   } };
-  const context = { state: {}, ensureRecruitmentSyncPanel: () => panel,
-    makeElement: () => ({ style: { setProperty() {} } }) };
+  const dashboardRenders = [];
+  const context = { state: { futureRadar: { dashboard: null } }, ensureRecruitmentSyncPanel: () => panel,
+    makeElement: () => ({ style: { setProperty() {} } }),
+    renderFutureRadarDashboard: (dashboard) => dashboardRenders.push(dashboard) };
   vm.createContext(context);
   vm.runInContext([
     appSource.match(/const CHATGPT_MONITOR_SOURCE_COUNT = \d+;/)[0],
@@ -42,6 +44,8 @@ test("the bridge defaults to nine sources and uses the server count for its titl
   assert.equal(nodes.get('[data-sync-metric="accepted"] strong').textContent, "10");
   assert.equal(nodes.get('[data-sync-metric="pending"] strong').textContent, "3");
   assert.equal(nodes.get('[data-sync-badge]').textContent, "同步完成");
+  assert.equal(dashboardRenders.length, 4);
+  assert.ok(dashboardRenders.every((dashboard) => Object.keys(dashboard).length === 0));
 });
 
 test("the bridge labels inventory as source signals and never treats skipped or closed as rejected", () => {

@@ -2669,6 +2669,10 @@ function renderRecruitmentSyncStatus(rawStatus) {
         ? `${expected} / ${expected} 已同步`
         : `${Math.min(connected, expected)} / ${expected} 源已回传`;
   state.recruitmentSyncStatus = status;
+  // The ChatGPT bridge can finish long before the full opportunity pool on a
+  // sleeping free instance. Paint its stored NEW/UPDATED/CLOSED counters now
+  // instead of leaving the dashboard blank until the slowest request ends.
+  renderFutureRadarDashboard(state.futureRadar?.dashboard || {});
 }
 
 function radarCollection(payload, keys = []) {
