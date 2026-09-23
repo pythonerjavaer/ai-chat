@@ -137,6 +137,24 @@ def test_transport_recovery_queues_and_completes_public_backfill(harness, monkey
     assert harness.coordinator.run_once()["processed"]["attempted"] == 0
 
 
+def test_long_bridge_silence_infers_public_recovery_window(harness):
+    harness.ingestion.ingest(monitor_payload(run_id="before-outage"), idempotency_key="before-outage")
+    old = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    with database.connect() as connection:
+        connection.execute(
+            """UPDATE monitor_ingestion_watermarks SET last_successful_ingestion_at=?,
+               last_received_at=?,updated_at=? WHERE source_id='chatgpt-radar-02'""",
+            (old, old, old),
+        )
+    harness.ingestion.ingest(monitor_payload(run_id="after-outage"), idempotency_key="after-outage")
+    mark = table("monitor_ingestion_watermarks")[0]
+    assert mark["pending_backfill"] == 1
+    assert mark["recovery_status"] == "backfill_pending"
+    assert mark["interrupted_from"] == old
+    assert harness.coordinator.run_once()["processed"]["succeeded"] == 1
+    assert table("monitor_ingestion_watermarks")[0]["pending_backfill"] == 0
+
+
 def test_failed_public_source_keeps_window_and_retries_with_backoff(harness, monkeypatch):
     make_interruption_then_recover(harness, monkeypatch)
     harness.current_adapter["value"] = FailingAdapter()

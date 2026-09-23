@@ -299,11 +299,32 @@ class ChatGPTMonitorIngestionService:
         duplicate_suppressed = int(response.get("duplicates") or 0)
         with self.connect() as connection:
             prior = connection.execute(
-                "SELECT pending_backfill,interrupted_from FROM monitor_ingestion_watermarks WHERE source_id=?",
+                """SELECT pending_backfill,interrupted_from,last_successful_ingestion_at,last_received_at
+                   FROM monitor_ingestion_watermarks WHERE source_id=?""",
                 (source_id,),
             ).fetchone()
-            preserve_backfill = bool(prior and prior["pending_backfill"])
-            interrupted_from = prior["interrupted_from"] if preserve_backfill else None
+            source = connection.execute(
+                "SELECT interval_minutes FROM monitor_sources WHERE id=?", (source_id,),
+            ).fetchone()
+            interval_minutes = max(60, int(source["interval_minutes"] if source else 1_440))
+            last_received = _parse_time(prior["last_received_at"]) if prior else None
+            received = _parse_time(received_at)
+            # A complete database outage cannot persist its own failure marker.
+            # The first Bridge row accepted after recovery therefore infers a
+            # bounded interruption only when delivery has been silent for at
+            # least two source cadences (and never less than six hours).
+            inferred_gap = bool(
+                last_received and received
+                and received - last_received > timedelta(minutes=max(360, interval_minutes * 2))
+            )
+            preserve_backfill = bool(prior and (prior["pending_backfill"] or inferred_gap))
+            interrupted_from = None
+            if preserve_backfill:
+                interrupted_from = (
+                    prior["interrupted_from"]
+                    or prior["last_successful_ingestion_at"]
+                    or prior["last_received_at"]
+                )
             event_row = connection.execute(
                 "SELECT COALESCE(MAX(id),0) AS cursor FROM radar_events"
             ).fetchone()
