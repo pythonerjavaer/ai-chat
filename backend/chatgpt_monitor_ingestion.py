@@ -8,7 +8,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from .future_radar.normalization import (
@@ -29,6 +29,11 @@ _CAMPUS_MARKERS = (
 )
 _ADVICE_MARKERS = ("攻略", "怎么选", "备考", "经验", "面经", "笔经", "交流群")
 _ROUNDUP_MARKERS = ("汇总", "合集", "盘点", "多家", "各大", "一览", "秋招爆了")
+_STALE_RUN_AFTER = timedelta(minutes=20)
+
+
+class RetryableIngestionBusy(RuntimeError):
+    """The same monitor payload is already being processed and should be retried later."""
 
 
 def _json(value: Any) -> str:
@@ -37,6 +42,18 @@ def _json(value: Any) -> str:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except ValueError:
+        return None
 
 
 def _thread_ref(value: Any) -> str | None:
@@ -262,6 +279,128 @@ class ChatGPTMonitorIngestionService:
                 (status, error, _json(result), round((time.perf_counter() - started) * 1000), now, run_id),
             )
 
+    def _run_is_stale(self, run: dict[str, Any]) -> bool:
+        updated = _parse_time(run.get("updated_at"))
+        if updated is None:
+            return True
+        return datetime.now(timezone.utc) - updated > _STALE_RUN_AFTER
+
+    def _latest_event_id(self) -> int:
+        with self.connect() as connection:
+            row = connection.execute("SELECT COALESCE(MAX(id),0) AS cursor FROM radar_events").fetchone()
+        return int(row["cursor"] if row else 0)
+
+    def _update_watermark(
+        self, *, payload: dict[str, Any], run_id: str, response: dict[str, Any], received_at: str,
+    ) -> None:
+        now = _utc_now()
+        source_id = str(payload["source_id"])
+        duplicate_suppressed = int(response.get("duplicates") or 0)
+        with self.connect() as connection:
+            event_row = connection.execute(
+                "SELECT COALESCE(MAX(id),0) AS cursor FROM radar_events"
+            ).fetchone()
+            event_id = int(event_row["cursor"] if event_row else 0)
+            connection.execute(
+                """INSERT INTO monitor_ingestion_watermarks
+                   (source_id,source_thread_ref,monitor_name,last_successful_ingestion_at,
+                    last_successful_run_id,last_successful_event_id,last_received_at,
+                    recovery_status,interrupted_from,interrupted_until,pending_backfill,
+                    duplicate_suppressed,updated_at)
+                   VALUES (?,?,?,?,?,?,?,'normal',NULL,NULL,0,?,?)
+                   ON CONFLICT(source_id) DO UPDATE SET
+                     source_thread_ref=excluded.source_thread_ref,
+                     monitor_name=excluded.monitor_name,
+                     last_successful_ingestion_at=excluded.last_successful_ingestion_at,
+                     last_successful_run_id=excluded.last_successful_run_id,
+                     last_successful_event_id=excluded.last_successful_event_id,
+                     last_received_at=excluded.last_received_at,
+                     recovery_status='normal',
+                     interrupted_until=NULL,
+                     pending_backfill=0,
+                     duplicate_suppressed=monitor_ingestion_watermarks.duplicate_suppressed + excluded.duplicate_suppressed,
+                     updated_at=excluded.updated_at""",
+                (
+                    source_id, _thread_ref(payload.get("source_thread_id")), payload.get("monitor_name"),
+                    payload.get("generated_at") or now, run_id, event_id, received_at,
+                    duplicate_suppressed, now,
+                ),
+            )
+
+    def _mark_interruption(self, *, payload: dict[str, Any], run_id: str | None, error: str) -> None:
+        now = _utc_now()
+        source_id = str(payload.get("source_id") or "")
+        if not source_id:
+            return
+        if not self.radar.repository.get_source(source_id):
+            self.radar.repository.create_source({
+                "id": source_id,
+                "name": clean_text(payload.get("monitor_name") or source_id, limit=160),
+                "platform": "external",
+                "source_type": "manual",
+                "enabled": True,
+                "priority": 50,
+                "trust_level": "discovery",
+                "interval_minutes": 1_440,
+                "adapter_config": {"adapter": "manual"},
+                "status": "pending",
+                "verification_status": "unverified",
+            })
+        with self.connect() as connection:
+            prior = connection.execute(
+                "SELECT last_successful_ingestion_at, interrupted_from FROM monitor_ingestion_watermarks WHERE source_id=?",
+                (source_id,),
+            ).fetchone()
+            interrupted_from = None
+            if prior:
+                interrupted_from = prior["interrupted_from"] or prior["last_successful_ingestion_at"]
+            interrupted_from = interrupted_from or payload.get("generated_at") or now
+            connection.execute(
+                """INSERT INTO monitor_ingestion_watermarks
+                   (source_id,source_thread_ref,monitor_name,last_successful_ingestion_at,
+                    last_successful_run_id,last_successful_event_id,last_received_at,
+                    recovery_status,interrupted_from,interrupted_until,pending_backfill,
+                    duplicate_suppressed,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(source_id) DO UPDATE SET
+                     source_thread_ref=COALESCE(excluded.source_thread_ref, monitor_ingestion_watermarks.source_thread_ref),
+                     monitor_name=COALESCE(excluded.monitor_name, monitor_ingestion_watermarks.monitor_name),
+                     recovery_status='interrupted',
+                     interrupted_from=COALESCE(monitor_ingestion_watermarks.interrupted_from, excluded.interrupted_from),
+                     interrupted_until=excluded.interrupted_until,
+                     pending_backfill=1,
+                     last_received_at=excluded.last_received_at,
+                     updated_at=excluded.updated_at""",
+                (
+                    source_id, _thread_ref(payload.get("source_thread_id")), payload.get("monitor_name"),
+                    None, run_id, 0, now, "interrupted", interrupted_from, now, 1, 0, now,
+                ),
+            )
+
+    def recovery_status(self) -> dict[str, Any]:
+        with self.connect() as connection:
+            summary_rows = connection.execute(
+                """SELECT processing_status, COUNT(*) AS count
+                   FROM monitor_ingestion_runs GROUP BY processing_status"""
+            ).fetchall()
+            item_rows = connection.execute(
+                """SELECT processing_status, COUNT(*) AS count
+                   FROM monitor_ingestion_items GROUP BY processing_status"""
+            ).fetchall()
+            watermarks = [dict(row) for row in connection.execute(
+                """SELECT * FROM monitor_ingestion_watermarks
+                   ORDER BY updated_at DESC LIMIT 100"""
+            ).fetchall()]
+            latest_event = connection.execute(
+                "SELECT COALESCE(MAX(id),0) AS cursor FROM radar_events"
+            ).fetchone()
+        return {
+            "runs": {str(row["processing_status"]): int(row["count"]) for row in summary_rows},
+            "items": {str(row["processing_status"]): int(row["count"]) for row in item_rows},
+            "watermarks": watermarks,
+            "latest_radar_event_id": int(latest_event["cursor"] if latest_event else 0),
+        }
+
     def ingest(self, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
         started = time.perf_counter()
         canonical = _json(payload)
@@ -280,15 +419,22 @@ class ChatGPTMonitorIngestionService:
         )
         if not created:
             previous = json.loads(run.get("result") or "{}")
-            if previous:
+            if previous and run.get("processing_status") in {"success", "partial"}:
                 return {**previous, "idempotent_replay": True}
-            return {"run_id": run["id"], "status": run["processing_status"], "idempotent_replay": True}
-
-        run_id = proposed_run_id
+            if run.get("processing_status") in {"received", "processing"} and not self._run_is_stale(run):
+                raise RetryableIngestionBusy("same bridge payload is still processing; retry later")
+            # A stale or failed run with no durable result is safe to replay because
+            # monitor_ingestion_items, radar_sync_batches and radar_jobs are all
+            # protected by stable keys/idempotency constraints.
+            run_id = str(run["id"])
+        else:
+            run_id = proposed_run_id
+        received_at = _utc_now()
         with self.connect() as connection:
             connection.execute(
-                "UPDATE monitor_ingestion_runs SET processing_status='processing',updated_at=? WHERE id=?",
-                (_utc_now(), run_id),
+                """UPDATE monitor_ingestion_runs SET processing_status='processing',processing_error=NULL,
+                   updated_at=? WHERE id=?""",
+                (received_at, run_id),
             )
 
         jobs_for_sync: list[dict[str, Any]] = []
@@ -381,6 +527,9 @@ class ChatGPTMonitorIngestionService:
                 run_id, status=response["status"], result=response,
                 error=None if not errors else f"{len(errors)} item(s) failed", started=started,
             )
+            self._update_watermark(
+                payload=payload, run_id=run_id, response=response, received_at=received_at,
+            )
             logger.info(
                 "chatgpt_monitor_sync monitor_run_id=%s source_thread_ref=%s received=%s "
                 "created=%s updated=%s duplicate=%s filtered=%s failed=%s processing_time_ms=%s",
@@ -392,5 +541,9 @@ class ChatGPTMonitorIngestionService:
             return response
         except Exception as exc:
             error = clean_text(exc, limit=300) or type(exc).__name__
-            self._finish_run(run_id, status="failed", result={}, error=error, started=started)
+            try:
+                self._finish_run(run_id, status="failed", result={}, error=error, started=started)
+                self._mark_interruption(payload=payload, run_id=run_id, error=error)
+            except Exception:
+                logger.exception("failed to record monitor ingestion interruption")
             raise

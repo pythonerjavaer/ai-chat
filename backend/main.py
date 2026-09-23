@@ -114,7 +114,7 @@ from .future_radar.schemas import (
     SourcePatchRequest,
 )
 from .future_radar.service import FutureRadarService, RadarRunBusy, SyncConflict
-from .chatgpt_monitor_ingestion import ChatGPTMonitorIngestionService
+from .chatgpt_monitor_ingestion import ChatGPTMonitorIngestionService, RetryableIngestionBusy
 from .future_radar_mcp import build_future_radar_mcp
 from .future_radar.adapters import _public_reference_url, _redact_public_text
 from .security import (
@@ -2224,10 +2224,19 @@ def sync_chatgpt_monitor(
         return chatgpt_monitor_ingestion_service.ingest(
             request.model_dump(mode="json"), idempotency_key=idempotency_key,
         )
+    except RetryableIngestionBusy as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except SyncConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/integrations/chatgpt-monitor/recovery/status")
+def chatgpt_monitor_recovery_status(
+    _: Annotated[None, Depends(require_admin_dashboard_token)],
+) -> dict:
+    return chatgpt_monitor_ingestion_service.recovery_status()
 
 
 @app.post("/api/future-radar/sources", status_code=status.HTTP_201_CREATED)

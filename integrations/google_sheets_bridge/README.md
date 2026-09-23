@@ -31,7 +31,10 @@ The columns are:
 | I | `error` | Apps Script |
 
 ChatGPT should leave F:I untouched. A row can be left blank or set to
-`PENDING`; both states are eligible for processing. Rows are never deleted.
+`PENDING`; both states are eligible for processing. Apps Script may also use
+`PROCESSING`, `PROCESSED`, `RETRYABLE`, and `FAILED_PERMANENT`. Rows are never
+deleted. Stale `PROCESSING` rows are retried automatically after the processing
+lease window.
 
 ## Configure the secret
 
@@ -55,6 +58,10 @@ repository or into ChatGPT messages.
   also applies monitor run IDs, external IDs, URLs, fingerprints and database
   constraints.
 
-HTTP 2xx marks a row `PROCESSED` and stores the response. HTTP errors, invalid
-JSON, and network failures mark it `ERROR` without deleting the row; correcting
-the row and clearing F:I (or setting F to `PENDING`) allows a later retry.
+HTTP 2xx marks a row `PROCESSED` and stores the response. HTTP 402, 408, 429,
+500, 502, 503, 504, timeouts and network failures mark the row `RETRYABLE` and
+store retry metadata in the error cell, including attempts and `next_retry_at`.
+Quota-style 402 responses use a longer backoff; other retryable failures use
+bounded exponential backoff. Malformed JSON and permanent client-side failures
+mark the row `FAILED_PERMANENT`. Payload JSON is preserved in all cases; rows
+are not deleted or silently skipped.

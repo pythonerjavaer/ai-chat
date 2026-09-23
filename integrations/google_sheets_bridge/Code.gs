@@ -12,6 +12,88 @@ const BRIDGE_SHEET_NAME = 'inbox';
 const HANDLER_NAME = 'processPendingRows';
 const MAX_ERROR_LENGTH = 500;
 
+const RETRYABLE_HTTP_CODES = [402, 408, 429, 500, 502, 503, 504];
+const STALE_PROCESSING_MINUTES = 15;
+const DEFAULT_BACKOFF_MINUTES = 5;
+const QUOTA_BACKOFF_MINUTES = 360;
+const MAX_BACKOFF_MINUTES = 360;
+
+function now_() {
+  return new Date();
+}
+
+function errorState_(cellValue) {
+  const raw = String(cellValue || '').trim();
+  if (!raw) return {attempts: 0};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch (error) {}
+  const match = raw.match(/attempts=(\d+)/i);
+  return {attempts: match ? Number(match[1]) : 0, message: raw};
+}
+
+function retryDelayMinutes_(attempts, reason, httpCode) {
+  if (httpCode === 402 || /quota|402/i.test(String(reason || ''))) {
+    return QUOTA_BACKOFF_MINUTES;
+  }
+  const exponent = Math.max(0, Math.min(Number(attempts || 0), 6));
+  return Math.min(MAX_BACKOFF_MINUTES, DEFAULT_BACKOFF_MINUTES * Math.pow(2, exponent));
+}
+
+function retryState_(reason, attempts, httpCode) {
+  const delay = retryDelayMinutes_(attempts, reason, httpCode);
+  const next = new Date(now_().getTime() + delay * 60 * 1000);
+  return {
+    classification: 'RETRYABLE',
+    reason: String(reason || 'temporary_failure').slice(0, MAX_ERROR_LENGTH),
+    http_code: httpCode || null,
+    attempts: Number(attempts || 0) + 1,
+    next_retry_at: next.toISOString(),
+  };
+}
+
+function permanentState_(reason, attempts, httpCode) {
+  return {
+    classification: 'FAILED_PERMANENT',
+    reason: String(reason || 'permanent_failure').slice(0, MAX_ERROR_LENGTH),
+    http_code: httpCode || null,
+    attempts: Number(attempts || 0) + 1,
+  };
+}
+
+function shouldAttempt_(status, processedAt, errorCell) {
+  const normalized = String(status || '').trim().toUpperCase();
+  if (!normalized || normalized === 'PENDING') return true;
+  if (normalized === 'RETRYABLE' || normalized === 'ERROR') {
+    const state = errorState_(errorCell);
+    if (!state.next_retry_at) return true;
+    return new Date(state.next_retry_at).getTime() <= now_().getTime();
+  }
+  if (normalized === 'PROCESSING') {
+    const startedAt = processedAt instanceof Date ? processedAt : new Date(processedAt);
+    if (!startedAt || isNaN(startedAt.getTime())) return true;
+    return now_().getTime() - startedAt.getTime() > STALE_PROCESSING_MINUTES * 60 * 1000;
+  }
+  return false;
+}
+
+function classifyHttpFailure_(code, body, attempts) {
+  const message = 'HTTP ' + code + ': ' + String(body || '').slice(0, MAX_ERROR_LENGTH);
+  if (RETRYABLE_HTTP_CODES.indexOf(code) !== -1) {
+    return {status: 'RETRYABLE', state: retryState_(message, attempts, code)};
+  }
+  return {status: 'FAILED_PERMANENT', state: permanentState_(message, attempts, code)};
+}
+
+function classifyException_(error, attempts) {
+  const message = String(error || 'unknown_error').slice(0, MAX_ERROR_LENGTH);
+  if (/json|syntax/i.test(message)) {
+    return {status: 'FAILED_PERMANENT', state: permanentState_(message, attempts, null)};
+  }
+  return {status: 'RETRYABLE', state: retryState_(message, attempts, null)};
+}
+
 function bridgeProperties_() {
   const props = PropertiesService.getScriptProperties();
   const url = (props.getProperty('FUTURE_RADAR_SYNC_URL') || '').trim();
@@ -62,12 +144,16 @@ function processPendingRows() {
     const rows = range.getValues();
     rows.forEach(function(row, offset) {
       const status = String(row[5] || '').trim().toUpperCase();
-      if (status && status !== 'PENDING') return;
       const bridgeId = String(row[0] || '').trim();
       const payloadJson = String(row[4] || '').trim();
       if (!bridgeId || !payloadJson) return;
+      if (!shouldAttempt_(status, row[6], row[8])) return;
       const rowNumber = offset + 2;
-      sheet.getRange(rowNumber, 6).setValue('PROCESSING');
+      const previousState = errorState_(row[8]);
+      const attempts = Number(previousState.attempts || 0);
+      sheet.getRange(rowNumber, 6, 1, 4).setValues([[
+        'PROCESSING', now_(), '', '',
+      ]]);
       try {
         JSON.parse(payloadJson);
         const response = UrlFetchApp.fetch(config.url, {
@@ -84,16 +170,18 @@ function processPendingRows() {
         const body = response.getContentText();
         if (code >= 200 && code < 300) {
           sheet.getRange(rowNumber, 6, 1, 4).setValues([[
-            'PROCESSED', new Date(), body, '',
+            'PROCESSED', now_(), body, '',
           ]]);
         } else {
+          const classified = classifyHttpFailure_(code, body, attempts);
           sheet.getRange(rowNumber, 6, 1, 4).setValues([[
-            'ERROR', '', '', 'HTTP ' + code + ': ' + body.slice(0, MAX_ERROR_LENGTH),
+            classified.status, now_(), '', JSON.stringify(classified.state),
           ]]);
         }
       } catch (error) {
+        const classified = classifyException_(error, attempts);
         sheet.getRange(rowNumber, 6, 1, 4).setValues([[
-          'ERROR', '', '', String(error).slice(0, MAX_ERROR_LENGTH),
+          classified.status, now_(), '', JSON.stringify(classified.state),
         ]]);
       }
     });

@@ -301,6 +301,23 @@ def migrate(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (result_lead_id) REFERENCES recruitment_monitor_leads(id) ON DELETE SET NULL
         );
 
+        CREATE TABLE IF NOT EXISTS monitor_ingestion_watermarks (
+            source_id TEXT PRIMARY KEY,
+            source_thread_ref TEXT,
+            monitor_name TEXT,
+            last_successful_ingestion_at TEXT,
+            last_successful_run_id TEXT,
+            last_successful_event_id INTEGER NOT NULL DEFAULT 0,
+            last_received_at TEXT,
+            recovery_status TEXT NOT NULL DEFAULT 'normal',
+            interrupted_from TEXT,
+            interrupted_until TEXT,
+            pending_backfill INTEGER NOT NULL DEFAULT 0,
+            duplicate_suppressed INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (source_id) REFERENCES monitor_sources(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS radar_locks (
             lock_name TEXT PRIMARY KEY,
             owner TEXT NOT NULL,
@@ -362,6 +379,8 @@ def migrate(connection: sqlite3.Connection) -> None:
             ON monitor_ingestion_items(processing_status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_monitor_ingestion_items_fingerprint
             ON monitor_ingestion_items(fingerprint);
+        CREATE INDEX IF NOT EXISTS idx_monitor_ingestion_watermarks_status
+            ON monitor_ingestion_watermarks(recovery_status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_recruitment_monitor_leads_status
             ON recruitment_monitor_leads(status, updated_at DESC);
         """
