@@ -1688,6 +1688,9 @@ def future_radar_opportunities(
             result["opportunities"] = result["items"]
     result["tier_definitions"] = list(TIER_DEFINITIONS)
     result["pool"] = "opportunities"
+    # The browser polls this marker through the tiny events response.  It
+    # avoids re-reading the full, scored pool when no source/job changed.
+    result["opportunity_revision"] = future_radar_service.repository.opportunity_revision_marker()
     result.update(_radar_search_metadata())
     # These public records contain only JSON-compatible primitives. Avoid
     # FastAPI recursively encoding the same large compatibility lists again.
@@ -2028,6 +2031,10 @@ def future_radar_events(
         public_verified_only=True,
     )
     result["events"] = result["items"]
+    # Includes discovery/source-screened writes even when the public verified
+    # event list is unchanged.  The UI can therefore refresh those leads
+    # without a full opportunity request every polling interval.
+    result["opportunity_revision"] = future_radar_service.repository.opportunity_revision_marker()
     if after_event_id is not None and result["items"]:
         result["dashboard"] = _public_radar_dashboard(
             future_radar_service.repository.dashboard()

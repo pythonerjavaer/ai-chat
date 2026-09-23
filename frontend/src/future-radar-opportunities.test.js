@@ -99,6 +99,7 @@ function pollingContext({ race = false, unchanged = false } = {}) {
     jobsLoaded: unchanged, jobsError: "",
     lastEventId: null, activeRunTypes: new Set(), events: [],
     jobs: unchanged ? payload.items : [], opportunityStats: unchanged ? payload.stats : {},
+    opportunityRevision: unchanged ? "1" : null,
   } };
   const result = { applied: 0, rendered: 0 };
   const context = {
@@ -112,7 +113,7 @@ function pollingContext({ race = false, unchanged = false } = {}) {
     futureRadarPayloadMatchesQuery: () => true,
     api: async (path) => {
       calls.push(path);
-      if (path.startsWith("/future-radar/events")) return { items: [] };
+      if (path.startsWith("/future-radar/events")) return { items: [], opportunity_revision: unchanged ? "1" : "2" };
       if (race) state.futureRadar.jobsRequestId += 1;
       return payload;
     },
@@ -162,6 +163,7 @@ test("a newer filter or navigation request wins over an older background poll", 
 test("an unchanged poll keeps the current cards and expanded details stable", async () => {
   const fixture = pollingContext({ unchanged: true });
   await vm.runInNewContext(`${functionSource("async function pollFutureRadarEvents(", "\nfunction stopFutureRadarPolling")}\npollFutureRadarEvents();`, fixture.context);
-  assert.equal(fixture.result.applied, 1);
+  assert.equal(fixture.result.applied, 0);
   assert.equal(fixture.result.rendered, 0);
+  assert.equal(fixture.calls.some((path) => path.startsWith("/future-radar/opportunities?")), false);
 });

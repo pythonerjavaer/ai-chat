@@ -1894,6 +1894,17 @@ class RadarRepository:
         finally:
             connection.close()
 
+    def opportunity_revision_marker(self) -> str | None:
+        """Return the lightweight public change marker for the opportunity pool.
+
+        Clients use this only to decide whether a large, already paginated
+        opportunity projection must be read again.  The namespace stays
+        private; a changed integer is sufficient even after a restore because
+        any different value causes a fresh projection.
+        """
+        revision = self._opportunity_revision()
+        return str(revision[2]) if revision is not None else None
+
     def _opportunity_cache_prefix(
         self, *, cache_scope: str, public_url: Callable[[Any], str | None],
         company_aliases: dict[str, str],

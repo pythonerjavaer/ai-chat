@@ -75,6 +75,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     pollOpportunityController: null, snapshotRequestId: 0,
     totalJobs: existing ? 1 : 0,
     opportunityStats: existing ? { tier_counts: { UNRANKED: 1 }, verification_status: { pending: 1 } } : {},
+    opportunityRevision: existing ? "1" : null,
     filters: { status: DEFAULT_FUTURE_RADAR_STATUS },
     sources: [], runs: [], events: [], activeRunTypes: new Set(), polling: false,
     searchScope: {}, searchCoverage: null,
@@ -550,6 +551,7 @@ test("active main pool renders pending unknown rows with the complete backend co
 
 test("opportunity polling failure remains visible even while event polling succeeds", async () => {
   const r = runtime({ existing: true });
+  r.controls.apiHandler = (path) => path.startsWith("/future-radar/events") ? { items: [], opportunity_revision: "2" } : undefined;
   await r.run("pollFutureRadarEvents()");
   assert.match(r.elements.futureRadarLiveState.className, /warning/);
   assert.match(r.elements.futureRadarError.textContent, /主机会池刷新失败/);
@@ -770,6 +772,8 @@ test("failed T0 selection restores the T3 snapshot label, not a T0-highlighted T
 test("a cancelled background poll cannot repaint a new T selection or its completed page", async () => {
   const r = runtime({ fail: false });
   installTierSnapshot(r, "T1");
+  r.state.futureRadar.opportunityRevision = "1";
+  r.controls.apiHandler = (path) => path.startsWith("/future-radar/events") ? { items: [], opportunity_revision: "2" } : undefined;
   const poll = deferred();
   const current = deferred();
   r.controls.opportunityHandler = (_path, options) => {
@@ -780,6 +784,7 @@ test("a cancelled background poll cannot repaint a new T selection or its comple
     return current.promise;
   };
   const polling = r.run("pollFutureRadarEvents()");
+  await new Promise(setImmediate);
   const selecting = r.run("selectRecruitmentTier('T2')");
   assert.equal(poll.signal.aborted, true);
   await r.flushSelection();
@@ -1202,7 +1207,7 @@ test("company expansion and background polling inherit the balanced projection w
   await r.run("pollFutureRadarEvents()");
   const queries = r.calls.filter((path) => path.startsWith("/future-radar/opportunities?")).map((path) => new URLSearchParams(path.split("?")[1]));
   assert.ok(queries.some((params) => params.has("company_key")));
-  assert.ok(queries.length >= 3);
+  assert.equal(queries.length, 2, "an unchanged event revision must not re-read the complete pool");
   queries.forEach((params) => {
     assert.equal(params.get("balanced_only"), "true");
     assert.equal(params.get("priority_only"), "false");

@@ -118,10 +118,12 @@ test("chat and search discoveries appear in the default unified opportunity pool
   assert.match(renderer, /createFutureRadarOpportunityDetail\(job\)/);
 });
 
-test("unified opportunities refresh without needing a verified public event", () => {
+test("unified opportunities refresh only when the durable pool revision changes", () => {
   const start = appSource.indexOf("async function pollFutureRadarEvents(");
   const end = appSource.indexOf("\nfunction stopFutureRadarPolling", start);
   const pollingSource = appSource.slice(start, end);
+  assert.match(pollingSource, /incomingRevision/);
+  assert.match(pollingSource, /incomingRevision !== state\.futureRadar\.opportunityRevision/);
   assert.match(pollingSource, /api\(`\/future-radar\/opportunities\?\$\{opportunityQuery\}`,\s*\{\s*timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS/);
   assert.match(pollingSource, /state\.futureRadar\.jobsRequestId === jobsRequestId/);
   assert.match(pollingSource, /futureRadarJobsQuery\(\) === opportunityQuery/);

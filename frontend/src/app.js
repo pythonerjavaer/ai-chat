@@ -147,6 +147,7 @@ const state = {
     pageSize: 20,
     opportunityStats: {},
     opportunityStatsQuery: "",
+    opportunityRevision: null,
     jobsRequestId: 0,
     jobsLoading: false,
     jobsRequestQuery: "",
@@ -948,6 +949,7 @@ function endFutureRadarSession(expired = false) {
   state.futureRadar.totalJobs = 0;
   state.futureRadar.opportunityStats = {};
   state.futureRadar.opportunityStatsQuery = "";
+  state.futureRadar.opportunityRevision = null;
   state.futureRadar.activeRunTypes.clear();
   state.futureRadar.jobsError = expired ? futureRadarOpportunityErrorCopy(error) : "";
   if (elements.recruitmentDialog?.open) elements.recruitmentDialog.close();
@@ -3575,6 +3577,9 @@ function applyFutureRadarJobsPayload(payload, query = futureRadarJobsQuery()) {
   state.futureRadar.jobsAppliedPageSize = state.futureRadar.pageSize;
   state.futureRadar.opportunityStats = payload.stats || {};
   state.futureRadar.opportunityStatsQuery = query;
+  if (payload.opportunity_revision != null) {
+    state.futureRadar.opportunityRevision = String(payload.opportunity_revision);
+  }
   // The deadline card and the pool must use the same 15-day result set. Refresh
   // it immediately after the pool response arrives so a stale dashboard read
   // cannot leave a visible zero beside populated closing-soon results.
@@ -3885,25 +3890,33 @@ async function pollFutureRadarEvents() {
     const query = cursor == null ? "?limit=50" : `?limit=50&after_event_id=${encodeURIComponent(cursor)}`;
     const opportunityQuery = futureRadarJobsQuery();
     const jobsRequestId = state.futureRadar.jobsRequestId;
-    let opportunityError = null;
-    const [payload, dashboard, opportunityPayload] = await Promise.all([
+    const [payload, dashboard] = await Promise.all([
       metadataAllowed ? api(`/future-radar/events${query}`).catch(() => null) : Promise.resolve(null),
       metadataAllowed && state.futureRadar.activeRunTypes.size
         ? readFutureRadarDashboard().catch(() => null)
         : Promise.resolve(null),
-      // Chat and search leads must refresh even when there is no verified-only
-      // public change event. The unified API owns filtering, ranking and totals.
-      !opportunitiesAllowed
-        ? Promise.resolve(null)
-        : api(`/future-radar/opportunities?${opportunityQuery}`, {
-          timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
-          signal: controller.signal,
-        }).catch((error) => { opportunityError = error; return null; }),
     ]);
     if (sessionToken !== state.token || controller?.signal.aborted
       || state.futureRadar.jobsRequestId !== jobsRequestId
       || futureRadarJobsQuery() !== opportunityQuery) return;
     if (dashboard) renderFutureRadarDashboard(dashboard);
+    const incomingRevision = payload?.opportunity_revision == null
+      ? null : String(payload.opportunity_revision);
+    // A complete pool read can transfer far more data than the incremental
+    // event cursor.  Read it only after a durable pool change (or to recover
+    // an initial/failed snapshot), never every 30-second status tick.
+    const shouldRefreshOpportunities = opportunitiesAllowed && (
+      !state.futureRadar.jobsLoaded || Boolean(state.futureRadar.jobsError)
+      || (incomingRevision != null && incomingRevision !== state.futureRadar.opportunityRevision)
+    );
+    let opportunityPayload = null;
+    let opportunityError = null;
+    if (shouldRefreshOpportunities) {
+      opportunityPayload = await api(`/future-radar/opportunities?${opportunityQuery}`, {
+        timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
+        signal: controller.signal,
+      }).catch((error) => { opportunityError = error; return null; });
+    }
     // Navigation or filter changes made during polling always win over it.
     if (opportunityPayload && !state.futureRadar.jobsLoading
       && state.futureRadar.jobsRequestId === jobsRequestId
