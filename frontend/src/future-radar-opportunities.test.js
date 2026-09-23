@@ -113,12 +113,15 @@ function pollingContext({ race = false, unchanged = false } = {}) {
     futureRadarPayloadMatchesQuery: () => true,
     api: async (path) => {
       calls.push(path);
-      if (path.startsWith("/future-radar/events")) return { items: [], opportunity_revision: unchanged ? "1" : "2" };
+      if (path.startsWith("/future-radar/changes")) return unchanged
+        ? { items: [], events: [], opportunity_revision: "1" }
+        : { items: [], events: [], full_sync_required: true, opportunity_revision: "2" };
       if (race) state.futureRadar.jobsRequestId += 1;
       return payload;
     },
     radarCollection: (value) => value?.items || [],
     applyFutureRadarJobsPayload: () => { result.applied += 1; return true; },
+    applyFutureRadarChangePayload: () => ({ changed: false, fullSyncRequired: unchanged ? false : true }),
     renderRecruitmentJobs: () => { result.rendered += 1; },
     renderRecruitmentDeadlineAlerts() {},
     eventIdentity: (event) => event.id,
@@ -149,7 +152,7 @@ test("opportunity Retry-After pauses only pool polling while metadata remains re
   const fixture = pollingContext();
   fixture.context.radarOpportunityPollingGate.failure({ status: 429, retryAfter: "120" });
   await vm.runInNewContext(`${functionSource("async function pollFutureRadarEvents(", "\nfunction stopFutureRadarPolling")}\npollFutureRadarEvents();`, fixture.context);
-  assert.deepEqual(fixture.calls, ["/future-radar/events?limit=50"]);
+  assert.deepEqual(fixture.calls, ["/future-radar/changes?limit=50"]);
   assert.equal(fixture.result.applied, 0);
 });
 

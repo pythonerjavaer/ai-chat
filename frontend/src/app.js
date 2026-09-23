@@ -65,7 +65,7 @@ const STORAGE_KEYS = {
 const WORKSPACE_ORDER = ["legal", "general", "finance"];
 const CHATGPT_MONITOR_SOURCE_COUNT = 9;
 const RECRUITMENT_REFRESH_LABEL = "同步候选源 ↻";
-const FUTURE_RADAR_POLL_INTERVAL_MS = 30_000;
+const FUTURE_RADAR_POLL_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const FUTURE_RADAR_RUN_STATUS_POLL_MS = RADAR_STATUS_INTERVAL_MS;
 const FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS = 20;
 const FUTURE_RADAR_SCAN_TYPES = Object.freeze(["quick", "deep"]);
@@ -148,6 +148,7 @@ const state = {
     opportunityStats: {},
     opportunityStatsQuery: "",
     opportunityRevision: null,
+    opportunityChangeCursor: null,
     jobsRequestId: 0,
     jobsLoading: false,
     jobsRequestQuery: "",
@@ -3592,6 +3593,81 @@ function applyFutureRadarJobsPayload(payload, query = futureRadarJobsQuery()) {
   return true;
 }
 
+function futureRadarStableOpportunityId(job) {
+  return String(job?.id || job?.external_id || "").trim();
+}
+
+function mergeFutureRadarJobList(existing, incoming, action) {
+  const id = futureRadarStableOpportunityId(incoming);
+  if (!id) return { items: existing, changed: false };
+  const next = [...existing];
+  const index = next.findIndex((job) => [job?.id, job?.external_id].map(String).includes(id));
+  if (action === "DELETE") {
+    if (index < 0) return { items: next, changed: false };
+    next.splice(index, 1);
+    return { items: next, changed: true };
+  }
+  if (index >= 0) {
+    const merged = { ...next[index], ...incoming };
+    if (JSON.stringify(merged) === JSON.stringify(next[index])) return { items: next, changed: false };
+    next[index] = merged;
+    return { items: next, changed: true };
+  }
+  next.unshift(incoming);
+  return { items: next, changed: true };
+}
+
+function applyFutureRadarChangePayload(payload) {
+  if (payload?.full_sync_required) return { fullSyncRequired: true, changed: false };
+  const changes = radarCollection(payload, ["changes", "items"]);
+  let changed = false;
+  for (const change of changes) {
+    const action = String(change.action || "").toUpperCase();
+    const job = change.job || null;
+    const isDelete = action === "DELETE";
+    if (!job && !isDelete) continue;
+    const target = job || { id: change.job_id, external_id: change.external_id };
+    const jobsResult = mergeFutureRadarJobList(state.futureRadar.jobs || [], target, action);
+    state.futureRadar.jobs = jobsResult.items;
+    changed = changed || jobsResult.changed;
+    const recruitmentResult = mergeFutureRadarJobList(state.recruitmentJobs || [], target, action);
+    state.recruitmentJobs = recruitmentResult.items;
+    changed = changed || recruitmentResult.changed;
+    const deadlineResult = mergeFutureRadarJobList(state.futureRadar.deadlineJobs || [], target, action);
+    state.futureRadar.deadlineJobs = deadlineResult.items;
+    for (const entry of state.futureRadar.companyExpansions?.values() || []) {
+      if (!entry.loaded && !entry.jobs?.length) continue;
+      const result = mergeFutureRadarJobList(entry.jobs || [], target, action);
+      entry.jobs = result.items;
+      if (result.changed) {
+        changed = true;
+        if (entry.open) renderFutureRadarCompanyJobs(entry);
+      }
+    }
+  }
+  const cursor = valueAtPaths(payload, ["last_event_id", "next_after_event_id", "cursor"]);
+  if (cursor !== null) {
+    state.futureRadar.lastEventId = cursor;
+    state.futureRadar.opportunityChangeCursor = cursor;
+  }
+  if (payload?.opportunity_revision != null) {
+    state.futureRadar.opportunityRevision = String(payload.opportunity_revision);
+  }
+  if (payload?.dashboard) {
+    state.futureRadar.dashboard = payload.dashboard;
+    renderFutureRadarDashboard(payload.dashboard);
+  }
+  if (changed && state.futureRadar.jobsAppliedView === "jobs") {
+    state.futureRadar.totalJobs = Math.max(state.futureRadar.totalJobs || 0, state.futureRadar.jobs.length);
+    renderRecruitmentJobs(state.futureRadar.jobs);
+    renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(state.futureRadar.jobs));
+    renderFutureRadarPagination();
+  } else if (changed) {
+    renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(state.futureRadar.deadlineJobs || []));
+  }
+  return { fullSyncRequired: false, changed };
+}
+
 function futureRadarJobsQuery(page = state.futureRadar.page) {
   return buildFutureRadarJobsQuery({
     page,
@@ -3886,12 +3962,12 @@ async function pollFutureRadarEvents() {
   state.futureRadar.pollOpportunityController = controller;
   state.futureRadar.polling = true;
   try {
-    const cursor = state.futureRadar.lastEventId;
-    const query = cursor == null ? "?limit=50" : `?limit=50&after_event_id=${encodeURIComponent(cursor)}`;
+    const cursor = state.futureRadar.opportunityChangeCursor ?? state.futureRadar.lastEventId;
+    const query = cursor == null ? "?limit=50" : `?limit=50&cursor=${encodeURIComponent(cursor)}`;
     const opportunityQuery = futureRadarJobsQuery();
     const jobsRequestId = state.futureRadar.jobsRequestId;
     const [payload, dashboard] = await Promise.all([
-      metadataAllowed ? api(`/future-radar/events${query}`).catch(() => null) : Promise.resolve(null),
+      metadataAllowed ? api(`/future-radar/changes${query}`).catch(() => null) : Promise.resolve(null),
       metadataAllowed && state.futureRadar.activeRunTypes.size
         ? readFutureRadarDashboard().catch(() => null)
         : Promise.resolve(null),
@@ -3900,14 +3976,9 @@ async function pollFutureRadarEvents() {
       || state.futureRadar.jobsRequestId !== jobsRequestId
       || futureRadarJobsQuery() !== opportunityQuery) return;
     if (dashboard) renderFutureRadarDashboard(dashboard);
-    const incomingRevision = payload?.opportunity_revision == null
-      ? null : String(payload.opportunity_revision);
-    // A complete pool read can transfer far more data than the incremental
-    // event cursor.  Read it only after a durable pool change (or to recover
-    // an initial/failed snapshot), never every 30-second status tick.
     const shouldRefreshOpportunities = opportunitiesAllowed && (
       !state.futureRadar.jobsLoaded || Boolean(state.futureRadar.jobsError)
-      || (incomingRevision != null && incomingRevision !== state.futureRadar.opportunityRevision)
+      || payload?.full_sync_required === true
     );
     let opportunityPayload = null;
     let opportunityError = null;
@@ -3932,6 +4003,24 @@ async function pollFutureRadarEvents() {
         renderRecruitmentDeadlineAlerts(state.futureRadar.jobs);
       }
     }
+    if (!opportunityPayload && payload && !state.futureRadar.jobsLoading
+      && state.futureRadar.jobsRequestId === jobsRequestId
+      && futureRadarJobsQuery() === opportunityQuery) {
+      const result = applyFutureRadarChangePayload(payload);
+      if (result.fullSyncRequired && opportunitiesAllowed) {
+        opportunityPayload = await api(`/future-radar/opportunities?${opportunityQuery}`, {
+          timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS,
+          signal: controller.signal,
+        }).catch((error) => { opportunityError = error; return null; });
+        if (opportunityPayload && !state.futureRadar.jobsLoading
+          && state.futureRadar.jobsRequestId === jobsRequestId
+          && futureRadarJobsQuery() === opportunityQuery) {
+          applyFutureRadarJobsPayload(opportunityPayload, opportunityQuery);
+          renderRecruitmentJobs(state.futureRadar.jobs);
+          renderRecruitmentDeadlineAlerts(state.futureRadar.jobs);
+        }
+      }
+    }
     if (opportunityError && !state.futureRadar.jobsLoading
       && state.futureRadar.jobsRequestId === jobsRequestId
       && futureRadarJobsQuery() === opportunityQuery) {
@@ -3942,7 +4031,7 @@ async function pollFutureRadarEvents() {
       if (message !== previousError) renderRecruitmentJobs(state.futureRadar.jobs);
     }
     if (!payload && !opportunityPayload && !state.futureRadar.jobsLoading) throw new Error("Radar poll unavailable");
-    const incoming = radarCollection(payload, ["events", "changes"]);
+    const incoming = radarCollection(payload, ["events"]);
     const knownIds = new Set(state.futureRadar.events.map(eventIdentity));
     const novel = incoming.filter((event) => !knownIds.has(eventIdentity(event)));
     if (incoming.length) mergeFutureRadarEvents(incoming, payload);

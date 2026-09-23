@@ -160,7 +160,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     futureRadarProfileReload: { request() {} },
     FUTURE_RADAR_SCAN_TYPES: ["quick", "deep"],
     FUTURE_RADAR_REQUEST_CONTROLLERS: new Set(),
-    FUTURE_RADAR_POLL_INTERVAL_MS: 30_000,
+    FUTURE_RADAR_POLL_INTERVAL_MS: 3 * 60 * 60 * 1000,
     soundscapeEngine: { async destroy() {} },
     storage: { async remove() {} },
     STORAGE_KEYS: { token: "local-test-only" },
@@ -551,7 +551,7 @@ test("active main pool renders pending unknown rows with the complete backend co
 
 test("opportunity polling failure remains visible even while event polling succeeds", async () => {
   const r = runtime({ existing: true });
-  r.controls.apiHandler = (path) => path.startsWith("/future-radar/events") ? { items: [], opportunity_revision: "2" } : undefined;
+  r.controls.apiHandler = (path) => path.startsWith("/future-radar/changes") ? { items: [], events: [], full_sync_required: true, opportunity_revision: "2" } : undefined;
   await r.run("pollFutureRadarEvents()");
   assert.match(r.elements.futureRadarLiveState.className, /warning/);
   assert.match(r.elements.futureRadarError.textContent, /主机会池刷新失败/);
@@ -773,7 +773,7 @@ test("a cancelled background poll cannot repaint a new T selection or its comple
   const r = runtime({ fail: false });
   installTierSnapshot(r, "T1");
   r.state.futureRadar.opportunityRevision = "1";
-  r.controls.apiHandler = (path) => path.startsWith("/future-radar/events") ? { items: [], opportunity_revision: "2" } : undefined;
+  r.controls.apiHandler = (path) => path.startsWith("/future-radar/changes") ? { items: [], events: [], full_sync_required: true, opportunity_revision: "2" } : undefined;
   const poll = deferred();
   const current = deferred();
   r.controls.opportunityHandler = (_path, options) => {

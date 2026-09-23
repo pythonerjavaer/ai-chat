@@ -118,17 +118,18 @@ test("chat and search discoveries appear in the default unified opportunity pool
   assert.match(renderer, /createFutureRadarOpportunityDetail\(job\)/);
 });
 
-test("unified opportunities refresh only when the durable pool revision changes", () => {
+test("unified opportunities use delta changes before falling back to full sync", () => {
   const start = appSource.indexOf("async function pollFutureRadarEvents(");
   const end = appSource.indexOf("\nfunction stopFutureRadarPolling", start);
   const pollingSource = appSource.slice(start, end);
-  assert.match(pollingSource, /incomingRevision/);
-  assert.match(pollingSource, /incomingRevision !== state\.futureRadar\.opportunityRevision/);
+  assert.match(pollingSource, /api\(`\/future-radar\/changes\$\{query\}`/);
+  assert.match(pollingSource, /applyFutureRadarChangePayload\(payload\)/);
+  assert.match(pollingSource, /payload\?\.full_sync_required === true/);
   assert.match(pollingSource, /api\(`\/future-radar\/opportunities\?\$\{opportunityQuery\}`,\s*\{\s*timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS/);
   assert.match(pollingSource, /state\.futureRadar\.jobsRequestId === jobsRequestId/);
   assert.match(pollingSource, /futureRadarJobsQuery\(\) === opportunityQuery/);
   assert.match(pollingSource, /applyFutureRadarJobsPayload\(opportunityPayload, opportunityQuery\)/);
-  assert.ok(pollingSource.indexOf("applyFutureRadarJobsPayload") < pollingSource.indexOf("if (novel.length)"));
+  assert.ok(pollingSource.indexOf("applyFutureRadarChangePayload") < pollingSource.indexOf("if (novel.length)"));
 });
 
 test("T-tier filters go to the unified backend and detail uses the same pool", () => {

@@ -61,6 +61,48 @@ def test_observation_and_event_updates_refresh_public_metadata_without_rescoring
     assert new["tier_code"] == old["tier_code"]
 
 
+def test_opportunity_changes_return_only_impacted_lightweight_records(harness):
+    from backend import main
+
+    one = harness.insert("one")
+    harness.insert("two")
+    initial = harness.repository.list_opportunity_changes(
+        after_event_id=10_000,
+        public_url=public_url,
+        prepare=lambda row: main._public_radar_opportunity(row, {}),
+        input_sanitizer=main._public_search_update,
+        cache_scope=scoring_scope(1, {}, "delta-test-rules"),
+    )
+    assert initial["items"] == []
+    assert initial["full_sync_required"] is True
+
+    stamp = "2026-09-06T12:34:56+00:00"
+    with harness.repository.transaction() as connection:
+        connection.execute(
+            "UPDATE radar_jobs SET closing_date=?,last_changed_at=?,updated_at=? WHERE id=?",
+            ("2027-10-01", stamp, stamp, one["id"]),
+        )
+        harness.repository.insert_event(
+            connection, run_id="delta-run", entity_type="job",
+            entity_id=one["id"], external_id="one", event_type="DEADLINE_CHANGED",
+            before=None, after=None, fields=["closing_date"],
+            source_id="discovery", now=stamp,
+        )
+    result = harness.repository.list_opportunity_changes(
+        after_event_id=0,
+        public_url=public_url,
+        prepare=lambda row: main._public_radar_opportunity(row, {}),
+        input_sanitizer=main._public_search_update,
+        cache_scope=scoring_scope(1, {}, "delta-test-rules"),
+    )
+    assert result["full_sync_required"] is False
+    assert [change["job"]["external_id"] for change in result["items"]] == ["one"]
+    assert result["items"][0]["event_type"] == "DEADLINE_CHANGED"
+    assert result["items"][0]["job"]["closing_date"] == "2027-10-01"
+    assert result["items"][0]["job"].get("description", "") == ""
+    assert result["last_event_id"] >= 1
+
+
 def test_three_live_revision_retries_score_each_unchanged_record_once(harness, record_pool, monkeypatch):
     pool, calls = record_pool
     for index in range(32):

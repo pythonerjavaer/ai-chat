@@ -1235,17 +1235,20 @@ _REVIEW_REASON_LABELS = {
 }
 
 
-def _public_search_update(job: dict) -> dict:
+def _public_search_update(job: dict, *, include_detail: bool = False) -> dict:
     """Expose a normalized discovery candidate without presenting it as fact."""
-    allowed = (
+    allowed = [
         "id", "external_id", "program_id", "company", "title", "city", "region",
         "employer_type", "industry", "primary_category", "organization_category",
         "industry_tags", "role_tags", "official_url", "application_url",
-        "opening_date", "closing_date", "status", "verification_status",
-        "confidence_score", "description", "responsibilities", "requirements", "tags",
+        "opening_date", "closing_date", "status", "verification_status", "confidence_score", "tags",
         "program_name", "recruitment_year", "first_seen_at", "last_seen_at",
         "last_changed_at", "latest_event_type", "latest_event_at",
-    )
+    ]
+    if include_detail:
+        allowed.extend(["description", "responsibilities", "requirements"])
+    else:
+        allowed.append("requirements")
     item = {key: job.get(key) for key in allowed}
     item["source_ratings"] = [
         {
@@ -1263,7 +1266,9 @@ def _public_search_update(job: dict) -> dict:
         "primary_category", "organization_category",
     ):
         if item.get(field):
-            item[field] = _redact_public_text(str(item[field]), limit=2_000)
+            item[field] = _redact_public_text(
+                str(item[field]), limit=2_000 if include_detail else 320
+            )
     for field in ("tags", "industry_tags", "role_tags"):
         item[field] = [
             _redact_public_text(str(value), limit=100)
@@ -1309,6 +1314,10 @@ def _public_search_update(job: dict) -> dict:
     )
     item["is_candidate"] = not (item["officially_verified"] or item["source_screened"])
     return item
+
+
+def _public_search_update_detail(job: dict) -> dict:
+    return _public_search_update(job, include_detail=True)
 
 
 def _public_review_candidate(candidate: dict) -> dict:
@@ -1368,10 +1377,10 @@ def _radar_company_aliases() -> dict[str, str]:
     }
 
 
-def _public_radar_opportunity(job: dict, profile: dict) -> dict:
+def _public_radar_opportunity(job: dict, profile: dict, *, include_detail: bool = False) -> dict:
     # Sanitize before scoring so derived labels cannot copy private transport
     # fields. Explicit original ratings and official verification stay separate.
-    item = score_job(_public_search_update(job), profile)
+    item = score_job(_public_search_update(job, include_detail=include_detail), profile)
     program_listing = is_recruitment_program_listing(job)
     item["listing_kind"] = "recruitment_program" if program_listing else "job"
     item["is_specific_job"] = not program_listing
@@ -1709,9 +1718,9 @@ def future_radar_opportunity(job_id: str, user: User) -> dict:
     job = future_radar_service.repository.get_prepared_opportunity(
         job_id, public_url=_public_reference_url, company_aliases=_radar_company_aliases(),
         application_states=personal.application_states(database.connect, user["id"]),
-        prepare=lambda item: _public_radar_opportunity(item, profile),
-        input_sanitizer=_public_search_update,
-        cache_scope=_radar_scoring_scope(user["id"], profile),
+        prepare=lambda item: _public_radar_opportunity(item, profile, include_detail=True),
+        input_sanitizer=_public_search_update_detail,
+        cache_scope=_radar_scoring_scope(user["id"], profile) + ":detail",
     )
     if not job:
         raise HTTPException(status_code=404, detail="Radar opportunity not found.")
@@ -2045,10 +2054,29 @@ def future_radar_events(
 @app.get("/api/future-radar/changes")
 def future_radar_changes(
     user: User,
-    after_event_id: int = Query(default=0, ge=0),
+    cursor: int | None = Query(default=None, ge=0),
+    after_event_id: int | None = Query(default=None, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict:
-    return future_radar_events(user, after_event_id, limit, None)
+    from .future_radar import personal
+    profile = database.get_recruitment_profile(user["id"])
+    result = future_radar_service.repository.list_opportunity_changes(
+        after_event_id=cursor if cursor is not None else after_event_id or 0,
+        limit=limit,
+        public_url=_public_reference_url,
+        prepare=lambda job: _public_radar_opportunity(job, profile),
+        input_sanitizer=_public_search_update,
+        company_aliases=_radar_company_aliases(),
+        cache_scope=_radar_scoring_scope(user["id"], profile),
+        application_states=personal.application_states(database.connect, user["id"]),
+    )
+    result["changes"] = result["items"]
+    result["opportunity_revision"] = future_radar_service.repository.opportunity_revision_marker()
+    if result.get("items"):
+        result["dashboard"] = _public_radar_dashboard(
+            future_radar_service.repository.dashboard()
+        )
+    return result
 
 
 @app.get("/api/future-radar/runs")

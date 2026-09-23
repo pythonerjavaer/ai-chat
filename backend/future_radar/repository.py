@@ -29,6 +29,15 @@ from .opportunity_cache import (
 JSON_SOURCE_FIELDS = ("adapter_config", "query_config", "region_config")
 JSON_RUN_FIELDS = ("errors", "source_ids")
 JSON_JOB_FIELDS = ("tags", "industry_tags", "role_tags", "source_ratings")
+JOB_SUMMARY_COLUMNS = (
+    "id", "external_id", "program_id", "company_id", "company", "title", "city",
+    "region", "employer_type", "industry", "primary_category", "organization_category",
+    "industry_tags", "role_tags", "official_url", "application_url", "opening_date",
+    "closing_date", "status", "verification_status", "confidence_score", "tags",
+    "source_ratings", "content_hash", "source_id", "missing_successes", "first_seen_at",
+    "last_seen_at", "last_changed_at", "created_at", "updated_at",
+)
+JOB_SUMMARY_SELECT = ", ".join(f"j.{column}" for column in JOB_SUMMARY_COLUMNS)
 
 RUN_LOCK_TTL_SECONDS = 30 * 60
 SOURCE_LOCK_TTL_SECONDS = 20 * 60
@@ -2649,6 +2658,128 @@ class RadarRepository:
                 if current:
                     items.append(self.public_event(event, dict(current)))
         return {"items": items, "last_event_id": latest}
+
+    def list_opportunity_changes(
+        self, *, after_event_id: int = 0, limit: int = 50,
+        public_url: Callable[[Any], str | None],
+        prepare: Callable[[dict[str, Any]], dict[str, Any]],
+        company_aliases: dict[str, str] | None = None,
+        cache_scope: str | None = None,
+        input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        application_states: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Return changed opportunity summaries since an event cursor.
+
+        This is the everyday sync path for the browser.  It intentionally reads
+        only event rows and the impacted job summaries; the full scored pool is
+        still available for first load, filter changes, repair and stale cursor
+        recovery.
+        """
+        company_aliases = company_aliases or {}
+        if after_event_id < 0:
+            after_event_id = 0
+        with self._connect() as connection:
+            latest = int(connection.execute(
+                "SELECT COALESCE(MAX(id),0) FROM radar_events"
+            ).fetchone()[0])
+            if after_event_id > latest:
+                return {
+                    "items": [], "events": [], "last_event_id": latest,
+                    "has_more": False, "full_sync_required": True,
+                }
+            rows = connection.execute(
+                """
+                SELECT e.*, s.name AS source_name
+                FROM radar_events e LEFT JOIN monitor_sources s ON s.id=e.source_id
+                WHERE e.id>? AND e.entity_type='job'
+                ORDER BY e.id ASC LIMIT ?
+                """,
+                (after_event_id, limit),
+            ).fetchall()
+            events = [self.decode_event(row) for row in rows]
+            next_cursor = max(
+                [after_event_id, *(int(event["id"]) for event in events if event.get("id") is not None)]
+            )
+            has_more = bool(events) and next_cursor < latest
+            job_ids = []
+            seen_ids = set()
+            for event in events:
+                entity_id = str(event.get("entity_id") or "")
+                if entity_id and entity_id not in seen_ids:
+                    seen_ids.add(entity_id)
+                    job_ids.append(entity_id)
+            job_rows: dict[str, dict[str, Any]] = {}
+            if job_ids:
+                placeholders = ",".join("?" for _ in job_ids)
+                for row in connection.execute(
+                    f"""
+                    SELECT {JOB_SUMMARY_SELECT}, '' AS description,
+                           '' AS responsibilities, '' AS requirements,
+                           p.program_name, p.recruitment_year, p.recruitment_type,
+                           (SELECT e2.event_type FROM radar_events e2
+                            WHERE e2.entity_type='job' AND e2.entity_id=j.id
+                            ORDER BY e2.id DESC LIMIT 1) AS latest_event_type,
+                           (SELECT e2.detected_at FROM radar_events e2
+                            WHERE e2.entity_type='job' AND e2.entity_id=j.id
+                            ORDER BY e2.id DESC LIMIT 1) AS latest_event_at
+                    FROM radar_jobs j
+                    LEFT JOIN recruitment_programs p ON p.id=j.program_id
+                    WHERE j.id IN ({placeholders})
+                    """,
+                    job_ids,
+                ).fetchall():
+                    item = self._decode_job(row)
+                    sources = self._job_sources(connection, item["id"])
+                    item["sources"] = sources
+                    item["discovered_by"] = [
+                        source for source in sources if source["verification_role"] == "discovery"
+                    ]
+                    item["verified_by"] = [
+                        source for source in sources if source["verification_role"] == "verification"
+                    ]
+                    job_rows[item["id"]] = item
+
+        record_cache_scope = self._record_cache_scope(
+            self._opportunity_cache_prefix(
+                cache_scope=cache_scope or "", public_url=public_url,
+                company_aliases=company_aliases, input_sanitizer=input_sanitizer,
+            )
+        ) if cache_scope is not None else None
+        statuses_by_id = application_states or {}
+        changes = []
+        for event in events:
+            job = job_rows.get(str(event.get("entity_id") or ""))
+            if not job:
+                changes.append({
+                    "event_id": event["id"],
+                    "event_type": event["event_type"],
+                    "action": "DELETE",
+                    "job_id": event.get("entity_id"),
+                    "external_id": event.get("external_id"),
+                    "changed_fields": event.get("changed_fields", []),
+                    "detected_at": event.get("detected_at"),
+                })
+                continue
+            action = "DELETE" if str(event.get("event_type") or "").upper() == "DELETE" else "UPSERT"
+            prepared = self._prepare_opportunity_record(
+                job, prepare=prepare, input_sanitizer=input_sanitizer,
+                record_cache_scope=record_cache_scope,
+            )
+            prepared["application_status"] = statuses_by_id.get(prepared.get("id"), "not_applied")
+            changes.append({
+                "event_id": event["id"],
+                "event_type": event["event_type"],
+                "action": action,
+                "job": prepared,
+                "job_id": prepared.get("id"),
+                "external_id": prepared.get("external_id"),
+                "changed_fields": event.get("changed_fields", []),
+                "detected_at": event.get("detected_at"),
+            })
+        return {
+            "items": changes, "events": events, "last_event_id": next_cursor,
+            "has_more": has_more, "full_sync_required": False,
+        }
 
     def dashboard(self) -> dict[str, Any]:
         today = date.today()
