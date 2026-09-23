@@ -208,7 +208,12 @@ def test_retry_after_failed_run_reuses_bridge_id_and_does_not_duplicate(harness,
     assert result["jobs_created"] == 1
     assert len(rows("radar_jobs")) == 1
     assert len(rows("monitor_ingestion_runs")) == 1
-    assert rows("monitor_ingestion_watermarks")[0]["recovery_status"] == "normal"
+    # Transport recovery does not prove the public-source interruption window
+    # was covered. The automatic backfill coordinator clears this only after
+    # every mapped official/ATS source succeeds.
+    mark = rows("monitor_ingestion_watermarks")[0]
+    assert mark["recovery_status"] == "backfill_pending"
+    assert mark["pending_backfill"] == 1
 
 
 def test_fresh_processing_replay_is_retryable_busy(harness):

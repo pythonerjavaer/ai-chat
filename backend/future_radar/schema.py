@@ -318,6 +318,39 @@ def migrate(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (source_id) REFERENCES monitor_sources(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS monitor_backfill_source_scopes (
+            monitor_source_id TEXT NOT NULL,
+            public_source_id TEXT NOT NULL,
+            match_reason TEXT NOT NULL,
+            first_observed_at TEXT NOT NULL,
+            last_observed_at TEXT NOT NULL,
+            PRIMARY KEY (monitor_source_id, public_source_id),
+            FOREIGN KEY (monitor_source_id) REFERENCES monitor_sources(id) ON DELETE CASCADE,
+            FOREIGN KEY (public_source_id) REFERENCES monitor_sources(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS source_backfill_jobs (
+            id TEXT PRIMARY KEY,
+            monitor_source_id TEXT NOT NULL,
+            public_source_id TEXT NOT NULL,
+            window_start TEXT NOT NULL,
+            window_end TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT,
+            radar_run_id TEXT,
+            result TEXT NOT NULL DEFAULT '{}',
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE (monitor_source_id, public_source_id, window_start, window_end),
+            FOREIGN KEY (monitor_source_id) REFERENCES monitor_sources(id) ON DELETE CASCADE,
+            FOREIGN KEY (public_source_id) REFERENCES monitor_sources(id) ON DELETE CASCADE,
+            FOREIGN KEY (radar_run_id) REFERENCES radar_runs(id) ON DELETE SET NULL
+        );
+
         CREATE TABLE IF NOT EXISTS radar_locks (
             lock_name TEXT PRIMARY KEY,
             owner TEXT NOT NULL,
@@ -381,6 +414,10 @@ def migrate(connection: sqlite3.Connection) -> None:
             ON monitor_ingestion_items(fingerprint);
         CREATE INDEX IF NOT EXISTS idx_monitor_ingestion_watermarks_status
             ON monitor_ingestion_watermarks(recovery_status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_monitor_backfill_scopes_monitor
+            ON monitor_backfill_source_scopes(monitor_source_id, last_observed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_source_backfill_jobs_due
+            ON source_backfill_jobs(status, next_attempt_at, updated_at);
         CREATE INDEX IF NOT EXISTS idx_recruitment_monitor_leads_status
             ON recruitment_monitor_leads(status, updated_at DESC);
         """

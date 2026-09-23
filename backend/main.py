@@ -115,6 +115,7 @@ from .future_radar.schemas import (
 )
 from .future_radar.service import FutureRadarService, RadarRunBusy, SyncConflict
 from .chatgpt_monitor_ingestion import ChatGPTMonitorIngestionService, RetryableIngestionBusy
+from .source_backfill import BACKFILL_INTERVAL_SECONDS, SourceBackfillCoordinator
 from .future_radar_mcp import build_future_radar_mcp
 from .future_radar.adapters import _public_reference_url, _redact_public_text
 from .security import (
@@ -194,6 +195,11 @@ chatgpt_monitor_ingestion_service = ChatGPTMonitorIngestionService(
     radar=future_radar_service,
     connect=database.connect,
 )
+source_backfill_coordinator = SourceBackfillCoordinator(
+    radar=future_radar_service,
+    connect=database.connect,
+)
+chatgpt_monitor_ingestion_service.scope_recorder = source_backfill_coordinator.record_scope
 future_radar_mcp_server, future_radar_mcp_app = build_future_radar_mcp(
     chatgpt_monitor_ingestion_service,
     token=settings.future_radar_sync_token or settings.recruitment_ingest_token,
@@ -571,6 +577,23 @@ async def wechat_public_discovery_loop() -> None:
             logger.exception("Scheduled WeChat public discovery failed safely")
 
 
+async def source_backfill_recovery_loop() -> None:
+    """Recover bounded public-source gaps without browser polling or paid APIs."""
+    # Give the existing five-minute Apps Script trigger time to deliver its
+    # PENDING/RETRYABLE rows before any independent public-source recovery.
+    await asyncio.sleep(60)
+    while True:
+        try:
+            result = await asyncio.to_thread(source_backfill_coordinator.run_once)
+            if result.get("status") not in {"waiting_for_bridge_backlog", "already_running"}:
+                logger.info("Source backfill recovery pass: %s", result)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Source backfill recovery pass failed safely")
+        await asyncio.sleep(BACKFILL_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     startup_rss = log_memory_checkpoint(logger, "app_startup", "before")
@@ -585,6 +608,7 @@ async def lifespan(_: FastAPI):
         restore_chatgpt_screened_opportunities_in_background()
     )]
     tasks.append(asyncio.create_task(wechat_public_discovery_loop()))
+    tasks.append(asyncio.create_task(source_backfill_recovery_loop()))
     first_refresh_complete = asyncio.Event()
     if settings.recruitment_refresh_minutes > 0:
         tasks.append(asyncio.create_task(
@@ -2236,7 +2260,10 @@ def sync_chatgpt_monitor(
 def chatgpt_monitor_recovery_status(
     _: Annotated[None, Depends(require_admin_dashboard_token)],
 ) -> dict:
-    return chatgpt_monitor_ingestion_service.recovery_status()
+    return {
+        **chatgpt_monitor_ingestion_service.recovery_status(),
+        "source_backfill": source_backfill_coordinator.status(),
+    }
 
 
 @app.post("/api/future-radar/sources", status_code=status.HTTP_201_CREATED)

@@ -81,6 +81,7 @@ class ChatGPTMonitorIngestionService:
     def __init__(self, *, radar: FutureRadarService, connect: Callable[[], Any]):
         self.radar = radar
         self.connect = connect
+        self.scope_recorder: Callable[[str, list[dict[str, Any]]], int] | None = None
 
     def _existing_external_id_for_url(self, url: str | None) -> str | None:
         if not url:
@@ -297,6 +298,12 @@ class ChatGPTMonitorIngestionService:
         source_id = str(payload["source_id"])
         duplicate_suppressed = int(response.get("duplicates") or 0)
         with self.connect() as connection:
+            prior = connection.execute(
+                "SELECT pending_backfill,interrupted_from FROM monitor_ingestion_watermarks WHERE source_id=?",
+                (source_id,),
+            ).fetchone()
+            preserve_backfill = bool(prior and prior["pending_backfill"])
+            interrupted_from = prior["interrupted_from"] if preserve_backfill else None
             event_row = connection.execute(
                 "SELECT COALESCE(MAX(id),0) AS cursor FROM radar_events"
             ).fetchone()
@@ -307,7 +314,7 @@ class ChatGPTMonitorIngestionService:
                     last_successful_run_id,last_successful_event_id,last_received_at,
                     recovery_status,interrupted_from,interrupted_until,pending_backfill,
                     duplicate_suppressed,updated_at)
-                   VALUES (?,?,?,?,?,?,?,'normal',NULL,NULL,0,?,?)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?, ?,?)
                    ON CONFLICT(source_id) DO UPDATE SET
                      source_thread_ref=excluded.source_thread_ref,
                      monitor_name=excluded.monitor_name,
@@ -315,15 +322,18 @@ class ChatGPTMonitorIngestionService:
                      last_successful_run_id=excluded.last_successful_run_id,
                      last_successful_event_id=excluded.last_successful_event_id,
                      last_received_at=excluded.last_received_at,
-                     recovery_status='normal',
-                     interrupted_until=NULL,
-                     pending_backfill=0,
+                     recovery_status=excluded.recovery_status,
+                     interrupted_from=excluded.interrupted_from,
+                     interrupted_until=excluded.interrupted_until,
+                     pending_backfill=excluded.pending_backfill,
                      duplicate_suppressed=monitor_ingestion_watermarks.duplicate_suppressed + excluded.duplicate_suppressed,
                      updated_at=excluded.updated_at""",
                 (
                     source_id, _thread_ref(payload.get("source_thread_id")), payload.get("monitor_name"),
                     payload.get("generated_at") or now, run_id, event_id, received_at,
-                    duplicate_suppressed, now,
+                    "backfill_pending" if preserve_backfill else "normal",
+                    interrupted_from, now if preserve_backfill else None,
+                    int(preserve_backfill), duplicate_suppressed, now,
                 ),
             )
 
@@ -491,6 +501,11 @@ class ChatGPTMonitorIngestionService:
                 "articles": list(payload.get("articles") or []),
             }
             radar_result = self.radar.sync(sync_payload, idempotency_key=key)
+            if self.scope_recorder and jobs_for_sync:
+                # This records only exact company/public-host overlaps already
+                # observed in a successful monitor run. It never broadens the
+                # monitor to unrelated Future Radar sources.
+                self.scope_recorder(source_id, jobs_for_sync)
             counts = radar_result.get("counts") or {}
             tier_counts: dict[str, int] = {}
             for external_id, item_id in item_rows.items():

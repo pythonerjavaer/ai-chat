@@ -671,6 +671,9 @@ class FutureRadarService:
                 key = {
                     "NEW": "new_jobs", "UPDATED": "updated_jobs", "VERIFIED": "updated_jobs",
                     "DEADLINE_CHANGED": "updated_jobs", "JD_CHANGED": "updated_jobs",
+                    "LOCATION_CHANGED": "updated_jobs",
+                    "APPLICATION_URL_CHANGED": "updated_jobs",
+                    "APPLICATION_DISABLED": "closed_jobs",
                     "BATCH_CHANGED": "updated_jobs",
                     "CLOSED": "closed_jobs", "REOPENED": "reopened_jobs",
                 }.get(event, "unchanged_jobs")
@@ -684,6 +687,18 @@ class FutureRadarService:
             for raw in result.jobs[offset:offset + RESULT_WRITE_BATCH_SIZE]:
                 try:
                     item = normalize_job(raw)
+                    event_hint = clean_text(
+                        raw.get("event_type") or raw.get("_event_type_hint"), limit=32,
+                    ).upper()
+                    if event_hint in {
+                        "NEW", "UPDATED", "CLOSED", "REOPENED", "DEADLINE_CHANGED",
+                        "JD_CHANGED", "LOCATION_CHANGED", "APPLICATION_URL_CHANGED",
+                        "APPLICATION_DISABLED", "BATCH_CHANGED",
+                    }:
+                        # Internal change semantics survive normalization, but
+                        # are not persisted as job fields or included in its
+                        # semantic hash.
+                        item["_event_type_hint"] = event_hint
                     if item["verification_status"] == "source_screened" and not (
                         source.get("id") == "legacy-search-discovery"
                         and source.get("adapter_config", {}).get("adapter") == "legacy_database"
@@ -992,7 +1007,11 @@ class FutureRadarService:
         if existing["status"] == "closed" and merged["status"] == "open":
             return "REOPENED"
         if existing["status"] != "closed" and merged["status"] == "closed":
-            return "CLOSED"
+            return (
+                "APPLICATION_DISABLED"
+                if merged.get("_event_type_hint") == "APPLICATION_DISABLED"
+                else "CLOSED"
+            )
         if existing["verification_status"] != "verified" and merged["verification_status"] == "verified":
             return "VERIFIED"
         changed = set(fields)
@@ -1000,6 +1019,10 @@ class FutureRadarService:
             return "DEADLINE_CHANGED"
         if changed & {"description", "responsibilities", "requirements"}:
             return "JD_CHANGED"
+        if changed & {"city", "region"}:
+            return "LOCATION_CHANGED"
+        if "application_url" in changed:
+            return "APPLICATION_DISABLED" if not merged.get("application_url") else "APPLICATION_URL_CHANGED"
         if "program_id" in changed:
             return "BATCH_CHANGED"
         return "UPDATED"
