@@ -2214,6 +2214,7 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 .finance-workspace { display:grid; grid-template-columns:minmax(420px,1.2fr) minmax(320px,.8fr) minmax(260px,.65fr); gap:18px; align-items:start; }
 .statement-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:14px; }
 .analytics-workspace { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; align-items:start; }
+.compact-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); margin-bottom:12px; }
 .domain-record-card.clickable { cursor:pointer; }.domain-record-card.clickable:hover { border-color:rgba(var(--domain-accent),.4); transform:translateY(-1px); }
 .pulse-metric { text-align:left; cursor:pointer; font:inherit; }.pulse-metric:disabled { opacity:1; cursor:default; }
 

@@ -1186,9 +1186,19 @@ class PulseRepository:
                                   "segment": "High Value" if spent >= 150000 else "Frequent" if count >= 4 else "Returning" if count >= 2 else "New",
                                   "frequency": count, "recency_days": (datetime.now(timezone.utc) - datetime.fromisoformat(last)).days if last else None})
         sku_map = {x["id"]: x for x in state["skus"]}; asset_map = {x["id"]: x for x in state["assets"]}
-        top_assets = sorted([{**asset_map[k], "lifetime_revenue": v,
-                              "rental_count": sum(1 for o in orders for i in o["items"] if i["asset_id"] == k),
-                              "payback_progress": round(v * 100 / max(1, asset_map[k]["purchase_cost_cents"]), 1)} for k, v in revenue_by_asset.items()], key=lambda x: x["lifetime_revenue"], reverse=True)
+        top_assets = []
+        for asset_id, value in revenue_by_asset.items():
+            rental_count = sum(1 for o in orders for i in o["items"] if i["asset_id"] == asset_id)
+            cleaning = sum(x["amount_cents"] for x in state["expenses"] if x.get("asset_id") == asset_id and x["category"] == "cleaning")
+            repair = sum(x["amount_cents"] for x in state["expenses"] if x.get("asset_id") == asset_id and x["category"] == "repair")
+            age_days = max(1, (datetime.now(timezone.utc).date() - date.fromisoformat(asset_map[asset_id]["acquisition_date"])).days)
+            occupied_days = rental_count * 3
+            top_assets.append({**asset_map[asset_id], "lifetime_revenue": value, "rental_count": rental_count,
+                               "utilization": round(occupied_days * 100 / age_days, 1),
+                               "cleaning_cost": cleaning, "repair_cost": repair,
+                               "revenue_per_available_day": round(value / max(1, age_days - occupied_days)),
+                               "payback_progress": round(value * 100 / max(1, asset_map[asset_id]["purchase_cost_cents"]), 1)})
+        top_assets.sort(key=lambda x: x["lifetime_revenue"], reverse=True)
         revenue_by_sku_rows = sorted([{"id": key, "name": sku_map[key]["name"], "size": sku_map[key]["size"], "revenue": value,
                                        "orders": sum(1 for o in orders for i in o["items"] if i["sku_id"] == key)} for key, value in revenue_by_sku.items()], key=lambda x: x["revenue"], reverse=True)
         month_rows: dict[str, dict[str, int]] = {}
@@ -1199,6 +1209,25 @@ class PulseRepository:
             if payment["payment_type"] == "deposit_refund": row["cash_out"] += payment["amount_cents"]
         for order in orders: month_rows.setdefault(order["created_at"][:7], {"revenue": 0, "cash_in": 0, "cash_out": 0, "orders": 0})["orders"] += 1
         timeline = [{"period": key, **value} for key, value in sorted(month_rows.items())]
+        channel_revenue: dict[str, int] = {}
+        for payment in state["payments"]:
+            if payment["payment_type"] == "rental" and payment["order_id"] in order_map:
+                channel = order_map[payment["order_id"]].get("channel") or "Unknown"
+                channel_revenue[channel] = channel_revenue.get(channel, 0) + payment["amount_cents"]
+        cohorts: dict[str, dict[str, int]] = {}
+        for customer in state["customers"]:
+            key = customer["created_at"][:7]; row = cohorts.setdefault(key, {"customers": 0, "orders": 0, "revenue": 0})
+            row["customers"] += 1
+            owned_ids = {o["id"] for o in orders if o["customer_id"] == customer["id"]}
+            row["orders"] += len(owned_ids)
+            row["revenue"] += sum(p["amount_cents"] for p in state["payments"] if p["payment_type"] == "rental" and p["order_id"] in owned_ids)
+        active_customer_count = sum(1 for row in customer_rows if row["orders"])
+        customer_summary = {"new_customers": sum(1 for row in customer_rows if row["orders"] == 1),
+                            "returning_customers": sum(1 for row in customer_rows if row["orders"] >= 2),
+                            "average_spend": round(sum(row["lifetime_revenue"] for row in customer_rows) / max(1, active_customer_count)),
+                            "referral_customers": sum(1 for row in customer_rows if row.get("source") == "Referral"),
+                            "channel_revenue": [{"channel": key, "revenue": value} for key, value in sorted(channel_revenue.items(), key=lambda item: item[1], reverse=True)],
+                            "cohorts": [{"cohort": key, **value} for key, value in sorted(cohorts.items())]}
         trial_accounts = [{"code": code, "name": DEMO_ACCOUNTS[code][0], "account_type": DEMO_ACCOUNTS[code][1], "closing_balance": value} for code, value in sorted(balances.items())]
         return {**state, "loaded": True,
                 "dashboard": {"metrics": {"revenue": revenue, "orders": len(orders), "cash_in": cash_in, "cash_out": cash_out,
@@ -1216,7 +1245,8 @@ class PulseRepository:
                     "cash_flow": {"operating": sum(sum(l["debit_cents"]-l["credit_cents"] for l in j["lines"] if l["account_code"]=="1000") for j in state["journals"] if j["cash_flow_category"]=="operating"),
                                   "investing": sum(sum(l["debit_cents"]-l["credit_cents"] for l in j["lines"] if l["account_code"]=="1000") for j in state["journals"] if j["cash_flow_category"]=="investing"),
                                   "financing": sum(sum(l["debit_cents"]-l["credit_cents"] for l in j["lines"] if l["account_code"]=="1000") for j in state["journals"] if j["cash_flow_category"]=="financing")}},
-                "analytics": {"customers": customer_rows, "revenue_by_sku": revenue_by_sku_rows, "top_assets": top_assets,
+                "analytics": {"customers": customer_rows, "customer_summary": customer_summary,
+                              "revenue_by_sku": revenue_by_sku_rows, "top_assets": top_assets,
                               "unavailable_demand": state["unavailable_demand"], "trends": timeline,
                               "insights": [{"id": "demo-insight-demand", "title": "Size M 存在未满足需求", "metric": len(state["unavailable_demand"]), "period": "过去30天", "calculation": "未满足的Size M需求事件数", "evidence_ids": [x["id"] for x in state["unavailable_demand"]]},
                                            {"id": "demo-insight-asset", "title": f"{top_assets[0]['asset_code']} 是收入最高资产" if top_assets else "暂无资产收入", "metric": top_assets[0]["lifetime_revenue"] if top_assets else 0, "period": "六个月", "calculation": "与该资产关联订单的租金收款合计", "evidence_ids": [top_assets[0]["id"]] if top_assets else []}]}}

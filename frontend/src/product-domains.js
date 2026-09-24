@@ -396,8 +396,12 @@ export function initProductDomains({ api, toast }) {
     const data = pulseDemo() ? pulse.analytics : await api("/pulse/analytics?date_from=" + pulse.dateFrom + "&date_to=" + pulse.dateTo);
     const revenue = data.revenue_by_sku || (data.sales && data.sales.revenue_by_sku) || [];
     list($("pulse-analytics-output"), revenue, (item) => card(item.name, item.orders + " 单 · " + (item.size || ""), money(item.revenue, pulse.currency)), "尚无已确认租赁收入。");
+    const summary = data.customer_summary || {};
+    $("pulse-customer-summary").replaceChildren(metric("New", summary.new_customers || 0, "仅一笔订单客户"), metric("Returning", summary.returning_customers || 0, "两笔及以上客户"), metric("Average Spend", money(summary.average_spend || 0, pulse.currency), "有订单客户均值"), metric("Referral", summary.referral_customers || 0, "推荐渠道客户"));
+    list($("pulse-channel-output"), summary.channel_revenue || [], (item) => card(item.channel, "ACQUISITION CHANNEL", money(item.revenue, pulse.currency)), "尚无渠道收入数据。");
+    list($("pulse-cohort-output"), summary.cohorts || [], (item) => card(item.cohort + " Cohort", item.customers + " 位客户 · " + item.orders + " 单", money(item.revenue, pulse.currency)), "真实客户积累后显示 Cohort。");
     list($("pulse-segment-output"), data.customers || [], (item) => card(item.name, item.segment + " · " + item.orders + " 单", money(item.lifetime_revenue, pulse.currency) + " · Recency " + (item.recency_days == null ? "—" : item.recency_days) + "天"), "尚无客户行为数据。");
-    list($("pulse-asset-analytics"), data.top_assets || [], (item) => { const node = card(item.asset_code, item.rental_count + " 次租赁", money(item.lifetime_revenue, pulse.currency) + " · 回本 " + item.payback_progress + "%"); node.classList.add("clickable"); node.addEventListener("click", () => { tab(pulseDialog, "assets"); openAsset(item.id); }); return node; }, "真实资产经营记录出现后显示资产经济性。");
+    list($("pulse-asset-analytics"), data.top_assets || [], (item) => { const node = card(item.asset_code, item.rental_count + " 次租赁 · 利用率 " + (item.utilization == null ? "—" : item.utilization + "%"), money(item.lifetime_revenue, pulse.currency) + " · 回本 " + item.payback_progress + "% · 每可用日 " + money(item.revenue_per_available_day || 0, pulse.currency)); node.classList.add("clickable"); node.addEventListener("click", () => { tab(pulseDialog, "assets"); openAsset(item.id); }); return node; }, "真实资产经营记录出现后显示资产经济性。");
     list($("pulse-insight-list"), data.insights || [], (item) => card(item.title, item.period + " · Metric " + item.metric, item.calculation + "\nEvidence: " + (item.evidence_ids || []).join(", ")), "数据不足时不编造经营洞察。");
   }
 

@@ -188,6 +188,9 @@ def test_pulse_demo_full_transaction_updates_balanced_finance(product_store):
     demo = repo.reset_demo(1)
     assert demo["trial_balance"]["balanced"] is True
     assert demo["statements"]["balance_sheet"]["balanced"] is True
+    assert demo["analytics"]["customer_summary"]["cohorts"]
+    assert demo["analytics"]["customer_summary"]["channel_revenue"]
+    assert demo["analytics"]["top_assets"][0]["revenue_per_available_day"] > 0
     assert repo.list_entity(1, "pulse_orders") == []
     customer = repo.demo_action(1, PulseDemoAction(action="customer", payload={"name": "Journey Customer"}))["customers"][-1]
     available = next(asset for asset in repo.demo(1)["assets"] if asset["status"] == "available")
