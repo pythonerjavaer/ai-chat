@@ -11,11 +11,11 @@ import {
 } from "./product-navigation.js";
 
 test("the global product navigation contains every formal product exactly once", () => {
-  assert.equal(PRODUCT_NAV_ITEMS.length, 10);
-  assert.equal(new Set(PRODUCT_NAV_ITEMS.map((item) => item.id)).size, 10);
+  assert.equal(PRODUCT_NAV_ITEMS.length, 12);
+  assert.equal(new Set(PRODUCT_NAV_ITEMS.map((item) => item.id)).size, 12);
   assert.deepEqual(
     PRODUCT_NAV_ITEMS.map((item) => item.label),
-    ["寒冰域", "极光域", "烈火域", "未来雷达", "造界", "共振", "溯源透镜", "八度空间", "光子魅影", "遗忘史诗"],
+    ["寒冰域", "极光域", "烈火域", "未来雷达", "造界", "共振", "溯源透镜", "八度空间", "光子魅影", "遗忘史诗", "跃迁域", "脉冲域"],
   );
 });
 
@@ -31,7 +31,7 @@ test("every modal product has a real navigation surface and all product buttons 
   const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
   const modalProducts = PRODUCT_NAV_ITEMS.filter((item) => item.dialogId);
 
-  assert.equal(modalProducts.length, 7);
+  assert.equal(modalProducts.length, 9);
   modalProducts.forEach((item) => {
     assert.match(html, new RegExp(`<dialog[^>]+id=["']${item.dialogId}["']`));
   });
@@ -46,7 +46,7 @@ test("switching products closes every previous product dialog but keeps the dest
   assert.equal(switchingToTrace.includes("trace-dialog"), false);
   assert.equal(switchingToTrace.includes("recruitment-dialog"), true);
   assert.equal(switchingToTrace.includes("music-dimension-dialog"), true);
-  assert.equal(productDialogIdsToClose("general").length, 7);
+  assert.equal(productDialogIdsToClose("general").length, 9);
 });
 
 test("only known products can be restored or launched", () => {

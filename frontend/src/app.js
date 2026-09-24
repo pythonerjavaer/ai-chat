@@ -10,6 +10,7 @@ import { Haptics, ImpactStyle } from "@capacitor/haptics";
 import { Preferences } from "@capacitor/preferences";
 import { MUSIC_CREATION_TEMPLATES, buildMusicBlueprint, soundscapeEngine } from "./music-creator.js";
 import { initOblivionArchive, openOblivionArchive } from "./oblivion-archive.js";
+import { initProductDomains } from "./product-domains.js";
 import {
   PRODUCT_NAV_ITEMS,
   normalizeProductId,
@@ -70,6 +71,7 @@ const FUTURE_RADAR_RUN_STATUS_POLL_MS = RADAR_STATUS_INTERVAL_MS;
 const FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS = 20;
 const FUTURE_RADAR_SCAN_TYPES = Object.freeze(["quick", "deep"]);
 const FUTURE_RADAR_REQUEST_CONTROLLERS = new Set();
+let productDomains = null;
 const WORKSPACE_META = {
   legal: { symbol: "§", eyebrow: "FROST", themeName: "寒冰域", label: "寒冰域", hero: "有些东西决定世界如何运行，也决定什么不能被越过。", description: "当前从合同、合规、义务、期限与风险开始。", lens: "来源" },
   general: { symbol: "✦", eyebrow: "AURORA", themeName: "极光域", label: "极光域", hero: "让散落的信息逐渐形成属于你的知识世界。", description: "当前从资料、文档、对话与可追溯问答开始。", lens: "来源" },
@@ -2242,6 +2244,8 @@ async function launchProduct(product) {
   if (product === "forge") await openStudio();
   if (product === "music") await openMusicDimension();
   if (product === "photon") await openPhotonProjection();
+  if (product === "leap") await productDomains?.openLeap();
+  if (product === "pulse") await productDomains?.openPulse();
   if (state.token) {
     state.pendingLaunch = null;
     await storage.remove(STORAGE_KEYS.pendingProduct);
@@ -5602,6 +5606,13 @@ function openRegistrationFromLink() {
 }
 
 elements.authForm.addEventListener("submit", authenticate);
+productDomains = initProductDomains({ api, toast: showToast });
+document.querySelectorAll("[data-product-map-open]").forEach((button) => {
+  button.addEventListener("click", () => {
+    button.closest("dialog")?.close();
+    openWorldMap();
+  });
+});
 elements.authSwitch.addEventListener("click", () => setAuthMode(state.authMode === "login" ? "register" : "login"));
 elements.authModeLogin.addEventListener("click", () => setAuthMode("login"));
 elements.authModeRegister.addEventListener("click", () => setAuthMode("register"));

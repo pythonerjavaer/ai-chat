@@ -95,6 +95,10 @@ function runtime({ compact = false, id = "world", cardHeight = 138.594 } = {}) {
     openStudio() { opened.push("forge"); },
     openMusicDimension() { opened.push("music"); },
     openPhotonProjection() { opened.push("photon"); },
+    productDomains: {
+      openLeap() { opened.push("leap"); },
+      openPulse() { opened.push("pulse"); },
+    },
   });
   vm.runInContext(`${setupSource}\n${launchSource}`, context);
   const realLaunch = context.launchProduct;
@@ -299,7 +303,7 @@ test("keyboard activation remains usable after a cancelled pointer gesture", asy
   assert.equal(r.recruitmentDialog.open, true);
 });
 
-test("all ten desktop and mobile products activate their own destination exactly once", async () => {
+test("all twelve desktop and mobile products activate their own destination exactly once", async () => {
   for (const compact of [false, true]) {
     for (const [index, product] of PRODUCT_NAV_ITEMS.entries()) {
       const r = runtime({ compact });

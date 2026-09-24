@@ -117,6 +117,12 @@ from .future_radar.service import FutureRadarService, RadarRunBusy, SyncConflict
 from .chatgpt_monitor_ingestion import ChatGPTMonitorIngestionService, RetryableIngestionBusy
 from .source_backfill import BACKFILL_INTERVAL_SECONDS, SourceBackfillCoordinator
 from .future_radar_mcp import build_future_radar_mcp
+from .product_domains import (
+    create_leap_router,
+    create_pulse_router,
+    init_leap_schema,
+    init_pulse_schema,
+)
 from .future_radar.adapters import _public_reference_url, _redact_public_text
 from .security import (
     create_access_token,
@@ -598,6 +604,8 @@ async def source_backfill_recovery_loop() -> None:
 async def lifespan(_: FastAPI):
     startup_rss = log_memory_checkpoint(logger, "app_startup", "before")
     database.init_db()
+    init_leap_schema(database.connect)
+    init_pulse_schema(database.connect)
     future_radar_service.seed_registry()
     wechat_title_service.repository.seed_watchlist()
     wechat_title_service.repository.interrupt_stale_scan_runs()
@@ -1149,6 +1157,8 @@ app.include_router(create_wechat_router(
     consented_user=require_privacy_consent, admin_auth=require_admin_dashboard_token,
     discovery_provider=wechat_discovery_provider,
 ))
+app.include_router(create_leap_router(database.connect, current_user))
+app.include_router(create_pulse_router(database.connect, current_user))
 
 
 _PUBLIC_RADAR_ERROR_MESSAGES = {
