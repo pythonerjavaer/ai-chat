@@ -112,6 +112,23 @@ test("real builder and API send the active main-pool GET without blank dates or 
   assert.equal(r.timers[0].cleared, true);
 });
 
+test("shared API preserves structured reading-assistant error codes and safe messages", async (t) => {
+  const server = await localServer(t, (_request, response) => {
+    response.writeHead(429, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ detail: {
+      code: "AI_CREDITS_EXHAUSTED",
+      message: "冰焰现有AI服务的API额度已用完。",
+    } }));
+  });
+  const r = runtime(server.base);
+  await assert.rejects(
+    r.run("api('/leap/reading-assistant/interpret', {method: 'POST', body: '{}'})"),
+    (error) => error.status === 429
+      && error.code === "AI_CREDITS_EXHAUSTED"
+      && error.message === "冰焰现有AI服务的API额度已用完。",
+  );
+});
+
 test("a suspended metadata polling gate does not block manually read private application records", async t => {
   const server = await localServer(t, (_request, response) => {
     response.writeHead(200, { 'Content-Type': 'application/json' });

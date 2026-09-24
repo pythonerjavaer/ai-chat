@@ -123,6 +123,7 @@ from .product_domains import (
     init_leap_schema,
     init_pulse_schema,
 )
+from .product_domains.interpretation import classify_provider_failure
 from .future_radar.adapters import _public_reference_url, _redact_public_text
 from .security import (
     create_access_token,
@@ -1160,16 +1161,28 @@ app.include_router(create_wechat_router(
 def _run_leap_interpretation(user_id: int, system_prompt: str, prompt: str,
                              max_output_tokens: int) -> dict:
     """Use Frostfire's already-configured model path only after a user click."""
-    enforce_model_request_rate(user_id, 1)
     try:
+        enforce_model_request_rate(user_id, 1)
         reply, usage = run_space(
             system_prompt, prompt, max_output_tokens=max_output_tokens, mode="lean",
         )
-    except HTTPException:
-        raise
+    except HTTPException as exc:
+        code = "AI_RATE_LIMITED" if exc.status_code == 429 else "AI_PROVIDER_ERROR"
+        message = "冰焰AI服务当前请求过于频繁，请稍后重试。" if exc.status_code == 429 else "冰焰AI服务暂时无法完成内容解读，请稍后重试。"
+        logger.warning("Leap interpretation rejected code=%s status=%s", code, exc.status_code)
+        raise HTTPException(status_code=exc.status_code, detail={"code": code, "message": message}) from exc
     except Exception as exc:
-        logger.exception("Leap interpretation request failed")
-        raise HTTPException(status_code=502, detail="内容解读服务暂时不可用，请稍后重试。") from exc
+        code, status_code, message = classify_provider_failure(exc)
+        # Do not log the exception string: provider diagnostics can contain
+        # request identifiers, and the prompt can contain private text.
+        logger.warning(
+            "Leap interpretation provider failure code=%s status=%s exception_type=%s",
+            code, status_code, type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": code, "message": message},
+        ) from exc
     database.record_token_usage(
         user_id, None, usage["input_tokens"], usage["output_tokens"], usage["total_tokens"],
     )

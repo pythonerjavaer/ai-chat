@@ -678,9 +678,18 @@ async function api(path, options = {}) {
     }
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
-      try { detail = (await response.json()).detail || detail; } catch (_) {}
+      let errorCode = "";
+      try {
+        const errorPayload = await response.json();
+        const responseDetail = errorPayload?.detail;
+        if (responseDetail && typeof responseDetail === "object") {
+          detail = responseDetail.message || responseDetail.code || detail;
+          errorCode = responseDetail.code || "";
+        } else if (responseDetail) detail = String(responseDetail);
+      } catch (_) {}
       const requestError = new Error(detail);
       requestError.status = response.status;
+      requestError.code = errorCode;
       requestError.retryAfter = response.headers.get("Retry-After");
       throw requestError;
     }

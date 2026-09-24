@@ -73,6 +73,45 @@ export function translationTarget(selection, scope) {
   };
 }
 
+export function classifySelectionScope(selection) {
+  const quote = String(selection?.quote || "").trim();
+  if (!quote) return "selection";
+  if (isSingleEnglishWord(quote)) return "word";
+  if (Number(selection?.paragraph_position) !== Number(selection?.paragraph_end ?? selection?.paragraph_position)) return "selection";
+  const paragraph = String(selection?.paragraph_text || "");
+  const start = Number(selection?.start_offset) || 0;
+  const end = Number(selection?.end_offset) || 0;
+  const sentence = sentenceAtSelection(paragraph, start, end);
+  if (start === sentence.start && end === sentence.end) return "sentence";
+  const paragraphStart = paragraph.length - paragraph.trimStart().length;
+  const paragraphEnd = paragraph.trimEnd().length;
+  if (start === paragraphStart && end === paragraphEnd) return "paragraph";
+  return "selection";
+}
+
+export function createSelectionSnapshot({ material, rows, startPosition, endPosition, start, end, quote }) {
+  const selectedRows = Array.isArray(rows) ? rows : [];
+  if (!material || !selectedRows.length) return null;
+  const first = selectedRows[0];
+  const containingSentence = sentenceAtSelection(first.content, start, selectedRows.length === 1 ? end : start);
+  const chapter = (material.chapters || []).find((item) => startPosition >= Number(item.start_paragraph) && startPosition <= Number(item.end_paragraph));
+  const segments = selectedRows.map((row, index) => {
+    const segmentStart = index === 0 ? start : 0;
+    const segmentEnd = index === selectedRows.length - 1 ? end : row.content.length;
+    return { segment_id: row.stable_anchor || `p-${row.position}`, paragraph_id: row.id || row.stable_anchor || `p-${row.position}`, paragraph_position: row.position, start_offset: segmentStart, end_offset: segmentEnd, selected_text: row.content.slice(segmentStart, segmentEnd) };
+  });
+  return {
+    document_id: material.id, document_version: material.version || 1,
+    material_id: material.id, material_version: material.version || 1,
+    chapter_id: chapter?.id ?? chapter?.position ?? null,
+    segment_id: segments[0].segment_id, paragraph_id: segments[0].paragraph_id,
+    paragraph_position: startPosition, paragraph_end: endPosition, start_offset: start, end_offset: end,
+    selected_text: quote, quote, paragraph_text: first.content,
+    containing_sentence: containingSentence.text, containing_paragraph: first.content,
+    segments, paragraphs: selectedRows,
+  };
+}
+
 export function translationCacheIdentity({ documentId, documentVersion, documentHash, paragraphPosition, scope, text, providerId, providerModel, sentenceIndex = null, start = null, end = null, paragraphEnd = null }) {
   const location = scope === "sentence" ? `sentence:${sentenceIndex}` : scope === "word" ? `word:${start}-${end}` : scope === "selection" ? `selection:${paragraphPosition}-${paragraphEnd}:${start}-${end}` : `paragraph:${paragraphPosition}`;
   return [documentId || "demo", documentVersion || 1, documentHash || "demo", paragraphPosition, location, scope, "en", "zh-Hans", providerId, providerModel, text].join("|");
@@ -104,7 +143,7 @@ export function buildTranslationRequest({ material, paragraph, provider, target,
 
 export function buildInterpretationRequest({ material, selection, target, scope, force = false }) {
   return {
-    action: "interpret", scope, document_id: material.id,
+    action: "interpret", scope, document_id: material.id, document_version: material.version || 1,
     paragraph_start: Number(target.paragraphStart ?? selection?.paragraph_position ?? 0),
     paragraph_end: Number(target.paragraphEnd ?? selection?.paragraph_end ?? selection?.paragraph_position ?? 0),
     selection_start: Number.isInteger(target.start) ? target.start : null,
@@ -499,7 +538,8 @@ export function initProductDomains({ api, toast }) {
   }
   function renderTranslationResult(original, result, scope) {
     const output = $("leap-selection-translation"); output.replaceChildren();
-    output.append(el("small", "", (scope === "word" ? "选词翻译" : scope === "sentence" ? "句子对照" : "段落对照") + " · " + result.provider + " / " + result.provider_model + (result.cache_hit ? " · 缓存" : "")));
+    const scopeTitle = { word: "选词翻译", sentence: "句子对照", paragraph: "段落对照", selection: "所选文字翻译" }[scope] || "范围翻译";
+    output.append(el("small", "", scopeTitle + " · " + result.provider + " / " + result.provider_model + (result.cache_hit ? " · 缓存" : "")));
     output.append(el("p", "translation-original", original));
     const dictionary = result.metadata?.dictionary || result.dictionary || [];
     if (scope === "word") {
@@ -534,6 +574,57 @@ export function initProductDomains({ api, toast }) {
       return { text: sentence.text, sentenceIndex: sentence.index, paragraphStart: paragraph.position, paragraphEnd: paragraph.position, start: sentence.start, end: sentence.end, contextText: paragraph.content };
     }
     return { text: selection.quote, paragraphStart: selection.paragraph_position, paragraphEnd: selection.paragraph_end, start: selection.start_offset, end: selection.end_offset, contextText: Number(selection.paragraph_end) === Number(selection.paragraph_position) ? paragraph.content : "" };
+  }
+  function currentAssistantTarget(scope = leap.currentAssistantScope) {
+    if (!scope || scope === "chapter") return null;
+    try { return assistantTarget(scope); } catch (_) { return null; }
+  }
+  function assistantResultFor(actionName, scope = leap.currentAssistantScope) {
+    const target = currentAssistantTarget(scope);
+    return target ? leap.assistantResults.get(assistantSelectionKey(actionName, scope, target)) : null;
+  }
+  function setScopeButtons(scope) {
+    const buttons = {
+      word: $("leap-translate-word"), sentence: $("leap-translate-sentence"), paragraph: $("leap-translate-paragraph"),
+      selection: $("leap-assistant-selection"), chapter: $("leap-assistant-chapter"),
+    };
+    Object.entries(buttons).forEach(([name, button]) => {
+      button.classList.toggle("active", name === scope);
+      button.setAttribute("aria-pressed", String(name === scope));
+    });
+  }
+  function renderAssistantIdle(actionName = leap.assistantAction) {
+    const output = $("leap-selection-translation");
+    const cached = assistantResultFor(actionName);
+    if (cached) {
+      const target = currentAssistantTarget();
+      if (actionName === "translate") renderTranslationResult(target.text, cached, leap.currentAssistantScope);
+      else renderInterpretationResult(target.text, cached, leap.currentAssistantScope);
+      return;
+    }
+    const scopeLabel = assistantScopeLabel(leap.currentAssistantScope);
+    output.textContent = leap.selection
+      ? `已选择“${leap.selection.quote}” · 当前范围：${scopeLabel}。点击“${actionName === "translate" ? "翻译" : "含义"}”开始处理。`
+      : leap.currentAssistantScope === "chapter" && leap.activeMaterial
+        ? `当前范围：章节。点击“${actionName === "translate" ? "翻译" : "含义"}”开始处理。`
+        : "请先在正文中选择文字。";
+    output.dataset.tone = "";
+    $("leap-copy-translation").disabled = true; $("leap-save-translation-note").disabled = true;
+  }
+  function selectAssistantScope(scope) {
+    if (!leap.selection && scope !== "chapter") {
+      const output = $("leap-selection-translation"); output.textContent = "请先在正文中选择内容。"; output.dataset.tone = "error"; return;
+    }
+    if (scope === "word" && !isSingleEnglishWord(leap.selection?.quote || "")) {
+      const output = $("leap-selection-translation"); output.textContent = "“单词”范围需要先选择一个英文单词。"; output.dataset.tone = "error"; return;
+    }
+    if (scope === "sentence" && Number(leap.selection?.paragraph_end) !== Number(leap.selection?.paragraph_position)) {
+      const output = $("leap-selection-translation"); output.textContent = "跨段选区不能扩展为单句；可使用所选文字、段落或章节。"; output.dataset.tone = "error"; return;
+    }
+    leap.assistantGeneration += 1; leap.assistantController?.abort(); leap.assistantController = null;
+    leap.currentAssistantScope = scope; leap.currentTranslationScope = scope;
+    $("leap-assistant-scope").textContent = assistantScopeLabel(scope); setScopeButtons(scope);
+    renderAssistantIdle();
   }
   async function chapterAssistantTarget() {
     if (!leap.activeMaterial) throw new Error("请先打开一本材料。 ");
@@ -633,11 +724,12 @@ export function initProductDomains({ api, toast }) {
       material = data.material; paragraphs = data.paragraphs; offset = data.offset || offset;
     }
     if (!material) return;
-    leap.activeMaterial = material; leap.readerOffset = offset; leap.readerParagraphs = paragraphs; leap.selection = null; leap.translationGeneration += 1; leap.assistantGeneration += 1; leap.assistantController?.abort(); leap.assistantController = null; leap.assistantLast = {};
+    leap.activeMaterial = material; leap.readerOffset = offset; leap.readerParagraphs = paragraphs; leap.selection = null; leap.translationGeneration += 1; leap.assistantGeneration += 1; leap.assistantController?.abort(); leap.assistantController = null; leap.assistantLast = {}; leap.currentAssistantScope = null;
     $("leap-note-material").value = material.id;
     $("leap-reader-title").textContent = material.title;
     $("leap-reader-meta").textContent = (material.author || material.kind || "作者未知") + " · 共 " + (material.paragraph_count || paragraphs.length) + " 段 · 选中文字可翻译、解读或建立证据";
     $("leap-selection-quote").textContent = "在正文中拖动选择单词、句子、段落或跨段文字";
+    $("leap-assistant-scope").textContent = "所选文字"; setScopeButtons(null);
     $("leap-selection-translation").textContent = "“翻译”与“含义”只在你点击后分别运行；两类结果不会串用。";
     leap.lastTranslation = null; $("leap-copy-translation").disabled = true; $("leap-save-translation-note").disabled = true;
     const source = $("leap-reader-source"); source.replaceChildren(); source.classList.toggle("hidden", !material.library_source);
@@ -688,13 +780,16 @@ export function initProductDomains({ api, toast }) {
     const trailing = rawQuote.length - rawQuote.trimEnd().length;
     start += leading; end -= trailing;
     const quote = rawQuote.trim(); if (!quote) return;
-    leap.selection = { material_id: leap.activeMaterial.id, material_version: leap.activeMaterial.version || 1, paragraph_position: startPosition, paragraph_end: endPosition, start_offset: start, end_offset: end, quote, paragraph_text: selectedRows[0].content, paragraphs: selectedRows };
+    leap.selection = createSelectionSnapshot({ material: leap.activeMaterial, rows: selectedRows, startPosition, endPosition, start, end, quote });
+    const automaticScope = classifySelectionScope(leap.selection);
+    leap.currentAssistantScope = automaticScope; leap.currentTranslationScope = automaticScope;
     $("leap-selection-quote").textContent = quote;
-    $("leap-selection-translation").textContent = "选择“翻译”或“含义”，再选择处理范围。";
-    leap.lastTranslation = null; leap.currentTranslationScope = null; leap.assistantLast = {}; leap.assistantStates = { translate: { status: "idle", error: "" }, interpret: { status: "idle", error: "" } }; leap.assistantGeneration += 1; leap.assistantController?.abort(); leap.assistantController = null;
+    $("leap-assistant-scope").textContent = assistantScopeLabel(automaticScope); setScopeButtons(automaticScope);
+    leap.lastTranslation = null; leap.assistantLast = {}; leap.assistantStates = { translate: { status: "idle", error: "" }, interpret: { status: "idle", error: "" } }; leap.assistantGeneration += 1; leap.assistantController?.abort(); leap.assistantController = null;
     $("leap-copy-translation").disabled = true; $("leap-save-translation-note").disabled = true;
     host.querySelectorAll(".selected").forEach((item) => item.classList.remove("selected"));
     selectedRows.forEach((row) => host.querySelector('[data-position="' + row.position + '"]')?.classList.add("selected"));
+    renderAssistantIdle();
   }
   async function saveSelection() {
     if (!leap.selection) throw new Error("请先在正文中拖动选择一段文字。");
@@ -711,20 +806,11 @@ export function initProductDomains({ api, toast }) {
     const translationTab = $("leap-assistant-translate-tab"); const interpretationTab = $("leap-assistant-interpret-tab");
     translationTab.classList.toggle("active", actionName === "translate"); interpretationTab.classList.toggle("active", actionName === "interpret");
     translationTab.setAttribute("aria-selected", String(actionName === "translate")); interpretationTab.setAttribute("aria-selected", String(actionName === "interpret"));
-    const previous = leap.assistantLast[actionName]; const output = $("leap-selection-translation");
-    if (previous) {
-      if (actionName === "translate") renderTranslationResult(previous.original, previous.result, previous.scope);
-      else renderInterpretationResult(previous.original, previous.result, previous.scope);
-    } else {
-      const state = leap.assistantStates[actionName];
-      output.textContent = state.status === "loading" ? (actionName === "translate" ? "正在按需翻译…" : "正在依据原文解读…") : state.status === "error" ? state.error : actionName === "translate" ? "选择范围后只生成译文。" : (leap.interpretationCapability?.message || "选择范围后解读原文含义与依据。");
-      output.dataset.tone = state.status === "error" ? "error" : state.status === "loading" ? "loading" : "";
-    }
   }
   async function requestAssistant(scope, force = false) {
     const actionName = leap.assistantAction; const generation = ++leap.assistantGeneration;
     leap.assistantController?.abort(); leap.assistantController = null;
-    leap.currentAssistantScope = scope; $("leap-assistant-scope").textContent = assistantScopeLabel(scope);
+    leap.currentAssistantScope = scope; $("leap-assistant-scope").textContent = assistantScopeLabel(scope); setScopeButtons(scope);
     if (scope === "word" && !isSingleEnglishWord(leap.selection?.quote || "")) throw new Error("“单词”一次只接受一个英文单词；连续文字请选择句子或所选文字。 ");
     leap.assistantStates[actionName] = { status: "loading", error: "" };
     const output = $("leap-selection-translation"); output.textContent = actionName === "translate" ? "正在按需翻译…" : "正在依据原文解读…"; output.dataset.tone = "loading";
@@ -750,28 +836,30 @@ export function initProductDomains({ api, toast }) {
     });
   }
   $("leap-reader-pages").addEventListener("mouseup", captureSelection);
-  $("leap-assistant-translate-tab").addEventListener("click", () => showAssistantTab("translate"));
-  $("leap-assistant-interpret-tab").addEventListener("click", () => showAssistantTab("interpret"));
-  $("leap-translate-word").addEventListener("click", () => runAssistant("word"));
-  $("leap-translate-sentence").addEventListener("click", () => runAssistant("sentence"));
-  $("leap-translate-paragraph").addEventListener("click", () => runAssistant("paragraph"));
-  $("leap-assistant-selection").addEventListener("click", () => runAssistant("selection"));
-  $("leap-assistant-chapter").addEventListener("click", () => runAssistant("chapter"));
+  document.addEventListener("selectionchange", captureSelection);
+  $("leap-assistant-translate-tab").addEventListener("click", () => { showAssistantTab("translate"); runAssistant(leap.currentAssistantScope || "selection"); });
+  $("leap-assistant-interpret-tab").addEventListener("click", () => { showAssistantTab("interpret"); runAssistant(leap.currentAssistantScope || "selection"); });
+  $("leap-translate-word").addEventListener("click", () => selectAssistantScope("word"));
+  $("leap-translate-sentence").addEventListener("click", () => selectAssistantScope("sentence"));
+  $("leap-translate-paragraph").addEventListener("click", () => selectAssistantScope("paragraph"));
+  $("leap-assistant-selection").addEventListener("click", () => selectAssistantScope("selection"));
+  $("leap-assistant-chapter").addEventListener("click", () => selectAssistantScope("chapter"));
   $("leap-retranslate-selection").addEventListener("click", () => {
     const scope = leap.currentAssistantScope || (leap.selection && isSingleEnglishWord(leap.selection.quote) ? "word" : "selection");
     runAssistant(scope, true);
   });
   $("leap-copy-translation").addEventListener("click", async () => {
     if (!leap.lastTranslation) return;
-    await navigator.clipboard.writeText(leap.lastTranslation.translated); toast("译文已复制。");
+    await navigator.clipboard.writeText(leap.lastTranslation.translated); toast("阅读助手结果已复制。");
   });
   $("leap-save-translation-note").addEventListener("click", async () => {
     if (!leap.lastTranslation) return;
     try {
       await saveSelection();
       const note = $("leap-note-form").querySelector("textarea");
-      note.value = "[AI/机器翻译，仅供辅助阅读]\n" + leap.lastTranslation.translated + "\n\n我的理解：";
-      note.focus(); toast("原文已作为证据保存；译文只写入你的个人理解，不会冒充作者原文。");
+      const interpretation = leap.lastTranslation.action === "interpret";
+      note.value = (interpretation ? "[AI 内容解读，仅供辅助阅读]\n" : "[AI/机器翻译，仅供辅助阅读]\n") + leap.lastTranslation.translated + "\n\n我的理解：";
+      note.focus(); toast(interpretation ? "原文已作为证据保存；内容解读已写入你的个人理解。" : "原文已作为证据保存；译文只写入你的个人理解，不会冒充作者原文。");
     } catch (error) { status("leap-status", error.message, "error"); }
   });
   $("leap-translation-provider").addEventListener("change", (event) => {

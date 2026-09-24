@@ -2228,6 +2228,7 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 .reading-assistant-tabs button { min-height:34px; color:#78929b; border:0; border-radius:8px; background:transparent; cursor:pointer; font-weight:800; }
 .reading-assistant-tabs button.active { color:#e6fbff; background:rgba(var(--domain-accent),.16); box-shadow:0 0 18px rgba(var(--domain-accent),.08); }
 .translation-actions { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:10px; }
+.translation-actions button.active { border-color:rgba(var(--domain-accent),.72); background:rgba(var(--domain-accent),.2); color:#effcff; box-shadow:0 0 14px rgba(var(--domain-accent),.1); }
 .selection-translation { margin:0 0 12px; padding:11px 12px; border:1px solid rgba(var(--domain-accent),.15); border-radius:11px; background:rgba(0,0,0,.14); color:#9eb5bd; font-size:12px; line-height:1.65; }
 .selection-translation small { display:block; margin-bottom:5px; }.selection-translation p { margin:0; color:#dff4f7; font:500 14px/1.75 "Songti SC","Noto Serif SC",serif; }
 .selection-translation .translation-original { margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid rgba(var(--domain-accent),.13); color:#9fb2b8; font:400 12px/1.6 Georgia,serif; }

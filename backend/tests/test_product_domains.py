@@ -25,7 +25,7 @@ from backend.product_domains.leap import (
 )
 from backend.product_domains.public_library import PublicLibraryService, seed_catalog
 from backend.product_domains.translation import AzureTranslatorProvider, TranslationService
-from backend.product_domains.interpretation import InterpretationService
+from backend.product_domains.interpretation import InterpretationService, classify_provider_failure
 from backend.product_domains.pulse import (
     AssetStatusWrite,
     AssetWrite,
@@ -388,6 +388,7 @@ def test_interpretation_api_reports_unconfigured_and_uses_injected_frostfire_run
     material = repo.create_material(1, MaterialCreate(title="API meaning", text="Weight matters here."))
     payload = {
         "action": "interpret", "scope": "word", "document_id": material["id"],
+        "document_version": material["version"],
         "paragraph_start": 0, "paragraph_end": 0, "selection_start": 0, "selection_end": 6,
         "source_text": "Weight", "context_text": "Weight matters here.",
         "target_language": "zh-CN", "coverage_complete": True, "coverage_label": "完整单词", "force": False,
@@ -396,7 +397,9 @@ def test_interpretation_api_reports_unconfigured_and_uses_injected_frostfire_run
     unavailable_app.include_router(create_leap_router(product_store, lambda: {"id": 1}))
     unavailable = TestClient(unavailable_app)
     assert unavailable.get("/api/leap/reading-assistant/capabilities").json()["available"] is False
-    assert unavailable.post("/api/leap/reading-assistant/interpret", json=payload).status_code == 503
+    unavailable_response = unavailable.post("/api/leap/reading-assistant/interpret", json=payload)
+    assert unavailable_response.status_code == 503
+    assert unavailable_response.json()["detail"]["code"] == "AI_NOT_CONFIGURED"
 
     calls = []
     available_app = FastAPI()
@@ -410,6 +413,53 @@ def test_interpretation_api_reports_unconfigured_and_uses_injected_frostfire_run
     assert response.status_code == 200
     assert response.json()["result_text"].startswith("原文明确表达")
     assert len(calls) == 1
+
+
+def test_interpretation_provider_errors_have_safe_stable_categories():
+    class QuotaError(RuntimeError):
+        status_code = 429
+        body = {"error": {"code": "credit_balance_exhausted", "message": "private provider detail"}}
+
+    class TimeoutError(RuntimeError):
+        pass
+
+    quota = classify_provider_failure(QuotaError("request id and private provider detail"))
+    timeout = classify_provider_failure(TimeoutError("request timed out"))
+    unknown = classify_provider_failure(RuntimeError("secret diagnostic"))
+
+    assert quota[:2] == ("AI_CREDITS_EXHAUSTED", 429)
+    assert timeout[:2] == ("AI_TIMEOUT", 504)
+    assert unknown[:2] == ("AI_PROVIDER_ERROR", 502)
+    assert "private provider detail" not in quota[2]
+    assert "secret diagnostic" not in unknown[2]
+
+
+def test_interpretation_api_distinguishes_invalid_selection_and_document_version(product_store):
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(title="Validation", text="Weight matters here."))
+    base = {
+        "action": "interpret", "scope": "word", "document_id": material["id"],
+        "document_version": material["version"],
+        "paragraph_start": 0, "paragraph_end": 0, "selection_start": 0, "selection_end": 6,
+        "source_text": "Wrong!", "context_text": "Weight matters here.",
+        "target_language": "zh-CN", "coverage_complete": True, "coverage_label": "完整单词", "force": False,
+    }
+    app = FastAPI()
+    app.include_router(create_leap_router(
+        product_store, lambda: {"id": 1},
+        lambda *_args: {"text": "never reached"}, "test-model",
+    ))
+    client = TestClient(app)
+
+    invalid = client.post("/api/leap/reading-assistant/interpret", json=base)
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"]["code"] == "INVALID_SELECTION"
+
+    with product_store() as connection:
+        connection.execute("UPDATE leap_materials SET version=2 WHERE id=?", (material["id"],))
+    mismatch = client.post("/api/leap/reading-assistant/interpret", json={**base, "source_text": "Weight", "document_version": 1})
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"]["code"] == "DOCUMENT_VERSION_MISMATCH"
 
 
 def _pulse_master_data(repo: PulseRepository, user_id: int = 1):

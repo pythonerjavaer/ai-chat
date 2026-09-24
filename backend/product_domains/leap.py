@@ -287,6 +287,9 @@ class InterpretationWrite(BaseModel):
     action: Literal["interpret"] = "interpret"
     scope: Literal["word", "sentence", "paragraph", "chapter", "selection"]
     document_id: str
+    # Optional for backward compatibility with already-open reader tabs; new
+    # clients always send it so stale selections can be rejected explicitly.
+    document_version: int | None = Field(default=None, ge=1)
     paragraph_start: int = Field(ge=0)
     paragraph_end: int = Field(ge=0)
     selection_start: int | None = Field(default=None, ge=0)
@@ -879,8 +882,22 @@ def create_leap_router(
     @router.post("/reading-assistant/interpret")
     def interpret(payload: InterpretationWrite, user: InterpretationUser):
         if not interpretations.capabilities()["available"]:
-            raise HTTPException(status_code=503, detail="内容解读暂不可用：冰焰AI服务未配置。")
-        return safe(lambda: interpretations.interpret(user["id"], payload.model_dump()))
+            raise HTTPException(status_code=503, detail={
+                "code": "AI_NOT_CONFIGURED",
+                "message": "内容解读暂不可用：冰焰AI服务未配置。",
+            })
+        try:
+            return interpretations.interpret(user["id"], payload.model_dump())
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail={
+                "code": "DOCUMENT_NOT_FOUND", "message": "当前材料不存在或无权访问。",
+            }) from exc
+        except ValueError as exc:
+            reason = str(exc)
+            code = "DOCUMENT_VERSION_MISMATCH" if "当前文档版本" in reason else "INVALID_SELECTION"
+            status_code = 409 if code == "DOCUMENT_VERSION_MISMATCH" else 422
+            message = "材料版本已更新，请重新打开后再选择原文。" if code == "DOCUMENT_VERSION_MISMATCH" else reason
+            raise HTTPException(status_code=status_code, detail={"code": code, "message": message}) from exc
 
     @router.get("/home")
     def home(user: User): return repo.home(user["id"])

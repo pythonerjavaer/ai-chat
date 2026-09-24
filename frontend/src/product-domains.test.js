@@ -5,7 +5,9 @@ import {
   BrowserLocalTranslationProvider,
   buildInterpretationRequest,
   buildTranslationRequest,
+  classifySelectionScope,
   contextualMeaningFromMarkedTranslation,
+  createSelectionSnapshot,
   isSingleEnglishWord,
   markWordInContext,
   sentenceAroundSelection,
@@ -116,12 +118,74 @@ test("reading assistant keeps interpretation separate from translation and prese
   });
   assert.equal(request.paragraph_start, 8);
   assert.equal(request.paragraph_end, 8);
+  assert.equal(request.document_version, 4);
   assert.notEqual(JSON.stringify(request), JSON.stringify(buildTranslationRequest({
     material, paragraph: { position: 8, stable_anchor: "p-8", content: sentenceTarget.contextText },
     provider: { id: "browser_local", model: "chrome-built-in-translator" }, target: sentenceTarget, scope: "sentence",
   })));
   assert.match(source, /assistantGeneration/);
   assert.match(source, /assistantController\?\.abort/);
+});
+
+test("manual selections are classified without changing their exact offsets or text", () => {
+  const paragraphText = "First sentence. The noisiest authorities objected. Final sentence.";
+  const base = { paragraph_position: 4, paragraph_end: 4, paragraph_text: paragraphText };
+  const wordStart = paragraphText.indexOf("noisiest");
+  assert.equal(classifySelectionScope({ ...base, quote: "noisiest", start_offset: wordStart, end_offset: wordStart + 8 }), "word");
+
+  const sentence = sentenceRanges(paragraphText)[1];
+  assert.equal(classifySelectionScope({ ...base, quote: sentence.text, start_offset: sentence.start, end_offset: sentence.end }), "sentence");
+  assert.equal(classifySelectionScope({ ...base, quote: paragraphText, start_offset: 0, end_offset: paragraphText.length }), "paragraph");
+
+  const partial = { ...base, quote: "noisiest authorities", start_offset: wordStart, end_offset: wordStart + "noisiest authorities".length };
+  const before = structuredClone(partial);
+  assert.equal(classifySelectionScope(partial), "selection");
+  assert.equal(translationTarget(partial, "selection").text, "noisiest authorities");
+  assert.equal(translationTarget(partial, "sentence").text, "The noisiest authorities objected.");
+  assert.equal(translationTarget(partial, "paragraph").text, paragraphText);
+  assert.deepEqual(partial, before, "classification and quick scope expansion must not mutate the manual selection");
+});
+
+test("cross-paragraph snapshot retains exact multi-segment bounds and document context", () => {
+  const rows = [
+    { id: "seg-7", stable_anchor: "p-v2-000007", position: 7, content: "Alpha begins here." },
+    { id: "seg-8", stable_anchor: "p-v2-000008", position: 8, content: "Beta finishes there." },
+  ];
+  const snapshot = createSelectionSnapshot({
+    material: { id: "doc-9", version: 2, chapters: [{ id: "chapter-1", start_paragraph: 0, end_paragraph: 10 }] },
+    rows, startPosition: 7, endPosition: 8, start: 6, end: 13, quote: "begins here.\n\nBeta finishes",
+  });
+  assert.equal(classifySelectionScope(snapshot), "selection");
+  assert.deepEqual({ document_id: snapshot.document_id, document_version: snapshot.document_version, chapter_id: snapshot.chapter_id }, { document_id: "doc-9", document_version: 2, chapter_id: "chapter-1" });
+  assert.equal(snapshot.containing_sentence, "Alpha begins here.");
+  assert.equal(snapshot.containing_paragraph, rows[0].content);
+  assert.deepEqual(snapshot.segments.map(({ paragraph_position, start_offset, end_offset, selected_text }) => ({ paragraph_position, start_offset, end_offset, selected_text })), [
+    { paragraph_position: 7, start_offset: 6, end_offset: 18, selected_text: "begins here." },
+    { paragraph_position: 8, start_offset: 0, end_offset: 13, selected_text: "Beta finishes" },
+  ]);
+  const target = translationTarget(snapshot, "selection");
+  assert.equal(target.text, "begins here.\n\nBeta finishes");
+  assert.equal(target.paragraphEnd, 8);
+});
+
+test("scope controls are request-free and actions execute the shared current scope", () => {
+  const scopeHandlerMarkers = [
+    '$("leap-translate-word").addEventListener("click", () => selectAssistantScope("word"))',
+    '$("leap-translate-sentence").addEventListener("click", () => selectAssistantScope("sentence"))',
+    '$("leap-translate-paragraph").addEventListener("click", () => selectAssistantScope("paragraph"))',
+    '$("leap-assistant-selection").addEventListener("click", () => selectAssistantScope("selection"))',
+    '$("leap-assistant-chapter").addEventListener("click", () => selectAssistantScope("chapter"))',
+  ];
+  scopeHandlerMarkers.forEach((marker) => assert.ok(source.includes(marker)));
+  const scopeFunction = source.slice(source.indexOf("function selectAssistantScope"), source.indexOf("async function chapterAssistantTarget"));
+  assert.doesNotMatch(scopeFunction, /\bapi\s*\(|runAssistant\s*\(|translateText\s*\(|interpretSelection\s*\(/);
+  assert.match(source, /leap-assistant-translate-tab[\s\S]{0,180}runAssistant\(leap\.currentAssistantScope/);
+  assert.match(source, /leap-assistant-interpret-tab[\s\S]{0,180}runAssistant\(leap\.currentAssistantScope/);
+  assert.match(source, /document\.addEventListener\("selectionchange", captureSelection\)/);
+  const captureFunction = source.slice(source.indexOf("function captureSelection"), source.indexOf("async function saveSelection"));
+  assert.doesNotMatch(captureFunction, /\bapi\s*\(|runAssistant\s*\(|translateText\s*\(|interpretSelection\s*\(/);
+  assert.match(source, /assistantSelectionKey\("translate"/);
+  assert.match(source, /assistantSelectionKey\("interpret"/);
 });
 
 test("sentence boundaries preserve quotes, abbreviations, decimals and question marks", () => {

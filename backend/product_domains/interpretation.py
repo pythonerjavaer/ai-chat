@@ -18,6 +18,56 @@ PROMPT_VERSION = "leap-interpret-v1"
 MAX_INTERPRET_CHARACTERS = 20_000
 
 
+def classify_provider_failure(exc: BaseException) -> tuple[str, int, str]:
+    """Return a stable public error without retaining provider diagnostics.
+
+    OpenAI exception strings may contain request IDs or operational details.
+    They are inspected only in memory for classification and are never returned
+    to the browser or written to the interpretation cache.
+    """
+    chain: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    status_code = 0
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status_code = status_code or int(getattr(current, "status_code", 0) or 0)
+        body = getattr(current, "body", None)
+        chain.append(type(current).__name__)
+        chain.append(str(body) if body is not None else str(current))
+        current = current.__cause__ or current.__context__
+    fingerprint = " ".join(chain).casefold()
+    if any(marker in fingerprint for marker in (
+        "credit_balance_exhausted", "insufficient_quota", "no credits remaining",
+        "credit balance", "billing_hard_limit_reached",
+    )):
+        return (
+            "AI_CREDITS_EXHAUSTED", 429,
+            "冰焰现有AI服务的API额度已用完；补充现有OpenAI API额度后即可重试，无需为跃迁域配置第二套密钥。",
+        )
+    if status_code == 429 or any(marker in fingerprint for marker in (
+        "ratelimiterror", "rate limit", "too many requests",
+    )):
+        return "AI_RATE_LIMITED", 429, "冰焰AI服务当前请求过于频繁，请稍后重试。"
+    if any(marker in fingerprint for marker in (
+        "apitimeouterror", "timeout", "timed out",
+    )):
+        return "AI_TIMEOUT", 504, "冰焰AI服务响应超时，请稍后重试。"
+    if any(marker in fingerprint for marker in (
+        "modelunavailableerror", "not configured", "未配置",
+    )):
+        return "AI_NOT_CONFIGURED", 503, "冰焰AI服务尚未配置。"
+    if status_code in {401, 403} or any(marker in fingerprint for marker in (
+        "authenticationerror", "permissiondeniederror", "invalid api key",
+    )):
+        return "AI_PROVIDER_ERROR", 502, "冰焰AI服务认证失败，请检查现有服务配置。"
+    if any(marker in fingerprint for marker in (
+        "apiconnectionerror", "connection error", "network error",
+    )):
+        return "AI_PROVIDER_ERROR", 502, "冰焰AI服务暂时无法连接，请稍后重试。"
+    return "AI_PROVIDER_ERROR", 502, "冰焰AI服务暂时无法完成内容解读，请稍后重试。"
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -124,6 +174,8 @@ class InterpretationService:
 
     def _validated(self, user_id: int, payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         material = self._material(user_id, payload["document_id"])
+        if payload.get("document_version") is not None and int(payload["document_version"]) != int(material["version"]):
+            raise ValueError("解读范围无法完整定位到当前文档版本。")
         start = int(payload["paragraph_start"])
         end = int(payload.get("paragraph_end", start))
         rows = self._paragraphs(material, start, end)
