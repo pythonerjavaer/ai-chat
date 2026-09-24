@@ -5,7 +5,7 @@ import io
 import json
 import threading
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -190,6 +190,12 @@ def init_pulse_schema(connect: Callable[[], Any]) -> None:
                 limitations TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,UNIQUE(user_id,metric_key),
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS pulse_demo_companies (
+                user_id INTEGER PRIMARY KEY,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
             CREATE INDEX IF NOT EXISTS idx_pulse_orders_user_date ON pulse_orders(user_id,created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_pulse_occupancy_asset_time ON pulse_asset_occupancies(user_id,asset_id,starts_at,buffer_ends_at,status);
             CREATE INDEX IF NOT EXISTS idx_pulse_payments_user_date ON pulse_payments(user_id,occurred_at DESC);
@@ -342,6 +348,106 @@ class SettingsWrite(BaseModel):
     @classmethod
     def currency_upper(cls, value: str) -> str:
         return value.upper()
+
+
+class OrderStatusWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["reserved", "rented", "returned", "completed", "cancelled"]
+    notes: str = Field(default="", max_length=2_000)
+
+
+class PulseDemoAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["customer", "order", "payment", "deposit", "deliver", "return", "inspect", "cleaning", "refund"]
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+DEMO_ACCOUNTS = {
+    "1000": ("Cash", "ASSET"), "1100": ("Accounts Receivable", "ASSET"),
+    "1300": ("Rental Assets", "ASSET"), "1310": ("Accumulated Depreciation", "ASSET"),
+    "2000": ("Customer Deposits", "LIABILITY"), "2100": ("Accounts Payable", "LIABILITY"),
+    "3000": ("Owner's Equity", "EQUITY"), "4000": ("Rental Revenue", "REVENUE"),
+    "5000": ("Cleaning Expense", "EXPENSE"), "5100": ("Repair Expense", "EXPENSE"),
+    "5200": ("Delivery Expense", "EXPENSE"), "5400": ("Marketing Expense", "EXPENSE"),
+    "5500": ("Rent Expense", "EXPENSE"), "5700": ("Depreciation Expense", "EXPENSE"),
+}
+
+
+def _demo_journal(state: dict[str, Any], occurred_at: str, description: str, source_type: str,
+                  source_id: str, lines: list[tuple[str, int, int]], cash_flow: str = "") -> str:
+    journal_id = f"demo-pulse-j-{uuid.uuid4().hex[:10]}"
+    state["journals"].append({"id": journal_id, "posting_date": occurred_at[:10], "occurred_at": occurred_at,
+                              "description": description, "source_document_type": source_type,
+                              "source_document_id": source_id, "cash_flow_category": cash_flow,
+                              "lines": [{"account_code": code, "account_name": DEMO_ACCOUNTS[code][0],
+                                         "account_type": DEMO_ACCOUNTS[code][1], "debit_cents": debit,
+                                         "credit_cents": credit} for code, debit, credit in lines]})
+    return journal_id
+
+
+def _pulse_demo_seed() -> dict[str, Any]:
+    """Deterministic six-month synthetic company with balanced journals."""
+    now = datetime.now(timezone.utc)
+    state: dict[str, Any] = {"demo": True, "version": 1, "currency": "AUD", "customers": [], "skus": [],
+                             "assets": [], "orders": [], "payments": [], "inspections": [], "expenses": [],
+                             "events": [], "journals": [], "unavailable_demand": [], "updated_at": _now()}
+    channels = ["Instagram", "Referral", "Website", "Walk-in"]
+    for index, name in enumerate(["Mia Chen", "Sophie Li", "Amelia Wang", "Chloe Zhang", "Olivia Lin", "Grace Xu", "Ella Zhou", "Ivy Sun"]):
+        state["customers"].append({"id": f"demo-pulse-c{index+1}", "name": name, "phone": f"04{index+1:08d}", "email": "", "source": channels[index % len(channels)], "notes": "DEMO customer", "created_at": (now - timedelta(days=170-index*9)).isoformat()})
+    sku_specs = [("Moonlight Satin", "Evening Gown", "S", 42000), ("Aurora Silk", "Evening Gown", "M", 48000), ("Ivory Column", "Bridal", "M", 62000), ("Ember Velvet", "Evening Gown", "L", 52000), ("Blue Hour", "Cocktail", "M", 36000)]
+    for index, (name, category, size, price) in enumerate(sku_specs):
+        state["skus"].append({"id": f"demo-pulse-s{index+1}", "name": name, "category": category, "size": size, "kind": "rental", "current_price_cents": price})
+    # Owner capital and asset purchase create a balanced opening position.
+    _demo_journal(state, (now - timedelta(days=185)).isoformat(), "Owner capital", "capital", "demo-capital", [("1000", 10_000_000, 0), ("3000", 0, 10_000_000)], "financing")
+    total_assets = 0
+    for index in range(24):
+        cost = 210000 + (index % 5) * 25000
+        total_assets += cost
+        state["assets"].append({"id": f"demo-pulse-a{index+1}", "sku_id": f"demo-pulse-s{index%5+1}", "asset_code": f"OIA-D-{index+1:03d}", "status": "available", "purchase_cost_cents": cost, "acquisition_date": (now - timedelta(days=190-index)).date().isoformat(), "created_at": (now - timedelta(days=190-index)).isoformat()})
+    _demo_journal(state, (now - timedelta(days=180)).isoformat(), "Rental asset acquisition", "asset_purchase", "demo-assets", [("1300", total_assets, 0), ("1000", 0, total_assets)], "investing")
+    for index in range(30):
+        created = now - timedelta(days=172-index*5)
+        cancelled = index in {5, 18}
+        active = index >= 28
+        asset = state["assets"][index % len(state["assets"])]
+        sku = state["skus"][index % len(state["skus"])]
+        amount = sku["current_price_cents"] + (index % 3) * 3000
+        order_id = f"demo-pulse-o{index+1}"
+        status = "cancelled" if cancelled else "rented" if active else "completed"
+        state["orders"].append({"id": order_id, "customer_id": f"demo-pulse-c{index%8+1}", "status": status,
+                                "channel": channels[index % len(channels)], "currency": "AUD", "total_cents": amount,
+                                "start_at": (created + timedelta(days=4)).isoformat(), "end_at": (created + timedelta(days=7)).isoformat(),
+                                "created_at": created.isoformat(), "items": [{"sku_id": sku["id"], "sku_name": sku["name"], "asset_id": asset["id"], "asset_code": asset["asset_code"], "unit_price_cents": amount}]})
+        if cancelled:
+            continue
+        payment_id = f"demo-pulse-pay{index+1}"
+        state["payments"].append({"id": payment_id, "order_id": order_id, "payment_type": "rental", "amount_cents": amount, "occurred_at": created.isoformat(), "method": "Card"})
+        _demo_journal(state, created.isoformat(), "Rental payment", "payment", payment_id, [("1000", amount, 0), ("4000", 0, amount)], "operating")
+        deposit_id, deposit = f"demo-pulse-dep{index+1}", 15000
+        state["payments"].append({"id": deposit_id, "order_id": order_id, "payment_type": "deposit", "amount_cents": deposit, "occurred_at": created.isoformat(), "method": "Card"})
+        _demo_journal(state, created.isoformat(), "Customer deposit received", "payment", deposit_id, [("1000", deposit, 0), ("2000", 0, deposit)], "operating")
+        if not active:
+            refund_id = f"demo-pulse-ref{index+1}"
+            state["payments"].append({"id": refund_id, "order_id": order_id, "payment_type": "deposit_refund", "amount_cents": deposit, "occurred_at": (created + timedelta(days=8)).isoformat(), "method": "Card"})
+            _demo_journal(state, (created + timedelta(days=8)).isoformat(), "Customer deposit refunded", "payment", refund_id, [("2000", deposit, 0), ("1000", 0, deposit)], "operating")
+            expense = 4500 + (index % 3) * 500
+            expense_id = f"demo-pulse-x{index+1}"
+            state["expenses"].append({"id": expense_id, "order_id": order_id, "asset_id": asset["id"], "category": "cleaning", "amount_cents": expense, "status": "paid", "description": "Post-rental cleaning", "occurred_at": (created + timedelta(days=8)).isoformat()})
+            _demo_journal(state, (created + timedelta(days=8)).isoformat(), "Cleaning expense", "expense", expense_id, [("5000", expense, 0), ("1000", 0, expense)], "operating")
+        else:
+            asset["status"] = "rented"
+    # Monthly rent, marketing and non-cash depreciation.
+    monthly_dep = round((total_assets / 36) / 1)
+    for month in range(6):
+        occurred = now - timedelta(days=month*30+12)
+        for category, amount, code in (("rent", 180000, "5500"), ("marketing", 45000 + month*5000, "5400")):
+            expense_id = f"demo-pulse-{category}-{month}"
+            state["expenses"].append({"id": expense_id, "order_id": None, "asset_id": None, "category": category, "amount_cents": amount, "status": "paid", "description": category.title(), "occurred_at": occurred.isoformat()})
+            _demo_journal(state, occurred.isoformat(), f"{category.title()} expense", "expense", expense_id, [(code, amount, 0), ("1000", 0, amount)], "operating")
+        _demo_journal(state, occurred.isoformat(), "Monthly straight-line depreciation", "depreciation", f"demo-dep-{month}", [("5700", monthly_dep, 0), ("1310", 0, monthly_dep)], "")
+    for index in range(8):
+        state["unavailable_demand"].append({"id": f"demo-demand-{index+1}", "sku_id": "demo-pulse-s2", "size": "M", "requested_at": (now - timedelta(days=index*3+2)).isoformat(), "reason": "requested dates unavailable"})
+    return state
 
 
 _asset_write_lock = threading.Lock()
@@ -532,15 +638,26 @@ class PulseRepository:
             payments = connection.execute(
                 "SELECT * FROM pulse_payments WHERE order_id=? AND user_id=? ORDER BY occurred_at", (order_id, user_id),
             ).fetchall()
+            inspections = connection.execute(
+                "SELECT * FROM pulse_inspections WHERE order_id=? AND user_id=? ORDER BY created_at", (order_id, user_id),
+            ).fetchall()
+            expenses = connection.execute(
+                "SELECT * FROM pulse_expenses WHERE order_id=? AND user_id=? ORDER BY occurred_at", (order_id, user_id),
+            ).fetchall()
+            events = connection.execute(
+                "SELECT * FROM pulse_asset_events WHERE order_id=? AND user_id=? ORDER BY occurred_at", (order_id, user_id),
+            ).fetchall()
             journals = connection.execute(
                 """SELECT j.id,j.description,j.posting_date,j.status FROM pulse_journals j
-                   WHERE j.user_id=? AND j.source_document_id IN
-                   (SELECT id FROM pulse_payments WHERE order_id=? AND user_id=?) ORDER BY j.posting_date""",
-                (user_id, order_id, user_id),
+                   WHERE j.user_id=? AND (j.source_document_id IN
+                   (SELECT id FROM pulse_payments WHERE order_id=? AND user_id=?) OR j.source_document_id IN
+                   (SELECT id FROM pulse_expenses WHERE order_id=? AND user_id=?)) ORDER BY j.posting_date""",
+                (user_id, order_id, user_id, order_id, user_id),
             ).fetchall()
         order.update(customer={k: customer[k] for k in ("id", "name", "phone", "email")},
                      items=[_row(x) for x in items], payments=[_row(x) for x in payments],
-                     journals=[_row(x) for x in journals])
+                     inspections=[_row(x) for x in inspections], expenses=[_row(x) for x in expenses],
+                     events=[_row(x) for x in events], journals=[_row(x) for x in journals])
         return order
 
     def transition_asset(self, user_id: int, asset_id: str, payload: AssetStatusWrite) -> dict:
@@ -571,6 +688,24 @@ class PulseRepository:
                 (str(uuid.uuid4()), user_id, asset_id, payload.status, payload.order_id, payload.notes.strip(), now, now),
             )
             return self._owned(connection, "pulse_assets", asset_id, user_id)
+
+    def transition_order(self, user_id: int, order_id: str, payload: OrderStatusWrite) -> dict:
+        """Move an order and every assigned rental asset through one business workflow."""
+        detail = self.order_detail(user_id, order_id)
+        allowed = {"reserved": {"rented", "cancelled"}, "rented": {"returned"},
+                   "returned": {"completed"}, "completed": set(), "cancelled": set()}
+        if payload.status != detail["status"] and payload.status not in allowed.get(detail["status"], set()):
+            raise ValueError(f"订单不能从 {detail['status']} 直接变为 {payload.status}。")
+        now = _now()
+        with self.connect() as connection:
+            connection.execute("UPDATE pulse_orders SET status=?,notes=?,updated_at=? WHERE id=? AND user_id=?",
+                               (payload.status, payload.notes.strip() or detail["notes"], now, order_id, user_id))
+        target = {"rented": "rented", "returned": "inspection", "completed": "available", "cancelled": "available"}.get(payload.status)
+        if target:
+            for item in detail["items"]:
+                if item.get("asset_id"):
+                    self.transition_asset(user_id, item["asset_id"], AssetStatusWrite(status=target, order_id=order_id, notes=payload.notes or f"订单变为 {payload.status}"))
+        return self.order_detail(user_id, order_id)
 
     def create_inspection(self, user_id: int, payload: InspectionWrite) -> dict:
         now, item_id = _now(), str(uuid.uuid4())
@@ -877,14 +1012,29 @@ class PulseRepository:
                    FROM (SELECT customer_id,COUNT(*) AS order_count FROM pulse_orders
                          WHERE user_id=? AND status!='cancelled' GROUP BY customer_id) q""", (user_id,),
             ).fetchone()
+            receivables = connection.execute(
+                """SELECT COALESCE(SUM(CASE WHEN o.total_cents>COALESCE(p.paid,0)
+                   THEN o.total_cents-COALESCE(p.paid,0) ELSE 0 END),0) AS amount
+                   FROM pulse_orders o LEFT JOIN
+                   (SELECT order_id,SUM(amount_cents) AS paid FROM pulse_payments
+                    WHERE user_id=? AND payment_type IN ('rental','product_sale','service') GROUP BY order_id) p
+                   ON p.order_id=o.id WHERE o.user_id=? AND o.status!='cancelled'""", (user_id, user_id),
+            ).fetchone()
+            paid_expenses = connection.execute(
+                """SELECT COALESCE(SUM(amount_cents),0) AS amount FROM pulse_expenses
+                   WHERE user_id=? AND status='paid' AND substr(occurred_at,1,10)>=? AND substr(occurred_at,1,10)<=?""",
+                (user_id, date_from, date_to),
+            ).fetchone()
         order_count = int(metrics["orders"])
         asset_count = int(assets["assets"])
         return {"date_from": date_from, "date_to": date_to, "currency": self.settings(user_id)["currency"],
                 "metrics": {"revenue": statements["income_statement"]["revenue_total"], "orders": order_count,
-                            "cash_in": payment["cash_in"], "cash_out": payment["cash_out"],
+                            "cash_in": payment["cash_in"],
+                            "cash_out": int(payment["cash_out"]) + int(paid_expenses["amount"]),
                             "operating_expenses": sum(statements["income_statement"]["expenses"].values()),
                             "operating_profit": statements["income_statement"]["operating_profit"],
-                            "deposits_held": payment["deposits_held"], "rental_asset_value": assets["recorded_asset_cost"],
+                            "deposits_held": payment["deposits_held"], "outstanding_receivables": receivables["amount"],
+                            "available_assets": assets["available"], "rental_asset_value": assets["recorded_asset_cost"],
                             "inventory_availability": round(int(assets["available"]) * 100 / max(1, asset_count), 1),
                             "asset_utilization_proxy": round(int(assets["occupied"]) * 100 / max(1, asset_count), 1),
                             "average_order_value": round(int(metrics["order_value"]) / max(1, order_count)),
@@ -911,6 +1061,13 @@ class PulseRepository:
                 "SELECT * FROM pulse_asset_events WHERE user_id=? AND asset_id=? ORDER BY occurred_at DESC LIMIT 100",
                 (user_id, asset_id),
             ).fetchall()
+            rental_history = connection.execute(
+                """SELECT o.id,o.status,o.start_at,o.end_at,o.total_cents,o.channel,c.name AS customer_name
+                   FROM pulse_order_items i JOIN pulse_orders o ON o.id=i.order_id
+                   JOIN pulse_customers c ON c.id=o.customer_id
+                   WHERE i.user_id=? AND i.asset_id=? ORDER BY o.start_at DESC LIMIT 100""",
+                (user_id, asset_id),
+            ).fetchall()
         revenue, direct_cost = int(stats["revenue"]), int(costs["cleaning_cost"]) + int(costs["repair_cost"])
         complete = bool(asset["purchase_cost_complete"])
         contribution = revenue - direct_cost
@@ -920,7 +1077,8 @@ class PulseRepository:
                 "contribution": contribution, "roi": round(contribution / asset["purchase_cost_cents"], 4)
                 if complete and asset["purchase_cost_cents"] else None,
                 "data_quality": "complete" if complete else "insufficient_cost_data",
-                "history": [_row(item) for item in history]}
+                "history": [_row(item) for item in history],
+                "rental_history": [_row(item) for item in rental_history]}
 
     def analytics(self, user_id: int, date_from: str, date_to: str) -> dict:
         with self.connect() as connection:
@@ -941,17 +1099,194 @@ class PulseRepository:
                    LEFT JOIN pulse_payments p ON p.order_id=o.id
                    WHERE c.user_id=? GROUP BY c.id,c.name ORDER BY lifetime_revenue DESC LIMIT 100""", (user_id,),
             ).fetchall()
+            top_assets = connection.execute(
+                """SELECT a.id,a.asset_code,s.name AS sku_name,COUNT(DISTINCT o.id) AS rental_count,
+                   COALESCE(SUM(CASE WHEN p.payment_type='rental' THEN p.amount_cents ELSE 0 END),0) AS lifetime_revenue,
+                   a.purchase_cost_cents
+                   FROM pulse_assets a JOIN pulse_skus s ON s.id=a.sku_id
+                   LEFT JOIN pulse_order_items i ON i.asset_id=a.id
+                   LEFT JOIN pulse_orders o ON o.id=i.order_id
+                   LEFT JOIN pulse_payments p ON p.order_id=o.id
+                    AND substr(p.occurred_at,1,10)>=? AND substr(p.occurred_at,1,10)<=?
+                   WHERE a.user_id=? GROUP BY a.id,a.asset_code,s.name,a.purchase_cost_cents
+                   ORDER BY lifetime_revenue DESC LIMIT 25""", (date_from, date_to, user_id),
+            ).fetchall()
         customer_rows = []
+        now = datetime.now(timezone.utc)
         for item in customers:
             row = _row(item)
             row["segment"] = "High Value" if row["lifetime_revenue"] >= 100_000 else "Frequent" if row["orders"] >= 3 else "Returning" if row["orders"] >= 2 else "New"
             row["segment_rule"] = "High Value≥1000 currency units; Frequent≥3 orders; Returning=2; otherwise New"
+            row["recency_days"] = max(0, (now - datetime.fromisoformat(row["last_order_at"])).days) if row["last_order_at"] else None
             customer_rows.append(row)
+        asset_rows = []
+        for item in top_assets:
+            row = _row(item)
+            row["payback_progress"] = round(int(row["lifetime_revenue"]) * 100 / max(1, int(row["purchase_cost_cents"] or 0)), 1) if row["purchase_cost_cents"] else None
+            asset_rows.append(row)
+        insights = []
+        if revenue_by_sku:
+            best = _row(revenue_by_sku[0])
+            insights.append({"title": f"{best['name']} 是当前最高收入款式", "period": f"{date_from}–{date_to}",
+                             "metric": "rental_revenue", "calculation": f"已确认租赁收款 {best['revenue']} 分",
+                             "evidence_ids": [best["id"]]})
         return {"date_from": date_from, "date_to": date_to,
                 "sales": {"revenue_by_sku": [_row(x) for x in revenue_by_sku]},
                 "customers": customer_rows,
-                "limitations": {"cohort": "planned", "rfm": "rule_segments_only", "funnel": "insufficient_data",
+                "top_assets": asset_rows, "insights": insights,
+                "limitations": {"cohort": "insufficient_data", "rfm": "rule_segments_only", "funnel": "insufficient_data",
                                 "forecasting": "not_enabled", "lost_demand": "unavailable_without_demand_events"}}
+
+    def _save_demo(self, user_id: int, state: dict[str, Any]) -> dict[str, Any]:
+        state["updated_at"] = _now()
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO pulse_demo_companies(user_id,state_json,updated_at) VALUES(?,?,?)
+                   ON CONFLICT(user_id) DO UPDATE SET state_json=excluded.state_json,updated_at=excluded.updated_at""",
+                (user_id, json.dumps(state, ensure_ascii=False), state["updated_at"]),
+            )
+        return self.demo(user_id)
+
+    @staticmethod
+    def _demo_view(state: dict[str, Any]) -> dict[str, Any]:
+        balances = {code: 0 for code in DEMO_ACCOUNTS}
+        debit_total = credit_total = 0
+        for journal in state["journals"]:
+            for line in journal["lines"]:
+                balances[line["account_code"]] += int(line["debit_cents"]) - int(line["credit_cents"])
+                debit_total += int(line["debit_cents"]); credit_total += int(line["credit_cents"])
+        revenue = sum(-value for code, value in balances.items() if DEMO_ACCOUNTS[code][1] == "REVENUE")
+        expenses = sum(value for code, value in balances.items() if DEMO_ACCOUNTS[code][1] == "EXPENSE")
+        assets_total = sum(value for code, value in balances.items() if DEMO_ACCOUNTS[code][1] == "ASSET")
+        liabilities = sum(-value for code, value in balances.items() if DEMO_ACCOUNTS[code][1] == "LIABILITY")
+        equity_base = sum(-value for code, value in balances.items() if DEMO_ACCOUNTS[code][1] == "EQUITY")
+        orders = [o for o in state["orders"] if o["status"] != "cancelled"]
+        customers_with_orders: dict[str, int] = {}
+        for order in orders: customers_with_orders[order["customer_id"]] = customers_with_orders.get(order["customer_id"], 0) + 1
+        cash_in = sum(p["amount_cents"] for p in state["payments"] if p["payment_type"] in {"rental", "deposit"})
+        cash_out = sum(p["amount_cents"] for p in state["payments"] if p["payment_type"] == "deposit_refund") + sum(x["amount_cents"] for x in state["expenses"] if x["status"] == "paid")
+        deposits = -balances.get("2000", 0)
+        available = sum(1 for a in state["assets"] if a["status"] == "available")
+        revenue_by_asset: dict[str, int] = {}
+        revenue_by_sku: dict[str, int] = {}
+        order_map = {o["id"]: o for o in state["orders"]}
+        for payment in state["payments"]:
+            if payment["payment_type"] != "rental" or payment["order_id"] not in order_map: continue
+            order = order_map[payment["order_id"]]
+            for item in order["items"]:
+                revenue_by_asset[item["asset_id"]] = revenue_by_asset.get(item["asset_id"], 0) + payment["amount_cents"]
+                revenue_by_sku[item["sku_id"]] = revenue_by_sku.get(item["sku_id"], 0) + payment["amount_cents"]
+        customer_rows = []
+        for customer in state["customers"]:
+            own = [o for o in orders if o["customer_id"] == customer["id"]]
+            spent = sum(p["amount_cents"] for p in state["payments"] if p["payment_type"] == "rental" and any(o["id"] == p["order_id"] for o in own))
+            last = max((o["created_at"] for o in own), default=None)
+            count = len(own)
+            customer_rows.append({**customer, "orders": count, "lifetime_revenue": spent, "last_order_at": last,
+                                  "segment": "High Value" if spent >= 150000 else "Frequent" if count >= 4 else "Returning" if count >= 2 else "New",
+                                  "frequency": count, "recency_days": (datetime.now(timezone.utc) - datetime.fromisoformat(last)).days if last else None})
+        sku_map = {x["id"]: x for x in state["skus"]}; asset_map = {x["id"]: x for x in state["assets"]}
+        top_assets = sorted([{**asset_map[k], "lifetime_revenue": v,
+                              "rental_count": sum(1 for o in orders for i in o["items"] if i["asset_id"] == k),
+                              "payback_progress": round(v * 100 / max(1, asset_map[k]["purchase_cost_cents"]), 1)} for k, v in revenue_by_asset.items()], key=lambda x: x["lifetime_revenue"], reverse=True)
+        revenue_by_sku_rows = sorted([{"id": key, "name": sku_map[key]["name"], "size": sku_map[key]["size"], "revenue": value,
+                                       "orders": sum(1 for o in orders for i in o["items"] if i["sku_id"] == key)} for key, value in revenue_by_sku.items()], key=lambda x: x["revenue"], reverse=True)
+        month_rows: dict[str, dict[str, int]] = {}
+        for payment in state["payments"]:
+            key = payment["occurred_at"][:7]; row = month_rows.setdefault(key, {"revenue": 0, "cash_in": 0, "cash_out": 0, "orders": 0})
+            if payment["payment_type"] == "rental": row["revenue"] += payment["amount_cents"]
+            if payment["payment_type"] in {"rental", "deposit"}: row["cash_in"] += payment["amount_cents"]
+            if payment["payment_type"] == "deposit_refund": row["cash_out"] += payment["amount_cents"]
+        for order in orders: month_rows.setdefault(order["created_at"][:7], {"revenue": 0, "cash_in": 0, "cash_out": 0, "orders": 0})["orders"] += 1
+        timeline = [{"period": key, **value} for key, value in sorted(month_rows.items())]
+        trial_accounts = [{"code": code, "name": DEMO_ACCOUNTS[code][0], "account_type": DEMO_ACCOUNTS[code][1], "closing_balance": value} for code, value in sorted(balances.items())]
+        return {**state, "loaded": True,
+                "dashboard": {"metrics": {"revenue": revenue, "orders": len(orders), "cash_in": cash_in, "cash_out": cash_out,
+                    "operating_expenses": expenses, "operating_profit": revenue-expenses, "deposits_held": deposits,
+                    "outstanding_receivables": max(0, balances.get("1100", 0)), "available_assets": available,
+                    "asset_utilization": round((len(state["assets"])-available)*100/max(1,len(state["assets"])),1),
+                    "average_order_value": round(sum(o["total_cents"] for o in orders)/max(1,len(orders))),
+                    "repeat_customer_rate": round(sum(1 for v in customers_with_orders.values() if v>=2)*100/max(1,len(customers_with_orders)),1)},
+                    "trends": timeline, "recent_exceptions": ([{"kind": "Unavailable demand", "count": len(state["unavailable_demand"]), "detail": "Size M requests without available inventory"}]
+                        + [{"kind": "Maintenance", "count": sum(1 for a in state["assets"] if a["status"] == "maintenance"), "detail": "Assets awaiting repair"}])},
+                "trial_balance": {"accounts": trial_accounts, "total_debit": debit_total, "total_credit": credit_total, "balanced": debit_total == credit_total},
+                "statements": {"income_statement": {"revenue_total": revenue, "expenses_total": expenses, "operating_profit": revenue-expenses},
+                    "balance_sheet": {"assets_total": assets_total, "liabilities_total": liabilities, "equity_total": equity_base + revenue-expenses,
+                                      "balanced": assets_total == liabilities + equity_base + revenue-expenses},
+                    "cash_flow": {"operating": sum(sum(l["debit_cents"]-l["credit_cents"] for l in j["lines"] if l["account_code"]=="1000") for j in state["journals"] if j["cash_flow_category"]=="operating"),
+                                  "investing": sum(sum(l["debit_cents"]-l["credit_cents"] for l in j["lines"] if l["account_code"]=="1000") for j in state["journals"] if j["cash_flow_category"]=="investing"),
+                                  "financing": sum(sum(l["debit_cents"]-l["credit_cents"] for l in j["lines"] if l["account_code"]=="1000") for j in state["journals"] if j["cash_flow_category"]=="financing")}},
+                "analytics": {"customers": customer_rows, "revenue_by_sku": revenue_by_sku_rows, "top_assets": top_assets,
+                              "unavailable_demand": state["unavailable_demand"], "trends": timeline,
+                              "insights": [{"id": "demo-insight-demand", "title": "Size M 存在未满足需求", "metric": len(state["unavailable_demand"]), "period": "过去30天", "calculation": "未满足的Size M需求事件数", "evidence_ids": [x["id"] for x in state["unavailable_demand"]]},
+                                           {"id": "demo-insight-asset", "title": f"{top_assets[0]['asset_code']} 是收入最高资产" if top_assets else "暂无资产收入", "metric": top_assets[0]["lifetime_revenue"] if top_assets else 0, "period": "六个月", "calculation": "与该资产关联订单的租金收款合计", "evidence_ids": [top_assets[0]["id"]] if top_assets else []}]}}
+
+    def demo(self, user_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute("SELECT state_json FROM pulse_demo_companies WHERE user_id=?", (user_id,)).fetchone()
+        if not row: return {"loaded": False, "demo": True}
+        try: state = json.loads(row["state_json"])
+        except (TypeError, ValueError): return {"loaded": False, "demo": True}
+        return self._demo_view(state)
+
+    def reset_demo(self, user_id: int) -> dict[str, Any]:
+        return self._save_demo(user_id, _pulse_demo_seed())
+
+    def demo_action(self, user_id: int, command: PulseDemoAction) -> dict[str, Any]:
+        view = self.demo(user_id)
+        if not view.get("loaded"): view = self.reset_demo(user_id)
+        keys = ("demo", "version", "currency", "customers", "skus", "assets", "orders", "payments", "inspections", "expenses", "events", "journals", "unavailable_demand")
+        state = {key: view[key] for key in keys}; p, now = command.payload, _now()
+        customers = {x["id"]: x for x in state["customers"]}; assets = {x["id"]: x for x in state["assets"]}; orders = {x["id"]: x for x in state["orders"]}
+        if command.action == "customer":
+            item_id = f"demo-pulse-c-{uuid.uuid4().hex[:10]}"; state["customers"].append({"id": item_id, "name": str(p.get("name", "Demo Customer")).strip(), "phone": str(p.get("phone", "")), "email": "", "source": str(p.get("source", "Manual")), "notes": "Created in DEMO", "created_at": now})
+        elif command.action == "order":
+            customer_id, asset_id = p.get("customer_id"), p.get("asset_id")
+            if customer_id not in customers or asset_id not in assets or assets[asset_id]["status"] != "available": raise ValueError("请选择可用演示客户和资产。")
+            sku = next(x for x in state["skus"] if x["id"] == assets[asset_id]["sku_id"]); order_id = f"demo-pulse-o-{uuid.uuid4().hex[:10]}"; amount = int(p.get("amount_cents") or sku["current_price_cents"])
+            state["orders"].append({"id": order_id, "customer_id": customer_id, "status": "reserved", "channel": str(p.get("channel", "Manual")), "currency": "AUD", "total_cents": amount, "start_at": str(p.get("start_at") or now), "end_at": str(p.get("end_at") or (datetime.now(timezone.utc)+timedelta(days=3)).isoformat()), "created_at": now, "items": [{"sku_id": sku["id"], "sku_name": sku["name"], "asset_id": asset_id, "asset_code": assets[asset_id]["asset_code"], "unit_price_cents": amount}]}); assets[asset_id]["status"] = "reserved"
+        elif command.action in {"payment", "deposit", "refund"}:
+            order_id = p.get("order_id"); order = orders.get(order_id)
+            if not order: raise ValueError("演示订单不存在。")
+            payment_type = {"payment": "rental", "deposit": "deposit", "refund": "deposit_refund"}[command.action]
+            amount = int(p.get("amount_cents") or (order["total_cents"] if command.action == "payment" else 15000)); payment_id = f"demo-pulse-pay-{uuid.uuid4().hex[:10]}"
+            state["payments"].append({"id": payment_id, "order_id": order_id, "payment_type": payment_type, "amount_cents": amount, "occurred_at": now, "method": "Demo Card"})
+            lines = [("1000", amount, 0), ("4000", 0, amount)] if command.action == "payment" else [("1000", amount, 0), ("2000", 0, amount)] if command.action == "deposit" else [("2000", amount, 0), ("1000", 0, amount)]
+            _demo_journal(state, now, {"payment":"Rental payment","deposit":"Customer deposit received","refund":"Customer deposit refunded"}[command.action], "payment", payment_id, lines, "operating")
+            if command.action == "refund":
+                for item in order["items"]: assets[item["asset_id"]]["status"] = "available"
+                order["status"] = "completed"
+        elif command.action in {"deliver", "return"}:
+            order = orders.get(p.get("order_id"));
+            if not order: raise ValueError("演示订单不存在。")
+            target = "rented" if command.action == "deliver" else "returned"; order["status"] = target
+            for item in order["items"]: assets[item["asset_id"]]["status"] = "rented" if command.action == "deliver" else "inspection"
+            state["events"].append({"id": f"demo-event-{uuid.uuid4().hex[:8]}", "order_id": order["id"], "event_type": target, "occurred_at": now})
+        elif command.action == "inspect":
+            order = orders.get(p.get("order_id")); asset_id = p.get("asset_id")
+            if not order or asset_id not in assets: raise ValueError("演示订单或资产不存在。")
+            condition = p.get("condition_status", "cleaning_required"); target = "available" if condition == "good" else "cleaning" if condition == "cleaning_required" else "maintenance"
+            assets[asset_id]["status"] = target; state["inspections"].append({"id": f"demo-ins-{uuid.uuid4().hex[:8]}", "order_id": order["id"], "asset_id": asset_id, "condition_status": condition, "resolution_status": "confirmed", "created_at": now})
+        elif command.action == "cleaning":
+            order = orders.get(p.get("order_id")); asset_id = p.get("asset_id"); amount = int(p.get("amount_cents") or 5000)
+            if not order or asset_id not in assets: raise ValueError("演示订单或资产不存在。")
+            expense_id = f"demo-pulse-x-{uuid.uuid4().hex[:10]}"; state["expenses"].append({"id": expense_id, "order_id": order["id"], "asset_id": asset_id, "category": "cleaning", "amount_cents": amount, "status": "paid", "description": "Demo cleaning", "occurred_at": now}); assets[asset_id]["status"] = "cleaning"
+            _demo_journal(state, now, "Cleaning expense", "expense", expense_id, [("5000", amount, 0), ("1000", 0, amount)], "operating")
+        return self._save_demo(user_id, state)
+
+    def demo_order(self, user_id: int, order_id: str) -> dict[str, Any]:
+        view = self.demo(user_id); order = next((x for x in view.get("orders", []) if x["id"] == order_id), None)
+        if not order: raise KeyError("演示订单不存在。")
+        customer = next(x for x in view["customers"] if x["id"] == order["customer_id"])
+        return {**order, "customer": customer, "payments": [x for x in view["payments"] if x["order_id"] == order_id], "inspections": [x for x in view["inspections"] if x["order_id"] == order_id], "expenses": [x for x in view["expenses"] if x.get("order_id") == order_id], "events": [x for x in view["events"] if x.get("order_id") == order_id], "journals": [j for j in view["journals"] if j["source_document_id"] in {x["id"] for x in view["payments"] if x["order_id"] == order_id} | {x["id"] for x in view["expenses"] if x.get("order_id") == order_id}]}
+
+    def demo_asset(self, user_id: int, asset_id: str) -> dict[str, Any]:
+        view = self.demo(user_id); asset = next((x for x in view.get("assets", []) if x["id"] == asset_id), None)
+        if not asset: raise KeyError("演示资产不存在。")
+        orders = [o for o in view["orders"] if any(i["asset_id"] == asset_id for i in o["items"])]
+        revenue = sum(p["amount_cents"] for p in view["payments"] if p["payment_type"] == "rental" and any(o["id"] == p["order_id"] for o in orders))
+        expenses = [x for x in view["expenses"] if x.get("asset_id") == asset_id]; cost = sum(x["amount_cents"] for x in expenses)
+        return {**asset, "rental_history": orders, "expenses": expenses, "lifetime_revenue": revenue, "rental_count": len(orders), "recorded_direct_cost": cost, "contribution": revenue-cost, "payback_progress": round(revenue*100/max(1,asset["purchase_cost_cents"]),1)}
 
     def metric_dictionary(self, user_id: int) -> list[dict]:
         self.ensure_user_setup(user_id)
@@ -983,6 +1318,26 @@ def create_pulse_router(connect: Callable[[], Any], current_user: Callable[..., 
                                 "asset_economics", "metric_dictionary"],
                 "experimental": ["rule_customer_segments"],
                 "planned": ["cohort", "full_rfm", "funnel", "demand_events", "scenario_analysis", "forecasting"]}
+
+    @router.get("/demo")
+    def demo(user: User): return repo.demo(user["id"])
+
+    @router.post("/demo/load")
+    def demo_load(user: User):
+        current = repo.demo(user["id"])
+        return current if current.get("loaded") else repo.reset_demo(user["id"])
+
+    @router.post("/demo/reset")
+    def demo_reset(user: User): return repo.reset_demo(user["id"])
+
+    @router.post("/demo/action")
+    def demo_action(payload: PulseDemoAction, user: User): return safe(lambda: repo.demo_action(user["id"], payload))
+
+    @router.get("/demo/orders/{order_id}")
+    def demo_order(order_id: str, user: User): return safe(lambda: repo.demo_order(user["id"], order_id))
+
+    @router.get("/demo/assets/{asset_id}")
+    def demo_asset(asset_id: str, user: User): return safe(lambda: repo.demo_asset(user["id"], asset_id))
 
     @router.get("/settings")
     def settings(user: User): return repo.settings(user["id"])
@@ -1022,6 +1377,10 @@ def create_pulse_router(connect: Callable[[], Any], current_user: Callable[..., 
 
     @router.get("/orders/{order_id}")
     def order_detail(order_id: str, user: User): return safe(lambda: repo.order_detail(user["id"], order_id))
+
+    @router.post("/orders/{order_id}/status")
+    def order_status(order_id: str, payload: OrderStatusWrite, user: User):
+        return safe(lambda: repo.transition_order(user["id"], order_id, payload))
 
     @router.post("/payments", status_code=201)
     def payment(payload: PaymentWrite, user: User): return safe(lambda: repo.record_payment(user["id"], payload))

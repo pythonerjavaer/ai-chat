@@ -127,13 +127,21 @@ def init_leap_schema(connect: Callable[[], Any]) -> None:
                 viewpoint_b TEXT NOT NULL,
                 evidence_a_excerpt_id TEXT,
                 evidence_b_excerpt_id TEXT,
+                common_ground TEXT NOT NULL DEFAULT '',
                 disagreement TEXT NOT NULL DEFAULT '',
                 judgment TEXT NOT NULL DEFAULT '',
+                unresolved_questions TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY(evidence_a_excerpt_id) REFERENCES leap_excerpts(id) ON DELETE SET NULL,
                 FOREIGN KEY(evidence_b_excerpt_id) REFERENCES leap_excerpts(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS leap_demo_workspaces (
+                user_id INTEGER PRIMARY KEY,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_leap_materials_user_updated
                 ON leap_materials(user_id, updated_at DESC);
@@ -147,6 +155,10 @@ def init_leap_schema(connect: Callable[[], Any]) -> None:
                 ON leap_clash_cards(user_id, updated_at DESC);
             """
         )
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(leap_clash_cards)").fetchall()}
+        for name in ("common_ground", "unresolved_questions"):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE leap_clash_cards ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
 
 
 class MaterialCreate(BaseModel):
@@ -191,7 +203,7 @@ class WormholeWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     left_excerpt_id: str
     right_excerpt_id: str
-    relation_type: Literal["相似", "对立", "延伸", "应用"]
+    relation_type: Literal["相似", "对立", "延伸", "因果", "应用", "质疑"]
     reflection: str = Field(min_length=1, max_length=10_000)
 
     @model_validator(mode="after")
@@ -208,8 +220,45 @@ class ClashWrite(BaseModel):
     viewpoint_b: str = Field(min_length=1, max_length=10_000)
     evidence_a_excerpt_id: str | None = None
     evidence_b_excerpt_id: str | None = None
+    common_ground: str = Field(default="", max_length=10_000)
     disagreement: str = Field(default="", max_length=10_000)
     judgment: str = Field(default="", max_length=10_000)
+    unresolved_questions: str = Field(default="", max_length=10_000)
+
+
+class DemoAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["progress", "excerpt", "note", "wormhole", "clash"]
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+def _leap_demo_seed() -> dict[str, Any]:
+    """Small, self-authored/public-domain-based demo; never mixed with user records."""
+    now = _now()
+    materials = [
+        {"id": "demo-leap-m1", "title": "洞穴与看见", "author": "公共领域思想改写", "kind": "哲学", "progress_percent": 75,
+         "paragraphs": ["有人终身只看见墙上的影子，于是把影子的次序当作世界本身。", "当一个人转身面对光，最初的感受往往不是自由，而是刺痛与怀疑。", "教育并非把视力放进眼睛，而是帮助目光改变方向。"]},
+        {"id": "demo-leap-m2", "title": "江河与选择", "author": "自建示例文本", "kind": "文学", "progress_percent": 45,
+         "paragraphs": ["江河看似沿着既定河床前进，却在每一次转弯处重新解释地形。", "选择不是摆脱所有限制，而是在限制中发现仍然可以改变的方向。", "抵达之后，人们常把漫长的犹豫压缩成一句必然。"]},
+        {"id": "demo-leap-m3", "title": "制度与记忆", "author": "自建示例文本", "kind": "历史", "progress_percent": 30,
+         "paragraphs": ["制度保存集体经验，也可能把旧问题冻结为新的常识。", "一项规则的寿命，往往比创造它的危机更长。", "理解历史需要同时看见决定、后果与后来者的重新叙述。"]},
+        {"id": "demo-leap-m4", "title": "公共生活的尺度", "author": "自建示例文本", "kind": "社会思想", "progress_percent": 20,
+         "paragraphs": ["公共讨论的困难，不只来自意见不同，也来自人们衡量证据的尺度不同。", "共识不是取消分歧，而是让分歧能够被共同检验。", "当判断可以回到证据，争论才可能积累而不是循环。"]},
+    ]
+    excerpts = [
+        {"id": "demo-leap-e1", "material_id": "demo-leap-m1", "paragraph_position": 1, "start_offset": 0, "end_offset": 32, "quote": materials[0]["paragraphs"][1], "created_at": now},
+        {"id": "demo-leap-e2", "material_id": "demo-leap-m2", "paragraph_position": 1, "start_offset": 0, "end_offset": 32, "quote": materials[1]["paragraphs"][1], "created_at": now},
+        {"id": "demo-leap-e3", "material_id": "demo-leap-m3", "paragraph_position": 0, "start_offset": 0, "end_offset": 28, "quote": materials[2]["paragraphs"][0], "created_at": now},
+        {"id": "demo-leap-e4", "material_id": "demo-leap-m4", "paragraph_position": 2, "start_offset": 0, "end_offset": 28, "quote": materials[3]["paragraphs"][2], "created_at": now},
+    ]
+    return {"demo": True, "version": 1, "materials": materials, "excerpts": excerpts,
+            "notes": [{"id": "demo-leap-n1", "material_id": "demo-leap-m1", "excerpt_id": "demo-leap-e1", "topic": "自由", "content": "改变理解方向会先带来不适；自由包含重新学习如何看。", "created_at": "2026-08-12T08:00:00+00:00"},
+                      {"id": "demo-leap-n2", "material_id": "demo-leap-m2", "excerpt_id": "demo-leap-e2", "topic": "自由", "content": "第二次理解：自由并非没有边界，而是在边界内仍能修正路径。", "created_at": "2026-09-10T08:00:00+00:00"},
+                      {"id": "demo-leap-n3", "material_id": "demo-leap-m4", "excerpt_id": "demo-leap-e4", "topic": "证据", "content": "证据的价值在于让分歧可以累积和修正。", "created_at": "2026-09-18T08:00:00+00:00"}],
+            "wormholes": [{"id": "demo-leap-w1", "left_excerpt_id": "demo-leap-e1", "right_excerpt_id": "demo-leap-e2", "relation_type": "延伸", "reflection": "转身面对光描述认知的改变；江河转向描述行动的改变。两者都把自由理解为方向的重新选择。", "created_at": now},
+                          {"id": "demo-leap-w2", "left_excerpt_id": "demo-leap-e3", "right_excerpt_id": "demo-leap-e4", "relation_type": "质疑", "reflection": "制度能够保存经验，但只有证据可被重新检验时，保存才不会变成冻结。", "created_at": now}],
+            "clashes": [{"id": "demo-leap-c1", "title": "稳定是否必然限制自由", "viewpoint_a": "稳定的制度让行动获得可预期边界。", "viewpoint_b": "稳定也可能让历史偶然被误认为永恒常识。", "evidence_a_excerpt_id": "demo-leap-e2", "evidence_b_excerpt_id": "demo-leap-e3", "common_ground": "双方都承认边界影响选择。", "disagreement": "边界首先是能力条件还是认知束缚。", "judgment": "应区分可检验、可修订的边界与拒绝证据的边界。", "unresolved_questions": "谁有权启动修订？修订成本由谁承担？", "created_at": now}],
+            "updated_at": now}
 
 
 class LeapRepository:
@@ -469,20 +518,21 @@ class LeapRepository:
         item_id, now = item_id or str(uuid.uuid4()), _now()
         values = (payload.title.strip(), payload.viewpoint_a.strip(), payload.viewpoint_b.strip(),
                   payload.evidence_a_excerpt_id, payload.evidence_b_excerpt_id,
-                  payload.disagreement.strip(), payload.judgment.strip(), now)
+                  payload.common_ground.strip(), payload.disagreement.strip(), payload.judgment.strip(),
+                  payload.unresolved_questions.strip(), now)
         with self.connect() as connection:
             if connection.execute("SELECT 1 FROM leap_clash_cards WHERE id=? AND user_id=?", (item_id, user_id)).fetchone():
                 connection.execute(
                     """UPDATE leap_clash_cards SET title=?,viewpoint_a=?,viewpoint_b=?,
-                       evidence_a_excerpt_id=?,evidence_b_excerpt_id=?,disagreement=?,judgment=?,updated_at=?
+                       evidence_a_excerpt_id=?,evidence_b_excerpt_id=?,common_ground=?,disagreement=?,judgment=?,unresolved_questions=?,updated_at=?
                        WHERE id=? AND user_id=?""", values + (item_id, user_id),
                 )
             else:
                 connection.execute(
                     """INSERT INTO leap_clash_cards
                        (id,user_id,title,viewpoint_a,viewpoint_b,evidence_a_excerpt_id,
-                        evidence_b_excerpt_id,disagreement,judgment,created_at,updated_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                        evidence_b_excerpt_id,common_ground,disagreement,judgment,unresolved_questions,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (item_id, user_id) + values[:-1] + (now, now),
                 )
             row = connection.execute("SELECT * FROM leap_clash_cards WHERE id=? AND user_id=?", (item_id, user_id)).fetchone()
@@ -516,6 +566,154 @@ class LeapRepository:
         edges += [{"source": f"excerpt:{x['left_excerpt_id']}", "target": f"excerpt:{x['right_excerpt_id']}", "kind": x["relation_type"], "target_id": x["id"]} for x in wormholes]
         return {"nodes": nodes, "edges": edges}
 
+    def home(self, user_id: int) -> dict:
+        """A bounded, useful landing view instead of a wall of zero counters."""
+        with self.connect() as connection:
+            reading = connection.execute(
+                """SELECT m.id,m.title,m.author,m.tags,m.paragraph_count,
+                          COALESCE(p.progress_percent,0) AS progress_percent,
+                          COALESCE(p.paragraph_position,0) AS paragraph_position,m.updated_at
+                   FROM leap_materials m LEFT JOIN leap_reading_progress p
+                     ON p.material_id=m.id AND p.user_id=m.user_id
+                   WHERE m.user_id=? ORDER BY COALESCE(p.updated_at,m.updated_at) DESC LIMIT 5""", (user_id,),
+            ).fetchall()
+        recent_excerpts = self.list_excerpts(user_id)[:6]
+        recent_notes = self.list_notes(user_id, "")[:6]
+        recent_wormholes = self.list_wormholes(user_id)[:4]
+        recent_clashes = self.list_clashes(user_id)[:3]
+        topics: dict[str, dict[str, Any]] = {}
+        for note in recent_notes:
+            topic = (note.get("topic") or "未命名主题").strip()
+            current = topics.setdefault(topic, {"topic": topic, "count": 0, "latest_at": note["updated_at"]})
+            current["count"] += 1
+        return {"reading": [_row(item) | {"tags": _json(item["tags"], [])} for item in reading],
+                "recent_excerpts": recent_excerpts, "recent_notes": recent_notes,
+                "recent_wormholes": recent_wormholes, "recent_clashes": recent_clashes,
+                "active_topics": list(topics.values()),
+                "next_action": "添加第一份材料" if not reading else "继续阅读并选取一条证据" if not recent_excerpts else "连接两条证据" if not recent_wormholes else "继续探索你的思想关系"}
+
+    def timeline(self, user_id: int) -> list[dict]:
+        notes = self.list_notes(user_id, "")
+        grouped: dict[str, list[dict]] = {}
+        for note in notes:
+            topic = (note.get("topic") or "未命名主题").strip()
+            grouped.setdefault(topic, []).append({"id": note["id"], "content": note["content"],
+                                                   "material_title": note.get("material_title") or "独立笔记",
+                                                   "created_at": note["created_at"]})
+        return [{"topic": topic, "entries": sorted(entries, key=lambda x: x["created_at"])}
+                for topic, entries in grouped.items()]
+
+    def search_all(self, user_id: int, query: str, limit: int) -> list[dict]:
+        query, limit = query.strip(), min(limit, 60)
+        if not query:
+            return []
+        pattern = f"%{query}%"
+        with self.connect() as connection:
+            material = connection.execute(
+                "SELECT id,title AS label,author AS context FROM leap_materials WHERE user_id=? AND (title LIKE ? OR author LIKE ? OR tags LIKE ?) LIMIT ?",
+                (user_id, pattern, pattern, pattern, limit),
+            ).fetchall()
+            paragraph = connection.execute(
+                """SELECT p.material_id AS id,substr(p.content,1,240) AS label,m.title AS context,p.position
+                   FROM leap_paragraphs p JOIN leap_materials m ON m.id=p.material_id
+                   WHERE m.user_id=? AND p.material_version=m.version AND p.content LIKE ? LIMIT ?""",
+                (user_id, pattern, limit),
+            ).fetchall()
+            excerpt = connection.execute(
+                """SELECT e.id,e.quote AS label,m.title AS context,e.material_id,e.paragraph_position AS position
+                   FROM leap_excerpts e JOIN leap_materials m ON m.id=e.material_id
+                   WHERE e.user_id=? AND e.quote LIKE ? LIMIT ?""", (user_id, pattern, limit),
+            ).fetchall()
+            note = connection.execute(
+                "SELECT id,content AS label,topic AS context,material_id FROM leap_notes WHERE user_id=? AND (topic LIKE ? OR content LIKE ?) LIMIT ?",
+                (user_id, pattern, pattern, limit),
+            ).fetchall()
+            wormhole = connection.execute(
+                "SELECT id,reflection AS label,relation_type AS context FROM leap_wormholes WHERE user_id=? AND reflection LIKE ? LIMIT ?",
+                (user_id, pattern, limit),
+            ).fetchall()
+            clash = connection.execute(
+                "SELECT id,title AS label,judgment AS context FROM leap_clash_cards WHERE user_id=? AND (title LIKE ? OR viewpoint_a LIKE ? OR viewpoint_b LIKE ? OR judgment LIKE ?) LIMIT ?",
+                (user_id, pattern, pattern, pattern, pattern, limit),
+            ).fetchall()
+        result = ([{"kind": "material", **_row(x)} for x in material]
+                  + [{"kind": "paragraph", **_row(x)} for x in paragraph]
+                  + [{"kind": "excerpt", **_row(x)} for x in excerpt]
+                  + [{"kind": "note", **_row(x)} for x in note]
+                  + [{"kind": "wormhole", **_row(x)} for x in wormhole]
+                  + [{"kind": "clash", **_row(x)} for x in clash])
+        return result[:limit]
+
+    def _save_demo(self, user_id: int, state: dict[str, Any]) -> dict[str, Any]:
+        state["updated_at"] = _now()
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO leap_demo_workspaces(user_id,state_json,updated_at) VALUES(?,?,?)
+                   ON CONFLICT(user_id) DO UPDATE SET state_json=excluded.state_json,updated_at=excluded.updated_at""",
+                (user_id, json.dumps(state, ensure_ascii=False), state["updated_at"]),
+            )
+        return self.demo(user_id)
+
+    def demo(self, user_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute("SELECT state_json,updated_at FROM leap_demo_workspaces WHERE user_id=?", (user_id,)).fetchone()
+        if not row:
+            return {"loaded": False, "demo": True}
+        state = _json(row["state_json"], {})
+        material_map = {item["id"]: item for item in state.get("materials", [])}
+        excerpt_map = {item["id"]: item for item in state.get("excerpts", [])}
+        for excerpt in state.get("excerpts", []):
+            excerpt["material_title"] = material_map.get(excerpt["material_id"], {}).get("title", "未知材料")
+        for note in state.get("notes", []):
+            note["material_title"] = material_map.get(note.get("material_id"), {}).get("title", "独立笔记")
+        for item in state.get("wormholes", []):
+            left, right = excerpt_map.get(item["left_excerpt_id"], {}), excerpt_map.get(item["right_excerpt_id"], {})
+            item.update(left_quote=left.get("quote", ""), right_quote=right.get("quote", ""),
+                        left_material=material_map.get(left.get("material_id"), {}).get("title", ""),
+                        right_material=material_map.get(right.get("material_id"), {}).get("title", ""))
+        timeline: dict[str, list[dict]] = {}
+        for note in state.get("notes", []):
+            timeline.setdefault(note.get("topic") or "未命名主题", []).append(note)
+        nodes = ([{"id": f"material:{m['id']}", "kind": "material", "label": m["title"], "target_id": m["id"]} for m in state.get("materials", [])]
+                 + [{"id": f"excerpt:{e['id']}", "kind": "excerpt", "label": e["quote"][:60], "target_id": e["id"]} for e in state.get("excerpts", [])]
+                 + [{"id": f"topic:{topic}", "kind": "theme", "label": topic, "target_id": topic} for topic in timeline])
+        edges = ([{"source": f"material:{e['material_id']}", "target": f"excerpt:{e['id']}", "kind": "contains"} for e in state.get("excerpts", [])]
+                 + [{"source": f"excerpt:{w['left_excerpt_id']}", "target": f"excerpt:{w['right_excerpt_id']}", "kind": w["relation_type"], "target_id": w["id"]} for w in state.get("wormholes", [])])
+        state.update(loaded=True, timeline=[{"topic": k, "entries": sorted(v, key=lambda x: x["created_at"])} for k, v in timeline.items()], universe={"nodes": nodes, "edges": edges})
+        return state
+
+    def reset_demo(self, user_id: int) -> dict[str, Any]:
+        return self._save_demo(user_id, _leap_demo_seed())
+
+    def demo_action(self, user_id: int, action: DemoAction) -> dict[str, Any]:
+        current = self.demo(user_id)
+        if not current.get("loaded"):
+            current = self.reset_demo(user_id)
+        state = {key: current[key] for key in ("demo", "version", "materials", "excerpts", "notes", "wormholes", "clashes")}
+        p, now = action.payload, _now()
+        materials = {x["id"]: x for x in state["materials"]}
+        excerpts = {x["id"]: x for x in state["excerpts"]}
+        if action.action == "progress":
+            materials[p["material_id"]]["progress_percent"] = max(0, min(100, int(p.get("progress_percent", 0))))
+        elif action.action == "excerpt":
+            material = materials.get(p.get("material_id"))
+            position = int(p.get("paragraph_position", -1))
+            if not material or position < 0 or position >= len(material["paragraphs"]):
+                raise ValueError("演示材料原文位置无效。")
+            quote = str(p.get("quote", "")).strip()
+            if not quote or quote not in material["paragraphs"][position]:
+                raise ValueError("摘录必须来自所选原文。")
+            state["excerpts"].append({"id": f"demo-leap-e-{uuid.uuid4().hex[:10]}", "material_id": material["id"], "paragraph_position": position, "start_offset": int(p.get("start_offset", 0)), "end_offset": int(p.get("end_offset", len(quote))), "quote": quote, "created_at": now})
+        elif action.action == "note":
+            state["notes"].append({"id": f"demo-leap-n-{uuid.uuid4().hex[:10]}", "material_id": p.get("material_id"), "excerpt_id": p.get("excerpt_id"), "topic": str(p.get("topic", "")).strip(), "content": str(p.get("content", "")).strip(), "created_at": now})
+        elif action.action == "wormhole":
+            if p.get("left_excerpt_id") not in excerpts or p.get("right_excerpt_id") not in excerpts or p.get("left_excerpt_id") == p.get("right_excerpt_id"):
+                raise ValueError("思想虫洞需要两条不同的真实摘录。")
+            state["wormholes"].append({"id": f"demo-leap-w-{uuid.uuid4().hex[:10]}", "left_excerpt_id": p["left_excerpt_id"], "right_excerpt_id": p["right_excerpt_id"], "relation_type": p.get("relation_type", "延伸"), "reflection": str(p.get("reflection", "")).strip(), "created_at": now})
+        elif action.action == "clash":
+            state["clashes"].append({"id": f"demo-leap-c-{uuid.uuid4().hex[:10]}", "title": str(p.get("title", "思想对撞")).strip(), "viewpoint_a": str(p.get("viewpoint_a", "")).strip(), "viewpoint_b": str(p.get("viewpoint_b", "")).strip(), "evidence_a_excerpt_id": p.get("evidence_a_excerpt_id"), "evidence_b_excerpt_id": p.get("evidence_b_excerpt_id"), "common_ground": str(p.get("common_ground", "")).strip(), "disagreement": str(p.get("disagreement", "")).strip(), "judgment": str(p.get("judgment", "")).strip(), "unresolved_questions": str(p.get("unresolved_questions", "")).strip(), "created_at": now})
+        return self._save_demo(user_id, state)
+
 
 def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., dict]) -> APIRouter:
     router, repo = APIRouter(prefix="/api/leap", tags=["跃迁域"]), LeapRepository(connect)
@@ -537,6 +735,30 @@ def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., d
                              "认知时间轴": "规划中", "时空透镜": "规划中", "反事实阅读": "规划中",
                              "跨时空思想会谈": "规划中", "记忆桥": "规划中", "跨域迁移": "规划中",
                              "个人认知光谱": "规划中", "认知暗物质": "规划中", "思想引力": "规划中"}}
+
+    @router.get("/home")
+    def home(user: User): return repo.home(user["id"])
+
+    @router.get("/search")
+    def search(user: User, q: str = Query(min_length=1, max_length=120), limit: int = Query(40, ge=1, le=60)):
+        return repo.search_all(user["id"], q, limit)
+
+    @router.get("/timeline")
+    def timeline(user: User): return repo.timeline(user["id"])
+
+    @router.get("/demo")
+    def demo(user: User): return repo.demo(user["id"])
+
+    @router.post("/demo/load")
+    def demo_load(user: User):
+        current = repo.demo(user["id"])
+        return current if current.get("loaded") else repo.reset_demo(user["id"])
+
+    @router.post("/demo/reset")
+    def demo_reset(user: User): return repo.reset_demo(user["id"])
+
+    @router.post("/demo/action")
+    def demo_action(payload: DemoAction, user: User): return safe(lambda: repo.demo_action(user["id"], payload))
 
     @router.get("/materials")
     def materials(user: User, q: str = Query("", max_length=120), limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0)):

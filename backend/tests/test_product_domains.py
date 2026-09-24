@@ -16,6 +16,7 @@ from backend.product_domains.leap import (
     NoteWrite,
     ProgressUpdate,
     WormholeWrite,
+    DemoAction,
 )
 from backend.product_domains.pulse import (
     AssetStatusWrite,
@@ -28,6 +29,8 @@ from backend.product_domains.pulse import (
     PulseRepository,
     SKUWrite,
     ExpenseWrite,
+    OrderStatusWrite,
+    PulseDemoAction,
 )
 
 
@@ -122,6 +125,7 @@ def test_pulse_price_snapshot_deposit_accounting_and_asset_lifecycle(product_sto
     ))
     assert expense["expense"]["id"]
     assert expense["journal"]["balanced"] is True
+    assert repo.dashboard(1, "2020-01-01", "2035-12-31")["metrics"]["cash_out"] == 800
 
     repo.transition_asset(1, asset["id"], AssetStatusWrite(status="rented", order_id=order["id"]))
     repo.transition_asset(1, asset["id"], AssetStatusWrite(status="inspection", order_id=order["id"]))
@@ -161,6 +165,74 @@ def test_pulse_user_data_isolation(product_store):
     with product_store() as connection:
         with pytest.raises(KeyError):
             repo._owned(connection, "pulse_customers", customer["id"], 2)
+
+
+def test_leap_demo_is_isolated_persistent_and_evidence_backed(product_store):
+    repo = LeapRepository(product_store)
+    demo = repo.reset_demo(1)
+    assert demo["loaded"] is True
+    assert len(demo["materials"]) == 4
+    assert repo.list_materials(1, "", 30, 0)["total"] == 0
+    material = demo["materials"][0]
+    updated = repo.demo_action(1, DemoAction(action="excerpt", payload={
+        "material_id": material["id"], "paragraph_position": 0,
+        "quote": material["paragraphs"][0], "start_offset": 0,
+    }))
+    assert len(updated["excerpts"]) == len(demo["excerpts"]) + 1
+    assert repo.demo(2)["loaded"] is False
+    assert any(node["kind"] == "theme" for node in updated["universe"]["nodes"])
+
+
+def test_pulse_demo_full_transaction_updates_balanced_finance(product_store):
+    repo = PulseRepository(product_store)
+    demo = repo.reset_demo(1)
+    assert demo["trial_balance"]["balanced"] is True
+    assert demo["statements"]["balance_sheet"]["balanced"] is True
+    assert repo.list_entity(1, "pulse_orders") == []
+    customer = repo.demo_action(1, PulseDemoAction(action="customer", payload={"name": "Journey Customer"}))["customers"][-1]
+    available = next(asset for asset in repo.demo(1)["assets"] if asset["status"] == "available")
+    order = repo.demo_action(1, PulseDemoAction(action="order", payload={
+        "customer_id": customer["id"], "asset_id": available["id"], "amount_cents": 55_000,
+    }))["orders"][-1]
+    for action, payload in (
+        ("payment", {"order_id": order["id"], "amount_cents": 55_000}),
+        ("deposit", {"order_id": order["id"], "amount_cents": 15_000}),
+        ("deliver", {"order_id": order["id"]}),
+        ("return", {"order_id": order["id"]}),
+        ("inspect", {"order_id": order["id"], "asset_id": available["id"], "condition_status": "cleaning_required"}),
+        ("cleaning", {"order_id": order["id"], "asset_id": available["id"], "amount_cents": 5_000}),
+        ("refund", {"order_id": order["id"], "amount_cents": 15_000}),
+    ):
+        demo = repo.demo_action(1, PulseDemoAction(action=action, payload=payload))
+    detail = repo.demo_order(1, order["id"])
+    assert detail["status"] == "completed"
+    assert {item["payment_type"] for item in detail["payments"]} >= {"rental", "deposit", "deposit_refund"}
+    assert detail["inspections"] and detail["expenses"] and detail["journals"]
+    assert demo["trial_balance"]["balanced"] is True
+    assert demo["statements"]["balance_sheet"]["balanced"] is True
+    assert repo.demo_asset(1, available["id"])["lifetime_revenue"] >= 55_000
+
+
+def test_real_order_status_drives_assigned_asset(product_store):
+    repo = PulseRepository(product_store)
+    customer, sku, asset = _pulse_master_data(repo)
+    start = datetime.now(timezone.utc) + timedelta(days=2)
+    order = repo.create_order(1, OrderWrite(customer_id=customer["id"], start_at=start,
+        end_at=start + timedelta(days=2), items=[OrderLineWrite(sku_id=sku["id"], asset_id=asset["id"])]))
+    repo.transition_order(1, order["id"], OrderStatusWrite(status="rented"))
+    assert repo.list_entity(1, "pulse_assets")[0]["status"] == "rented"
+    repo.transition_order(1, order["id"], OrderStatusWrite(status="returned"))
+    assert repo.list_entity(1, "pulse_assets")[0]["status"] == "inspection"
+    repo.create_inspection(1, InspectionWrite(order_id=order["id"], asset_id=asset["id"],
+        condition_status="cleaning_required", resolution_status="confirmed"))
+    repo.record_expense(1, ExpenseWrite(category="cleaning", amount_cents=500, order_id=order["id"],
+        asset_id=asset["id"], description="Post-rental cleaning"))
+    repo.transition_asset(1, asset["id"], AssetStatusWrite(status="available", order_id=order["id"]))
+    repo.record_payment(1, PaymentWrite(order_id=order["id"], payment_type="deposit_refund", amount_cents=3_000))
+    completed = repo.transition_order(1, order["id"], OrderStatusWrite(status="completed"))
+    assert completed["status"] == "completed"
+    assert completed["inspections"] and completed["expenses"] and len(completed["journals"]) == 2
+    assert repo.list_entity(1, "pulse_assets")[0]["status"] == "available"
 
 
 def test_product_domain_routes_work_with_postgres(persistent_app):
