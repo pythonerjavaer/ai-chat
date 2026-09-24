@@ -253,6 +253,50 @@ def test_interpretation_is_evidence_bound_cached_and_separate_from_translation(p
         service.interpret(1, {**payload, "source_text": text})
 
 
+def test_interpretation_validates_word_sentence_paragraph_selection_and_chapter_scopes(product_store):
+    repo = LeapRepository(product_store)
+    first = "Weight matters here. Sentence two."
+    second = "中文段落也可以解读。"
+    material = repo.create_material(1, MaterialCreate(title="All scopes", text=f"{first}\n\n{second}"))
+    with product_store() as connection:
+        connection.execute(
+            """INSERT INTO leap_chapters(material_id,material_version,position,title,stable_anchor,start_paragraph,end_paragraph)
+               VALUES(?,1,0,'Complete chapter','c-0',0,1)""", (material["id"],),
+        )
+        connection.execute(
+            "UPDATE leap_paragraphs SET chapter_position=0,chapter_title='Complete chapter' WHERE material_id=?",
+            (material["id"],),
+        )
+
+    seen = []
+    service = InterpretationService(
+        product_store,
+        lambda _user, _system, prompt, _limit: seen.append(prompt) or {"text": "原文明确表达：测试解读。"},
+        provider_model="test-model",
+    )
+    base = {
+        "action": "interpret", "document_id": material["id"], "target_language": "zh-CN",
+        "context_text": "", "coverage_complete": True, "coverage_label": "完整范围", "force": False,
+    }
+    payloads = [
+        {**base, "scope": "word", "paragraph_start": 0, "paragraph_end": 0,
+         "selection_start": 0, "selection_end": 6, "source_text": "Weight", "context_text": first},
+        {**base, "scope": "sentence", "paragraph_start": 0, "paragraph_end": 0,
+         "selection_start": 0, "selection_end": 20, "source_text": "Weight matters here.", "context_text": first},
+        {**base, "scope": "paragraph", "paragraph_start": 0, "paragraph_end": 0,
+         "selection_start": None, "selection_end": None, "source_text": first},
+        {**base, "scope": "selection", "paragraph_start": 0, "paragraph_end": 1,
+         "selection_start": 21, "selection_end": 4, "source_text": f"Sentence two.\n\n中文段落"},
+        {**base, "scope": "chapter", "paragraph_start": 0, "paragraph_end": 1,
+         "selection_start": None, "selection_end": None, "source_text": f"{first}\n\n{second}",
+         "coverage_label": "完整章节"},
+    ]
+    results = [service.interpret(1, payload) for payload in payloads]
+    assert [item["scope"] for item in results] == ["word", "sentence", "paragraph", "selection", "chapter"]
+    assert len(seen) == 5
+    assert all(item["action"] == "interpret" for item in results)
+
+
 def test_chapter_interpretation_reports_bounded_partial_coverage(product_store):
     repo = LeapRepository(product_store)
     material = repo.create_material(1, MaterialCreate(title="Chapter", text="A" * 9_000 + "\n\n" + "B" * 9_000))
