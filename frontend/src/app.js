@@ -13,8 +13,10 @@ import { initOblivionArchive, openOblivionArchive } from "./oblivion-archive.js"
 import { initProductDomains } from "./product-domains.js";
 import {
   PRODUCT_NAV_ITEMS,
+  globalAuthCopy,
   normalizeProductId,
   productDialogIdsToClose,
+  resolveSessionResumeProduct,
   resolveStartupProduct,
 } from "./product-navigation.js";
 import {
@@ -674,7 +676,16 @@ async function api(path, options = {}) {
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(API_BASE + path, { ...requestOptions, headers, signal: controller.signal });
-    if (response.status === 401 && !preserveAuthOn401 && !path.startsWith("/auth/login")) await logout(false);
+    if (response.status === 401 && !preserveAuthOn401 && !path.startsWith("/auth/login")) {
+      const activeItem = PRODUCT_NAV_ITEMS.find((item) => item.id === state.activeProduct);
+      const resumeProduct = resolveSessionResumeProduct({
+        activeProduct: state.activeProduct,
+        appVisible: !elements.appView.classList.contains("hidden"),
+        worldMapOpen: elements.worldMapDialog.open,
+        productSurfaceOpen: !activeItem?.dialogId || Boolean(document.getElementById(activeItem.dialogId)?.open),
+      });
+      await logout(false, { resumeProduct, preservePending: true });
+    }
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
       try { detail = (await response.json()).detail || detail; } catch (_) {}
@@ -718,23 +729,13 @@ function productDisplayName(product) {
   return productButton?.querySelector("strong")?.textContent?.trim() || "这个世界";
 }
 
-function showPendingProductAuth(product) {
-  if (!product) return;
-  const productName = productDisplayName(product);
-  const action = state.authMode === "register" ? "注册后进入" : "登录后进入";
-  elements.authKicker.textContent = "世界入口已锁定";
-  elements.authTitle.textContent = `${action}${productName}`;
-  elements.authDescription.textContent = "完成登录或注册后会自动打开刚才选择的产品，不需要再次寻找入口。";
-}
-
 function setAuthMode(mode) {
   state.authMode = mode;
   const registering = mode === "register";
-  elements.authKicker.textContent = registering ? "创建私有空间" : "欢迎回来";
-  elements.authTitle.textContent = registering ? "开启你的研究舱" : "进入你的研究舱";
-  elements.authDescription.textContent = registering
-    ? "账号用于隔离你的对话、文档与证据索引。"
-    : "对话、文档与证据索引会与你的账号绑定。";
+  const copy = globalAuthCopy(mode);
+  elements.authKicker.textContent = copy.kicker;
+  elements.authTitle.textContent = copy.title;
+  elements.authDescription.textContent = copy.description;
   elements.authSubmit.querySelector("span").textContent = registering ? "同意并创建账号" : "登录";
   elements.authSwitchCopy.textContent = registering ? "已经有账号？" : "还没有账号？";
   elements.authSwitch.textContent = registering ? "返回登录" : "创建账号";
@@ -746,7 +747,6 @@ function setAuthMode(mode) {
   elements.authModeRegister.classList.toggle("active", registering);
   elements.authModeLogin.setAttribute("aria-selected", String(!registering));
   elements.authModeRegister.setAttribute("aria-selected", String(registering));
-  if (state.pendingLaunch) showPendingProductAuth(state.pendingLaunch);
 }
 
 async function authenticate(event) {
@@ -809,7 +809,6 @@ function translateError(message) {
 async function enterApp() {
   const pendingLaunch = state.pendingLaunch || await storage.get(STORAGE_KEYS.pendingProduct);
   const resumeProduct = resolveStartupProduct({ queuedProductLaunch, pendingLaunch });
-  const openStartupWorldMap = !resumeProduct && Boolean(state.user?.privacy_accepted);
   queuedProductLaunch = null;
   if (WORKSPACE_ORDER.includes(resumeProduct)) state.workspace = resumeProduct;
   elements.authView.classList.add("hidden");
@@ -818,7 +817,7 @@ async function enterApp() {
   // Put the normal authenticated destination in the top layer before the
   // first network await. Otherwise the restored workspace can paint for the
   // whole loading period and then appear to redirect into the world map.
-  if (openStartupWorldMap) openWorldMap();
+  if (!resumeProduct) openWorldMap();
   await loadWorkspaces();
   await Promise.all([loadSessions(), loadDocuments(), loadHomeRecruitmentAlerts()]);
   newConversation();
@@ -958,7 +957,9 @@ function endFutureRadarSession(expired = false) {
   if (elements.recruitmentDialog?.open) elements.recruitmentDialog.close();
 }
 
-async function logout(showMessage = true) {
+async function logout(showMessage = true, { resumeProduct = null, preservePending = false } = {}) {
+  const nextPendingProduct = normalizeProductId(resumeProduct)
+    || (preservePending ? normalizeProductId(state.pendingLaunch) : null);
   state.token = null;
   endFutureRadarSession(!showMessage);
   await soundscapeEngine.destroy();
@@ -972,12 +973,21 @@ async function logout(showMessage = true) {
   state.sessionId = null;
   state.sessions = [];
   state.documents = [];
+  productDomains?.reset();
+  state.activeProduct = null;
+  state.pendingLaunch = nextPendingProduct;
+  queuedProductLaunch = null;
+  await storage.remove(STORAGE_KEYS.activeProduct);
+  if (nextPendingProduct) await storage.set(STORAGE_KEYS.pendingProduct, nextPendingProduct);
+  else await storage.remove(STORAGE_KEYS.pendingProduct);
+  closeOpenProductDialogs();
   if (elements.settingsDialog.open) elements.settingsDialog.close();
   if (elements.consentDialog.open) elements.consentDialog.close();
   if (elements.worldMapDialog.open) elements.worldMapDialog.close();
   elements.appView.classList.add("hidden");
   elements.authView.classList.remove("hidden");
   elements.password.value = "";
+  setAuthMode("login");
   if (showMessage) showToast("已安全退出");
 }
 
@@ -2198,6 +2208,20 @@ async function launchProduct(product) {
     queuedProductLaunch = product;
     return;
   }
+  const publicProduct = ["resonance", "trace", "oblivion"].includes(product);
+  if (!state.token && !publicProduct) {
+    state.pendingLaunch = product;
+    await storage.set(STORAGE_KEYS.pendingProduct, product);
+    const productName = productDisplayName(product);
+    if (WORKSPACE_ORDER.includes(product)) {
+      state.workspace = product;
+      await storage.set(STORAGE_KEYS.workspace, product);
+    }
+    setAuthMode(state.authMode);
+    document.querySelector(".auth-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    showToast(`登录冰焰后即可进入「${productName}」。`, 4200);
+    return;
+  }
   state.activeProduct = product;
   updateProductSwitchers(product);
   await storage.set(STORAGE_KEYS.activeProduct, product);
@@ -2218,19 +2242,6 @@ async function launchProduct(product) {
     await storage.remove(STORAGE_KEYS.pendingProduct);
     return openOblivionArchive();
   }
-  if (!state.token) {
-    state.pendingLaunch = product;
-    await storage.set(STORAGE_KEYS.pendingProduct, product);
-    const productName = productDisplayName(product);
-    if (WORKSPACE_ORDER.includes(product)) {
-      state.workspace = product;
-      await storage.set(STORAGE_KEYS.workspace, product);
-    }
-    showPendingProductAuth(product);
-    document.querySelector(".auth-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
-    showToast(`${productName}需要先登录；完成后将自动进入。`, 4200);
-    return;
-  }
   if (WORKSPACE_ORDER.includes(product)) {
     if (product !== state.workspace) await changeWorkspace(product);
     else playWorkspaceEntry(product);
@@ -2249,9 +2260,6 @@ async function launchProduct(product) {
   if (state.token) {
     state.pendingLaunch = null;
     await storage.remove(STORAGE_KEYS.pendingProduct);
-  } else {
-    state.pendingLaunch = product;
-    await storage.set(STORAGE_KEYS.pendingProduct, product);
   }
 }
 
@@ -5913,8 +5921,6 @@ setupRotaryCompasses();
     const publicProduct = state.pendingLaunch || state.activeProduct;
     if (["oblivion", "resonance", "trace"].includes(publicProduct)) {
       window.setTimeout(() => launchProduct(publicProduct), 80);
-    } else if (state.pendingLaunch) {
-      showPendingProductAuth(state.pendingLaunch);
     }
     return;
   }

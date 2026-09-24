@@ -67,7 +67,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
       job_status: { unknown: 255 }, tier_counts: { UNRANKED: 255 }, category_counts: { internet_tech: 255 },
       balanced_total: 255, priority_total: 255, matching_total: 255, secondary_total: 0 } };
   const oldJobs = Array.from({ length: 6 }, (_, i) => pendingJob(`legacy-${i}`));
-  const state = { token: Symbol("pure-state-session"), music: { enabled: false }, recruitmentJobs: oldJobs, recruitmentWatches: [], recruitmentTierFilter: "BALANCED", futureRadar: {
+  const state = { token: Symbol("pure-state-session"), user: { id: 1 }, activeProduct: "recruitment", pendingLaunch: null, music: { enabled: false }, recruitmentJobs: oldJobs, recruitmentWatches: [], recruitmentTierFilter: "BALANCED", futureRadar: {
     jobsLoaded: existing, jobsError: "", jobs: existing ? [pendingJob("saved-main")] : [],
     jobsLoading: false, loading: false, jobsRequestId: 0, page: 1, pageSize: 50,
     jobsRequestQuery: "", jobsRequestController: null, jobsRequestPromise: null,
@@ -98,6 +98,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   const noop = () => {};
   const context = {
     wechatTitleRadar: { reset() {} }, bridgeDetails: { reset() {} },
+    productDomains: { reset() {} },
     personalRadar: { reset() {}, start() {}, saveButton: () => new Element("button"), applicationControl: () => new Element("div") },
     AbortController, URLSearchParams,
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
@@ -105,6 +106,8 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     resumeFutureRadarRunStatusPolling() {},
     state, elements, DEFAULT_FUTURE_RADAR_STATUS, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS, TIER_CODES, buildFutureRadarJobsQuery,
     buildFutureRadarCompanyJobsQuery, starfieldLabel,
+    normalizeProductId: (product) => product,
+    queuedProductLaunch: null,
     futureRadarOpportunityDateCopy, futureRadarOpportunityErrorCopy, futureRadarOpportunitySource, futureRadarOriginalRating,
     futureRadarPublicOpportunityUrl, jobTierBucket, partitionJobsByPriority,
     futureRadarTierQuery, futureRadarVisibleCategoryCount,
@@ -162,8 +165,8 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     FUTURE_RADAR_REQUEST_CONTROLLERS: new Set(),
     FUTURE_RADAR_POLL_INTERVAL_MS: 3 * 60 * 60 * 1000,
     soundscapeEngine: { async destroy() {} },
-    storage: { async remove() {} },
-    STORAGE_KEYS: { token: "local-test-only" },
+    storage: { async set() {}, async remove() {} },
+    STORAGE_KEYS: { token: "local-test-only", activeProduct: "active", pendingProduct: "pending" },
     splitRecruitmentValues: () => [],
     setTimeout: (callback, delay) => {
       const timer = { callback, delay, cleared: false };
@@ -177,7 +180,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     "renderFutureRadarPrograms", "mergeFutureRadarEvents", "syncFutureRadarSourceFilter",
     "renderFutureRadarSources", "renderFutureRadarRuns", "renderRecruitmentProfile",
     "loadRecruitmentMonitors", "loadRecruitmentWatches", "renderRecruitmentWatches", "renderHomeRecruitmentAlerts", "renderRecruitmentMonitors", "renderRecruitmentSyncStatus",
-    "renderFutureRadarRunAvailability", "applyIncrementalRadarMetrics", "addRecruitmentWatchFromJob", "showToast", "renderMusicUI"]) context[name] = noop;
+    "renderFutureRadarRunAvailability", "applyIncrementalRadarMetrics", "addRecruitmentWatchFromJob", "showToast", "renderMusicUI", "closeOpenProductDialogs", "setAuthMode"]) context[name] = noop;
   vm.createContext(context);
   context.readFutureRadarDashboard = () => context.api("/future-radar/dashboard");
   const functions = [

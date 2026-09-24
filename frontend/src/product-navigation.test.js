@@ -4,9 +4,11 @@ import { readFileSync } from "node:fs";
 
 import {
   PRODUCT_NAV_ITEMS,
+  globalAuthCopy,
   normalizeProductId,
   productDialogId,
   productDialogIdsToClose,
+  resolveSessionResumeProduct,
   resolveStartupProduct,
 } from "./product-navigation.js";
 
@@ -87,7 +89,7 @@ test("authenticated startup opens the world map before loading a restored worksp
   const start = appSource.indexOf("async function enterApp()");
   const end = appSource.indexOf("\nasync function loadHomeRecruitmentAlerts", start);
   const enterAppSource = appSource.slice(start, end);
-  const mapOpen = enterAppSource.indexOf("if (openStartupWorldMap) openWorldMap();");
+  const mapOpen = enterAppSource.indexOf("if (!resumeProduct) openWorldMap();");
   const firstNetworkLoad = enterAppSource.indexOf("await loadWorkspaces();");
 
   assert.ok(mapOpen >= 0, "normal authenticated startup must open the world map");
@@ -101,4 +103,60 @@ test("an explicit product choice made before authentication is resumed", () => {
     resolveStartupProduct({ queuedProductLaunch: "music", pendingLaunch: "recruitment" }),
     "music",
   );
+});
+
+test("authentication copy always belongs to Frostfire rather than an individual product", () => {
+  assert.deepEqual(globalAuthCopy("login"), {
+    kicker: "FROSTFIRE / 冰焰",
+    title: "登录冰焰",
+    description: "一次登录，进入你的私人智能世界。",
+  });
+  assert.equal(globalAuthCopy("register").title, "创建冰焰账号");
+  const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(appSource + html, /登录后进入|注册后进入|世界入口已锁定|showPendingProductAuth/);
+  assert.match(html, /id="auth-title">登录冰焰</);
+});
+
+test("session expiry resumes only a product that was actually open", () => {
+  assert.equal(resolveSessionResumeProduct({ activeProduct: "leap", appVisible: true, worldMapOpen: false }), "leap");
+  assert.equal(resolveSessionResumeProduct({ activeProduct: "leap", appVisible: true, worldMapOpen: false, productSurfaceOpen: false }), null);
+  assert.equal(resolveSessionResumeProduct({ activeProduct: "pulse", appVisible: true, worldMapOpen: true }), null);
+  assert.equal(resolveSessionResumeProduct({ activeProduct: "recruitment", appVisible: false, worldMapOpen: false }), null);
+  assert.equal(resolveSessionResumeProduct({ activeProduct: "unknown", appVisible: true, worldMapOpen: false }), null);
+});
+
+test("401 uses global logout with resume while 403 remains an authorization error", () => {
+  const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const start = appSource.indexOf("async function api(");
+  const end = appSource.indexOf("\nfunction showToast", start);
+  const apiSource = appSource.slice(start, end);
+  assert.match(apiSource, /response\.status === 401/);
+  assert.match(apiSource, /logout\(false, \{ resumeProduct, preservePending: true \}\)/);
+  assert.doesNotMatch(apiSource, /response\.status === 403[^]*logout/);
+});
+
+test("Leap and Pulse use the shared Frostfire API and backend current-user dependency", () => {
+  const domainsSource = readFileSync(new URL("./product-domains.js", import.meta.url), "utf8");
+  const leapBackend = readFileSync(new URL("../../backend/product_domains/leap.py", import.meta.url), "utf8");
+  const pulseBackend = readFileSync(new URL("../../backend/product_domains/pulse.py", import.meta.url), "utf8");
+  assert.match(domainsSource, /export function initProductDomains\(\{ api, toast \}\)/);
+  assert.doesNotMatch(domainsSource, /localStorage|sessionStorage|Authorization|login|password/i);
+  assert.match(leapBackend, /def create_leap_router\([^)]*current_user/);
+  assert.match(pulseBackend, /def create_pulse_router\([^)]*current_user/);
+  assert.match(leapBackend, /Depends\(current_user\)/);
+  assert.match(pulseBackend, /Depends\(current_user\)/);
+});
+
+test("global logout clears product state and closes every product dialog", () => {
+  const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const start = appSource.indexOf("async function logout(");
+  const end = appSource.indexOf("\nasync function loadWorkspaces", start);
+  const logoutSource = appSource.slice(start, end);
+  assert.match(logoutSource, /state\.activeProduct = null/);
+  assert.match(logoutSource, /storage\.remove\(STORAGE_KEYS\.activeProduct\)/);
+  assert.match(logoutSource, /storage\.remove\(STORAGE_KEYS\.pendingProduct\)/);
+  assert.match(logoutSource, /closeOpenProductDialogs\(\)/);
+  assert.match(logoutSource, /productDomains\?\.reset\(\)/);
+  assert.match(logoutSource, /setAuthMode\("login"\)/);
 });

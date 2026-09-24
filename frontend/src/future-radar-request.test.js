@@ -50,6 +50,13 @@ function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null 
   let elapsed = 0;
   const context = {
     state, API_BASE: base, Headers, FormData, AbortController,
+    PRODUCT_NAV_ITEMS: [],
+    document: { getElementById: () => null },
+    elements: {
+      appView: { classList: { contains: () => true } },
+      worldMapDialog: { open: false },
+    },
+    resolveSessionResumeProduct: () => null,
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     radarOpportunityPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     FUTURE_RADAR_REQUEST_CONTROLLERS: new Set(),
@@ -66,8 +73,8 @@ function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null 
       return timer;
     },
     clearTimeout: (timer) => { timer.cleared = true; },
-    logout: (showMessage) => {
-      if (onLogout) return onLogout(showMessage);
+    logout: (showMessage, options) => {
+      if (onLogout) return onLogout(showMessage, options);
       throw new Error("Unexpected account flow in anonymous local test.");
     },
   };
@@ -321,7 +328,7 @@ test("HTTP 401 requests reauthentication instead of an endless main-pool refresh
     response.end('{"detail":"Not authenticated"}');
   });
   const logoutCalls = [];
-  const r = runtime(server.base, { onLogout: (showMessage) => logoutCalls.push(showMessage) });
+  const r = runtime(server.base, { onLogout: (showMessage, options) => logoutCalls.push([showMessage, options]) });
   await assert.rejects(r.run("api(`/future-radar/opportunities?${futureRadarJobsQuery()}`, {timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS})"), (error) => {
     assert.equal(error.status, 401);
     const copy = futureRadarOpportunityErrorCopy(error, true);
@@ -329,6 +336,9 @@ test("HTTP 401 requests reauthentication instead of an endless main-pool refresh
     assert.doesNotMatch(copy, /刷新机会|读取超时/);
     return true;
   });
-  assert.deepEqual(logoutCalls, [false]);
+  assert.equal(logoutCalls.length, 1);
+  assert.equal(logoutCalls[0][0], false);
+  assert.equal(logoutCalls[0][1].resumeProduct, null);
+  assert.equal(logoutCalls[0][1].preservePending, true);
   assert.equal(server.requests[0].authorization, undefined);
 });

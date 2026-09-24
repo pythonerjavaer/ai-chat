@@ -50,7 +50,7 @@ class Node {
   releasePointerCapture(id) { this.capturedPointers.delete(id); }
 }
 
-function runtime({ compact = false, id = "world", cardHeight = 138.594 } = {}) {
+function runtime({ compact = false, id = "world", cardHeight = 138.594, token = "isolated-test-token" } = {}) {
   const container = new Node({ rotaryCompass: id });
   container.clientWidth = compact ? 340 : 980;
   const cards = PRODUCT_NAV_ITEMS.map((item) => new Node({ launch: item.id }, container));
@@ -69,24 +69,34 @@ function runtime({ compact = false, id = "world", cardHeight = 138.594 } = {}) {
   const launchCalls = [];
   const opened = [];
   const workspaces = [];
-  const state = { token: "isolated-test-token", workspace: "general", pendingLaunch: null };
+  const storageWrites = [];
+  const authModes = [];
+  const toasts = [];
+  const state = { token, workspace: "general", pendingLaunch: null, authMode: "login" };
   const worldMapDialog = { open: true, close() { this.open = false; } };
   const recruitmentDialog = { open: false };
+  const authCard = { scrollIntoView() {} };
   const context = vm.createContext({
     console,
     rotaryCompasses: new Map(),
     window: { innerWidth: compact ? 390 : 1280, setTimeout: (task) => timers.push(task) },
-    document: { querySelector: () => controls },
+    document: { querySelector: (selector) => selector === ".auth-card" ? authCard : controls },
     normalizeProductId,
     productLaunchReady: true,
     queuedProductLaunch: null,
     state,
     WORKSPACE_ORDER: ["legal", "general", "finance"],
     STORAGE_KEYS: { activeProduct: "active", pendingProduct: "pending", workspace: "workspace" },
-    storage: { async set() {}, async remove() {} },
+    storage: {
+      async set(key, value) { storageWrites.push(["set", key, value]); },
+      async remove(key) { storageWrites.push(["remove", key]); },
+    },
     elements: { worldMapDialog, recruitmentDialog, resonanceDialog: "resonance", traceDialog: "trace" },
     updateProductSwitchers() {},
     closeOpenProductDialogs() {},
+    setAuthMode(mode) { authModes.push(mode); },
+    showToast(message) { toasts.push(message); },
+    productDisplayName(product) { return PRODUCT_NAV_ITEMS.find((item) => item.id === product)?.label || product; },
     async changeWorkspace(product) { state.workspace = product; workspaces.push(product); },
     playWorkspaceEntry(product) { workspaces.push(product); },
     openConcept(product) { opened.push(product); },
@@ -150,7 +160,7 @@ function runtime({ compact = false, id = "world", cardHeight = 138.594 } = {}) {
   }
   return {
     container, cards, left, right, compass, dimensions, center, hitAt, launchCalls, opened, workspaces,
-    state, worldMapDialog, recruitmentDialog, context, dispatch,
+    state, worldMapDialog, recruitmentDialog, context, dispatch, storageWrites, authModes, toasts,
     flushTimers() { while (timers.length) timers.shift()(); },
     async settled() { await new Promise(setImmediate); },
   };
@@ -179,6 +189,34 @@ test("selected Future Radar centre is not covered and opens Radar", async () => 
   assert.deepEqual(r.launchCalls, ["recruitment"]);
   assert.equal(r.recruitmentDialog.open, true);
   assert.deepEqual(r.workspaces, []);
+});
+
+for (const [product, label] of [["leap", "跃迁域"], ["pulse", "脉冲域"]]) {
+  test(`unauthenticated ${product} selection keeps one global login and resumes after authentication`, async () => {
+    const r = runtime({ token: null });
+    await r.context.launchProduct(product);
+    assert.equal(r.state.pendingLaunch, product);
+    assert.deepEqual(r.opened, []);
+    assert.deepEqual(r.authModes, ["login"]);
+    assert.match(r.toasts[0], new RegExp(`登录冰焰后即可进入.*${label}`));
+    assert.ok(r.storageWrites.some((entry) => entry[0] === "set" && entry[1] === "pending" && entry[2] === product));
+
+    r.state.token = "frostfire-global-token";
+    await r.context.launchProduct(product);
+    assert.deepEqual(r.opened, [product]);
+    assert.equal(r.state.pendingLaunch, null);
+    assert.ok(r.storageWrites.some((entry) => entry[0] === "remove" && entry[1] === "pending"));
+  });
+}
+
+test("authenticated switching across Leap, Pulse and Future Radar never re-authenticates", async () => {
+  const r = runtime();
+  await r.context.launchProduct("leap");
+  await r.context.launchProduct("pulse");
+  await r.context.launchProduct("recruitment");
+  assert.deepEqual(r.opened, ["leap", "pulse", "recruitment"]);
+  assert.deepEqual(r.authModes, []);
+  assert.deepEqual(r.toasts, []);
 });
 
 test("visible card centres remain their own hit targets at every snapped map position", () => {

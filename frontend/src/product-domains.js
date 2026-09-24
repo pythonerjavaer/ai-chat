@@ -113,6 +113,7 @@ function detail(label, value) {
 export function initProductDomains({ api, toast }) {
   const leapDialog = $("leap-domain-dialog");
   const pulseDialog = $("pulse-domain-dialog");
+  let authGeneration = 0;
   const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], translationMode: "original", translationProvider: "browser_local", translationProviders: {}, providerMetadata: [], translationCache: new Map(), translationGeneration: 0, cloudConsent: new Set(), cloudProviderFailed: false, lastTranslation: null, currentTranslationScope: null, translationSession: { browser_local: 0, azure_translator: 0, cacheSaved: 0 } };
   const pulse = { mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [], inspections: [], expenses: [], selectedOrder: null };
 
@@ -136,13 +137,16 @@ export function initProductDomains({ api, toast }) {
     applyLeapDemo(data); renderLeap(); return data;
   }
   async function loadLeap() {
+    const generation = authGeneration;
     status("leap-status", leapDemo() ? "正在打开隔离的跃迁域 Demo…" : "正在读取你的知识空间…");
     if (leapDemo()) {
       let data = await api("/leap/demo");
       if (!data.loaded) data = await api("/leap/demo/load", { method: "POST" });
+      if (generation !== authGeneration) return;
       applyLeapDemo(data);
     } else {
       const rows = await Promise.all([api("/leap/home"), api("/leap/materials?limit=100"), api("/leap/excerpts"), api("/leap/notes"), api("/leap/wormholes"), api("/leap/clashes"), api("/leap/timeline"), api("/leap/universe")]);
+      if (generation !== authGeneration) return;
       leap.home = rows[0]; leap.materials = rows[1].items || []; leap.excerpts = rows[2]; leap.notes = rows[3]; leap.wormholes = rows[4]; leap.clashes = rows[5]; leap.timeline = rows[6]; leap.universe = rows[7];
     }
     renderLeap();
@@ -600,12 +604,16 @@ export function initProductDomains({ api, toast }) {
 
   function applyPulseDemo(data) { Object.assign(pulse, data); pulse.currency = data.currency || "AUD"; }
   async function loadPulse() {
+    const generation = authGeneration;
     status("pulse-status", pulseDemo() ? "正在打开隔离的 Oia Demo Company…" : "正在读取真实 Oia 经营账本…");
     if (pulseDemo()) {
-      let data = await api("/pulse/demo"); if (!data.loaded) data = await api("/pulse/demo/load", { method: "POST" }); applyPulseDemo(data);
+      let data = await api("/pulse/demo"); if (!data.loaded) data = await api("/pulse/demo/load", { method: "POST" });
+      if (generation !== authGeneration) return;
+      applyPulseDemo(data);
     } else {
       const now = new Date(); const from = String(now.getFullYear()) + "-01-01"; const to = String(now.getFullYear()) + "-12-31";
       const rows = await Promise.all([api("/pulse/settings"), api("/pulse/dashboard?date_from=" + from + "&date_to=" + to), api("/pulse/customers"), api("/pulse/skus"), api("/pulse/assets"), api("/pulse/orders"), api("/pulse/payments"), api("/pulse/inspections"), api("/pulse/expenses")]);
+      if (generation !== authGeneration) return;
       Object.assign(pulse, { currency: rows[0].currency, dashboard: rows[1], customers: rows[2], skus: rows[3], assets: rows[4], orders: rows[5], payments: rows[6], inspections: rows[7], expenses: rows[8], dateFrom: from, dateTo: to });
     }
     renderPulse(); status("pulse-status", (pulseDemo() ? "DEMO · " : "") + pulse.customers.length + " 位客户 · " + pulse.orders.length + " 笔订单 · " + pulse.assets.length + " 件资产", "ok");
@@ -805,5 +813,24 @@ export function initProductDomains({ api, toast }) {
   return {
     async openLeap() { if (!leapDialog.open) leapDialog.showModal(); tab(leapDialog, "home"); try { await Promise.all([loadLeap(), loadTranslationCapabilities()]); } catch (error) { status("leap-status", error.message, "error"); } },
     async openPulse() { if (!pulseDialog.open) pulseDialog.showModal(); tab(pulseDialog, "overview"); try { await loadPulse(); } catch (error) { status("pulse-status", error.message, "error"); } },
+    reset() {
+      authGeneration += 1;
+      Object.assign(leap, {
+        mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [],
+        universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false,
+        activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], home: null,
+        providerMetadata: [], lastTranslation: null, currentTranslationScope: null,
+        translationSession: { browser_local: 0, azure_translator: 0, cacheSaved: 0 },
+      });
+      leap.translationGeneration += 1;
+      leap.translationCache.clear();
+      leap.cloudConsent.clear();
+      Object.assign(pulse, {
+        mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [],
+        inspections: [], expenses: [], selectedOrder: null, dashboard: null,
+      });
+      if (leapDialog.open) leapDialog.close();
+      if (pulseDialog.open) pulseDialog.close();
+    },
   };
 }
