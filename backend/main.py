@@ -124,6 +124,10 @@ from .product_domains import (
     init_pulse_schema,
 )
 from .product_domains.interpretation import classify_provider_failure
+from .product_domains.interpretation_providers import (
+    CallbackInterpretationProvider,
+    OpenRouterInterpretationProvider,
+)
 from .future_radar.adapters import _public_reference_url, _redact_public_text
 from .security import (
     create_access_token,
@@ -1186,15 +1190,27 @@ def _run_leap_interpretation(user_id: int, system_prompt: str, prompt: str,
     database.record_token_usage(
         user_id, None, usage["input_tokens"], usage["output_tokens"], usage["total_tokens"],
     )
-    return {"text": reply, "usage": usage}
+    return {"text": reply, "usage": usage, "model": settings.ai_model}
 
 
+interpretation_providers = {
+    "openrouter": OpenRouterInterpretationProvider(
+        settings.openrouter_api_key,
+        settings.openrouter_model,
+        endpoint=settings.openrouter_endpoint,
+        site_url=settings.public_base_url,
+    ),
+    "openai": CallbackInterpretationProvider(
+        _run_leap_interpretation if settings.openai_api_key else None,
+        settings.ai_model,
+    ),
+}
 app.include_router(create_leap_router(
     database.connect,
     current_user,
-    _run_leap_interpretation if settings.openai_api_key else None,
-    settings.ai_model if settings.openai_api_key else "unconfigured",
-    require_privacy_consent,
+    consented_user=require_privacy_consent,
+    interpretation_providers=interpretation_providers,
+    default_interpretation_provider=settings.ai_interpret_provider,
 ))
 app.include_router(create_pulse_router(database.connect, current_user))
 

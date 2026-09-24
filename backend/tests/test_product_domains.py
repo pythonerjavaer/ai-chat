@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import io
+import json
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,11 @@ from backend.product_domains.leap import (
 from backend.product_domains.public_library import PublicLibraryService, seed_catalog
 from backend.product_domains.translation import AzureTranslatorProvider, TranslationService
 from backend.product_domains.interpretation import InterpretationService, classify_provider_failure
+from backend.product_domains.interpretation_providers import (
+    InterpretationProviderResult,
+    InterpretationProviderError,
+    OpenRouterInterpretationProvider,
+)
 from backend.product_domains.pulse import (
     AssetStatusWrite,
     AssetWrite,
@@ -432,6 +438,93 @@ def test_interpretation_provider_errors_have_safe_stable_categories():
     assert unknown[:2] == ("AI_PROVIDER_ERROR", 502)
     assert "private provider detail" not in quota[2]
     assert "secret diagnostic" not in unknown[2]
+
+
+class _OpenRouterResponse:
+    def __init__(self, payload):
+        self.payload = json.dumps(payload).encode("utf-8")
+    def __enter__(self): return self
+    def __exit__(self, *_args): return False
+    def read(self, _limit): return self.payload
+
+
+def test_openrouter_free_provider_uses_official_endpoint_and_records_actual_model():
+    calls = []
+    def opener(request, timeout):
+        calls.append((request, timeout))
+        return _OpenRouterResponse({
+            "model": "meta-llama/llama-3.3-70b-instruct:free",
+            "choices": [{"message": {"content": '{"concise_meaning":"权威人士反对","explanation":"说明反对者的身份。","evidence":["authorities"],"uncertainty":"","scope":"selection"}'}}],
+            "usage": {"prompt_tokens": 21, "completion_tokens": 18, "total_tokens": 39},
+        })
+    provider = OpenRouterInterpretationProvider("secret", opener=opener)
+    result = provider.generate(1, "system", "prompt", 300)
+    request, timeout = calls[0]
+    assert request.full_url == "https://openrouter.ai/api/v1/chat/completions"
+    assert json.loads(request.data)["model"] == "openrouter/free"
+    assert request.headers["Authorization"] == "Bearer secret"
+    assert timeout == 60
+    assert result.provider == "openrouter"
+    assert result.requested_model == "openrouter/free"
+    assert result.actual_model == "meta-llama/llama-3.3-70b-instruct:free"
+    assert result.usage["total_tokens"] == 39
+
+
+def test_openrouter_provider_explicitly_reports_unconfigured_and_rate_limited():
+    with pytest.raises(InterpretationProviderError) as missing:
+        OpenRouterInterpretationProvider("").generate(1, "system", "prompt", 100)
+    assert missing.value.code == "OPENROUTER_NOT_CONFIGURED"
+
+    import urllib.error
+    def limited(*_args, **_kwargs):
+        raise urllib.error.HTTPError("https://openrouter.ai", 429, "limited", {}, None)
+    with pytest.raises(InterpretationProviderError) as rate:
+        OpenRouterInterpretationProvider("secret", opener=limited).generate(1, "system", "prompt", 100)
+    assert rate.value.code == "OPENROUTER_RATE_LIMITED"
+
+
+def test_interpretation_provider_choice_cache_and_actual_model_are_isolated(product_store):
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(title="Provider", text="Weight matters here."))
+
+    class FakeProvider:
+        label = "Fake Free"
+        is_free = True
+        configured = True
+        requested_model = "openrouter/free"
+        provider_id = "openrouter"
+        def __init__(self): self.calls = 0
+        def generate(self, *_args):
+            self.calls += 1
+            return InterpretationProviderResult(
+                text='{"concise_meaning":"分量很重要","explanation":"weight在句中指重要性。","evidence":["Weight matters"],"uncertainty":"","scope":"word"}',
+                provider="openrouter", requested_model="openrouter/free",
+                actual_model="free/model-a", requested_at="2026-09-25T00:00:00+00:00",
+                usage={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+            )
+
+    provider = FakeProvider()
+    service = InterpretationService(
+        product_store, providers={"openrouter": provider}, default_provider="openrouter",
+    )
+    payload = {
+        "action": "interpret", "provider": "openrouter", "scope": "word", "document_id": material["id"],
+        "document_version": material["version"], "paragraph_start": 0, "paragraph_end": 0,
+        "selection_start": 0, "selection_end": 6, "source_text": "Weight",
+        "context_text": "Weight matters here.", "target_language": "zh-CN",
+        "coverage_complete": True, "coverage_label": "完整单词", "force": False,
+    }
+    first = service.interpret(1, payload)
+    repeated = service.interpret(1, payload)
+    assert first["provider"] == "openrouter"
+    assert first["requested_model"] == "openrouter/free"
+    assert first["provider_model"] == "free/model-a"
+    assert first["structured"]["concise_meaning"] == "分量很重要"
+    assert repeated["cache_hit"] is True
+    assert provider.calls == 1
+    with product_store() as connection:
+        attempt = connection.execute("SELECT * FROM leap_interpretation_provider_attempts").fetchone()
+    assert attempt["status"] == "success" and attempt["actual_model"] == "free/model-a"
 
 
 def test_interpretation_api_distinguishes_invalid_selection_and_document_version(product_store):

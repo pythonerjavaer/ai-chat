@@ -141,9 +141,9 @@ export function buildTranslationRequest({ material, paragraph, provider, target,
   };
 }
 
-export function buildInterpretationRequest({ material, selection, target, scope, force = false }) {
+export function buildInterpretationRequest({ material, selection, target, scope, provider = null, force = false }) {
   return {
-    action: "interpret", scope, document_id: material.id, document_version: material.version || 1,
+    action: "interpret", provider, scope, document_id: material.id, document_version: material.version || 1,
     paragraph_start: Number(target.paragraphStart ?? selection?.paragraph_position ?? 0),
     paragraph_end: Number(target.paragraphEnd ?? selection?.paragraph_end ?? selection?.paragraph_position ?? 0),
     selection_start: Number.isInteger(target.start) ? target.start : null,
@@ -271,7 +271,7 @@ export function initProductDomains({ api, toast }) {
   const leapDialog = $("leap-domain-dialog");
   const pulseDialog = $("pulse-domain-dialog");
   let authGeneration = 0;
-  const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], translationMode: "original", translationProvider: "browser_local", translationProviders: {}, providerMetadata: [], translationCache: new Map(), translationGeneration: 0, cloudConsent: new Set(), cloudProviderFailed: false, lastTranslation: null, currentTranslationScope: null, assistantAction: "translate", currentAssistantScope: null, assistantResults: new Map(), assistantLast: {}, assistantStates: { translate: { status: "idle", error: "" }, interpret: { status: "idle", error: "" } }, assistantGeneration: 0, assistantController: null, interpretationCapability: null, translationSession: { browser_local: 0, azure_translator: 0, cacheSaved: 0 } };
+  const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], translationMode: "original", translationProvider: "browser_local", translationProviders: {}, providerMetadata: [], translationCache: new Map(), translationGeneration: 0, cloudConsent: new Set(), cloudProviderFailed: false, lastTranslation: null, currentTranslationScope: null, assistantAction: "translate", currentAssistantScope: null, assistantResults: new Map(), assistantLast: {}, assistantStates: { translate: { status: "idle", error: "" }, interpret: { status: "idle", error: "" } }, assistantGeneration: 0, assistantController: null, interpretationCapability: null, interpretationProvider: "openrouter", interpretationConsent: new Set(), translationSession: { browser_local: 0, azure_translator: 0, cacheSaved: 0 } };
   const pulse = { mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [], inspections: [], expenses: [], selectedOrder: null };
 
   function status(id, text, tone = "") { const node = $(id); node.textContent = text; node.dataset.tone = tone; }
@@ -468,6 +468,24 @@ export function initProductDomains({ api, toast }) {
       catch (_) { interpretation = { available: false, message: "内容解读能力状态暂时无法读取。" }; }
       leap.providerMetadata = capabilities.providers || [];
       leap.interpretationCapability = interpretation;
+      const interpretationSelect = $("leap-interpretation-provider");
+      if (interpretationSelect) {
+        const providers = interpretation.providers || [];
+        [...interpretationSelect.options].forEach((option) => {
+          const info = providers.find((item) => item.id === option.value);
+          option.disabled = !info?.configured;
+          if (option.value === "openrouter") option.textContent = info?.configured ? "免费 · OpenRouter Free" : "免费 · OpenRouter（未配置）";
+          if (option.value === "openai") option.textContent = info?.configured ? "OpenAI" : "OpenAI（当前不可用）";
+        });
+        const preferred = providers.find((item) => item.id === leap.interpretationProvider)
+          || providers.find((item) => item.id === interpretation.default_provider)
+          || providers.find((item) => item.id === "openrouter");
+        if (preferred) leap.interpretationProvider = preferred.id;
+        interpretationSelect.value = leap.interpretationProvider;
+        $("leap-interpretation-provider-status").textContent = preferred
+          ? `${preferred.label} · ${preferred.requested_model}${preferred.free ? " · 免费路由可能限速或更换底层模型" : ""}`
+          : interpretation.message;
+      }
       const azure = leap.providerMetadata.find((item) => item.id === "azure_translator");
       const azureOption = [...$("leap-translation-provider").options].find((item) => item.value === "azure_translator");
       if (azureOption) { azureOption.disabled = !azure?.configured; azureOption.textContent = azure?.configured ? "云端 · Microsoft Azure" : "云端 · Azure（未配置）"; }
@@ -560,7 +578,8 @@ export function initProductDomains({ api, toast }) {
   const assistantScopeLabel = (scope) => ({ word: "单词", sentence: "句子", paragraph: "段落", selection: "所选文字", chapter: "章节" }[scope] || "所选文字");
   function assistantSelectionKey(actionName, scope, target) {
     const material = leap.activeMaterial || {};
-    return [actionName, scope, material.id, material.version, target.paragraphStart, target.paragraphEnd, target.start, target.end, target.text].join("|");
+    const provider = actionName === "interpret" ? leap.interpretationProvider : leap.translationProvider;
+    return [actionName, provider, scope, material.id, material.version, target.paragraphStart, target.paragraphEnd, target.start, target.end, target.text].join("|");
   }
   function assistantTarget(scope) {
     const selection = leap.selection;
@@ -652,8 +671,25 @@ export function initProductDomains({ api, toast }) {
     const key = assistantSelectionKey("interpret", scope, target);
     if (!force && leap.assistantResults.has(key)) return renderInterpretationResult(target.text, leap.assistantResults.get(key), scope);
     if (!leap.interpretationCapability?.available) throw new Error(leap.interpretationCapability?.message || "内容解读暂不可用：冰焰AI服务未配置。 ");
-    const payload = buildInterpretationRequest({ material: leap.activeMaterial, selection: leap.selection, target, scope, force });
-    const result = await api("/leap/reading-assistant/interpret", { method: "POST", body: JSON.stringify(payload), signal: controller.signal, timeoutMs: 90000 });
+    const providerInfo = (leap.interpretationCapability.providers || []).find((item) => item.id === leap.interpretationProvider);
+    if (!providerInfo?.configured) throw new Error("所选内容解读引擎当前不可用，请在含义设置中切换。 ");
+    const material = leap.activeMaterial || {};
+    if (leap.interpretationProvider === "openrouter" && !material.library_source && !leap.interpretationConsent.has(material.id)) {
+      const accepted = window.confirm("选中的文本和必要上下文将发送到第三方服务 OpenRouter。不会自动上传整本私人文档；仅在你点击“含义”时发送当前主动请求的范围。是否继续？");
+      if (!accepted) throw new Error("已取消OpenRouter内容解读；你可以切换到其他已配置引擎。 ");
+      leap.interpretationConsent.add(material.id);
+    }
+    const payload = buildInterpretationRequest({ material: leap.activeMaterial, selection: leap.selection, target, scope, provider: leap.interpretationProvider, force });
+    let result;
+    try {
+      result = await api("/leap/reading-assistant/interpret", { method: "POST", body: JSON.stringify(payload), signal: controller.signal, timeoutMs: 90000 });
+    } catch (error) {
+      if (leap.interpretationProvider === "openai" && /额度|credits|quota/i.test(error.message || "")) {
+        const option = [...$("leap-interpretation-provider").options].find((item) => item.value === "openai");
+        if (option) option.textContent = "OpenAI（当前不可用 / 额度不足）";
+      }
+      throw error;
+    }
     if (generation !== leap.assistantGeneration) return;
     leap.assistantResults.set(key, result); renderInterpretationResult(target.text, result, scope);
   }
@@ -865,6 +901,16 @@ export function initProductDomains({ api, toast }) {
   $("leap-translation-provider").addEventListener("change", (event) => {
     leap.translationProvider = event.target.value; leap.translationGeneration += 1; leap.lastTranslation = null; leap.cloudProviderFailed = false;
     $("leap-reader-pages").querySelectorAll(".manuscript-translation").forEach((node) => node.remove()); updateProviderCapability();
+  });
+  $("leap-interpretation-provider").addEventListener("change", (event) => {
+    leap.interpretationProvider = event.target.value;
+    leap.assistantGeneration += 1; leap.assistantController?.abort(); leap.assistantController = null;
+    leap.lastTranslation = null;
+    const info = (leap.interpretationCapability?.providers || []).find((item) => item.id === leap.interpretationProvider);
+    $("leap-interpretation-provider-status").textContent = info
+      ? `${info.label} · ${info.requested_model}${info.free ? " · 免费路由可能限速或更换底层模型" : ""}`
+      : "当前解读引擎状态未知";
+    if (leap.assistantAction === "interpret") renderAssistantIdle("interpret");
   });
   $("leap-translation-mode").addEventListener("change", (event) => {
     leap.translationMode = event.target.value; leap.translationGeneration += 1; applyReaderTranslationMode();
@@ -1159,6 +1205,7 @@ export function initProductDomains({ api, toast }) {
       leap.translationGeneration += 1;
       leap.translationCache.clear();
       leap.cloudConsent.clear();
+      leap.interpretationConsent.clear();
       Object.assign(pulse, {
         mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [],
         inspections: [], expenses: [], selectedOrder: null, dashboard: null,

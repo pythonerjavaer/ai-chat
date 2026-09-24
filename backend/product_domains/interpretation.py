@@ -13,8 +13,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from .interpretation_providers import (
+    CallbackInterpretationProvider,
+    InterpretationProvider,
+    InterpretationProviderError,
+)
 
-PROMPT_VERSION = "leap-interpret-v1"
+
+PROMPT_VERSION = "leap-interpret-v2-structured"
 MAX_INTERPRET_CHARACTERS = 20_000
 
 
@@ -83,6 +89,7 @@ def init_interpretation_schema(connect: Callable[[], Any]) -> None:
             CREATE TABLE IF NOT EXISTS leap_interpretation_cache (
                 id TEXT PRIMARY KEY,
                 cache_key TEXT NOT NULL UNIQUE,
+                request_key TEXT NOT NULL DEFAULT '',
                 user_id INTEGER NOT NULL,
                 document_id TEXT NOT NULL,
                 document_version INTEGER NOT NULL,
@@ -96,9 +103,13 @@ def init_interpretation_schema(connect: Callable[[], Any]) -> None:
                 source_text_hash TEXT NOT NULL,
                 context_text_hash TEXT NOT NULL,
                 provider TEXT NOT NULL,
+                requested_model TEXT NOT NULL DEFAULT '',
                 provider_model TEXT NOT NULL,
                 prompt_version TEXT NOT NULL,
                 result_text TEXT NOT NULL,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                requested_at TEXT NOT NULL DEFAULT '',
+                provider_status TEXT NOT NULL DEFAULT 'success',
                 coverage_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -107,7 +118,37 @@ def init_interpretation_schema(connect: Callable[[], Any]) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_leap_interpretation_document
                 ON leap_interpretation_cache(user_id,document_id,document_version,updated_at DESC);
+            CREATE TABLE IF NOT EXISTS leap_interpretation_provider_attempts (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                document_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                requested_model TEXT NOT NULL,
+                actual_model TEXT NOT NULL DEFAULT '',
+                requested_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error_code TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(document_id) REFERENCES leap_materials(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_leap_interpretation_attempts
+                ON leap_interpretation_provider_attempts(user_id,requested_at DESC);
             """
+        )
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(leap_interpretation_cache)").fetchall()}
+        additions = {
+            "request_key": "TEXT NOT NULL DEFAULT ''",
+            "requested_model": "TEXT NOT NULL DEFAULT ''",
+            "result_json": "TEXT NOT NULL DEFAULT '{}'",
+            "requested_at": "TEXT NOT NULL DEFAULT ''",
+            "provider_status": "TEXT NOT NULL DEFAULT 'success'",
+        }
+        for name, declaration in additions.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE leap_interpretation_cache ADD COLUMN {name} {declaration}")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_leap_interpretation_request ON leap_interpretation_cache(user_id,request_key,updated_at DESC)"
         )
 
 
@@ -119,20 +160,102 @@ class InterpretationService:
         *,
         provider: str = "frostfire_ai",
         provider_model: str = "unconfigured",
+        providers: dict[str, InterpretationProvider] | None = None,
+        default_provider: str | None = None,
     ):
         self.connect = connect
-        self.runner = runner
-        self.provider = provider
-        self.provider_model = provider_model
+        self.providers = dict(providers or {})
+        if runner is not None or not self.providers:
+            self.providers.setdefault(provider, CallbackInterpretationProvider(runner, provider_model, provider))
+        self.default_provider = default_provider or (provider if provider in self.providers else next(iter(self.providers)))
 
     def capabilities(self) -> dict[str, Any]:
+        providers = [
+            {
+                "id": item.provider_id,
+                "label": item.label,
+                "configured": item.configured,
+                "free": item.is_free,
+                "requested_model": item.requested_model,
+            }
+            for item in self.providers.values()
+        ]
+        available = any(item["configured"] for item in providers)
         return {
-            "available": self.runner is not None,
-            "provider": self.provider,
-            "provider_model": self.provider_model,
+            "available": available,
+            "default_provider": self.default_provider,
+            "providers": providers,
             "prompt_version": PROMPT_VERSION,
-            "message": "内容解读可用" if self.runner else "内容解读暂不可用：冰焰AI服务未配置。",
+            "message": "内容解读可用" if available else "内容解读暂不可用：尚未配置解读Provider。",
         }
+
+    @staticmethod
+    def _structured_result(text: str, scope: str) -> dict[str, Any]:
+        value = text.strip()
+        if value.startswith("```"):
+            lines = value.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            value = "\n".join(lines).strip()
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            # Keep genuine provider prose usable.  We do not manufacture an
+            # explanation or evidence when the free router omits JSON.
+            if not value:
+                raise InterpretationProviderError(
+                    "INTERPRETATION_PARSE_ERROR", 502, "解读Provider没有返回可用内容。",
+                )
+            parsed = {"concise_meaning": value, "explanation": "", "evidence": [], "uncertainty": "", "scope": scope}
+        if not isinstance(parsed, dict):
+            raise InterpretationProviderError(
+                "INTERPRETATION_PARSE_ERROR", 502, "解读Provider返回格式无法解析。",
+            )
+        concise = str(parsed.get("concise_meaning") or parsed.get("meaning") or "").strip()
+        explanation = str(parsed.get("explanation") or "").strip()
+        evidence_value = parsed.get("evidence", [])
+        if isinstance(evidence_value, str):
+            evidence = [evidence_value.strip()] if evidence_value.strip() else []
+        elif isinstance(evidence_value, list):
+            evidence = [str(item).strip() for item in evidence_value if str(item).strip()][:6]
+        else:
+            evidence = []
+        uncertainty = str(parsed.get("uncertainty") or "").strip()
+        if not concise and not explanation:
+            raise InterpretationProviderError(
+                "INTERPRETATION_PARSE_ERROR", 502, "解读Provider返回格式缺少含义内容。",
+            )
+        return {
+            "concise_meaning": concise,
+            "explanation": explanation,
+            "evidence": evidence,
+            "uncertainty": uncertainty,
+            "scope": scope,
+        }
+
+    @staticmethod
+    def _display_text(structured: dict[str, Any]) -> str:
+        sections = [structured.get("concise_meaning", ""), structured.get("explanation", "")]
+        if structured.get("evidence"):
+            sections.append("原文线索：" + "；".join(structured["evidence"]))
+        if structured.get("uncertainty"):
+            sections.append("不确定性：" + structured["uncertainty"])
+        return "\n\n".join(str(item).strip() for item in sections if str(item).strip())
+
+    def _record_attempt(
+        self, user_id: int, document_id: str, provider: str, requested_model: str,
+        actual_model: str, requested_at: str, status: str, error_code: str = "",
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO leap_interpretation_provider_attempts
+                   (id,user_id,document_id,provider,requested_model,actual_model,requested_at,finished_at,status,error_code)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), user_id, document_id, provider, requested_model, actual_model,
+                 requested_at, _now(), status, error_code),
+            )
 
     def _material(self, user_id: int, document_id: str) -> dict[str, Any]:
         with self.connect() as connection:
@@ -214,6 +337,13 @@ class InterpretationService:
             "paragraph_end": rows[-1]["position"],
             "paragraph_count": len(rows),
         }
+        provider_id = str(payload.get("provider") or self.default_provider).strip().lower()
+        selected_provider = self.providers.get(provider_id)
+        if selected_provider is None:
+            raise InterpretationProviderError("AI_PROVIDER_ERROR", 422, "未知的内容解读Provider。")
+        if not selected_provider.configured:
+            code = "OPENROUTER_NOT_CONFIGURED" if provider_id == "openrouter" else "AI_NOT_CONFIGURED"
+            raise InterpretationProviderError(code, 503, f"{selected_provider.label}尚未配置。")
         identity = {
             "user_id": user_id,
             "document_id": material["id"],
@@ -227,24 +357,23 @@ class InterpretationService:
             "selection_end": payload.get("selection_end"),
             "source_text_hash": _digest(source),
             "context_text_hash": _digest(context),
-            "provider": self.provider,
-            "provider_model": self.provider_model,
+            "provider": provider_id,
+            "requested_model": selected_provider.requested_model,
             "prompt_version": PROMPT_VERSION,
         }
-        cache_key = _digest(json.dumps(identity, ensure_ascii=False, sort_keys=True))
+        request_key = _digest(json.dumps(identity, ensure_ascii=False, sort_keys=True))
         if not payload.get("force"):
             with self.connect() as connection:
                 cached = connection.execute(
-                    "SELECT * FROM leap_interpretation_cache WHERE cache_key=? AND user_id=?",
-                    (cache_key, user_id),
+                    "SELECT * FROM leap_interpretation_cache WHERE request_key=? AND user_id=? ORDER BY updated_at DESC LIMIT 1",
+                    (request_key, user_id),
                 ).fetchone()
             if cached:
                 result = dict(cached)
                 result["coverage"] = json.loads(result.pop("coverage_json") or "{}")
+                result["structured"] = json.loads(result.get("result_json") or "{}")
                 result["cache_hit"] = True
                 return result
-        if self.runner is None:
-            raise ValueError("内容解读暂不可用：冰焰AI服务未配置。")
 
         scope_guidance = {
             "word": "解释这个词在本句中的具体作用；必要时说明搭配、隐喻或专业语境，不要只给译词。",
@@ -255,38 +384,65 @@ class InterpretationService:
         }[payload["scope"]]
         system = (
             "你是冰焰跃迁域的证据型阅读助手。只依据提供的原文和辅助上下文进行内容解读，"
-            "不得把译文当解读，不得编造作者意图、历史背景或文外事实。输出简洁中文，并明确分为："
-            "原文明确表达、理解与推断、材料不足。只有确有内容时才写材料不足。"
+            "不得把译文当解读，不得编造作者意图、历史背景或文外事实。只返回严格JSON对象，字段为："
+            "concise_meaning（简洁含义）、explanation（解释）、evidence（原文线索字符串数组）、"
+            "uncertainty（材料不足或不确定性，没有则空字符串）、scope（任务范围）。不要使用Markdown代码块。"
         )
         prompt = (
             f"任务范围：{payload['scope']}\n范围要求：{scope_guidance}\n"
             f"覆盖：{coverage['label']}\n\n需要解读的原文：\n{source}\n\n"
             + (f"仅供辅助理解的上下文（不得擅自纳入处理范围）：\n{context}" if context else "没有额外上下文。")
         )
-        output = self.runner(user_id, system, prompt, 900 if payload["scope"] == "chapter" else 600)
-        text = str(output.get("text") or "").strip()
-        if not text:
-            raise ValueError("内容解读服务没有返回结果。")
+        requested_at = _now()
+        try:
+            output = selected_provider.generate(
+                user_id, system, prompt, 900 if payload["scope"] == "chapter" else 600,
+            )
+            structured = self._structured_result(output.text, payload["scope"])
+        except InterpretationProviderError as exc:
+            self._record_attempt(
+                user_id, material["id"], provider_id, selected_provider.requested_model,
+                "", requested_at, "failed", exc.code,
+            )
+            if provider_id == "openrouter" and exc.code == "INTERPRETATION_PARSE_ERROR":
+                raise InterpretationProviderError("OPENROUTER_PARSE_ERROR", 502, exc.public_message) from exc
+            raise
+        except BaseException as exc:
+            self._record_attempt(
+                user_id, material["id"], provider_id, selected_provider.requested_model,
+                "", requested_at, "failed", type(exc).__name__,
+            )
+            raise
+        self._record_attempt(
+            user_id, material["id"], output.provider, output.requested_model,
+            output.actual_model, output.requested_at, "success",
+        )
+        text = self._display_text(structured)
+        actual_identity = {**identity, "provider_model": output.actual_model}
+        cache_key = _digest(json.dumps(actual_identity, ensure_ascii=False, sort_keys=True))
         now, row_id = _now(), str(uuid.uuid4())
         with self.connect() as connection:
             connection.execute(
                 """INSERT INTO leap_interpretation_cache
-                   (id,cache_key,user_id,document_id,document_version,document_hash,action,scope,
+                   (id,cache_key,request_key,user_id,document_id,document_version,document_hash,action,scope,
                     paragraph_start,paragraph_end,selection_start,selection_end,source_text_hash,
-                    context_text_hash,provider,provider_model,prompt_version,result_text,coverage_json,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    context_text_hash,provider,requested_model,provider_model,prompt_version,result_text,result_json,
+                    requested_at,provider_status,coverage_json,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(cache_key) DO UPDATE SET result_text=excluded.result_text,
                     coverage_json=excluded.coverage_json,updated_at=excluded.updated_at""",
-                (row_id, cache_key, user_id, material["id"], material["version"], material["content_hash"],
+                (row_id, cache_key, request_key, user_id, material["id"], material["version"], material["content_hash"],
                  "interpret", payload["scope"], rows[0]["position"], rows[-1]["position"],
                  payload.get("selection_start"), payload.get("selection_end"), identity["source_text_hash"],
-                 identity["context_text_hash"], self.provider, self.provider_model, PROMPT_VERSION,
-                 text, json.dumps(coverage, ensure_ascii=False), now, now),
+                 identity["context_text_hash"], output.provider, output.requested_model, output.actual_model, PROMPT_VERSION,
+                 text, json.dumps(structured, ensure_ascii=False), output.requested_at, "success",
+                 json.dumps(coverage, ensure_ascii=False), now, now),
             )
             saved = connection.execute(
                 "SELECT * FROM leap_interpretation_cache WHERE cache_key=? AND user_id=?", (cache_key, user_id)
             ).fetchone()
         result = dict(saved)
         result["coverage"] = json.loads(result.pop("coverage_json") or "{}")
+        result["structured"] = json.loads(result.get("result_json") or "{}")
         result["cache_hit"] = False
         return result

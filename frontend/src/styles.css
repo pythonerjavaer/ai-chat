@@ -2224,6 +2224,10 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 .selection-card { padding:16px; border:1px solid rgba(var(--domain-accent),.28); border-radius:16px; background:rgba(var(--domain-accent),.065); }
 .selection-card small { color:rgb(var(--domain-accent)); font-size:9px; font-weight:900; letter-spacing:.12em; }
 .selection-card blockquote { margin:12px 0; color:#e5f3f7; font:500 14px/1.7 Georgia,"Songti SC",serif; }
+.interpretation-provider-setting { display:grid; grid-template-columns:auto minmax(0,1fr); gap:6px 10px; align-items:center; margin:10px 0; }
+.interpretation-provider-setting > span { color:#b9d5df; font-size:11px; font-weight:800; }
+.interpretation-provider-setting select { min-width:0; }
+.interpretation-provider-setting small { grid-column:1 / -1; color:#7fa6b4; letter-spacing:0; line-height:1.45; }
 .reading-assistant-tabs { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:0 0 9px; padding:4px; border:1px solid rgba(var(--domain-accent),.16); border-radius:11px; background:rgba(0,0,0,.14); }
 .reading-assistant-tabs button { min-height:34px; color:#78929b; border:0; border-radius:8px; background:transparent; cursor:pointer; font-weight:800; }
 .reading-assistant-tabs button.active { color:#e6fbff; background:rgba(var(--domain-accent),.16); box-shadow:0 0 18px rgba(var(--domain-accent),.08); }

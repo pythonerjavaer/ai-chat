@@ -19,6 +19,14 @@ services:
       - key: DATABASE_POOL_SIZE
         value: 8
       # OPENAI_API_KEY is optional; add only for explicitly enabled cloud features.
+      - key: AI_INTERPRET_PROVIDER
+        value: openrouter
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: openrouter/free
+      - key: OPENROUTER_ENDPOINT
+        value: https://openrouter.ai/api/v1/chat/completions
       - key: JWT_SECRET
         generateValue: true
       - key: AI_MODEL

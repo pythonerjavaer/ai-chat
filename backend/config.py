@@ -35,6 +35,10 @@ class Settings:
     future_radar_close_confirmations: int
     future_radar_max_workers: int
     future_radar_ai_model: str
+    ai_interpret_provider: str = "openrouter"
+    openrouter_api_key: str = field(default="", repr=False)
+    openrouter_model: str = "openrouter/free"
+    openrouter_endpoint: str = "https://openrouter.ai/api/v1/chat/completions"
     database_backend: str = "sqlite"
     database_url: str = field(default="", repr=False)
     database_schema: str = "frostfire"
@@ -97,6 +101,9 @@ def load_settings() -> Settings:
         "RECRUITMENT_WEB_SEARCH_ENABLED",
         "false",
     ).strip().lower() in {"1", "true", "yes", "on"}
+    ai_interpret_provider = os.getenv("AI_INTERPRET_PROVIDER", "openrouter").strip().lower() or "openrouter"
+    if ai_interpret_provider not in {"openrouter", "openai"}:
+        raise RuntimeError("AI_INTERPRET_PROVIDER must be openrouter or openai.")
 
     return Settings(
         openai_api_key=openai_api_key,
@@ -165,6 +172,13 @@ def load_settings() -> Settings:
             os.getenv("FUTURE_RADAR_AI_MODEL", "").strip()
             or os.getenv("RECRUITMENT_WEB_SEARCH_MODEL", "").strip()
             or "gpt-5.4-mini"
+        ),
+        ai_interpret_provider=ai_interpret_provider,
+        openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
+        openrouter_model=os.getenv("OPENROUTER_MODEL", "openrouter/free").strip() or "openrouter/free",
+        openrouter_endpoint=(
+            os.getenv("OPENROUTER_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions").strip()
+            or "https://openrouter.ai/api/v1/chat/completions"
         ),
     )
 

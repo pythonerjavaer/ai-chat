@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .public_library import PublicLibraryService, init_public_library_schema
 from .interpretation import InterpretationService, init_interpretation_schema
+from .interpretation_providers import InterpretationProvider, InterpretationProviderError
 from .translation import TranslationService, init_translation_schema
 
 
@@ -285,6 +286,7 @@ class TranslationWrite(BaseModel):
 class InterpretationWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["interpret"] = "interpret"
+    provider: Literal["openrouter", "openai"] | None = None
     scope: Literal["word", "sentence", "paragraph", "chapter", "selection"]
     document_id: str
     # Optional for backward compatibility with already-open reader tabs; new
@@ -847,12 +849,17 @@ def create_leap_router(
     interpretation_runner: Callable[[int, str, str, int], dict[str, Any]] | None = None,
     interpretation_model: str = "unconfigured",
     consented_user: Callable[..., dict] | None = None,
+    *,
+    interpretation_providers: dict[str, InterpretationProvider] | None = None,
+    default_interpretation_provider: str | None = None,
 ) -> APIRouter:
     router, repo = APIRouter(prefix="/api/leap", tags=["跃迁域"]), LeapRepository(connect)
     library = PublicLibraryService(connect)
     translations = TranslationService(connect)
     interpretations = InterpretationService(
         connect, interpretation_runner, provider_model=interpretation_model,
+        providers=interpretation_providers,
+        default_provider=default_interpretation_provider,
     )
     User = Annotated[dict, Depends(current_user)]
     InterpretationUser = Annotated[dict, Depends(consented_user or current_user)]
@@ -881,11 +888,6 @@ def create_leap_router(
 
     @router.post("/reading-assistant/interpret")
     def interpret(payload: InterpretationWrite, user: InterpretationUser):
-        if not interpretations.capabilities()["available"]:
-            raise HTTPException(status_code=503, detail={
-                "code": "AI_NOT_CONFIGURED",
-                "message": "内容解读暂不可用：冰焰AI服务未配置。",
-            })
         try:
             return interpretations.interpret(user["id"], payload.model_dump())
         except KeyError as exc:
@@ -898,6 +900,11 @@ def create_leap_router(
             status_code = 409 if code == "DOCUMENT_VERSION_MISMATCH" else 422
             message = "材料版本已更新，请重新打开后再选择原文。" if code == "DOCUMENT_VERSION_MISMATCH" else reason
             raise HTTPException(status_code=status_code, detail={"code": code, "message": message}) from exc
+        except InterpretationProviderError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={"code": exc.code, "message": exc.public_message},
+            ) from exc
 
     @router.get("/home")
     def home(user: User): return repo.home(user["id"])

@@ -106,25 +106,28 @@ test("sentence and paragraph translation send different source text and cache id
 });
 
 test("reading assistant keeps interpretation separate from translation and preserves scope", () => {
-  for (const marker of ["READING ASSISTANT", "leap-assistant-translate-tab", "leap-assistant-interpret-tab", "/leap/reading-assistant/interpret", "action: \"interpret\""]) {
+  for (const marker of ["READING ASSISTANT", "leap-assistant-translate-tab", "leap-assistant-interpret-tab", "leap-interpretation-provider", "OpenRouter Free", "/leap/reading-assistant/interpret", "action: \"interpret\""]) {
     assert.match(source + html, new RegExp(marker.replaceAll("/", "\\/")));
   }
   const material = { id: "doc-1", version: 4 };
   const selection = { paragraph_position: 8, paragraph_end: 8 };
   const sentenceTarget = { text: "Sentence two is longer.", paragraphStart: 8, paragraphEnd: 8, start: 14, end: 37, contextText: "Sentence one. Sentence two is longer. Sentence three." };
-  const request = buildInterpretationRequest({ material, selection, target: sentenceTarget, scope: "sentence" });
+  const request = buildInterpretationRequest({ material, selection, target: sentenceTarget, scope: "sentence", provider: "openrouter" });
   assert.deepEqual({ action: request.action, scope: request.scope, source_text: request.source_text, context_text: request.context_text }, {
     action: "interpret", scope: "sentence", source_text: "Sentence two is longer.", context_text: "Sentence one. Sentence two is longer. Sentence three.",
   });
   assert.equal(request.paragraph_start, 8);
   assert.equal(request.paragraph_end, 8);
   assert.equal(request.document_version, 4);
+  assert.equal(request.provider, "openrouter");
   assert.notEqual(JSON.stringify(request), JSON.stringify(buildTranslationRequest({
     material, paragraph: { position: 8, stable_anchor: "p-8", content: sentenceTarget.contextText },
     provider: { id: "browser_local", model: "chrome-built-in-translator" }, target: sentenceTarget, scope: "sentence",
   })));
   assert.match(source, /assistantGeneration/);
   assert.match(source, /assistantController\?\.abort/);
+  assert.match(source, /selected.*text.*necessary context|选中的文本和必要上下文将发送到第三方服务 OpenRouter/);
+  assert.doesNotMatch(source, /openrouter.*fallback.*openai/i);
 });
 
 test("manual selections are classified without changing their exact offsets or text", () => {
