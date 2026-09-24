@@ -192,20 +192,19 @@ test("selected Future Radar centre is not covered and opens Radar", async () => 
 });
 
 for (const [product, label] of [["leap", "跃迁域"], ["pulse", "脉冲域"]]) {
-  test(`unauthenticated ${product} selection keeps one global login and resumes after authentication`, async () => {
+  test(`unauthenticated ${product} selection keeps one global login without post-login resume`, async () => {
     const r = runtime({ token: null });
     await r.context.launchProduct(product);
-    assert.equal(r.state.pendingLaunch, product);
+    assert.equal(r.state.pendingLaunch, null);
     assert.deepEqual(r.opened, []);
     assert.deepEqual(r.authModes, ["login"]);
-    assert.match(r.toasts[0], new RegExp(`登录冰焰后即可进入.*${label}`));
-    assert.ok(r.storageWrites.some((entry) => entry[0] === "set" && entry[1] === "pending" && entry[2] === product));
+    assert.match(r.toasts[0], new RegExp(`请先登录冰焰.*世界地图.*${label}`));
+    assert.equal(r.storageWrites.some((entry) => entry[0] === "set" && entry[1] === "pending"), false);
 
     r.state.token = "frostfire-global-token";
     await r.context.launchProduct(product);
     assert.deepEqual(r.opened, [product]);
     assert.equal(r.state.pendingLaunch, null);
-    assert.ok(r.storageWrites.some((entry) => entry[0] === "remove" && entry[1] === "pending"));
   });
 }
 

@@ -30,10 +30,6 @@ export function productDialogIdsToClose(nextProduct = null) {
     .filter((dialogId) => dialogId && dialogId !== retainedDialogId);
 }
 
-export function resolveStartupProduct({ queuedProductLaunch = null, pendingLaunch = null } = {}) {
-  return normalizeProductId(queuedProductLaunch) || normalizeProductId(pendingLaunch);
-}
-
 export function globalAuthCopy(mode = "login") {
   if (mode === "register") {
     return {
@@ -47,9 +43,4 @@ export function globalAuthCopy(mode = "login") {
     title: "登录冰焰",
     description: "一次登录，进入你的私人智能世界。",
   };
-}
-
-export function resolveSessionResumeProduct({ activeProduct = null, appVisible = false, worldMapOpen = false, productSurfaceOpen = true } = {}) {
-  if (!appVisible || worldMapOpen || !productSurfaceOpen) return null;
-  return normalizeProductId(activeProduct);
 }

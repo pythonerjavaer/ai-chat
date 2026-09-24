@@ -16,8 +16,6 @@ import {
   globalAuthCopy,
   normalizeProductId,
   productDialogIdsToClose,
-  resolveSessionResumeProduct,
-  resolveStartupProduct,
 } from "./product-navigation.js";
 import {
   DEFAULT_FUTURE_RADAR_STATUS,
@@ -193,7 +191,6 @@ const state = {
     activeRunTypes: new Set(),
     filters: { q: "", company: "", city: "", industry: "", employer_type: "", program_id: "", status: DEFAULT_FUTURE_RADAR_STATUS, application_status: "", verification_status: "", source_id: "", event_type: "", sort: "changed", opening_after: "", opening_before: "", closing_after: "", closing_before: "" },
   },
-  pendingLaunch: null,
   activeProduct: null,
   music: {
     enabled: false,
@@ -677,14 +674,7 @@ async function api(path, options = {}) {
   try {
     const response = await fetch(API_BASE + path, { ...requestOptions, headers, signal: controller.signal });
     if (response.status === 401 && !preserveAuthOn401 && !path.startsWith("/auth/login")) {
-      const activeItem = PRODUCT_NAV_ITEMS.find((item) => item.id === state.activeProduct);
-      const resumeProduct = resolveSessionResumeProduct({
-        activeProduct: state.activeProduct,
-        appVisible: !elements.appView.classList.contains("hidden"),
-        worldMapOpen: elements.worldMapDialog.open,
-        productSurfaceOpen: !activeItem?.dialogId || Boolean(document.getElementById(activeItem.dialogId)?.open),
-      });
-      await logout(false, { resumeProduct, preservePending: true });
+      await logout(false);
     }
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
@@ -807,21 +797,26 @@ function translateError(message) {
 }
 
 async function enterApp() {
-  const pendingLaunch = state.pendingLaunch || await storage.get(STORAGE_KEYS.pendingProduct);
-  const resumeProduct = resolveStartupProduct({ queuedProductLaunch, pendingLaunch });
   queuedProductLaunch = null;
-  if (WORKSPACE_ORDER.includes(resumeProduct)) state.workspace = resumeProduct;
+  state.activeProduct = null;
+  // Every authenticated start begins at the same neutral workspace. The
+  // workspace remains underneath the world map and is never painted as the
+  // first visible destination.
+  state.workspace = "general";
+  const clearStartupRestores = Promise.all([
+    storage.remove(STORAGE_KEYS.pendingProduct),
+    storage.remove(STORAGE_KEYS.activeProduct),
+  ]);
   elements.authView.classList.add("hidden");
   elements.appView.classList.remove("hidden");
   applyUser();
-  // Put the normal authenticated destination in the top layer before the
-  // first network await. Otherwise the restored workspace can paint for the
-  // whole loading period and then appear to redirect into the world map.
-  if (!resumeProduct) openWorldMap();
+  // Open synchronously before any network/storage await so no workspace can
+  // flash before the map. Product navigation only happens after a user click.
+  openWorldMap();
+  await clearStartupRestores;
   await loadWorkspaces();
   await Promise.all([loadSessions(), loadDocuments(), loadHomeRecruitmentAlerts()]);
   newConversation();
-  if (resumeProduct) window.setTimeout(() => launchProduct(resumeProduct), 0);
   if (!state.user.privacy_accepted && !elements.consentDialog.open) {
     elements.consentDialog.showModal();
   }
@@ -957,9 +952,7 @@ function endFutureRadarSession(expired = false) {
   if (elements.recruitmentDialog?.open) elements.recruitmentDialog.close();
 }
 
-async function logout(showMessage = true, { resumeProduct = null, preservePending = false } = {}) {
-  const nextPendingProduct = normalizeProductId(resumeProduct)
-    || (preservePending ? normalizeProductId(state.pendingLaunch) : null);
+async function logout(showMessage = true) {
   state.token = null;
   endFutureRadarSession(!showMessage);
   await soundscapeEngine.destroy();
@@ -975,11 +968,9 @@ async function logout(showMessage = true, { resumeProduct = null, preservePendin
   state.documents = [];
   productDomains?.reset();
   state.activeProduct = null;
-  state.pendingLaunch = nextPendingProduct;
   queuedProductLaunch = null;
   await storage.remove(STORAGE_KEYS.activeProduct);
-  if (nextPendingProduct) await storage.set(STORAGE_KEYS.pendingProduct, nextPendingProduct);
-  else await storage.remove(STORAGE_KEYS.pendingProduct);
+  await storage.remove(STORAGE_KEYS.pendingProduct);
   closeOpenProductDialogs();
   if (elements.settingsDialog.open) elements.settingsDialog.close();
   if (elements.consentDialog.open) elements.consentDialog.close();
@@ -2208,18 +2199,11 @@ async function launchProduct(product) {
     queuedProductLaunch = product;
     return;
   }
-  const publicProduct = ["resonance", "trace", "oblivion"].includes(product);
-  if (!state.token && !publicProduct) {
-    state.pendingLaunch = product;
-    await storage.set(STORAGE_KEYS.pendingProduct, product);
+  if (!state.token) {
     const productName = productDisplayName(product);
-    if (WORKSPACE_ORDER.includes(product)) {
-      state.workspace = product;
-      await storage.set(STORAGE_KEYS.workspace, product);
-    }
     setAuthMode(state.authMode);
     document.querySelector(".auth-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
-    showToast(`登录冰焰后即可进入「${productName}」。`, 4200);
+    showToast(`请先登录冰焰，再从世界地图进入「${productName}」。`, 4200);
     return;
   }
   state.activeProduct = product;
@@ -2228,27 +2212,17 @@ async function launchProduct(product) {
   closeOpenProductDialogs(product);
   if (elements.worldMapDialog.open) elements.worldMapDialog.close();
   if (product === "resonance") {
-    state.pendingLaunch = null;
-    await storage.remove(STORAGE_KEYS.pendingProduct);
     return openConcept(elements.resonanceDialog);
   }
   if (product === "trace") {
-    state.pendingLaunch = null;
-    await storage.remove(STORAGE_KEYS.pendingProduct);
     return openConcept(elements.traceDialog);
   }
   if (product === "oblivion") {
-    state.pendingLaunch = null;
-    await storage.remove(STORAGE_KEYS.pendingProduct);
     return openOblivionArchive();
   }
   if (WORKSPACE_ORDER.includes(product)) {
     if (product !== state.workspace) await changeWorkspace(product);
     else playWorkspaceEntry(product);
-    if (state.token) {
-      state.pendingLaunch = null;
-      await storage.remove(STORAGE_KEYS.pendingProduct);
-    }
     return;
   }
   if (product === "recruitment") await openRecruitment();
@@ -2257,10 +2231,6 @@ async function launchProduct(product) {
   if (product === "photon") await openPhotonProjection();
   if (product === "leap") await productDomains?.openLeap();
   if (product === "pulse") await productDomains?.openPulse();
-  if (state.token) {
-    state.pendingLaunch = null;
-    await storage.remove(STORAGE_KEYS.pendingProduct);
-  }
 }
 
 async function createSpace(event) {
@@ -5904,24 +5874,19 @@ setupRotaryCompasses();
   }
   if (initialParams.get("start") === "register") openRegistrationFromLink();
   state.token = await storage.get(STORAGE_KEYS.token);
-  state.workspace = (await storage.get(STORAGE_KEYS.workspace)) || "general";
-  state.activeProduct = await storage.get(STORAGE_KEYS.activeProduct);
-  state.pendingLaunch = await storage.get(STORAGE_KEYS.pendingProduct);
+  // Stored workspace/product history never participates in startup routing.
+  // It may describe a previous session, but every new/renewed session starts
+  // at the Frostfire world map with a neutral workspace underneath it.
+  state.workspace = "general";
+  state.activeProduct = null;
   productLaunchReady = true;
   if (Capacitor.isNativePlatform() && !configuredApiBase) {
     elements.authError.textContent = "移动端构建尚未配置正式 HTTPS API 地址。";
   }
   if (!state.token) {
-    if (queuedProductLaunch) {
-      const queuedProduct = queuedProductLaunch;
-      queuedProductLaunch = null;
-      await launchProduct(queuedProduct);
-      return;
-    }
-    const publicProduct = state.pendingLaunch || state.activeProduct;
-    if (["oblivion", "resonance", "trace"].includes(publicProduct)) {
-      window.setTimeout(() => launchProduct(publicProduct), 80);
-    }
+    queuedProductLaunch = null;
+    await storage.remove(STORAGE_KEYS.pendingProduct);
+    await storage.remove(STORAGE_KEYS.activeProduct);
     return;
   }
   try {

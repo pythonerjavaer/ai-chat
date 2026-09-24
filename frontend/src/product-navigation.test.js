@@ -8,8 +8,6 @@ import {
   normalizeProductId,
   productDialogId,
   productDialogIdsToClose,
-  resolveSessionResumeProduct,
-  resolveStartupProduct,
 } from "./product-navigation.js";
 
 test("the global product navigation contains every formal product exactly once", () => {
@@ -66,10 +64,9 @@ test("switching products closes every previous product dialog but keeps the dest
   assert.equal(productDialogIdsToClose("general").length, 9);
 });
 
-test("only known products can be restored or launched", () => {
+test("only known products can be launched", () => {
   assert.equal(normalizeProductId("music"), "music");
   assert.equal(normalizeProductId("unknown"), null);
-  assert.equal(resolveStartupProduct({ queuedProductLaunch: "unknown", pendingLaunch: "finance" }), "finance");
 });
 
 test("the visible Chinese world-map name changes without renaming the English product", () => {
@@ -79,30 +76,33 @@ test("the visible Chinese world-map name changes without renaming the English pr
   assert.match(html, /FROSTFIRE<br \/>PRODUCT COMPASS/);
 });
 
-test("a previously active product does not bypass the product compass on startup", () => {
-  assert.equal(resolveStartupProduct({ activeProduct: "general" }), null);
-  assert.equal(resolveStartupProduct({ activeProduct: "recruitment" }), null);
-});
-
-test("authenticated startup opens the world map before loading a restored workspace", () => {
+test("every authenticated startup synchronously opens the world map and never launches a product", () => {
   const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
   const start = appSource.indexOf("async function enterApp()");
   const end = appSource.indexOf("\nasync function loadHomeRecruitmentAlerts", start);
   const enterAppSource = appSource.slice(start, end);
-  const mapOpen = enterAppSource.indexOf("if (!resumeProduct) openWorldMap();");
+  const mapOpen = enterAppSource.indexOf("openWorldMap();");
   const firstNetworkLoad = enterAppSource.indexOf("await loadWorkspaces();");
 
   assert.ok(mapOpen >= 0, "normal authenticated startup must open the world map");
-  assert.ok(mapOpen < firstNetworkLoad, "the map must open before the restored workspace can paint");
+  assert.ok(mapOpen < firstNetworkLoad, "the map must open before any workspace network load");
+  assert.match(enterAppSource, /state\.workspace = "general"/);
+  assert.match(enterAppSource, /state\.activeProduct = null/);
+  assert.match(enterAppSource, /storage\.remove\(STORAGE_KEYS\.pendingProduct\)/);
+  assert.match(enterAppSource, /storage\.remove\(STORAGE_KEYS\.activeProduct\)/);
+  assert.doesNotMatch(enterAppSource, /resolveStartupProduct|resumeProduct|launchProduct\(/);
   assert.doesNotMatch(enterAppSource, /setTimeout\(openWorldMap/);
 });
 
-test("an explicit product choice made before authentication is resumed", () => {
-  assert.equal(resolveStartupProduct({ pendingLaunch: "recruitment" }), "recruitment");
-  assert.equal(
-    resolveStartupProduct({ queuedProductLaunch: "music", pendingLaunch: "recruitment" }),
-    "music",
-  );
+test("bootstrap ignores stored workspace, active product, and pending product", () => {
+  const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const start = appSource.indexOf("(async function bootstrap()");
+  const bootstrapSource = appSource.slice(start);
+  assert.match(bootstrapSource, /state\.workspace = "general"/);
+  assert.match(bootstrapSource, /state\.activeProduct = null/);
+  assert.match(bootstrapSource, /storage\.remove\(STORAGE_KEYS\.pendingProduct\)/);
+  assert.doesNotMatch(bootstrapSource, /storage\.get\(STORAGE_KEYS\.(workspace|activeProduct|pendingProduct)\)/);
+  assert.doesNotMatch(bootstrapSource, /launchProduct\(/);
 });
 
 test("authentication copy always belongs to Frostfire rather than an individual product", () => {
@@ -118,22 +118,26 @@ test("authentication copy always belongs to Frostfire rather than an individual 
   assert.match(html, /id="auth-title">登录冰焰</);
 });
 
-test("session expiry resumes only a product that was actually open", () => {
-  assert.equal(resolveSessionResumeProduct({ activeProduct: "leap", appVisible: true, worldMapOpen: false }), "leap");
-  assert.equal(resolveSessionResumeProduct({ activeProduct: "leap", appVisible: true, worldMapOpen: false, productSurfaceOpen: false }), null);
-  assert.equal(resolveSessionResumeProduct({ activeProduct: "pulse", appVisible: true, worldMapOpen: true }), null);
-  assert.equal(resolveSessionResumeProduct({ activeProduct: "recruitment", appVisible: false, worldMapOpen: false }), null);
-  assert.equal(resolveSessionResumeProduct({ activeProduct: "unknown", appVisible: true, worldMapOpen: false }), null);
-});
-
-test("401 uses global logout with resume while 403 remains an authorization error", () => {
+test("401 uses global logout without product resume while 403 remains an authorization error", () => {
   const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
   const start = appSource.indexOf("async function api(");
   const end = appSource.indexOf("\nfunction showToast", start);
   const apiSource = appSource.slice(start, end);
   assert.match(apiSource, /response\.status === 401/);
-  assert.match(apiSource, /logout\(false, \{ resumeProduct, preservePending: true \}\)/);
+  assert.match(apiSource, /await logout\(false\)/);
+  assert.doesNotMatch(apiSource, /resumeProduct|preservePending/);
   assert.doesNotMatch(apiSource, /response\.status === 403[^]*logout/);
+});
+
+test("unauthenticated product clicks never persist a post-login destination", () => {
+  const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const start = appSource.indexOf("async function launchProduct(");
+  const end = appSource.indexOf("\nasync function createSpace", start);
+  const launchSource = appSource.slice(start, end);
+  assert.match(launchSource, /if \(!state\.token\)/);
+  assert.match(launchSource, /请先登录冰焰，再从世界地图进入/);
+  assert.doesNotMatch(launchSource, /pendingLaunch|pendingProduct/);
+  assert.doesNotMatch(launchSource, /storage\.set\(STORAGE_KEYS\.workspace/);
 });
 
 test("Leap and Pulse use the shared Frostfire API and backend current-user dependency", () => {

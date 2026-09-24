@@ -56,7 +56,6 @@ function runtime(base, { categories = [], onHeaders = () => {}, onLogout = null 
       appView: { classList: { contains: () => true } },
       worldMapDialog: { open: false },
     },
-    resolveSessionResumeProduct: () => null,
     radarPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     radarOpportunityPollingGate: createRadarPollingGate({ read: () => null, write() {}, locks: () => null }),
     FUTURE_RADAR_REQUEST_CONTROLLERS: new Set(),
@@ -338,7 +337,6 @@ test("HTTP 401 requests reauthentication instead of an endless main-pool refresh
   });
   assert.equal(logoutCalls.length, 1);
   assert.equal(logoutCalls[0][0], false);
-  assert.equal(logoutCalls[0][1].resumeProduct, null);
-  assert.equal(logoutCalls[0][1].preservePending, true);
+  assert.equal(logoutCalls[0][1], undefined);
   assert.equal(server.requests[0].authorization, undefined);
 });
