@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import io
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -18,6 +20,7 @@ from backend.product_domains.leap import (
     WormholeWrite,
     DemoAction,
 )
+from backend.product_domains.public_library import PublicLibraryService, seed_catalog
 from backend.product_domains.pulse import (
     AssetStatusWrite,
     AssetWrite,
@@ -85,6 +88,53 @@ def test_leap_evidence_wormhole_clash_progress_and_isolation(product_store):
     with pytest.raises(KeyError):
         repo.get_material(2, left["id"])
     assert repo.list_excerpts(2) == []
+
+
+def _sample_epub() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as book:
+        book.writestr("META-INF/container.xml", """<?xml version='1.0'?><container xmlns='urn:oasis:names:tc:opendocument:xmlns:container'><rootfiles><rootfile full-path='EPUB/package.opf'/></rootfiles></container>""")
+        book.writestr("EPUB/package.opf", """<?xml version='1.0'?><package xmlns='http://www.idpf.org/2007/opf'><manifest><item id='cover' href='text/cover.xhtml' media-type='application/xhtml+xml'/><item id='c1' href='text/chapter.xhtml' media-type='application/xhtml+xml'/></manifest><spine><itemref idref='cover'/><itemref idref='c1'/></spine></package>""")
+        book.writestr("EPUB/text/cover.xhtml", """<html xmlns='http://www.w3.org/1999/xhtml'><body><img src='cover.jpg' alt='Cover'/></body></html>""")
+        book.writestr("EPUB/text/chapter.xhtml", """<html xmlns='http://www.w3.org/1999/xhtml'><body><h1>Chapter One</h1><p>First stable paragraph.</p><p>Second stable paragraph.</p></body></html>""")
+    return buffer.getvalue()
+
+
+class _LibraryClient:
+    def gutenberg_detail(self, source_id):
+        return {"provider": "gutenberg", "source_item_id": source_id, "title": "Pride and Prejudice", "author": "Jane Austen", "language": "en", "edition": "Reviewed edition", "translator": "", "source_name": "Project Gutenberg", "source_url": "https://www.gutenberg.org/ebooks/1342", "download_url": "https://www.gutenberg.org/ebooks/1342.epub.noimages", "content_type": "application/epub+zip", "format": "EPUB", "rights_status": "auto_import", "licensing_note": "Public domain test fixture"}
+
+    def download(self, item):
+        return _sample_epub(), {"content-type": "application/epub+zip", "etag": '"edition-1"'}, item["download_url"]
+
+
+def test_public_library_import_is_private_versioned_and_deduplicated(product_store):
+    service = PublicLibraryService(product_store, _LibraryClient())
+    run = service.create_import(1, "gutenberg", "1342")
+    service.run(1, run["id"])
+    finished = service.import_status(1, run["id"])
+    assert finished["status"] == "success"
+    assert len(finished["source_hash"]) == 64
+    material = LeapRepository(product_store).get_material(1, finished["material_id"])
+    assert material["library_source"]["source_name"] == "Project Gutenberg"
+    assert material["chapters"][0]["title"] == "Chapter One"
+    paragraphs = LeapRepository(product_store).paragraphs(1, finished["material_id"], 0, 10)["paragraphs"]
+    assert paragraphs[0]["stable_anchor"].startswith("s0001-")
+    duplicate = service.create_import(1, "gutenberg", "1342")
+    assert duplicate == {"id": run["id"], "status": "duplicate", "material_id": finished["material_id"], "progress": 100}
+    with product_store() as connection:
+        stored = connection.execute("SELECT user_id,original_size,stored_size,body FROM leap_library_objects").fetchone()
+    assert stored["user_id"] == 1 and stored["original_size"] > 0 and stored["stored_size"] > 0 and stored["body"]
+
+
+def test_seed_catalog_blocks_ctext_fulltext_and_exposes_versions(product_store):
+    rows = seed_catalog()
+    titles = {row["title"] for row in rows}
+    assert {"The Republic", "The Wealth of Nations", "Pride and Prejudice", "论语", "孟子", "道德经", "庄子"} <= titles
+    assert all(row["rights_status"] == "manual_review" for row in rows if row["provider"] == "ctext")
+    service = PublicLibraryService(product_store, _LibraryClient())
+    with pytest.raises(ValueError, match="人工确认"):
+        service.create_import(1, "ctext", "analects")
 
 
 def _pulse_master_data(repo: PulseRepository, user_id: int = 1):
@@ -249,6 +299,13 @@ def test_product_domain_routes_work_with_postgres(persistent_app):
         })
         assert material.status_code == 201, material.text
         assert client.get("/api/leap/materials", headers=headers).json()["items"][0]["title"] == "跨域阅读样本"
+        public_catalog = client.get("/api/leap/library/search?provider=ctext", headers=headers)
+        assert public_catalog.status_code == 200, public_catalog.text
+        assert {item["title"] for item in public_catalog.json()["items"]} == {"论语", "孟子", "道德经", "庄子"}
+        blocked = client.post(
+            "/api/leap/library/imports?provider=ctext&source_item_id=analects", headers=headers,
+        )
+        assert blocked.status_code == 400 and "人工确认" in blocked.json()["detail"]
 
         customer = client.post("/api/pulse/customers", headers=headers, json={"name": "Oia 测试客户"})
         sku = client.post("/api/pulse/skus", headers=headers, json={

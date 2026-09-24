@@ -1,7 +1,9 @@
 export const PRODUCT_NAV_ITEMS = Object.freeze([
   { id: "legal", symbol: "§", label: "寒冰域", english: "FROST" },
-  { id: "general", symbol: "✦", label: "极光域", english: "AURORA" },
   { id: "finance", symbol: "↗", label: "烈火域", english: "EMBER" },
+  { id: "general", symbol: "✦", label: "极光域", english: "AURORA" },
+  { id: "pulse", symbol: "⌁", label: "脉冲域", english: "PULSE", dialogId: "pulse-domain-dialog" },
+  { id: "leap", symbol: "⇌", label: "跃迁域", english: "LEAP", dialogId: "leap-domain-dialog" },
   { id: "recruitment", symbol: "◉", label: "未来雷达", english: "FUTURE RADAR", dialogId: "recruitment-dialog" },
   { id: "forge", symbol: "＋", label: "造界", english: "WORLD FORGE", dialogId: "studio-dialog" },
   { id: "resonance", symbol: "≈", label: "共振", english: "RESONANCE", dialogId: "resonance-dialog" },
@@ -9,8 +11,6 @@ export const PRODUCT_NAV_ITEMS = Object.freeze([
   { id: "music", symbol: "♫", label: "八度空间", english: "MUSIC DIMENSION", dialogId: "music-dimension-dialog" },
   { id: "photon", symbol: "◫", label: "光子魅影", english: "PHOTON PROJECTION", dialogId: "photon-projection-dialog" },
   { id: "oblivion", symbol: "◷", label: "遗忘史诗", english: "OBLIVION ARCHIVE", dialogId: "oblivion-archive-dialog" },
-  { id: "leap", symbol: "⇌", label: "跃迁域", english: "LEAP", dialogId: "leap-domain-dialog" },
-  { id: "pulse", symbol: "⌁", label: "脉冲域", english: "PULSE", dialogId: "pulse-domain-dialog" },
 ]);
 
 const PRODUCT_IDS = new Set(PRODUCT_NAV_ITEMS.map((item) => item.id));

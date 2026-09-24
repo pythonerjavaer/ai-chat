@@ -15,8 +15,23 @@ test("the global product navigation contains every formal product exactly once",
   assert.equal(new Set(PRODUCT_NAV_ITEMS.map((item) => item.id)).size, 12);
   assert.deepEqual(
     PRODUCT_NAV_ITEMS.map((item) => item.label),
-    ["寒冰域", "极光域", "烈火域", "未来雷达", "造界", "共振", "溯源透镜", "八度空间", "光子魅影", "遗忘史诗", "跃迁域", "脉冲域"],
+    ["寒冰域", "烈火域", "极光域", "脉冲域", "跃迁域", "未来雷达", "造界", "共振", "溯源透镜", "八度空间", "光子魅影", "遗忘史诗"],
   );
+});
+
+test("both world maps use the Frost Ember Aurora Pulse Leap order", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const expected = ["legal", "finance", "general", "pulse", "leap"];
+  for (const className of ["world-entry-grid", "world-map-grid"]) {
+    const start = html.indexOf(className);
+    const segment = html.slice(start, html.indexOf("</div>", start));
+    let previous = -1;
+    expected.forEach((id) => {
+      const position = segment.indexOf(`data-launch="${id}"`);
+      assert.ok(position > previous, `${id} should appear in the requested order in ${className}`);
+      previous = position;
+    });
+  }
 });
 
 test("workspace products stay in the main surface and modal products resolve their dialog", () => {

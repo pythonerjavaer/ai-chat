@@ -45,7 +45,7 @@ function detail(label, value) {
 export function initProductDomains({ api, toast }) {
   const leapDialog = $("leap-domain-dialog");
   const pulseDialog = $("pulse-domain-dialog");
-  const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, activeMaterial: null, selection: null };
+  const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null };
   const pulse = { mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [], inspections: [], expenses: [], selectedOrder: null };
 
   function status(id, text, tone = "") { const node = $(id); node.textContent = text; node.dataset.tone = tone; }
@@ -141,6 +141,60 @@ export function initProductDomains({ api, toast }) {
     [["leap-wormhole-left", "选择证据A"], ["leap-wormhole-right", "选择证据B"], ["leap-clash-a", "选择A的证据"], ["leap-clash-b", "选择B的证据"]].forEach((pair) => choices($(pair[0]), leap.excerpts, (item) => (item.material_title || materialTitle(item.material_id)) + " · " + item.quote.slice(0, 42), pair[1]));
     renderUniverse();
   }
+  function libraryLabel(provider) {
+    return { gutenberg: "Project Gutenberg", standard_ebooks: "Standard Ebooks", ctext: "Chinese Text Project" }[provider] || provider;
+  }
+  function renderLibrary() {
+    list($("leap-library-results"), leap.library, (item) => {
+      const node = card(item.title, item.author + " · " + (item.language || "语言未知"), (item.edition || "版本信息未提供") + "\n" + item.licensing_note);
+      node.classList.add("library-book-card");
+      const meta = el("div", "library-book-meta");
+      meta.append(el("span", "source-chip", libraryLabel(item.provider)), el("span", "source-chip", item.format || "TEXT"));
+      meta.append(el("span", item.rights_status === "auto_import" ? "rights-chip safe" : "rights-chip review", item.rights_status === "auto_import" ? "可自动导入" : "需要人工确认"));
+      const controls = el("div", "domain-card-actions");
+      const source = el("a", "", "查看来源"); source.href = item.source_url; source.target = "_blank"; source.rel = "noopener noreferrer"; controls.append(source);
+      if (item.rights_status === "auto_import") controls.append(action("加入跃迁域", () => importLibraryBook(item), "domain-primary"));
+      else { const disabled = action("需要人工确认", () => {}); disabled.disabled = true; controls.append(disabled); }
+      node.prepend(meta); node.append(controls); return node;
+    }, "没有找到符合当前来源和关键词的书目。");
+    list($("leap-library-imports"), leap.libraryImports, (item) => {
+      const node = card(item.title, libraryLabel(item.provider) + " · " + item.status, item.status === "failed" ? item.error : (item.source_version ? "版本 " + item.source_version + " · SHA-256 " + item.source_hash.slice(0, 12) : "进度 " + item.progress + "%"));
+      const progress = el("progress", "library-progress"); progress.max = 100; progress.value = item.progress || 0; node.append(progress);
+      if (item.material_id) node.append(action("打开阅读器", async () => { leap.mode = "real"; await loadLeap(); await openMaterial(item.material_id); }, "domain-primary"));
+      return node;
+    }, "导入任务将在这里显示进度、版本和哈希。");
+  }
+  async function loadLibrary(query = "", provider = "all") {
+    $("leap-library-status").textContent = query ? "正在从可信公开书目中搜索…" : "正在载入首批种子书目…";
+    const [catalog, imports] = await Promise.all([
+      api("/leap/library/search?q=" + encodeURIComponent(query) + "&provider=" + encodeURIComponent(provider), { timeoutMs: 45000 }),
+      api("/leap/library/imports"),
+    ]);
+    leap.library = catalog.items || []; leap.libraryImports = imports || []; leap.libraryLoaded = true; renderLibrary();
+    const unavailable = (catalog.provider_errors || []).map((item) => libraryLabel(item.provider)).join("、");
+    $("leap-library-status").textContent = leap.library.length + " 个版本 · " + catalog.policy + (unavailable ? " · 暂不可用：" + unavailable : "");
+  }
+  async function importLibraryBook(item) {
+    try {
+      $("leap-library-status").textContent = "正在创建“" + item.title + "”导入任务…";
+      const query = "provider=" + encodeURIComponent(item.provider) + "&source_item_id=" + encodeURIComponent(item.source_item_id);
+      const run = await api("/leap/library/imports?" + query, { method: "POST", timeoutMs: 45000 });
+      if (run.status === "duplicate") {
+        leap.mode = "real"; await loadLeap(); await openMaterial(run.material_id); toast("同一来源版本已经存在，已直接打开。 "); return;
+      }
+      let current = run;
+      for (let attempt = 0; attempt < 120 && !["success", "failed", "duplicate"].includes(current.status); attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        current = await api("/leap/library/imports/" + run.id);
+        const old = leap.libraryImports.findIndex((entry) => entry.id === current.id);
+        if (old >= 0) leap.libraryImports[old] = current; else leap.libraryImports.unshift(current);
+        renderLibrary(); $("leap-library-status").textContent = current.title + " · " + current.status + " · " + current.progress + "%";
+      }
+      if (current.status === "success" || current.status === "duplicate") {
+        leap.mode = "real"; await loadLeap(); await openMaterial(current.material_id); toast("公版书已导入并进入阅读器。 ");
+      } else if (current.status === "failed") throw new Error(current.error || "书籍导入失败。 ");
+    } catch (error) { $("leap-library-status").textContent = error.message; }
+  }
   async function openMaterial(id, focus = null) {
     let material; let paragraphs;
     if (leapDemo()) {
@@ -154,9 +208,18 @@ export function initProductDomains({ api, toast }) {
     leap.activeMaterial = material; $("leap-note-material").value = material.id;
     $("leap-reader-title").textContent = material.title;
     $("leap-reader-meta").textContent = (material.author || material.kind || "作者未知") + " · " + paragraphs.length + " 段 · 拖动选择文字建立证据";
+    const source = $("leap-reader-source"); source.replaceChildren(); source.classList.toggle("hidden", !material.library_source);
+    if (material.library_source) {
+      const info = material.library_source; source.append(el("small", "", "PUBLIC-DOMAIN SOURCE"), el("strong", "", info.source_name), el("p", "", (info.edition || "") + (info.translator ? " · 译者 " + info.translator : "")), el("p", "", info.licensing_note));
+      const link = el("a", "", "查看原始来源"); link.href = info.source_url; link.target = "_blank"; link.rel = "noopener noreferrer"; source.append(link);
+    }
+    const chapterHost = $("leap-reader-chapters"); chapterHost.replaceChildren();
+    (material.chapters || []).forEach((chapter) => chapterHost.append(action(chapter.title, () => { const target = $("leap-reader-pages").querySelector('[data-position="' + chapter.start_paragraph + '"]'); if (target) target.scrollIntoView({ behavior: "smooth", block: "start" }); }, "chapter-link")));
+    if (!(material.chapters || []).length) chapterHost.append(blank("此材料没有独立章节信息。"));
     const host = $("leap-reader-pages"); host.replaceChildren();
     paragraphs.forEach((paragraph) => {
-      const section = el("section", "manuscript-paragraph"); section.dataset.position = paragraph.position;
+      const section = el("section", "manuscript-paragraph"); section.dataset.position = paragraph.position; section.id = paragraph.stable_anchor || ("paragraph-" + paragraph.position);
+      if (paragraph.chapter_title && (paragraph.position === 0 || paragraphs.find((row) => row.position === paragraph.position - 1)?.chapter_title !== paragraph.chapter_title)) section.append(el("h4", "manuscript-chapter", paragraph.chapter_title));
       const text = el("p", "", paragraph.content); section.append(el("small", "", String(paragraph.position + 1).padStart(2, "0")), text);
       section.addEventListener("mouseup", () => captureSelection(section, text, paragraph)); host.append(section);
     });
@@ -235,6 +298,7 @@ export function initProductDomains({ api, toast }) {
   $("leap-real-mode").addEventListener("click", async () => { leap.mode = "real"; leap.activeMaterial = null; await loadLeap(); tab(leapDialog, "home"); });
   $("leap-demo-mode").addEventListener("click", async () => { leap.mode = "demo"; leap.activeMaterial = null; await loadLeap(); tab(leapDialog, "home"); });
   $("leap-demo-reset").addEventListener("click", async () => { applyLeapDemo(await api("/leap/demo/reset", { method: "POST" })); renderLeap(); toast("跃迁域 Demo 已恢复初始状态。"); });
+  $("leap-library-search").addEventListener("submit", async (event) => { event.preventDefault(); try { await loadLibrary($("leap-library-query").value.trim(), $("leap-library-provider").value); } catch (error) { $("leap-library-status").textContent = error.message; } });
 
   function applyPulseDemo(data) { Object.assign(pulse, data); pulse.currency = data.currency || "AUD"; }
   async function loadPulse() {
@@ -433,7 +497,7 @@ export function initProductDomains({ api, toast }) {
   $("pulse-demo-mode").addEventListener("click", async () => { pulse.mode = "demo"; pulse.selectedOrder = null; await loadPulse(); tab(pulseDialog, "overview"); });
   $("pulse-demo-reset").addEventListener("click", async () => { applyPulseDemo(await api("/pulse/demo/reset", { method: "POST" })); renderPulse(); toast("Oia Demo Company 已恢复到会计一致的六个月样本。"); });
 
-  leapDialog.querySelectorAll("[data-domain-tab]").forEach((node) => node.addEventListener("click", () => tab(leapDialog, node.dataset.domainTab)));
+  leapDialog.querySelectorAll("[data-domain-tab]").forEach((node) => node.addEventListener("click", async () => { tab(leapDialog, node.dataset.domainTab); if (node.dataset.domainTab === "library" && !leap.libraryLoaded) { try { await loadLibrary(); } catch (error) { $("leap-library-status").textContent = error.message; } } }));
   pulseDialog.querySelectorAll("[data-domain-tab]").forEach((node) => node.addEventListener("click", async () => { tab(pulseDialog, node.dataset.domainTab); if (node.dataset.domainTab === "finance") await loadFinance(); if (node.dataset.domainTab === "analytics") await loadPulseAnalytics(); }));
   $("leap-domain-close").addEventListener("click", () => leapDialog.close());
   $("pulse-domain-close").addEventListener("click", () => pulseDialog.close());

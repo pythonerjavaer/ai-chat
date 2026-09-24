@@ -156,13 +156,19 @@ function runtime({ compact = false, id = "world", cardHeight = 138.594 } = {}) {
   };
 }
 
-test("initial unselected Future Radar centre is not covered by EMBER and opens Radar", async () => {
+function selectProduct(runtimeState, productId) {
+  const index = runtimeState.cards.findIndex((card) => card.dataset.launch === productId);
+  runtimeState.compass.rotation = -index * Math.PI * 2 / runtimeState.cards.length;
+  runtimeState.compass.render();
+}
+
+test("selected Future Radar centre is not covered and opens Radar", async () => {
   // Live measured height from the failing first-registration world map. At
   // the old fixed radius 94, EMBER covered Radar's centre by about 0.19px.
   const r = runtime({ cardHeight: 138.594 });
   const radar = r.cards.find((card) => card.dataset.launch === "recruitment");
-  assert.equal(r.compass.rotation, 0);
-  assert.equal(radar.dataset.compassSelected, "false");
+  selectProduct(r, "recruitment");
+  assert.equal(radar.dataset.compassSelected, "true");
   const point = r.center(radar);
   const target = r.hitAt(point);
   assert.equal(target, radar);
@@ -209,12 +215,13 @@ test("font or card size changes recalculate centre clearance without changing th
 
 test("small pointer jitter does not rotate, restack, or snap a card before activation", async () => {
   const r = runtime();
+  selectProduct(r, "recruitment");
   const before = r.cards.map((card) => JSON.stringify([...card.properties]));
   r.dispatch("pointerdown", "recruitment");
   assert.equal(r.container.classList.contains("is-dragging"), false);
   r.dispatch("pointermove", "recruitment", { clientX: 103, clientY: 102 });
   r.dispatch("pointerup", "recruitment", { clientX: 103, clientY: 102 });
-  assert.equal(r.compass.rotation, 0);
+  assert.notEqual(r.compass.rotation, 0);
   assert.deepEqual(r.cards.map((card) => JSON.stringify([...card.properties])), before);
   assert.equal(r.container.classList.contains("is-snapping"), false);
   r.dispatch("click", "recruitment");
@@ -227,6 +234,7 @@ test("small pointer jitter does not rotate, restack, or snap a card before activ
 
 test("the pressed Future Radar product wins if an overlapping EMBER card receives click", async () => {
   const r = runtime();
+  selectProduct(r, "recruitment");
   r.dispatch("pointerdown", "recruitment");
   r.dispatch("pointerup", "finance");
   const click = r.dispatch("click", "finance");
@@ -284,17 +292,20 @@ test("a gesture starting on the compass background cannot accidentally open a ca
 
 test("secondary pointers cannot change or end the active gesture", () => {
   const r = runtime();
+  selectProduct(r, "recruitment");
+  const rotation = r.compass.rotation;
   r.dispatch("pointerdown", "recruitment");
   r.dispatch("pointerdown", "finance", { pointerId: 2, isPrimary: false });
   r.dispatch("pointermove", "finance", { pointerId: 2, clientX: 300 });
   r.dispatch("pointerup", "finance", { pointerId: 2 });
-  assert.equal(r.compass.rotation, 0);
+  assert.equal(r.compass.rotation, rotation);
   assert.equal(r.compass.dragging, true);
   assert.equal(r.compass.pressedCard.dataset.launch, "recruitment");
 });
 
 test("keyboard activation remains usable after a cancelled pointer gesture", async () => {
   const r = runtime();
+  selectProduct(r, "recruitment");
   r.dispatch("pointerdown", "finance");
   r.dispatch("pointercancel", r.container);
   r.dispatch("click", "recruitment", { detail: 0 });
@@ -325,11 +336,11 @@ test("all twelve desktop and mobile products activate their own destination exac
 test("rotation controls and keyboard arrows only select, never navigate", async () => {
   const r = runtime();
   r.dispatch("click", r.right);
-  assert.equal(r.container.dataset.selectedProduct, "general");
-  r.dispatch("keydown", r.container, { key: "ArrowRight" });
   assert.equal(r.container.dataset.selectedProduct, "finance");
-  r.dispatch("click", r.left);
+  r.dispatch("keydown", r.container, { key: "ArrowRight" });
   assert.equal(r.container.dataset.selectedProduct, "general");
+  r.dispatch("click", r.left);
+  assert.equal(r.container.dataset.selectedProduct, "finance");
   await r.settled();
   assert.deepEqual(r.launchCalls, []);
 });
@@ -337,6 +348,7 @@ test("rotation controls and keyboard arrows only select, never navigate", async 
 test("reinitializing the same map cannot install duplicate activation handlers", async () => {
   const r = runtime({ id: "landing" });
   r.context.setupRotaryCompass(r.container);
+  selectProduct(r, "recruitment");
   r.dispatch("click", "recruitment", { detail: 0 });
   await r.settled();
   assert.deepEqual(r.launchCalls, ["recruitment"]);

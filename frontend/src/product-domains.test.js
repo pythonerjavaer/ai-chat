@@ -12,6 +12,13 @@ test("Leap supports an evidence-backed reading journey and isolated demo", () =>
   }
 });
 
+test("Leap public-domain library exposes trusted sources, progress and reader anchors", () => {
+  for (const marker of ["公共领域书库", "/leap/library/search", "/leap/library/imports", "Project Gutenberg", "Standard Ebooks", "Chinese Text Project", "leap-reader-chapters", "stable_anchor"]) {
+    assert.match(source + html, new RegExp(marker.replaceAll("/", "\\/")));
+  }
+  assert.match(source, /attempt\s*<\s*120/);
+});
+
 test("Pulse supports transaction, asset, finance and analytics drill-down", () => {
   for (const marker of ["/pulse/demo/action", "/pulse/orders/", "pulse-order-detail", "pulse-asset-detail", "pulse-journal-detail"]) {
     assert.match(source + html, new RegExp(marker.replaceAll("/", "\\/")));
@@ -19,7 +26,8 @@ test("Pulse supports transaction, asset, finance and analytics drill-down", () =
 });
 
 test("new products do not add hidden polling loops", () => {
-  assert.doesNotMatch(source, /setInterval|setTimeout\s*\(/);
+  assert.doesNotMatch(source, /setInterval/);
+  assert.equal((source.match(/setTimeout\s*\(/g) || []).length, 1);
 });
 
 test("only the selected workspace panel is rendered", () => {

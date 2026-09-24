@@ -6,8 +6,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any, Callable, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .public_library import PublicLibraryService, init_public_library_schema
 
 
 MAX_MATERIAL_BYTES = 2 * 1024 * 1024
@@ -64,6 +66,9 @@ def init_leap_schema(connect: Callable[[], Any]) -> None:
                 material_version INTEGER NOT NULL,
                 position INTEGER NOT NULL,
                 content TEXT NOT NULL,
+                chapter_position INTEGER NOT NULL DEFAULT 0,
+                chapter_title TEXT NOT NULL DEFAULT '',
+                stable_anchor TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY(material_id, material_version, position),
                 FOREIGN KEY(material_id) REFERENCES leap_materials(id) ON DELETE CASCADE
             );
@@ -159,6 +164,17 @@ def init_leap_schema(connect: Callable[[], Any]) -> None:
         for name in ("common_ground", "unresolved_questions"):
             if name not in columns:
                 connection.execute(f"ALTER TABLE leap_clash_cards ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+        paragraph_columns = {row["name"] for row in connection.execute("PRAGMA table_info(leap_paragraphs)").fetchall()}
+        paragraph_additions = {
+            "chapter_position": "INTEGER NOT NULL DEFAULT 0",
+            "chapter_title": "TEXT NOT NULL DEFAULT ''",
+            "stable_anchor": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in paragraph_additions.items():
+            if name not in paragraph_columns:
+                connection.execute(f"ALTER TABLE leap_paragraphs ADD COLUMN {name} {definition}")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_leap_paragraph_anchor ON leap_paragraphs(material_id,material_version,stable_anchor)")
+    init_public_library_schema(connect)
 
 
 class MaterialCreate(BaseModel):
@@ -281,8 +297,10 @@ class LeapRepository:
                  len(paragraphs), now, now),
             )
             connection.executemany(
-                "INSERT INTO leap_paragraphs(material_id,material_version,position,content) VALUES(?,1,?,?)",
-                [(material_id, index, content) for index, content in enumerate(paragraphs)],
+                """INSERT INTO leap_paragraphs
+                   (material_id,material_version,position,content,chapter_position,chapter_title,stable_anchor)
+                   VALUES(?,1,?,?,0,'',?)""",
+                [(material_id, index, content, f"p-v1-{index:06d}") for index, content in enumerate(paragraphs)],
             )
         return self.get_material(user_id, material_id)
 
@@ -325,13 +343,27 @@ class LeapRepository:
             raise KeyError("材料不存在。")
         item = _row(row)
         item["tags"] = _json(item["tags"], [])
+        with self.connect() as connection:
+            source = connection.execute(
+                """SELECT provider,source_item_id,source_name,source_url,source_format,language,edition,translator,
+                          licensing_note,fetched_at,source_version,source_hash,status
+                   FROM leap_library_imports WHERE material_id=? AND user_id=? AND status='success'
+                   ORDER BY finished_at DESC LIMIT 1""", (material_id, user_id),
+            ).fetchone()
+            chapters = connection.execute(
+                """SELECT position,title,stable_anchor,start_paragraph,end_paragraph FROM leap_chapters
+                   WHERE material_id=? AND material_version=? ORDER BY position LIMIT 500""",
+                (material_id, item["version"]),
+            ).fetchall()
+        item["library_source"] = _row(source) if source else None
+        item["chapters"] = [_row(chapter) for chapter in chapters]
         return item
 
     def paragraphs(self, user_id: int, material_id: str, offset: int, limit: int) -> dict:
         material = self.get_material(user_id, material_id)
         with self.connect() as connection:
             rows = connection.execute(
-                """SELECT position,content FROM leap_paragraphs
+                """SELECT position,content,chapter_position,chapter_title,stable_anchor FROM leap_paragraphs
                    WHERE material_id=? AND material_version=? AND position>=?
                    ORDER BY position LIMIT ?""",
                 (material_id, material["version"], offset, limit),
@@ -717,6 +749,7 @@ class LeapRepository:
 
 def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., dict]) -> APIRouter:
     router, repo = APIRouter(prefix="/api/leap", tags=["跃迁域"]), LeapRepository(connect)
+    library = PublicLibraryService(connect)
     User = Annotated[dict, Depends(current_user)]
 
     def safe(call):
@@ -729,9 +762,10 @@ def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., d
 
     @router.get("/capabilities")
     def capabilities(_: User):
-        return {"model_calls": False, "embeddings": False, "supported_imports": ["text", "txt", "md"],
+        return {"model_calls": False, "embeddings": False,
+                "supported_imports": ["text", "txt", "md", "reviewed-public-domain-epub"],
                 "max_bytes": MAX_MATERIAL_BYTES,
-                "features": {"思想虫洞": "已实现", "思想宇宙": "实验性", "思想对撞": "已实现",
+                "features": {"公共领域书库": "已实现", "思想虫洞": "已实现", "思想宇宙": "实验性", "思想对撞": "已实现",
                              "认知时间轴": "规划中", "时空透镜": "规划中", "反事实阅读": "规划中",
                              "跨时空思想会谈": "规划中", "记忆桥": "规划中", "跨域迁移": "规划中",
                              "个人认知光谱": "规划中", "认知暗物质": "规划中", "思想引力": "规划中"}}
@@ -759,6 +793,26 @@ def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., d
 
     @router.post("/demo/action")
     def demo_action(payload: DemoAction, user: User): return safe(lambda: repo.demo_action(user["id"], payload))
+
+    @router.get("/library/search")
+    def library_search(user: User, q: str = Query("", max_length=120),
+                       provider: Literal["all", "gutenberg", "standard_ebooks", "ctext"] = "all"):
+        return safe(lambda: library.search(q, provider))
+
+    @router.get("/library/imports")
+    def library_imports(user: User, limit: int = Query(30, ge=1, le=100)):
+        return library.imports(user["id"], limit)
+
+    @router.post("/library/imports", status_code=status.HTTP_202_ACCEPTED)
+    def library_import(background: BackgroundTasks, user: User, provider: str, source_item_id: str):
+        created = safe(lambda: library.create_import(user["id"], provider, source_item_id))
+        if created["status"] == "queued":
+            background.add_task(library.run, user["id"], created["id"])
+        return created
+
+    @router.get("/library/imports/{run_id}")
+    def library_import_status(run_id: str, user: User):
+        return safe(lambda: library.import_status(user["id"], run_id))
 
     @router.get("/materials")
     def materials(user: User, q: str = Query("", max_length=120), limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0)):
