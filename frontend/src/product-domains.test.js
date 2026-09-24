@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { BrowserLocalTranslationProvider, isSingleEnglishWord, sentenceAroundSelection } from "./product-domains.js";
+import { BrowserLocalTranslationProvider, contextualMeaningFromMarkedTranslation, isSingleEnglishWord, markWordInContext, sentenceAroundSelection } from "./product-domains.js";
 
 const source = readFileSync(new URL("./product-domains.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -37,19 +37,34 @@ test("Leap translation providers support scoped selection and bounded bilingual 
   assert.equal(sentenceAroundSelection(paragraph, start, start + 4), "The unexamined life is not worth living.");
 });
 
-test("browser-local provider uses the device translator and keeps word and context meanings separate", async () => {
+test("browser-local provider keeps the basic meaning separate and extracts a concise contextual sense", async () => {
   const calls = [];
   const provider = new BrowserLocalTranslationProvider({
     Translator: {
       availability: async () => "available",
-      create: async () => ({ translate: async (text) => { calls.push(text); return "译：" + text; } }),
+      create: async () => ({ translate: async (text) => {
+        calls.push(text);
+        if (text.includes("⟦bank⟧")) return "他坐在⟦河岸⟧边。";
+        return text === "bank" ? "银行" : "译：" + text;
+      } }),
     },
   });
-  const result = await provider.lookupWord("reason", "Reason guides choice.");
-  assert.equal(result.translated_text, "译：reason");
-  assert.equal(result.context_translation, "译：Reason guides choice.");
-  assert.deepEqual(calls, ["reason", "Reason guides choice."]);
+  const result = await provider.lookupWord("bank", "He sat by the bank.");
+  assert.equal(result.translated_text, "银行");
+  assert.equal(result.contextual_meaning, "河岸");
+  assert.equal(result.context_translation, "他坐在⟦河岸⟧边。");
+  assert.deepEqual(calls, ["bank", "He sat by the ⟦bank⟧."]);
   assert.equal(result.provider, "browser_local");
+  assert.equal(markWordInContext("Bank", "The bank approved it."), "The ⟦bank⟧ approved it.");
+  assert.equal(contextualMeaningFromMarkedTranslation("靠近⟦河岸⟧。"), "河岸");
+});
+
+test("word translation UI prioritizes context and omits dictionary clutter", () => {
+  assert.match(source, /本句语境义 ·/);
+  assert.match(source, /基础词义 ·/);
+  assert.match(source, /语境不足，无法确定唯一含义/);
+  assert.doesNotMatch(source, /其他常见义项 ·/);
+  assert.doesNotMatch(source, /part_of_speech \?/);
 });
 
 test("Pulse supports transaction, asset, finance and analytics drill-down", () => {

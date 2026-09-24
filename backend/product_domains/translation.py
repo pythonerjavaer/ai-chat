@@ -30,6 +30,24 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _mark_word_in_context(word: str, context: str) -> str:
+    """Mark one exact word so a general translator can return its contextual sense."""
+    import re
+
+    value = str(word or "").strip()
+    source = str(context or "").strip()
+    if not value or not source:
+        return source
+    return re.sub(rf"\b{re.escape(value)}\b", lambda match: f"⟦{match.group(0)}⟧", source, count=1, flags=re.IGNORECASE)
+
+
+def _contextual_meaning(marked_translation: str) -> str:
+    import re
+
+    match = re.search(r"⟦\s*([^⟦⟧]+?)\s*⟧", str(marked_translation or ""))
+    return match.group(1).strip() if match else ""
+
+
 def init_translation_schema(connect: Callable[[], Any]) -> None:
     with connect() as connection:
         connection.executescript(
@@ -89,8 +107,15 @@ class TranslationProvider(ABC):
     def lookup_word(
         self, word: str, context: str, source_language: str, target_language: str,
     ) -> dict[str, Any]:
-        translated = self.translate(context or word, source_language, target_language)
-        return {**translated, "dictionary": [], "context_translation": translated["translated_text"]}
+        marked = _mark_word_in_context(word, context or word)
+        translated = self.translate(marked, source_language, target_language)
+        return {
+            **translated,
+            "dictionary": [],
+            "context_translation": translated["translated_text"],
+            "contextual_meaning": _contextual_meaning(translated["translated_text"]) or "语境不足，无法确定唯一含义",
+            "context_explanation": "",
+        }
 
 
 class AzureTranslatorProvider(TranslationProvider):
@@ -153,7 +178,8 @@ class AzureTranslatorProvider(TranslationProvider):
     def lookup_word(
         self, word: str, context: str, source_language: str, target_language: str,
     ) -> dict[str, Any]:
-        contextual = self.translate(context or word, source_language, target_language)
+        marked_context = _mark_word_in_context(word, context or word)
+        contextual = self.translate(marked_context, source_language, target_language)
         result = self._post(
             "/dictionary/lookup",
             {"api-version": "3.0", "from": source_language, "to": target_language},
@@ -167,7 +193,14 @@ class AzureTranslatorProvider(TranslationProvider):
                 "confidence": item.get("confidence"),
                 "back_translations": [str(x.get("displayText") or "") for x in (item.get("backTranslations") or [])[:4]],
             })
-        return {**contextual, "dictionary": dictionary, "context_translation": contextual["translated_text"]}
+        contextual_meaning = _contextual_meaning(contextual["translated_text"])
+        return {
+            **contextual,
+            "dictionary": dictionary,
+            "context_translation": contextual["translated_text"],
+            "contextual_meaning": contextual_meaning or "语境不足，无法确定唯一含义",
+            "context_explanation": "",
+        }
 
 
 class TranslationService:
@@ -357,7 +390,9 @@ class TranslationService:
             "translated_text": payload["translated_text"],
             "translated_at": payload.get("translated_at") or _now(),
             "metadata": {"runtime": "browser_device", "dictionary": payload.get("dictionary") or [],
-                         "context_translation": payload.get("context_translation") or ""},
+                         "context_translation": payload.get("context_translation") or "",
+                         "contextual_meaning": payload.get("contextual_meaning") or "",
+                         "context_explanation": payload.get("context_explanation") or ""},
         }
         charged = len(str(payload.get("source_text") or ""))
         if payload.get("translation_mode") == "word":
@@ -383,7 +418,12 @@ class TranslationService:
             )
         else:
             result = self.azure.translate(data["source_text"], data["source_language"], data["target_language"])
-        result["metadata"] = {"dictionary": result.get("dictionary") or [], "context_translation": result.get("context_translation")}
+        result["metadata"] = {
+            "dictionary": result.get("dictionary") or [],
+            "context_translation": result.get("context_translation"),
+            "contextual_meaning": result.get("contextual_meaning") or "",
+            "context_explanation": result.get("context_explanation") or "",
+        }
         charged = len(data["source_text"])
         if lookup:
             charged += len(str(payload.get("context_text") or data["source_text"]))

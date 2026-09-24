@@ -191,7 +191,7 @@ class _AzureClient:
         self.calls.append((url, kwargs))
         if url.endswith("/dictionary/lookup"):
             return _AzureResponse([{"translations": [{"displayTarget": "理性", "posTag": "NOUN", "confidence": 0.9, "backTranslations": [{"displayText": "reason"}]}]}])
-        return _AzureResponse([{"translations": [{"text": "理性指引选择。"}]}])
+        return _AzureResponse([{"translations": [{"text": "⟦理性⟧指引选择。"}]}])
 
 
 def test_azure_provider_dictionary_context_quota_and_no_key_fallback(product_store):
@@ -207,7 +207,8 @@ def test_azure_provider_dictionary_context_quota_and_no_key_fallback(product_sto
     )
     result = service.translate_azure(1, payload, lookup=True)
     assert result["metadata"]["dictionary"][0]["part_of_speech"] == "NOUN"
-    assert result["metadata"]["context_translation"] == "理性指引选择。"
+    assert result["metadata"]["context_translation"] == "⟦理性⟧指引选择。"
+    assert result["metadata"]["contextual_meaning"] == "理性"
     assert len(client.calls) == 2
     assert all(call[1]["headers"]["Ocp-Apim-Subscription-Key"] == "secret" for call in client.calls)
     unconfigured = TranslationService(product_store, azure=AzureTranslatorProvider())

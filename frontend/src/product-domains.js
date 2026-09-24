@@ -23,6 +23,19 @@ export function isSingleEnglishWord(value) {
   return /^[A-Za-z]+(?:[-'][A-Za-z]+)*$/.test(String(value || "").trim());
 }
 
+export function markWordInContext(word, context) {
+  const value = String(word || "").trim();
+  const source = String(context || "").trim();
+  if (!value || !source) return source;
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return source.replace(new RegExp(`\\b${escaped}\\b`, "i"), (match) => `⟦${match}⟧`);
+}
+
+export function contextualMeaningFromMarkedTranslation(value) {
+  const match = String(value || "").match(/⟦\s*([^⟦⟧]+?)\s*⟧/);
+  return match ? match[1].trim() : "";
+}
+
 export class BrowserLocalTranslationProvider {
   constructor(scope = window) {
     this.scope = scope;
@@ -58,8 +71,17 @@ export class BrowserLocalTranslationProvider {
   }
   async lookupWord(word, context) {
     const wordResult = await this.translate(word);
-    const contextual = context && context.trim() !== word.trim() ? await this.translate(context) : wordResult;
-    return { ...wordResult, contextual_only: true, context_translation: contextual.translated_text, dictionary: [] };
+    const markedContext = markWordInContext(word, context);
+    const contextual = markedContext && markedContext.trim() !== word.trim() ? await this.translate(markedContext) : wordResult;
+    const contextualMeaning = contextualMeaningFromMarkedTranslation(contextual.translated_text);
+    return {
+      ...wordResult,
+      contextual_only: true,
+      context_translation: contextual.translated_text,
+      contextual_meaning: contextualMeaning || "语境不足，无法确定唯一含义",
+      context_explanation: "",
+      dictionary: [],
+    };
   }
 }
 
@@ -289,7 +311,7 @@ export function initProductDomains({ api, toast }) {
       source_language: "en", target_language: "zh-Hans", provider: provider.id,
       provider_model: provider.model, translation_mode: scope,
       source_text: String(text || "").trim(), context_text: paragraph.content,
-      translated_text: "", translated_at: "", context_translation: "", dictionary: [], force,
+      translated_text: "", translated_at: "", context_translation: "", contextual_meaning: "", context_explanation: "", dictionary: [], force,
     };
   }
   async function ensureCloudConsent() {
@@ -340,7 +362,7 @@ export function initProductDomains({ api, toast }) {
   async function persistLocalTranslation(payload, result) {
     if (leapDemo()) return result;
     try {
-      return await api("/leap/translation/cache", { method: "PUT", body: JSON.stringify({ ...payload, translated_text: result.translated_text, translated_at: result.translated_at, context_translation: result.context_translation || "", dictionary: result.dictionary || [] }) });
+      return await api("/leap/translation/cache", { method: "PUT", body: JSON.stringify({ ...payload, translated_text: result.translated_text, translated_at: result.translated_at, context_translation: result.context_translation || "", contextual_meaning: result.contextual_meaning || "", context_explanation: result.context_explanation || "", dictionary: result.dictionary || [] }) });
     } catch (error) {
       $("leap-translation-capability").textContent = "译文已生成，但持久缓存保存失败：" + error.message;
       return result;
@@ -373,22 +395,18 @@ export function initProductDomains({ api, toast }) {
   }
   function renderTranslationResult(original, result, scope) {
     const output = $("leap-selection-translation"); output.replaceChildren();
-    output.append(el("small", "", (scope === "word" ? "词义与语境" : scope === "sentence" ? "句子对照" : "段落对照") + " · " + result.provider + " / " + result.provider_model + (result.cache_hit ? " · 缓存" : "")));
+    output.append(el("small", "", (scope === "word" ? "选词翻译" : scope === "sentence" ? "句子对照" : "段落对照") + " · " + result.provider + " / " + result.provider_model + (result.cache_hit ? " · 缓存" : "")));
     output.append(el("p", "translation-original", original));
     const dictionary = result.metadata?.dictionary || result.dictionary || [];
-    if (scope === "word" && dictionary.length) {
-      const core = dictionary[0];
-      output.append(el("strong", "translation-core", "核心释义 · " + core.display_target + (core.part_of_speech ? " · " + core.part_of_speech : "")));
-      output.append(el("p", "translation-context", "当前句语境 · " + (result.metadata?.context_translation || result.context_translation || result.translated_text)));
-      const others = dictionary.slice(1, 5).map((item) => item.display_target + (item.part_of_speech ? "（" + item.part_of_speech + "）" : "")).join("；");
-      if (others) output.append(el("p", "translation-alternatives", "其他常见义项 · " + others));
-    } else {
-      if (scope === "word") {
-        output.append(el("strong", "translation-core", "核心释义 · " + result.translated_text));
-        output.append(el("p", "translation-context", "当前句语境 · " + (result.metadata?.context_translation || result.context_translation || result.translated_text)));
-        output.append(el("p", "translation-limitation", "本地Provider不提供词性或其他常见义项；需要这些字段时可使用已配置的Azure词典能力。"));
-      } else output.append(el("p", "translation-result", result.translated_text));
-    }
+    if (scope === "word") {
+      const metadata = result.metadata || {};
+      const contextualMeaning = metadata.contextual_meaning || result.contextual_meaning || "语境不足，无法确定唯一含义";
+      const basicMeaning = dictionary[0]?.display_target || result.translated_text;
+      output.append(el("strong", "translation-context", "本句语境义 · " + contextualMeaning));
+      output.append(el("p", "translation-core", "基础词义 · " + basicMeaning));
+      const explanation = metadata.context_explanation || result.context_explanation || "";
+      if (explanation) output.append(el("p", "translation-limitation", explanation));
+    } else output.append(el("p", "translation-result", result.translated_text));
     output.append(el("small", "translation-audit", "AI/机器翻译，仅供辅助阅读 · " + (result.translated_at ? new Date(result.translated_at).toLocaleString("zh-CN") : "刚刚")));
     output.dataset.tone = "ok";
     leap.lastTranslation = { original, translated: result.translated_text, result, scope };

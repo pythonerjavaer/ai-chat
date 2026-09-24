@@ -270,6 +270,8 @@ class TranslationWrite(BaseModel):
     translated_text: str = Field(default="", max_length=40_000)
     translated_at: str = Field(default="", max_length=80)
     context_translation: str = Field(default="", max_length=40_000)
+    contextual_meaning: str = Field(default="", max_length=1_000)
+    context_explanation: str = Field(default="", max_length=1_000)
     dictionary: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
     force: bool = False
 
