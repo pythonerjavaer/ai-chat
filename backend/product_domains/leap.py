@@ -1,4 +1,4 @@
-"""跃迁域: evidence-based reading without model or embedding calls."""
+"""跃迁域: evidence-based reading with optional, user-triggered interpretation."""
 
 import hashlib
 import json
@@ -11,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Qu
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .public_library import PublicLibraryService, init_public_library_schema
+from .interpretation import InterpretationService, init_interpretation_schema
 from .translation import TranslationService, init_translation_schema
 
 
@@ -182,6 +183,7 @@ def init_leap_schema(connect: Callable[[], Any]) -> None:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_leap_paragraph_anchor ON leap_paragraphs(material_id,material_version,stable_anchor)")
     init_public_library_schema(connect)
     init_translation_schema(connect)
+    init_interpretation_schema(connect)
 
 
 class MaterialCreate(BaseModel):
@@ -259,13 +261,17 @@ class TranslationWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     document_id: str
     paragraph_position: int = Field(ge=0)
+    paragraph_end: int | None = Field(default=None, ge=0)
     segment_id: str = Field(default="", max_length=300)
     source_language: str = Field(default="en", max_length=20)
     target_language: str = Field(default="zh-Hans", max_length=20)
     provider: Literal["browser_local", "azure_translator"]
     provider_model: str = Field(min_length=1, max_length=120)
-    translation_mode: Literal["word", "sentence", "paragraph", "chapter_window"]
+    translation_mode: Literal["word", "sentence", "paragraph", "selection", "chapter_window"]
     source_text: str = Field(min_length=1, max_length=20_000)
+    sentence_index: int | None = Field(default=None, ge=0)
+    selection_start: int | None = Field(default=None, ge=0)
+    selection_end: int | None = Field(default=None, ge=0)
     context_text: str = Field(default="", max_length=20_000)
     translated_text: str = Field(default="", max_length=40_000)
     translated_at: str = Field(default="", max_length=80)
@@ -273,6 +279,23 @@ class TranslationWrite(BaseModel):
     contextual_meaning: str = Field(default="", max_length=1_000)
     context_explanation: str = Field(default="", max_length=1_000)
     dictionary: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+    force: bool = False
+
+
+class InterpretationWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["interpret"] = "interpret"
+    scope: Literal["word", "sentence", "paragraph", "chapter", "selection"]
+    document_id: str
+    paragraph_start: int = Field(ge=0)
+    paragraph_end: int = Field(ge=0)
+    selection_start: int | None = Field(default=None, ge=0)
+    selection_end: int | None = Field(default=None, ge=0)
+    source_text: str = Field(min_length=1, max_length=20_000)
+    context_text: str = Field(default="", max_length=20_000)
+    target_language: str = Field(default="zh-CN", max_length=20)
+    coverage_complete: bool = True
+    coverage_label: str = Field(default="", max_length=240)
     force: bool = False
 
 
@@ -399,6 +422,45 @@ class LeapRepository:
             ).fetchall()
         return {"material": material, "paragraphs": [_row(item) for item in rows],
                 "offset": offset, "limit": limit}
+
+    def chapter_content(self, user_id: int, material_id: str, chapter_position: int,
+                        max_characters: int = 16_000) -> dict:
+        material = self.get_material(user_id, material_id)
+        chapters = material.get("chapters") or []
+        chapter = next((item for item in chapters if int(item["position"]) == chapter_position), None)
+        if not chapter:
+            raise KeyError("章节不存在。")
+        start, end = int(chapter["start_paragraph"]), int(chapter["end_paragraph"])
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT position,content,chapter_position,chapter_title,stable_anchor
+                   FROM leap_paragraphs WHERE material_id=? AND material_version=?
+                   AND position>=? AND position<=? ORDER BY position LIMIT 300""",
+                (material_id, material["version"], start, end),
+            ).fetchall()
+        included, used = [], 0
+        for raw in rows:
+            row = _row(raw)
+            addition = len(row["content"]) + (2 if included else 0)
+            if included and used + addition > max_characters:
+                break
+            included.append(row); used += addition
+        if not included:
+            raise ValueError("章节没有可读取的正文。")
+        complete = len(included) == end - start + 1
+        return {
+            "chapter": chapter,
+            "source_text": "\n\n".join(item["content"] for item in included),
+            "paragraph_start": included[0]["position"],
+            "paragraph_end": included[-1]["position"],
+            "paragraph_count": len(included),
+            "total_paragraphs": end - start + 1,
+            "coverage_complete": complete,
+            "coverage_label": (
+                f"完整章节 · 第{start + 1}–{end + 1}段" if complete
+                else f"当前仅解读已加载部分 · 第{start + 1}–{included[-1]['position'] + 1}段 / 全章{end - start + 1}段"
+            ),
+        }
 
     def update_progress(self, user_id: int, material_id: str, payload: ProgressUpdate) -> dict:
         material = self.get_material(user_id, material_id)
@@ -776,11 +838,21 @@ class LeapRepository:
         return self._save_demo(user_id, state)
 
 
-def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., dict]) -> APIRouter:
+def create_leap_router(
+    connect: Callable[[], Any],
+    current_user: Callable[..., dict],
+    interpretation_runner: Callable[[int, str, str, int], dict[str, Any]] | None = None,
+    interpretation_model: str = "unconfigured",
+    consented_user: Callable[..., dict] | None = None,
+) -> APIRouter:
     router, repo = APIRouter(prefix="/api/leap", tags=["跃迁域"]), LeapRepository(connect)
     library = PublicLibraryService(connect)
     translations = TranslationService(connect)
+    interpretations = InterpretationService(
+        connect, interpretation_runner, provider_model=interpretation_model,
+    )
     User = Annotated[dict, Depends(current_user)]
+    InterpretationUser = Annotated[dict, Depends(consented_user or current_user)]
 
     def safe(call):
         try:
@@ -792,13 +864,23 @@ def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., d
 
     @router.get("/capabilities")
     def capabilities(_: User):
-        return {"model_calls": False, "embeddings": False,
+        return {"model_calls": interpretations.capabilities()["available"], "embeddings": False,
                 "supported_imports": ["text", "txt", "md", "reviewed-public-domain-epub"],
                 "max_bytes": MAX_MATERIAL_BYTES,
-                "features": {"公共领域书库": "已实现", "按需英中翻译": "本地可用；Azure可选", "思想虫洞": "已实现", "思想宇宙": "实验性", "思想对撞": "已实现",
+                "features": {"公共领域书库": "已实现", "按需英中翻译": "本地可用；Azure可选", "内容解读": "按需使用冰焰AI；未配置时明确停用", "思想虫洞": "已实现", "思想宇宙": "实验性", "思想对撞": "已实现",
                              "认知时间轴": "规划中", "时空透镜": "规划中", "反事实阅读": "规划中",
                              "跨时空思想会谈": "规划中", "记忆桥": "规划中", "跨域迁移": "规划中",
                              "个人认知光谱": "规划中", "认知暗物质": "规划中", "思想引力": "规划中"}}
+
+    @router.get("/reading-assistant/capabilities")
+    def reading_assistant_capabilities(_: User):
+        return {"action": "interpret", **interpretations.capabilities()}
+
+    @router.post("/reading-assistant/interpret")
+    def interpret(payload: InterpretationWrite, user: InterpretationUser):
+        if not interpretations.capabilities()["available"]:
+            raise HTTPException(status_code=503, detail="内容解读暂不可用：冰焰AI服务未配置。")
+        return safe(lambda: interpretations.interpret(user["id"], payload.model_dump()))
 
     @router.get("/home")
     def home(user: User): return repo.home(user["id"])
@@ -907,6 +989,10 @@ def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., d
     @router.get("/materials/{material_id}/paragraphs")
     def paragraphs(material_id: str, user: User, offset: int = Query(0, ge=0), limit: int = Query(40, ge=1, le=100)):
         return safe(lambda: repo.paragraphs(user["id"], material_id, offset, limit))
+
+    @router.get("/materials/{material_id}/chapters/{chapter_position}/content")
+    def chapter_content(material_id: str, chapter_position: int, user: User):
+        return safe(lambda: repo.chapter_content(user["id"], material_id, chapter_position))
 
     @router.put("/materials/{material_id}/progress")
     def progress(material_id: str, payload: ProgressUpdate, user: User):

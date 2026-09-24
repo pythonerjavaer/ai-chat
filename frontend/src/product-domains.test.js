@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { BrowserLocalTranslationProvider, contextualMeaningFromMarkedTranslation, isSingleEnglishWord, markWordInContext, sentenceAroundSelection } from "./product-domains.js";
+import {
+  BrowserLocalTranslationProvider,
+  buildInterpretationRequest,
+  buildTranslationRequest,
+  contextualMeaningFromMarkedTranslation,
+  isSingleEnglishWord,
+  markWordInContext,
+  sentenceAroundSelection,
+  sentenceRanges,
+  translationCacheIdentity,
+  translationTarget,
+} from "./product-domains.js";
 
 const source = readFileSync(new URL("./product-domains.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -21,7 +32,7 @@ test("Leap public-domain library exposes trusted sources, progress and reader an
 });
 
 test("Leap translation providers support scoped selection and bounded bilingual reading", () => {
-  for (const marker of ["翻译单词", "翻译句子", "翻译段落", "翻译当前阅读窗口", "BrowserLocalTranslationProvider", "AzureTranslationProvider", "scope.Translator", "scope.translation", "READER_PAGE_SIZE", "manuscript-translation", "/leap/translation/cache", "AI/机器翻译，仅供辅助阅读"]) {
+  for (const marker of ["leap-translate-word", "leap-translate-sentence", "leap-translate-paragraph", "翻译当前阅读窗口", "BrowserLocalTranslationProvider", "AzureTranslationProvider", "scope.Translator", "scope.translation", "READER_PAGE_SIZE", "manuscript-translation", "/leap/translation/cache", "AI/机器翻译，仅供辅助阅读"]) {
     assert.match(source + html, new RegExp(marker.replaceAll("/", "\\/")));
   }
   assert.match(html, /上下对照/);
@@ -57,6 +68,71 @@ test("browser-local provider keeps the basic meaning separate and extracts a con
   assert.equal(result.provider, "browser_local");
   assert.equal(markWordInContext("Bank", "The bank approved it."), "The ⟦bank⟧ approved it.");
   assert.equal(contextualMeaningFromMarkedTranslation("靠近⟦河岸⟧。"), "河岸");
+});
+
+test("sentence and paragraph translation send different source text and cache identities", () => {
+  const paragraphText = "Sentence one. Sentence two is longer. Sentence three ends here.";
+  const start = paragraphText.indexOf("two is");
+  const selection = { paragraph_text: paragraphText, quote: "two is", start_offset: start, end_offset: start + 6 };
+  const sentence = translationTarget(selection, "sentence");
+  const paragraph = translationTarget(selection, "paragraph");
+  assert.deepEqual(sentence, { text: "Sentence two is longer.", sentenceIndex: 1, start: 14, end: 37, paragraphEnd: undefined });
+  assert.equal(paragraph.text, paragraphText);
+
+  const shared = {
+    material: { id: "doc-1", version: 3, content_hash: "hash-3" },
+    paragraph: { position: 7, stable_anchor: "p-v3-000007", content: paragraphText },
+    provider: { id: "browser_local", model: "chrome-built-in-translator" },
+  };
+  const sentenceRequest = buildTranslationRequest({ ...shared, target: sentence, scope: "sentence" });
+  const paragraphRequest = buildTranslationRequest({ ...shared, target: paragraph, scope: "paragraph" });
+  assert.equal(sentenceRequest.source_text, "Sentence two is longer.");
+  assert.equal(sentenceRequest.translation_mode, "sentence");
+  assert.equal(sentenceRequest.sentence_index, 1);
+  assert.equal(sentenceRequest.segment_id, "p-v3-000007:sentence:1");
+  assert.equal(paragraphRequest.source_text, paragraphText);
+  assert.equal(paragraphRequest.translation_mode, "paragraph");
+  assert.equal(paragraphRequest.sentence_index, null);
+  assert.equal(paragraphRequest.segment_id, "p-v3-000007");
+
+  const keyBase = { documentId: "doc-1", documentVersion: 3, documentHash: "hash-3", paragraphPosition: 7, providerId: "browser_local", providerModel: "chrome-built-in-translator" };
+  const sentenceKey = translationCacheIdentity({ ...keyBase, scope: "sentence", text: sentence.text, sentenceIndex: sentence.sentenceIndex, start: sentence.start, end: sentence.end });
+  const paragraphKey = translationCacheIdentity({ ...keyBase, scope: "paragraph", text: paragraph.text });
+  assert.notEqual(sentenceKey, paragraphKey);
+  assert.match(sentenceKey, /sentence:1\|sentence\|/);
+  assert.match(paragraphKey, /paragraph:7\|paragraph\|/);
+});
+
+test("reading assistant keeps interpretation separate from translation and preserves scope", () => {
+  for (const marker of ["READING ASSISTANT", "leap-assistant-translate-tab", "leap-assistant-interpret-tab", "/leap/reading-assistant/interpret", "action: \"interpret\""]) {
+    assert.match(source + html, new RegExp(marker.replaceAll("/", "\\/")));
+  }
+  const material = { id: "doc-1", version: 4 };
+  const selection = { paragraph_position: 8, paragraph_end: 8 };
+  const sentenceTarget = { text: "Sentence two is longer.", paragraphStart: 8, paragraphEnd: 8, start: 14, end: 37, contextText: "Sentence one. Sentence two is longer. Sentence three." };
+  const request = buildInterpretationRequest({ material, selection, target: sentenceTarget, scope: "sentence" });
+  assert.deepEqual({ action: request.action, scope: request.scope, source_text: request.source_text, context_text: request.context_text }, {
+    action: "interpret", scope: "sentence", source_text: "Sentence two is longer.", context_text: "Sentence one. Sentence two is longer. Sentence three.",
+  });
+  assert.equal(request.paragraph_start, 8);
+  assert.equal(request.paragraph_end, 8);
+  assert.notEqual(JSON.stringify(request), JSON.stringify(buildTranslationRequest({
+    material, paragraph: { position: 8, stable_anchor: "p-8", content: sentenceTarget.contextText },
+    provider: { id: "browser_local", model: "chrome-built-in-translator" }, target: sentenceTarget, scope: "sentence",
+  })));
+  assert.match(source, /assistantGeneration/);
+  assert.match(source, /assistantController\?\.abort/);
+});
+
+test("sentence boundaries preserve quotes, abbreviations, decimals and question marks", () => {
+  const paragraph = 'Dr. Smith asked, "Is this clear?" The U.S. result was 3.14 times better! Final answer.';
+  assert.deepEqual(sentenceRanges(paragraph).map((item) => item.text), [
+    'Dr. Smith asked, "Is this clear?"',
+    "The U.S. result was 3.14 times better!",
+    "Final answer.",
+  ]);
+  const start = paragraph.indexOf("clear");
+  assert.equal(sentenceAroundSelection(paragraph, start, start + 5), 'Dr. Smith asked, "Is this clear?"');
 });
 
 test("word translation UI prioritizes context and omits dictionary clutter", () => {

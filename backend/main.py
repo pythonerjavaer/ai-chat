@@ -1157,7 +1157,32 @@ app.include_router(create_wechat_router(
     consented_user=require_privacy_consent, admin_auth=require_admin_dashboard_token,
     discovery_provider=wechat_discovery_provider,
 ))
-app.include_router(create_leap_router(database.connect, current_user))
+def _run_leap_interpretation(user_id: int, system_prompt: str, prompt: str,
+                             max_output_tokens: int) -> dict:
+    """Use Frostfire's already-configured model path only after a user click."""
+    enforce_model_request_rate(user_id, 1)
+    try:
+        reply, usage = run_space(
+            system_prompt, prompt, max_output_tokens=max_output_tokens, mode="lean",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Leap interpretation request failed")
+        raise HTTPException(status_code=502, detail="内容解读服务暂时不可用，请稍后重试。") from exc
+    database.record_token_usage(
+        user_id, None, usage["input_tokens"], usage["output_tokens"], usage["total_tokens"],
+    )
+    return {"text": reply, "usage": usage}
+
+
+app.include_router(create_leap_router(
+    database.connect,
+    current_user,
+    _run_leap_interpretation if settings.openai_api_key else None,
+    settings.ai_model if settings.openai_api_key else "unconfigured",
+    require_privacy_consent,
+))
 app.include_router(create_pulse_router(database.connect, current_user))
 
 

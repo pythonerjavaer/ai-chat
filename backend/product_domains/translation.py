@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -16,6 +17,9 @@ import httpx
 MAX_TRANSLATION_CHARACTERS = 20_000
 DEFAULT_AZURE_MONTHLY_LIMIT = 2_000_000
 DISCLAIMER = "AI/机器翻译，仅供辅助阅读，不是官方或权威译本。"
+SENTENCE_ABBREVIATIONS = {
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "fig", "no", "dept", "inc", "ltd", "e.g", "i.e",
+}
 
 
 def _now() -> str:
@@ -28,6 +32,53 @@ def _month() -> str:
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _sentence_ranges(value: str) -> list[tuple[int, int, str]]:
+    """Small deterministic sentence splitter shared with the browser contract."""
+    source = str(value or "")
+    ranges: list[tuple[int, int, str]] = []
+    start = 0
+
+    def period_ends(index: int) -> bool:
+        if source[index] != ".":
+            return True
+        before = source[index - 1] if index else ""
+        after = source[index + 1] if index + 1 < len(source) else ""
+        if before.isdigit() and after.isdigit():
+            return False
+        if before.isupper() and re.match(r"^[A-Z]\.", source[index + 1 :]):
+            return False
+        match = re.search(r"([A-Za-z](?:[A-Za-z.]*)?)\.$", source[: index + 1])
+        token = (match.group(1) if match else "").lower()
+        if token in SENTENCE_ABBREVIATIONS or re.fullmatch(r"(?:[a-z]\.){2,}", token + ".", re.I):
+            return False
+        return True
+
+    def append(end: int) -> None:
+        nonlocal start
+        left, right = start, end
+        while left < right and source[left].isspace():
+            left += 1
+        while right > left and source[right - 1].isspace():
+            right -= 1
+        if right > left:
+            ranges.append((left, right, source[left:right]))
+        start = end
+
+    index = 0
+    while index < len(source):
+        if source[index] in ".!?。！？" and period_ends(index):
+            end = index + 1
+            while end < len(source) and source[end] in "\"'”’）)]}":
+                end += 1
+            append(end)
+            index = end
+        else:
+            index += 1
+    if start < len(source):
+        append(len(source))
+    return ranges
 
 
 def _mark_word_in_context(word: str, context: str) -> str:
@@ -298,13 +349,49 @@ class TranslationService:
 
     def _cache_key(self, user_id: int, payload: dict[str, Any]) -> tuple[dict[str, Any], Any]:
         material, paragraph = self._material_and_paragraph(user_id, payload["document_id"], payload["paragraph_position"])
-        value = self._validate_source(payload["source_text"], paragraph["content"], payload["translation_mode"])
+        mode = payload["translation_mode"]
+        paragraph_end = int(payload.get("paragraph_end") if payload.get("paragraph_end") is not None else paragraph["position"])
+        if mode == "selection" and paragraph_end != int(paragraph["position"]):
+            if paragraph_end < int(paragraph["position"]) or paragraph_end - int(paragraph["position"]) > 299:
+                raise ValueError("所选翻译范围无效或过大。")
+            with self.connect() as connection:
+                rows = connection.execute(
+                    """SELECT position,content FROM leap_paragraphs WHERE material_id=? AND material_version=?
+                       AND position>=? AND position<=? ORDER BY position""",
+                    (material["id"], material["version"], paragraph["position"], paragraph_end),
+                ).fetchall()
+            if len(rows) != paragraph_end - int(paragraph["position"]) + 1:
+                raise ValueError("所选翻译内容无法定位到当前版本原文。")
+            start, end = payload.get("selection_start"), payload.get("selection_end")
+            if start is None or end is None or start > len(rows[0]["content"]) or end > len(rows[-1]["content"]):
+                raise ValueError("所选翻译位置无效。")
+            expected = "\n\n".join([rows[0]["content"][start:], *[row["content"] for row in rows[1:-1]], rows[-1]["content"][:end]]).strip()
+            value = str(payload["source_text"] or "").strip()
+            if value != expected:
+                raise ValueError("所选翻译内容与当前版本原文位置不一致。")
+        else:
+            value = self._validate_source(payload["source_text"], paragraph["content"], mode)
+        sentence_index = payload.get("sentence_index")
+        base_segment = paragraph["stable_anchor"] or f"p-{paragraph['position']}"
+        if mode == "sentence":
+            if sentence_index is None:
+                raise ValueError("句子翻译缺少sentence_index。")
+            sentences = _sentence_ranges(paragraph["content"])
+            if sentence_index >= len(sentences) or value != sentences[sentence_index][2]:
+                raise ValueError("句子翻译内容与当前段落的句子边界不一致。")
+            segment_id = f"{base_segment}:sentence:{sentence_index}"
+        elif mode == "word" and payload.get("selection_start") is not None and payload.get("selection_end") is not None:
+            segment_id = f"{base_segment}:word:{payload['selection_start']}-{payload['selection_end']}"
+        elif mode == "selection":
+            segment_id = f"{base_segment}:selection:{paragraph_end}:{payload.get('selection_start')}-{payload.get('selection_end')}"
+        else:
+            segment_id = base_segment
         data = {
             **payload,
             "source_text": value,
             "document_version": int(material["version"]),
             "document_hash": self._document_hash(material),
-            "segment_id": payload.get("segment_id") or paragraph["stable_anchor"] or f"p-{paragraph['position']}",
+            "segment_id": segment_id,
             "source_text_hash": _digest(value),
         }
         return data, paragraph

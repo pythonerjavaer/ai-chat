@@ -25,6 +25,7 @@ from backend.product_domains.leap import (
 )
 from backend.product_domains.public_library import PublicLibraryService, seed_catalog
 from backend.product_domains.translation import AzureTranslatorProvider, TranslationService
+from backend.product_domains.interpretation import InterpretationService
 from backend.product_domains.pulse import (
     AssetStatusWrite,
     AssetWrite,
@@ -179,6 +180,94 @@ def test_translation_cache_is_persistent_versioned_and_auditable(product_store):
     assert service.window_cache(1, material["id"], 0, 100, "browser_local", "chrome-built-in-translator")["items"] == []
 
 
+def test_sentence_and_paragraph_translation_have_distinct_sources_and_cache_keys(product_store):
+    repo = LeapRepository(product_store)
+    text = "Sentence one. Sentence two is longer. Sentence three ends here."
+    material = repo.create_material(1, MaterialCreate(title="Scopes", text=text))
+    paragraph = repo.paragraphs(1, material["id"], 0, 1)["paragraphs"][0]
+    service = TranslationService(product_store)
+
+    sentence = service.save_browser_local(1, _translation_payload(
+        material, paragraph,
+        translation_mode="sentence",
+        sentence_index=1,
+        selection_start=14,
+        selection_end=37,
+        source_text="Sentence two is longer.",
+        translated_text="第二句更长。",
+    ))
+    full_paragraph = service.save_browser_local(1, _translation_payload(
+        material, paragraph,
+        translation_mode="paragraph",
+        source_text=text,
+        translated_text="第一句。第二句更长。第三句到此结束。",
+    ))
+
+    assert sentence["source_text"] == "Sentence two is longer."
+    assert full_paragraph["source_text"] == text
+    assert sentence["segment_id"].endswith(":sentence:1")
+    assert full_paragraph["segment_id"] == paragraph["stable_anchor"]
+    assert sentence["source_text_hash"] != full_paragraph["source_text_hash"]
+    with product_store() as connection:
+        rows = connection.execute(
+            "SELECT translation_mode,segment_id,source_text_hash FROM leap_translation_cache ORDER BY translation_mode"
+        ).fetchall()
+    assert len(rows) == 2
+    assert len({(row["translation_mode"], row["segment_id"], row["source_text_hash"]) for row in rows}) == 2
+
+    with pytest.raises(ValueError, match="句子边界"):
+        service.save_browser_local(1, _translation_payload(
+            material, paragraph,
+            translation_mode="sentence",
+            sentence_index=1,
+            source_text=text,
+        ))
+
+
+def test_interpretation_is_evidence_bound_cached_and_separate_from_translation(product_store):
+    repo = LeapRepository(product_store)
+    text = "Sentence one. Sentence two is longer. Sentence three ends here."
+    material = repo.create_material(1, MaterialCreate(title="Meaning", text=text))
+    calls = []
+
+    def runner(user_id, system, prompt, max_tokens):
+        calls.append((user_id, system, prompt, max_tokens))
+        return {"text": "原文明确表达：第二句更长。\n理解与推断：它与相邻句形成长度对比。"}
+
+    service = InterpretationService(product_store, runner, provider_model="test-model")
+    payload = {
+        "action": "interpret", "scope": "sentence", "document_id": material["id"],
+        "paragraph_start": 0, "paragraph_end": 0, "selection_start": 14, "selection_end": 37,
+        "source_text": "Sentence two is longer.", "context_text": text,
+        "target_language": "zh-CN", "coverage_complete": True, "coverage_label": "完整句子", "force": False,
+    }
+    first = service.interpret(1, payload)
+    repeated = service.interpret(1, payload)
+    assert first["action"] == "interpret" and first["scope"] == "sentence"
+    assert first["provider"] == "frostfire_ai" and first["provider_model"] == "test-model"
+    assert repeated["cache_hit"] is True and len(calls) == 1
+    with product_store() as connection:
+        assert connection.execute("SELECT COUNT(*) AS count FROM leap_interpretation_cache").fetchone()["count"] == 1
+        assert connection.execute("SELECT COUNT(*) AS count FROM leap_translation_cache").fetchone()["count"] == 0
+    with pytest.raises(ValueError, match="原文位置"):
+        service.interpret(1, {**payload, "source_text": text})
+
+
+def test_chapter_interpretation_reports_bounded_partial_coverage(product_store):
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(title="Chapter", text="A" * 9_000 + "\n\n" + "B" * 9_000))
+    with product_store() as connection:
+        connection.execute(
+            """INSERT INTO leap_chapters(material_id,material_version,position,title,stable_anchor,start_paragraph,end_paragraph)
+               VALUES(?,1,0,'Long chapter','c-0',0,1)""", (material["id"],),
+        )
+        connection.execute("UPDATE leap_paragraphs SET chapter_position=0,chapter_title='Long chapter' WHERE material_id=?", (material["id"],))
+    result = repo.chapter_content(1, material["id"], 0)
+    assert result["coverage_complete"] is False
+    assert result["paragraph_start"] == result["paragraph_end"] == 0
+    assert "当前仅解读已加载部分" in result["coverage_label"]
+
+
 class _AzureResponse:
     def __init__(self, payload): self.payload = payload
     def raise_for_status(self): return None
@@ -248,6 +337,35 @@ def test_translation_api_works_without_azure_credentials(product_store, monkeypa
     })
     assert cache.status_code == 200 and len(cache.json()["items"]) == 1
     assert client.get("/api/leap/translation/stats").json()["total_translated_characters"] > 0
+
+
+def test_interpretation_api_reports_unconfigured_and_uses_injected_frostfire_runner(product_store):
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(title="API meaning", text="Weight matters here."))
+    payload = {
+        "action": "interpret", "scope": "word", "document_id": material["id"],
+        "paragraph_start": 0, "paragraph_end": 0, "selection_start": 0, "selection_end": 6,
+        "source_text": "Weight", "context_text": "Weight matters here.",
+        "target_language": "zh-CN", "coverage_complete": True, "coverage_label": "完整单词", "force": False,
+    }
+    unavailable_app = FastAPI()
+    unavailable_app.include_router(create_leap_router(product_store, lambda: {"id": 1}))
+    unavailable = TestClient(unavailable_app)
+    assert unavailable.get("/api/leap/reading-assistant/capabilities").json()["available"] is False
+    assert unavailable.post("/api/leap/reading-assistant/interpret", json=payload).status_code == 503
+
+    calls = []
+    available_app = FastAPI()
+    available_app.include_router(create_leap_router(
+        product_store, lambda: {"id": 1},
+        lambda user_id, system, prompt, limit: calls.append((user_id, system, prompt, limit)) or {"text": "原文明确表达：weight在本句中是主语。"},
+        "test-model",
+    ))
+    client = TestClient(available_app)
+    response = client.post("/api/leap/reading-assistant/interpret", json=payload)
+    assert response.status_code == 200
+    assert response.json()["result_text"].startswith("原文明确表达")
+    assert len(calls) == 1
 
 
 def _pulse_master_data(repo: PulseRepository, user_id: int = 1):

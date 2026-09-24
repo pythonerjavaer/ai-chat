@@ -2224,6 +2224,9 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 .selection-card { padding:16px; border:1px solid rgba(var(--domain-accent),.28); border-radius:16px; background:rgba(var(--domain-accent),.065); }
 .selection-card small { color:rgb(var(--domain-accent)); font-size:9px; font-weight:900; letter-spacing:.12em; }
 .selection-card blockquote { margin:12px 0; color:#e5f3f7; font:500 14px/1.7 Georgia,"Songti SC",serif; }
+.reading-assistant-tabs { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:0 0 9px; padding:4px; border:1px solid rgba(var(--domain-accent),.16); border-radius:11px; background:rgba(0,0,0,.14); }
+.reading-assistant-tabs button { min-height:34px; color:#78929b; border:0; border-radius:8px; background:transparent; cursor:pointer; font-weight:800; }
+.reading-assistant-tabs button.active { color:#e6fbff; background:rgba(var(--domain-accent),.16); box-shadow:0 0 18px rgba(var(--domain-accent),.08); }
 .translation-actions { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:10px; }
 .selection-translation { margin:0 0 12px; padding:11px 12px; border:1px solid rgba(var(--domain-accent),.15); border-radius:11px; background:rgba(0,0,0,.14); color:#9eb5bd; font-size:12px; line-height:1.65; }
 .selection-translation small { display:block; margin-bottom:5px; }.selection-translation p { margin:0; color:#dff4f7; font:500 14px/1.75 "Songti SC","Noto Serif SC",serif; }
@@ -2231,6 +2234,7 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 .selection-translation .translation-core { display:block; margin:5px 0; color:#dff8ff; }
 .selection-translation .translation-context,.selection-translation .translation-alternatives { margin-top:5px; }
 .selection-translation .translation-limitation,.selection-translation .translation-audit { margin-top:7px; color:#758e96; font-size:10px; }
+.selection-translation .interpretation-result { white-space:pre-wrap; }
 .selection-translation[data-tone="loading"] { color:#96e8ff; }.selection-translation[data-tone="error"] { color:#ffacac; border-color:rgba(255,120,120,.3); }
 .translation-result-actions { display:flex; gap:7px; margin:-3px 0 12px; }
 .translation-result-actions button { border:1px solid rgba(var(--domain-accent),.18); border-radius:8px; padding:7px 9px; background:rgba(var(--domain-accent),.045); color:#a9d2dc; cursor:pointer; }
