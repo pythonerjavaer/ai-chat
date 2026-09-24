@@ -421,14 +421,15 @@ class PublicLibraryService:
             content_type = headers.get("content-type", item.get("content_type", "application/octet-stream")).split(";", 1)[0]
             parsed = parse_epub(raw) if "epub" in content_type or raw.startswith(b"PK\x03\x04") else parse_html_document(raw)
             material_id, object_id, fetched = str(uuid.uuid4()), str(uuid.uuid4()), now_iso()
+            content_hash = hashlib.sha256("\x00".join(p["content"] for p in parsed.paragraphs).encode("utf-8")).hexdigest()
             version = headers.get("etag") or headers.get("last-modified") or digest[:16]
             compressed = zlib.compress(raw, 9); object_key = f"leap/{user_id}/{row['provider']}/{row['source_item_id']}/{digest}.{item.get('format','bin').lower()}"
             with self.connect() as connection:
                 connection.execute("UPDATE leap_library_imports SET status='saving',progress=80 WHERE id=?", (run_id,))
                 connection.execute("""INSERT INTO leap_library_objects(id,user_id,object_key,content_type,content_encoding,original_size,stored_size,sha256,body,created_at)
                                       VALUES(?,?,?,?,?,?,?,?,?,?)""", (object_id, user_id, object_key, content_type, "zlib", len(raw), len(compressed), digest, compressed, fetched))
-                connection.execute("""INSERT INTO leap_materials(id,user_id,title,author,source,tags,version,paragraph_count,created_at,updated_at)
-                                      VALUES(?,?,?,?,?,?,1,?,?,?)""", (material_id, user_id, row["title"], row["author"], row["source_url"], json.dumps(["公共领域书库", row["source_name"]], ensure_ascii=False), len(parsed.paragraphs), fetched, fetched))
+                connection.execute("""INSERT INTO leap_materials(id,user_id,title,author,source,tags,version,content_hash,paragraph_count,created_at,updated_at)
+                                      VALUES(?,?,?,?,?,?,1,?,?,?,?)""", (material_id, user_id, row["title"], row["author"], row["source_url"], json.dumps(["公共领域书库", row["source_name"]], ensure_ascii=False), content_hash, len(parsed.paragraphs), fetched, fetched))
                 connection.executemany("""INSERT INTO leap_paragraphs(material_id,material_version,position,content,chapter_position,chapter_title,stable_anchor)
                                            VALUES(?,1,?,?,?,?,?)""", [(material_id, p["position"], p["content"], p["chapter_position"], p["chapter_title"], p["stable_anchor"]) for p in parsed.paragraphs])
                 connection.executemany("""INSERT INTO leap_chapters(material_id,material_version,position,title,stable_anchor,start_paragraph,end_paragraph)

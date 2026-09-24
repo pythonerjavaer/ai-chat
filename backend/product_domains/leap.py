@@ -1,5 +1,6 @@
 """跃迁域: evidence-based reading without model or embedding calls."""
 
+import hashlib
 import json
 import re
 import uuid
@@ -10,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Qu
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .public_library import PublicLibraryService, init_public_library_schema
+from .translation import TranslationService, init_translation_schema
 
 
 MAX_MATERIAL_BYTES = 2 * 1024 * 1024
@@ -56,6 +58,7 @@ def init_leap_schema(connect: Callable[[], Any]) -> None:
                 source TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '[]',
                 version INTEGER NOT NULL DEFAULT 1,
+                content_hash TEXT NOT NULL DEFAULT '',
                 paragraph_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -173,8 +176,12 @@ def init_leap_schema(connect: Callable[[], Any]) -> None:
         for name, definition in paragraph_additions.items():
             if name not in paragraph_columns:
                 connection.execute(f"ALTER TABLE leap_paragraphs ADD COLUMN {name} {definition}")
+        material_columns = {row["name"] for row in connection.execute("PRAGMA table_info(leap_materials)").fetchall()}
+        if "content_hash" not in material_columns:
+            connection.execute("ALTER TABLE leap_materials ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_leap_paragraph_anchor ON leap_paragraphs(material_id,material_version,stable_anchor)")
     init_public_library_schema(connect)
+    init_translation_schema(connect)
 
 
 class MaterialCreate(BaseModel):
@@ -248,6 +255,25 @@ class DemoAction(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class TranslationWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document_id: str
+    paragraph_position: int = Field(ge=0)
+    segment_id: str = Field(default="", max_length=300)
+    source_language: str = Field(default="en", max_length=20)
+    target_language: str = Field(default="zh-Hans", max_length=20)
+    provider: Literal["browser_local", "azure_translator"]
+    provider_model: str = Field(min_length=1, max_length=120)
+    translation_mode: Literal["word", "sentence", "paragraph", "chapter_window"]
+    source_text: str = Field(min_length=1, max_length=20_000)
+    context_text: str = Field(default="", max_length=20_000)
+    translated_text: str = Field(default="", max_length=40_000)
+    translated_at: str = Field(default="", max_length=80)
+    context_translation: str = Field(default="", max_length=40_000)
+    dictionary: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+    force: bool = False
+
+
 def _leap_demo_seed() -> dict[str, Any]:
     """Small, self-authored/public-domain-based demo; never mixed with user records."""
     now = _now()
@@ -287,14 +313,15 @@ class LeapRepository:
             raise ValueError("材料不能超过 2 MB。")
         paragraphs = _paragraphs(payload.text)
         material_id, now = str(uuid.uuid4()), _now()
+        content_hash = hashlib.sha256("\x00".join(paragraphs).encode("utf-8")).hexdigest()
         with self.connect() as connection:
             connection.execute(
                 """INSERT INTO leap_materials
-                   (id,user_id,title,author,source,tags,version,paragraph_count,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,1,?,?,?)""",
+                   (id,user_id,title,author,source,tags,version,content_hash,paragraph_count,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,1,?,?,?,?)""",
                 (material_id, user_id, payload.title.strip(), payload.author.strip(),
                  payload.source.strip(), json.dumps(payload.tags, ensure_ascii=False),
-                 len(paragraphs), now, now),
+                 content_hash, len(paragraphs), now, now),
             )
             connection.executemany(
                 """INSERT INTO leap_paragraphs
@@ -313,7 +340,7 @@ class LeapRepository:
                 (user_id, query.strip(), pattern, pattern, pattern),
             ).fetchone()["total"]
             rows = connection.execute(
-                """SELECT m.id,m.title,m.author,m.source,m.tags,m.version,m.paragraph_count,
+                """SELECT m.id,m.title,m.author,m.source,m.tags,m.version,m.content_hash,m.paragraph_count,
                           m.created_at,m.updated_at,COALESCE(p.progress_percent,0) AS progress_percent,
                           COALESCE(p.paragraph_position,0) AS paragraph_position
                    FROM leap_materials m LEFT JOIN leap_reading_progress p
@@ -330,7 +357,7 @@ class LeapRepository:
     def get_material(self, user_id: int, material_id: str) -> dict:
         with self.connect() as connection:
             row = connection.execute(
-                """SELECT m.id,m.title,m.author,m.source,m.tags,m.version,m.paragraph_count,
+                """SELECT m.id,m.title,m.author,m.source,m.tags,m.version,m.content_hash,m.paragraph_count,
                           m.created_at,m.updated_at,COALESCE(p.progress_percent,0) AS progress_percent,
                           COALESCE(p.paragraph_position,0) AS paragraph_position,
                           COALESCE(p.character_offset,0) AS character_offset
@@ -750,6 +777,7 @@ class LeapRepository:
 def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., dict]) -> APIRouter:
     router, repo = APIRouter(prefix="/api/leap", tags=["跃迁域"]), LeapRepository(connect)
     library = PublicLibraryService(connect)
+    translations = TranslationService(connect)
     User = Annotated[dict, Depends(current_user)]
 
     def safe(call):
@@ -765,7 +793,7 @@ def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., d
         return {"model_calls": False, "embeddings": False,
                 "supported_imports": ["text", "txt", "md", "reviewed-public-domain-epub"],
                 "max_bytes": MAX_MATERIAL_BYTES,
-                "features": {"公共领域书库": "已实现", "思想虫洞": "已实现", "思想宇宙": "实验性", "思想对撞": "已实现",
+                "features": {"公共领域书库": "已实现", "按需英中翻译": "本地可用；Azure可选", "思想虫洞": "已实现", "思想宇宙": "实验性", "思想对撞": "已实现",
                              "认知时间轴": "规划中", "时空透镜": "规划中", "反事实阅读": "规划中",
                              "跨时空思想会谈": "规划中", "记忆桥": "规划中", "跨域迁移": "规划中",
                              "个人认知光谱": "规划中", "认知暗物质": "规划中", "思想引力": "规划中"}}
@@ -813,6 +841,37 @@ def create_leap_router(connect: Callable[[], Any], current_user: Callable[..., d
     @router.get("/library/imports/{run_id}")
     def library_import_status(run_id: str, user: User):
         return safe(lambda: library.import_status(user["id"], run_id))
+
+    @router.get("/translation/providers")
+    def translation_providers(_: User):
+        return translations.providers()
+
+    @router.get("/translation/cache")
+    def translation_cache(
+        user: User, document_id: str, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100),
+        provider: Literal["browser_local", "azure_translator"] = "browser_local",
+        provider_model: str = Query("chrome-built-in-translator", min_length=1, max_length=120),
+        target_language: str = Query("zh-Hans", min_length=2, max_length=20),
+    ):
+        return safe(lambda: translations.window_cache(
+            user["id"], document_id, offset, limit, provider, provider_model, target_language,
+        ))
+
+    @router.put("/translation/cache")
+    def save_translation_cache(payload: TranslationWrite, user: User):
+        return safe(lambda: translations.save_browser_local(user["id"], payload.model_dump()))
+
+    @router.post("/translation/translate")
+    def translate(payload: TranslationWrite, user: User):
+        return safe(lambda: translations.translate_azure(user["id"], payload.model_dump()))
+
+    @router.post("/translation/lookup")
+    def translate_word(payload: TranslationWrite, user: User):
+        return safe(lambda: translations.translate_azure(user["id"], payload.model_dump(), lookup=True))
+
+    @router.get("/translation/stats")
+    def translation_stats(user: User):
+        return translations.stats(user["id"])
 
     @router.get("/materials")
     def materials(user: User, q: str = Query("", max_length=120), limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0)):

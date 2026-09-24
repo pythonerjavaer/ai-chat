@@ -2,6 +2,74 @@ const $ = (id) => document.getElementById(id);
 const money = (cents, currency = "AUD") => new Intl.NumberFormat("zh-CN", { style: "currency", currency, maximumFractionDigits: 2 }).format((Number(cents) || 0) / 100);
 const date = (value) => value ? new Date(value).toLocaleDateString("zh-CN") : "—";
 const iso = (value) => value ? new Date(value).toISOString() : new Date().toISOString();
+const READER_PAGE_SIZE = 100;
+const MAX_TRANSLATION_CACHE = 800;
+
+export function sentenceAroundSelection(text, start, end) {
+  const source = String(text || "");
+  const safeStart = Math.max(0, Math.min(Number(start) || 0, source.length));
+  const safeEnd = Math.max(safeStart, Math.min(Number(end) || safeStart, source.length));
+  const boundaries = /[.!?。！？]/;
+  let left = safeStart;
+  while (left > 0 && !boundaries.test(source[left - 1])) left -= 1;
+  while (left < safeStart && /\s/.test(source[left])) left += 1;
+  let right = safeEnd;
+  while (right < source.length && !boundaries.test(source[right])) right += 1;
+  if (right < source.length) right += 1;
+  return source.slice(left, right).trim();
+}
+
+export function isSingleEnglishWord(value) {
+  return /^[A-Za-z]+(?:[-'][A-Za-z]+)*$/.test(String(value || "").trim());
+}
+
+export class BrowserLocalTranslationProvider {
+  constructor(scope = window) {
+    this.scope = scope;
+    this.id = "browser_local";
+    this.model = "chrome-built-in-translator";
+    this.instance = null;
+    this.pending = null;
+  }
+  async ready() {
+    if (this.instance) return this.instance;
+    if (this.pending) return this.pending;
+    this.pending = (async () => {
+      const modern = this.scope.Translator;
+      if (modern && typeof modern.create === "function") {
+        if (typeof modern.availability === "function") {
+          const availability = await modern.availability({ sourceLanguage: "en", targetLanguage: "zh" });
+          if (["unavailable", "no"].includes(availability)) throw new Error("本机尚不支持英中翻译。请使用支持 Translator API 的最新版 Chrome，并允许下载本地语言包。");
+        }
+        return modern.create({ sourceLanguage: "en", targetLanguage: "zh" });
+      }
+      const legacy = this.scope.translation;
+      if (legacy && typeof legacy.createTranslator === "function") return legacy.createTranslator({ sourceLanguage: "en", targetLanguage: "zh" });
+      throw new Error("当前浏览器没有 Chrome 内置 Translator API；可切换已配置的 Azure Provider。");
+    })();
+    try { this.instance = await this.pending; return this.instance; }
+    catch (error) { this.pending = null; throw error; }
+  }
+  async translate(text) {
+    const translator = await this.ready();
+    const translated = String(await translator.translate(text)).trim();
+    if (!translated) throw new Error("本地翻译没有返回结果。");
+    return { translated_text: translated, dictionary: [], provider: this.id, provider_model: this.model, translated_at: new Date().toISOString(), cache_hit: false };
+  }
+  async lookupWord(word, context) {
+    const wordResult = await this.translate(word);
+    const contextual = context && context.trim() !== word.trim() ? await this.translate(context) : wordResult;
+    return { ...wordResult, contextual_only: true, context_translation: contextual.translated_text, dictionary: [] };
+  }
+}
+
+export class AzureTranslationProvider {
+  constructor(api) { this.api = api; this.id = "azure_translator"; this.model = "translator-text-v3"; }
+  async translate(payload, lookup = false) {
+    return this.api("/leap/translation/" + (lookup ? "lookup" : "translate"), { method: "POST", body: JSON.stringify({ ...payload, provider: this.id, provider_model: this.model }) });
+  }
+  async lookupWord(payload) { return this.translate(payload, true); }
+}
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -45,7 +113,7 @@ function detail(label, value) {
 export function initProductDomains({ api, toast }) {
   const leapDialog = $("leap-domain-dialog");
   const pulseDialog = $("pulse-domain-dialog");
-  const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null };
+  const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], translationMode: "original", translationProvider: "browser_local", translationProviders: {}, providerMetadata: [], translationCache: new Map(), translationGeneration: 0, cloudConsent: new Set(), cloudProviderFailed: false, lastTranslation: null, currentTranslationScope: null, translationSession: { browser_local: 0, azure_translator: 0, cacheSaved: 0 } };
   const pulse = { mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [], inspections: [], expenses: [], selectedOrder: null };
 
   function status(id, text, tone = "") { const node = $(id); node.textContent = text; node.dataset.tone = tone; }
@@ -195,26 +263,213 @@ export function initProductDomains({ api, toast }) {
       } else if (current.status === "failed") throw new Error(current.error || "书籍导入失败。 ");
     } catch (error) { $("leap-library-status").textContent = error.message; }
   }
-  async function openMaterial(id, focus = null) {
-    let material; let paragraphs;
+  function activeProvider() {
+    return leap.translationProviders[leap.translationProvider];
+  }
+  function translationKey(text, scope, position = "selection") {
+    const material = leap.activeMaterial || {};
+    const provider = activeProvider() || { id: leap.translationProvider, model: "unknown" };
+    return [material.id || "demo", material.version || 1, material.content_hash || "demo", position, scope, "en", "zh-Hans", provider.id, provider.model, text].join("|");
+  }
+  function rememberTranslation(key, value) {
+    if (leap.translationCache.has(key)) leap.translationCache.delete(key);
+    leap.translationCache.set(key, value);
+    while (leap.translationCache.size > MAX_TRANSLATION_CACHE) leap.translationCache.delete(leap.translationCache.keys().next().value);
+  }
+  function translationPayload(text, scope, paragraph, force = false) {
+    const provider = activeProvider();
+    return {
+      document_id: leap.activeMaterial.id,
+      paragraph_position: paragraph.position,
+      segment_id: paragraph.stable_anchor || "p-" + paragraph.position,
+      source_language: "en", target_language: "zh-Hans", provider: provider.id,
+      provider_model: provider.model, translation_mode: scope,
+      source_text: String(text || "").trim(), context_text: paragraph.content,
+      translated_text: "", translated_at: "", context_translation: "", dictionary: [], force,
+    };
+  }
+  async function ensureCloudConsent() {
+    if (leap.translationProvider !== "azure_translator") return;
+    const material = leap.activeMaterial || {};
+    if (material.library_source || leap.cloudConsent.has(material.id)) return;
+    const accepted = window.confirm("选中的文本将发送到第三方翻译服务 Microsoft Azure Translator。不会自动上传整本文档；只有你明确请求的当前选区或当前阅读窗口会发送。是否继续？");
+    if (!accepted) throw new Error("已取消云端翻译；你可以切换到本机模式。");
+    leap.cloudConsent.add(material.id);
+  }
+  async function loadTranslationCapabilities() {
+    leap.translationProviders = {
+      browser_local: new BrowserLocalTranslationProvider(window),
+      azure_translator: new AzureTranslationProvider(api),
+    };
+    try {
+      const [capabilities, usage] = await Promise.all([api("/leap/translation/providers"), api("/leap/translation/stats")]);
+      leap.providerMetadata = capabilities.providers || [];
+      const azure = leap.providerMetadata.find((item) => item.id === "azure_translator");
+      const azureOption = [...$("leap-translation-provider").options].find((item) => item.value === "azure_translator");
+      if (azureOption) { azureOption.disabled = !azure?.configured; azureOption.textContent = azure?.configured ? "云端 · Microsoft Azure" : "云端 · Azure（未配置）"; }
+      const totals = (usage.providers || []).map((item) => item.provider + " " + Number(item.translated_characters || 0).toLocaleString() + "字").join(" · ") || "尚无翻译请求";
+      const current = Object.entries(leap.translationSession).filter(([key]) => key !== "cacheSaved").map(([key, value]) => key + " " + value.toLocaleString() + "字").join(" · ");
+      $("leap-translation-usage").textContent = "本次 " + current + " · 本次缓存节省 " + leap.translationSession.cacheSaved.toLocaleString() + "字 · 本月 " + usage.month + " / " + totals + " · 累计缓存节省 " + Number(usage.total_cache_hit_characters || 0).toLocaleString() + " 字";
+      updateProviderCapability();
+    } catch (error) { $("leap-translation-capability").textContent = "翻译能力状态暂时无法读取：" + error.message; }
+  }
+  function updateProviderCapability() {
+    const info = leap.providerMetadata.find((item) => item.id === leap.translationProvider);
+    if (leap.translationProvider === "browser_local") {
+      $("leap-translation-capability").textContent = "Chrome 内置 Translator · 浏览器/设备运行 · 首次可能下载语言包 · 内部模型与大小由Chrome管理";
+    } else {
+      $("leap-translation-capability").textContent = info?.configured ? "Azure Translator v3 · 后端调用 · 密钥不会进入浏览器" : "Azure尚未配置，当前不可用";
+    }
+  }
+  async function hydrateWindowCache() {
+    if (leapDemo() || !leap.activeMaterial) return;
+    const provider = activeProvider();
+    const query = new URLSearchParams({ document_id: leap.activeMaterial.id, offset: String(leap.readerOffset), limit: String(READER_PAGE_SIZE), provider: provider.id, provider_model: provider.model, target_language: "zh-Hans" });
+    try {
+      const data = await api("/leap/translation/cache?" + query);
+      (data.items || []).forEach((item) => {
+        const paragraph = leap.readerParagraphs.find((row) => Number(row.position) === Number(item.paragraph_position));
+        if (paragraph) rememberTranslation(translationKey(paragraph.content, item.translation_mode, paragraph.position), { ...item, cache_hit: true });
+      });
+    } catch (error) { $("leap-translation-capability").textContent = "缓存暂时不可读取；翻译仍可按需进行。"; }
+  }
+  async function persistLocalTranslation(payload, result) {
+    if (leapDemo()) return result;
+    try {
+      return await api("/leap/translation/cache", { method: "PUT", body: JSON.stringify({ ...payload, translated_text: result.translated_text, translated_at: result.translated_at, context_translation: result.context_translation || "", dictionary: result.dictionary || [] }) });
+    } catch (error) {
+      $("leap-translation-capability").textContent = "译文已生成，但持久缓存保存失败：" + error.message;
+      return result;
+    }
+  }
+  async function translateText(text, scope, paragraph, force = false) {
+    const value = String(text || "").trim();
+    if (!value) throw new Error("没有可翻译的英文内容。");
+    const key = translationKey(value, scope, paragraph.position);
+    if (!force && leap.translationCache.has(key)) {
+      leap.translationSession.cacheSaved += value.length;
+      return { ...leap.translationCache.get(key), cache_hit: true };
+    }
+    await ensureCloudConsent();
+    const provider = activeProvider();
+    if (provider.id === "azure_translator" && leap.cloudProviderFailed) throw new Error("本次会话的云翻译已因失败自动暂停；切换本地模式后仍可使用缓存与本地翻译。");
+    const payload = translationPayload(value, scope, paragraph, force);
+    let result;
+    if (provider.id === "browser_local") {
+      result = scope === "word" ? await provider.lookupWord(value, paragraph.content) : await provider.translate(value);
+      result = await persistLocalTranslation(payload, result);
+    } else {
+      try { result = scope === "word" ? await provider.lookupWord(payload) : await provider.translate(payload); }
+      catch (error) { leap.cloudProviderFailed = true; throw error; }
+    }
+    if (result.cache_hit) leap.translationSession.cacheSaved += value.length;
+    else leap.translationSession[provider.id] += value.length + (scope === "word" ? paragraph.content.length : 0);
+    rememberTranslation(key, result);
+    return result;
+  }
+  function renderTranslationResult(original, result, scope) {
+    const output = $("leap-selection-translation"); output.replaceChildren();
+    output.append(el("small", "", (scope === "word" ? "词义与语境" : scope === "sentence" ? "句子对照" : "段落对照") + " · " + result.provider + " / " + result.provider_model + (result.cache_hit ? " · 缓存" : "")));
+    output.append(el("p", "translation-original", original));
+    const dictionary = result.metadata?.dictionary || result.dictionary || [];
+    if (scope === "word" && dictionary.length) {
+      const core = dictionary[0];
+      output.append(el("strong", "translation-core", "核心释义 · " + core.display_target + (core.part_of_speech ? " · " + core.part_of_speech : "")));
+      output.append(el("p", "translation-context", "当前句语境 · " + (result.metadata?.context_translation || result.context_translation || result.translated_text)));
+      const others = dictionary.slice(1, 5).map((item) => item.display_target + (item.part_of_speech ? "（" + item.part_of_speech + "）" : "")).join("；");
+      if (others) output.append(el("p", "translation-alternatives", "其他常见义项 · " + others));
+    } else {
+      if (scope === "word") {
+        output.append(el("strong", "translation-core", "核心释义 · " + result.translated_text));
+        output.append(el("p", "translation-context", "当前句语境 · " + (result.metadata?.context_translation || result.context_translation || result.translated_text)));
+        output.append(el("p", "translation-limitation", "本地Provider不提供词性或其他常见义项；需要这些字段时可使用已配置的Azure词典能力。"));
+      } else output.append(el("p", "translation-result", result.translated_text));
+    }
+    output.append(el("small", "translation-audit", "AI/机器翻译，仅供辅助阅读 · " + (result.translated_at ? new Date(result.translated_at).toLocaleString("zh-CN") : "刚刚")));
+    output.dataset.tone = "ok";
+    leap.lastTranslation = { original, translated: result.translated_text, result, scope };
+    $("leap-copy-translation").disabled = false; $("leap-save-translation-note").disabled = false;
+  }
+  async function translateSelection(scope, force = false) {
+    if (!leap.selection) throw new Error("请先在正文中选择英文单词、句子或段落。");
+    let original = leap.selection.quote;
+    if (scope === "word" && !isSingleEnglishWord(original)) throw new Error("“翻译单词”一次只接受一个英文单词；也可以改用翻译句子。");
+    if (scope === "sentence") original = sentenceAroundSelection(leap.selection.paragraph_text, leap.selection.start_offset, leap.selection.end_offset);
+    if (scope === "paragraph") original = leap.selection.paragraph_text;
+    const paragraph = leap.readerParagraphs.find((item) => Number(item.position) === Number(leap.selection.paragraph_position));
+    if (!paragraph) throw new Error("当前原文段落已变化，请重新选择。");
+    const output = $("leap-selection-translation"); output.dataset.tone = "loading"; output.textContent = "正在按需翻译…";
+    const result = await translateText(original, scope, paragraph, force);
+    leap.currentTranslationScope = scope; renderTranslationResult(original, result, scope); loadTranslationCapabilities();
+  }
+  function applyReaderTranslationMode() {
+    const host = $("leap-reader-pages");
+    host.classList.toggle("translation-stacked", leap.translationMode === "stacked");
+    host.classList.toggle("translation-side-by-side", leap.translationMode === "side_by_side");
+    host.classList.toggle("translation-only", leap.translationMode === "translation_only");
+  }
+  async function renderBilingualPage(forcePosition = null) {
+    const generation = ++leap.translationGeneration;
+    if (leap.translationMode === "original") return;
+    await hydrateWindowCache();
+    const button = $("leap-bilingual-toggle"); let completed = 0;
+    for (let index = 0; index < leap.readerParagraphs.length; index += 1) {
+      if (generation !== leap.translationGeneration || leap.translationMode === "original") return;
+      const paragraph = leap.readerParagraphs[index];
+      if (forcePosition !== null && Number(forcePosition) !== Number(paragraph.position)) continue;
+      const section = $("leap-reader-pages").querySelector('[data-position="' + paragraph.position + '"]');
+      if (!section) continue;
+      let translated = section.querySelector(".manuscript-translation");
+      if (!translated) { translated = el("div", "manuscript-translation", "正在翻译…"); section.append(translated); }
+      try {
+        const result = await translateText(paragraph.content, "chapter_window", paragraph, Number(forcePosition) === Number(paragraph.position));
+        translated.replaceChildren(el("p", "", result.translated_text), el("small", "", result.provider + " / " + result.provider_model + (result.cache_hit ? " · 缓存" : "") + " · 机器翻译"), action("重新翻译本段", () => renderBilingualPage(paragraph.position), "translation-retry"));
+        translated.dataset.tone = "ok"; completed += 1;
+      } catch (error) {
+        translated.replaceChildren(el("span", "", error.message), action("重试本段", () => renderBilingualPage(paragraph.position), "translation-retry"));
+        translated.dataset.tone = "error";
+        if (forcePosition === null) break;
+      }
+      button.textContent = "当前窗口翻译 " + completed + "/" + leap.readerParagraphs.length;
+      if (forcePosition !== null) break;
+    }
+    button.textContent = "翻译当前阅读窗口";
+    loadTranslationCapabilities();
+  }
+  function updateReaderPager() {
+    const material = leap.activeMaterial || {};
+    const total = Number(material.paragraph_count) || leap.readerParagraphs.length;
+    const start = total ? leap.readerOffset + 1 : 0;
+    const end = Math.min(total, leap.readerOffset + leap.readerParagraphs.length);
+    $("leap-reader-page").textContent = start + "–" + end + " / " + total + " 段";
+    $("leap-reader-previous").disabled = leap.readerOffset <= 0;
+    $("leap-reader-next").disabled = end >= total;
+  }
+  async function openMaterial(id, focus = null, requestedOffset = null) {
+    let material; let paragraphs; let offset = 0;
     if (leapDemo()) {
       material = leap.materials.find((item) => item.id === id);
       paragraphs = (material ? material.paragraphs : []).map((content, position) => ({ content, position }));
     } else {
-      const data = await api("/leap/materials/" + id + "/paragraphs?offset=0&limit=100");
-      material = data.material; paragraphs = data.paragraphs;
+      offset = requestedOffset == null ? (focus == null ? 0 : Math.floor(Math.max(0, focus) / READER_PAGE_SIZE) * READER_PAGE_SIZE) : Math.max(0, requestedOffset);
+      const data = await api("/leap/materials/" + id + "/paragraphs?offset=" + offset + "&limit=" + READER_PAGE_SIZE);
+      material = data.material; paragraphs = data.paragraphs; offset = data.offset || offset;
     }
     if (!material) return;
-    leap.activeMaterial = material; $("leap-note-material").value = material.id;
+    leap.activeMaterial = material; leap.readerOffset = offset; leap.readerParagraphs = paragraphs; leap.selection = null; leap.translationGeneration += 1;
+    $("leap-note-material").value = material.id;
     $("leap-reader-title").textContent = material.title;
-    $("leap-reader-meta").textContent = (material.author || material.kind || "作者未知") + " · " + paragraphs.length + " 段 · 拖动选择文字建立证据";
+    $("leap-reader-meta").textContent = (material.author || material.kind || "作者未知") + " · 共 " + (material.paragraph_count || paragraphs.length) + " 段 · 选中文字可翻译或建立证据";
+    $("leap-selection-quote").textContent = "在正文中拖动选择单词、句子或段落";
+    $("leap-selection-translation").textContent = "翻译仅在你点击时运行。本地模式不离开设备；云端模式会明确提示。";
+    leap.lastTranslation = null; $("leap-copy-translation").disabled = true; $("leap-save-translation-note").disabled = true;
     const source = $("leap-reader-source"); source.replaceChildren(); source.classList.toggle("hidden", !material.library_source);
     if (material.library_source) {
       const info = material.library_source; source.append(el("small", "", "PUBLIC-DOMAIN SOURCE"), el("strong", "", info.source_name), el("p", "", (info.edition || "") + (info.translator ? " · 译者 " + info.translator : "")), el("p", "", info.licensing_note));
       const link = el("a", "", "查看原始来源"); link.href = info.source_url; link.target = "_blank"; link.rel = "noopener noreferrer"; source.append(link);
     }
     const chapterHost = $("leap-reader-chapters"); chapterHost.replaceChildren();
-    (material.chapters || []).forEach((chapter) => chapterHost.append(action(chapter.title, () => { const target = $("leap-reader-pages").querySelector('[data-position="' + chapter.start_paragraph + '"]'); if (target) target.scrollIntoView({ behavior: "smooth", block: "start" }); }, "chapter-link")));
+    (material.chapters || []).forEach((chapter) => chapterHost.append(action(chapter.title, async () => { const target = $("leap-reader-pages").querySelector('[data-position="' + chapter.start_paragraph + '"]'); if (target) target.scrollIntoView({ behavior: "smooth", block: "start" }); else await openMaterial(material.id, chapter.start_paragraph); }, "chapter-link")));
     if (!(material.chapters || []).length) chapterHost.append(blank("此材料没有独立章节信息。"));
     const host = $("leap-reader-pages"); host.replaceChildren();
     paragraphs.forEach((paragraph) => {
@@ -223,7 +478,10 @@ export function initProductDomains({ api, toast }) {
       const text = el("p", "", paragraph.content); section.append(el("small", "", String(paragraph.position + 1).padStart(2, "0")), text);
       section.addEventListener("mouseup", () => captureSelection(section, text, paragraph)); host.append(section);
     });
+    updateReaderPager();
     tab(leapDialog, "reader");
+    applyReaderTranslationMode();
+    if (leap.translationMode !== "original") await renderBilingualPage();
     if (focus !== null) requestAnimationFrame(() => { const target = host.querySelector('[data-position="' + focus + '"]'); if (target) { target.classList.add("evidence-focus"); target.scrollIntoView({ behavior: "smooth", block: "center" }); } });
   }
   function captureSelection(section, paragraphNode, paragraph) {
@@ -231,8 +489,10 @@ export function initProductDomains({ api, toast }) {
     if (!selected || selected.isCollapsed || !section.contains(selected.anchorNode) || !section.contains(selected.focusNode)) return;
     const quote = selected.toString().trim(); if (!quote) return;
     const start = Math.max(0, paragraphNode.textContent.indexOf(quote));
-    leap.selection = { material_id: leap.activeMaterial.id, material_version: leap.activeMaterial.version || 1, paragraph_position: paragraph.position, start_offset: start, end_offset: start + quote.length, quote };
+    leap.selection = { material_id: leap.activeMaterial.id, material_version: leap.activeMaterial.version || 1, paragraph_position: paragraph.position, start_offset: start, end_offset: start + quote.length, quote, paragraph_text: paragraph.content };
     $("leap-selection-quote").textContent = quote;
+    $("leap-selection-translation").textContent = "选择翻译范围：单词、所在句子或整个段落。";
+    leap.lastTranslation = null; leap.currentTranslationScope = null; $("leap-copy-translation").disabled = true; $("leap-save-translation-note").disabled = true;
     section.parentElement.querySelectorAll(".selected").forEach((item) => item.classList.remove("selected")); section.classList.add("selected");
   }
   async function saveSelection() {
@@ -245,6 +505,44 @@ export function initProductDomains({ api, toast }) {
   }
   async function jumpEvidence(item) { if (item) await openMaterial(item.material_id, Number(item.paragraph_position)); }
 
+  function requestSelectionTranslation(scope) {
+    translateSelection(scope).catch((error) => { const output = $("leap-selection-translation"); output.textContent = error.message; output.dataset.tone = "error"; });
+  }
+  $("leap-translate-word").addEventListener("click", () => requestSelectionTranslation("word"));
+  $("leap-translate-sentence").addEventListener("click", () => requestSelectionTranslation("sentence"));
+  $("leap-translate-paragraph").addEventListener("click", () => requestSelectionTranslation("paragraph"));
+  $("leap-retranslate-selection").addEventListener("click", () => {
+    const scope = leap.currentTranslationScope || (leap.selection && isSingleEnglishWord(leap.selection.quote) ? "word" : "sentence");
+    translateSelection(scope, true).catch((error) => { $("leap-selection-translation").textContent = error.message; $("leap-selection-translation").dataset.tone = "error"; });
+  });
+  $("leap-copy-translation").addEventListener("click", async () => {
+    if (!leap.lastTranslation) return;
+    await navigator.clipboard.writeText(leap.lastTranslation.translated); toast("译文已复制。");
+  });
+  $("leap-save-translation-note").addEventListener("click", async () => {
+    if (!leap.lastTranslation) return;
+    try {
+      await saveSelection();
+      const note = $("leap-note-form").querySelector("textarea");
+      note.value = "[AI/机器翻译，仅供辅助阅读]\n" + leap.lastTranslation.translated + "\n\n我的理解：";
+      note.focus(); toast("原文已作为证据保存；译文只写入你的个人理解，不会冒充作者原文。");
+    } catch (error) { status("leap-status", error.message, "error"); }
+  });
+  $("leap-translation-provider").addEventListener("change", (event) => {
+    leap.translationProvider = event.target.value; leap.translationGeneration += 1; leap.lastTranslation = null; leap.cloudProviderFailed = false;
+    $("leap-reader-pages").querySelectorAll(".manuscript-translation").forEach((node) => node.remove()); updateProviderCapability();
+  });
+  $("leap-translation-mode").addEventListener("change", (event) => {
+    leap.translationMode = event.target.value; leap.translationGeneration += 1; applyReaderTranslationMode();
+    if (leap.translationMode === "original") $("leap-reader-pages").querySelectorAll(".manuscript-translation").forEach((node) => node.remove());
+  });
+  $("leap-bilingual-toggle").addEventListener("click", async () => {
+    if (!leap.activeMaterial) return status("leap-status", "请先选择一份英文材料。", "error");
+    if (leap.translationMode === "original") { leap.translationMode = "stacked"; $("leap-translation-mode").value = "stacked"; applyReaderTranslationMode(); }
+    try { await renderBilingualPage(); } catch (error) { status("leap-status", error.message, "error"); }
+  });
+  $("leap-reader-previous").addEventListener("click", () => leap.activeMaterial && openMaterial(leap.activeMaterial.id, null, Math.max(0, leap.readerOffset - READER_PAGE_SIZE)));
+  $("leap-reader-next").addEventListener("click", () => leap.activeMaterial && openMaterial(leap.activeMaterial.id, null, leap.readerOffset + READER_PAGE_SIZE));
   $("leap-selection-save").addEventListener("click", async () => { try { await saveSelection(); } catch (error) { status("leap-status", error.message, "error"); } });
   $("leap-selection-note").addEventListener("click", async () => { try { await saveSelection(); $("leap-note-form").querySelector("textarea").focus(); } catch (error) { status("leap-status", error.message, "error"); } });
   $("leap-selection-wormhole").addEventListener("click", async () => { try { await saveSelection(); tab(leapDialog, "wormholes"); } catch (error) { status("leap-status", error.message, "error"); } });
@@ -505,7 +803,7 @@ export function initProductDomains({ api, toast }) {
   pulseDialog.addEventListener("cancel", (event) => { event.preventDefault(); pulseDialog.close(); });
 
   return {
-    async openLeap() { if (!leapDialog.open) leapDialog.showModal(); tab(leapDialog, "home"); try { await loadLeap(); } catch (error) { status("leap-status", error.message, "error"); } },
+    async openLeap() { if (!leapDialog.open) leapDialog.showModal(); tab(leapDialog, "home"); try { await Promise.all([loadLeap(), loadTranslationCapabilities()]); } catch (error) { status("leap-status", error.message, "error"); } },
     async openPulse() { if (!pulseDialog.open) pulseDialog.showModal(); tab(pulseDialog, "overview"); try { await loadPulse(); } catch (error) { status("pulse-status", error.message, "error"); } },
   };
 }

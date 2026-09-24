@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from backend.product_domains import init_leap_schema, init_pulse_schema
 from backend.tests.test_postgres_application import persistent_app, register  # noqa: F401
@@ -19,8 +21,10 @@ from backend.product_domains.leap import (
     ProgressUpdate,
     WormholeWrite,
     DemoAction,
+    create_leap_router,
 )
 from backend.product_domains.public_library import PublicLibraryService, seed_catalog
+from backend.product_domains.translation import AzureTranslatorProvider, TranslationService
 from backend.product_domains.pulse import (
     AssetStatusWrite,
     AssetWrite,
@@ -135,6 +139,114 @@ def test_seed_catalog_blocks_ctext_fulltext_and_exposes_versions(product_store):
     service = PublicLibraryService(product_store, _LibraryClient())
     with pytest.raises(ValueError, match="人工确认"):
         service.create_import(1, "ctext", "analects")
+
+
+def _translation_payload(material, paragraph, **overrides):
+    payload = {
+        "document_id": material["id"], "paragraph_position": paragraph["position"],
+        "segment_id": paragraph.get("stable_anchor") or "p-0", "source_language": "en", "target_language": "zh-Hans",
+        "provider": "browser_local", "provider_model": "chrome-built-in-translator",
+        "translation_mode": "paragraph", "source_text": paragraph["content"], "context_text": paragraph["content"],
+        "translated_text": "经审视的人生。", "translated_at": "2026-09-25T00:00:00+00:00",
+        "context_translation": "", "dictionary": [], "force": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_translation_cache_is_persistent_versioned_and_auditable(product_store):
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(title="Test", text="The examined life."))
+    paragraph = repo.paragraphs(1, material["id"], 0, 1)["paragraphs"][0]
+    service = TranslationService(product_store)
+    payload = _translation_payload(material, paragraph)
+    saved = service.save_browser_local(1, payload)
+    repeated = service.save_browser_local(1, payload)
+    assert saved["translated_text"] == "经审视的人生。"
+    assert repeated["cache_hit"] is True
+    assert repeated["metadata"]["disclaimer"].startswith("AI/机器翻译")
+    window = service.window_cache(1, material["id"], 0, 100, "browser_local", "chrome-built-in-translator")
+    assert len(window["items"]) == 1
+    stats = service.stats(1)
+    assert stats["providers"][0]["request_count"] == 1
+    assert stats["providers"][0]["cache_hit_characters"] > 0
+    with product_store() as connection:
+        connection.execute("UPDATE leap_materials SET version=2,content_hash='' WHERE id=?", (material["id"],))
+        connection.execute(
+            "INSERT INTO leap_paragraphs(material_id,material_version,position,content,stable_anchor) VALUES(?,2,0,?,?)",
+            (material["id"], "The changed life.", "p-v2-000000"),
+        )
+    assert service.window_cache(1, material["id"], 0, 100, "browser_local", "chrome-built-in-translator")["items"] == []
+
+
+class _AzureResponse:
+    def __init__(self, payload): self.payload = payload
+    def raise_for_status(self): return None
+    def json(self): return self.payload
+
+
+class _AzureClient:
+    def __init__(self): self.calls = []
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if url.endswith("/dictionary/lookup"):
+            return _AzureResponse([{"translations": [{"displayTarget": "理性", "posTag": "NOUN", "confidence": 0.9, "backTranslations": [{"displayText": "reason"}]}]}])
+        return _AzureResponse([{"translations": [{"text": "理性指引选择。"}]}])
+
+
+def test_azure_provider_dictionary_context_quota_and_no_key_fallback(product_store):
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(title="Test", text="Reason guides choice."))
+    paragraph = repo.paragraphs(1, material["id"], 0, 1)["paragraphs"][0]
+    client = _AzureClient()
+    azure = AzureTranslatorProvider("secret", "australiaeast", client=client)
+    service = TranslationService(product_store, azure=azure, azure_monthly_limit=1_000)
+    payload = _translation_payload(
+        material, paragraph, provider="azure_translator", provider_model="translator-text-v3",
+        translation_mode="word", source_text="Reason", context_text=paragraph["content"], translated_text="",
+    )
+    result = service.translate_azure(1, payload, lookup=True)
+    assert result["metadata"]["dictionary"][0]["part_of_speech"] == "NOUN"
+    assert result["metadata"]["context_translation"] == "理性指引选择。"
+    assert len(client.calls) == 2
+    assert all(call[1]["headers"]["Ocp-Apim-Subscription-Key"] == "secret" for call in client.calls)
+    unconfigured = TranslationService(product_store, azure=AzureTranslatorProvider())
+    assert unconfigured.providers()["providers"][1]["configured"] is False
+    with pytest.raises(ValueError, match="尚未配置"):
+        unconfigured.translate_azure(1, {**payload, "force": True})
+
+
+def test_translation_rejects_text_that_cannot_return_to_original(product_store):
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(title="Test", text="Original evidence only."))
+    paragraph = repo.paragraphs(1, material["id"], 0, 1)["paragraphs"][0]
+    service = TranslationService(product_store)
+    with pytest.raises(ValueError, match="原文"):
+        service.save_browser_local(1, _translation_payload(material, paragraph, source_text="Invented quote"))
+
+
+def test_translation_api_works_without_azure_credentials(product_store, monkeypatch):
+    monkeypatch.delenv("AZURE_TRANSLATOR_KEY", raising=False)
+    monkeypatch.delenv("AZURE_TRANSLATOR_REGION", raising=False)
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(title="API", text="Truth needs evidence."))
+    paragraph = repo.paragraphs(1, material["id"], 0, 1)["paragraphs"][0]
+    app = FastAPI()
+    app.include_router(create_leap_router(product_store, lambda: {"id": 1}))
+    client = TestClient(app)
+    providers = client.get("/api/leap/translation/providers")
+    assert providers.status_code == 200
+    assert providers.json()["providers"][1]["configured"] is False
+    saved = client.put("/api/leap/translation/cache", json=_translation_payload(material, paragraph))
+    assert saved.status_code == 200
+    assert saved.json()["provider"] == "browser_local"
+    cache = client.get("/api/leap/translation/cache", params={
+        "document_id": material["id"], "offset": 0, "limit": 100,
+        "provider": "browser_local", "provider_model": "chrome-built-in-translator",
+        "target_language": "zh-Hans",
+    })
+    assert cache.status_code == 200 and len(cache.json()["items"]) == 1
+    assert client.get("/api/leap/translation/stats").json()["total_translated_characters"] > 0
 
 
 def _pulse_master_data(repo: PulseRepository, user_id: int = 1):
