@@ -126,6 +126,8 @@ from .product_domains import (
 from .product_domains.interpretation import classify_provider_failure
 from .product_domains.interpretation_providers import (
     CallbackInterpretationProvider,
+    FreeInterpretationProvider,
+    GeminiInterpretationProvider,
     OpenRouterInterpretationProvider,
 )
 from .future_radar.adapters import _public_reference_url, _redact_public_text
@@ -1201,11 +1203,21 @@ interpretation_providers = {
         endpoint=settings.openrouter_endpoint,
         site_url=settings.public_base_url,
     ),
+    "gemini": GeminiInterpretationProvider(
+        settings.gemini_api_key,
+        settings.gemini_interpret_model,
+        endpoint=settings.gemini_endpoint,
+        allow_paid=settings.gemini_allow_paid,
+    ),
     "openai": CallbackInterpretationProvider(
         _run_leap_interpretation if settings.openai_api_key else None,
         settings.ai_model,
     ),
 }
+interpretation_providers["auto"] = FreeInterpretationProvider([
+    interpretation_providers["openrouter"],
+    interpretation_providers["gemini"],
+])
 app.include_router(create_leap_router(
     database.connect,
     current_user,

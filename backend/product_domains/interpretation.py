@@ -408,7 +408,11 @@ class InterpretationService:
         if selected_provider is None:
             raise InterpretationProviderError("AI_PROVIDER_ERROR", 422, "未知的内容解读Provider。")
         if not selected_provider.configured:
-            code = "OPENROUTER_NOT_CONFIGURED" if provider_id == "openrouter" else "AI_NOT_CONFIGURED"
+            code = {
+                "openrouter": "OPENROUTER_NOT_CONFIGURED",
+                "gemini": "GEMINI_NOT_CONFIGURED",
+                "auto": "ALL_FREE_INTERPRETATION_PROVIDERS_UNAVAILABLE",
+            }.get(provider_id, "AI_NOT_CONFIGURED")
             raise InterpretationProviderError(code, 503, f"{selected_provider.label}尚未配置。")
         identity = {
             "user_id": user_id,

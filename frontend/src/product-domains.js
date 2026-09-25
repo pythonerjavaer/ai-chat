@@ -271,7 +271,7 @@ export function initProductDomains({ api, toast }) {
   const leapDialog = $("leap-domain-dialog");
   const pulseDialog = $("pulse-domain-dialog");
   let authGeneration = 0;
-  const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], translationMode: "original", translationProvider: "browser_local", translationProviders: {}, providerMetadata: [], translationCache: new Map(), translationGeneration: 0, cloudConsent: new Set(), cloudProviderFailed: false, lastTranslation: null, currentTranslationScope: null, assistantAction: "translate", currentAssistantScope: null, assistantResults: new Map(), assistantLast: {}, assistantStates: { translate: { status: "idle", error: "" }, interpret: { status: "idle", error: "" } }, assistantGeneration: 0, assistantController: null, interpretationCapability: null, interpretationProvider: "openrouter", interpretationConsent: new Set(), translationSession: { browser_local: 0, azure_translator: 0, cacheSaved: 0 } };
+  const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], translationMode: "original", translationProvider: "browser_local", translationProviders: {}, providerMetadata: [], translationCache: new Map(), translationGeneration: 0, cloudConsent: new Set(), cloudProviderFailed: false, lastTranslation: null, currentTranslationScope: null, assistantAction: "translate", currentAssistantScope: null, assistantResults: new Map(), assistantLast: {}, assistantStates: { translate: { status: "idle", error: "" }, interpret: { status: "idle", error: "" } }, assistantGeneration: 0, assistantController: null, interpretationCapability: null, interpretationProvider: "auto", interpretationConsent: new Set(), translationSession: { browser_local: 0, azure_translator: 0, cacheSaved: 0 } };
   const pulse = { mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [], inspections: [], expenses: [], selectedOrder: null };
 
   function status(id, text, tone = "") { const node = $(id); node.textContent = text; node.dataset.tone = tone; }
@@ -474,11 +474,14 @@ export function initProductDomains({ api, toast }) {
         [...interpretationSelect.options].forEach((option) => {
           const info = providers.find((item) => item.id === option.value);
           option.disabled = !info?.configured;
+          if (option.value === "auto") option.textContent = info?.configured ? "免费 · 自动" : "免费 · 自动（未配置）";
           if (option.value === "openrouter") option.textContent = info?.configured ? "免费 · OpenRouter Free" : "免费 · OpenRouter（未配置）";
+          if (option.value === "gemini") option.textContent = info?.configured ? "免费 · Gemini" : "免费 · Gemini（未配置）";
           if (option.value === "openai") option.textContent = info?.configured ? "OpenAI" : "OpenAI（当前不可用）";
         });
         const preferred = providers.find((item) => item.id === leap.interpretationProvider)
           || providers.find((item) => item.id === interpretation.default_provider)
+          || providers.find((item) => item.id === "auto")
           || providers.find((item) => item.id === "openrouter");
         if (preferred) leap.interpretationProvider = preferred.id;
         interpretationSelect.value = leap.interpretationProvider;

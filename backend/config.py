@@ -35,11 +35,15 @@ class Settings:
     future_radar_close_confirmations: int
     future_radar_max_workers: int
     future_radar_ai_model: str
-    ai_interpret_provider: str = "openrouter"
+    ai_interpret_provider: str = "auto"
     openrouter_api_key: str = field(default="", repr=False)
     openrouter_model: str = "openrouter/free"
     openrouter_interpret_fallback_model: str = "openrouter/free"
     openrouter_endpoint: str = "https://openrouter.ai/api/v1/chat/completions"
+    gemini_api_key: str = field(default="", repr=False)
+    gemini_interpret_model: str = ""
+    gemini_endpoint: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_allow_paid: bool = False
     database_backend: str = "sqlite"
     database_url: str = field(default="", repr=False)
     database_schema: str = "frostfire"
@@ -102,9 +106,9 @@ def load_settings() -> Settings:
         "RECRUITMENT_WEB_SEARCH_ENABLED",
         "false",
     ).strip().lower() in {"1", "true", "yes", "on"}
-    ai_interpret_provider = os.getenv("AI_INTERPRET_PROVIDER", "openrouter").strip().lower() or "openrouter"
-    if ai_interpret_provider not in {"openrouter", "openai"}:
-        raise RuntimeError("AI_INTERPRET_PROVIDER must be openrouter or openai.")
+    ai_interpret_provider = os.getenv("AI_INTERPRET_PROVIDER", "auto").strip().lower() or "auto"
+    if ai_interpret_provider not in {"auto", "openrouter", "gemini", "openai"}:
+        raise RuntimeError("AI_INTERPRET_PROVIDER must be auto, openrouter, gemini or openai.")
 
     return Settings(
         openai_api_key=openai_api_key,
@@ -189,6 +193,13 @@ def load_settings() -> Settings:
             os.getenv("OPENROUTER_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions").strip()
             or "https://openrouter.ai/api/v1/chat/completions"
         ),
+        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
+        gemini_interpret_model=os.getenv("GEMINI_INTERPRET_MODEL", "").strip(),
+        gemini_endpoint=(
+            os.getenv("GEMINI_ENDPOINT", "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+            or "https://generativelanguage.googleapis.com/v1beta"
+        ),
+        gemini_allow_paid=os.getenv("GEMINI_ALLOW_PAID", "false").strip().lower() in {"1", "true", "yes", "on"},
     )
 
 

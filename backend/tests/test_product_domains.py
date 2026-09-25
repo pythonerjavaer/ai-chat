@@ -30,6 +30,8 @@ from backend.product_domains.interpretation import InterpretationService, classi
 from backend.product_domains.interpretation_providers import (
     InterpretationProviderResult,
     InterpretationProviderError,
+    FreeInterpretationProvider,
+    GeminiInterpretationProvider,
     OpenRouterInterpretationProvider,
 )
 from backend.product_domains.pulse import (
@@ -509,6 +511,54 @@ def test_openrouter_fixed_free_model_falls_back_only_to_free_router():
     ]
     assert result.requested_model == "nvidia/nemotron-3-super-120b-a12b:free"
     assert result.actual_model == "free/router-selected-model:free"
+
+
+def test_gemini_provider_uses_generate_content_and_records_actual_model():
+    calls = []
+    def opener(request, timeout):
+        calls.append((request, timeout))
+        return _OpenRouterResponse({
+            "modelVersion": "gemini-free-test",
+            "candidates": [{"content": {"parts": [{"text": '{"concise_meaning":"含义","explanation":"解释","evidence":[],"uncertainty":"","scope":"word"}'}]}}],
+            "usageMetadata": {"promptTokenCount": 4, "candidatesTokenCount": 5, "totalTokenCount": 9},
+        })
+    provider = GeminiInterpretationProvider("secret", "gemini-free-test", opener=opener)
+    result = provider.generate(1, "system", "prompt", 100)
+    request, timeout = calls[0]
+    assert ":generateContent?key=secret" in request.full_url
+    assert json.loads(request.data)["generationConfig"]["responseMimeType"] == "application/json"
+    assert timeout == 60
+    assert result.provider == "gemini"
+    assert result.actual_model == "gemini-free-test"
+    assert result.usage["total_tokens"] == 9
+
+
+def test_gemini_provider_requires_explicit_model_and_never_enables_paid_mode():
+    with pytest.raises(InterpretationProviderError) as missing:
+        GeminiInterpretationProvider("secret").generate(1, "system", "prompt", 100)
+    assert missing.value.code == "GEMINI_NOT_CONFIGURED"
+    assert not GeminiInterpretationProvider("secret", "gemini-test", allow_paid=True).configured
+
+
+def test_free_router_never_calls_paid_provider_and_falls_back_to_gemini():
+    class FailedOpenRouter:
+        configured = True
+        provider_id = "openrouter"
+        requested_model = "openrouter/free"
+        fallback_model = "openrouter/free"
+        is_free = True
+        def generate(self, *_args):
+            raise InterpretationProviderError("OPENROUTER_RATE_LIMITED", 429, "limited")
+    class FreeGemini:
+        configured = True
+        provider_id = "gemini"
+        requested_model = "gemini-free"
+        fallback_model = ""
+        is_free = True
+        def generate(self, *_args):
+            return InterpretationProviderResult("{}", "gemini", "gemini-free", "gemini-actual", "now", {})
+    result = FreeInterpretationProvider([FailedOpenRouter(), FreeGemini()]).generate(1, "system", "prompt", 100)
+    assert result.provider == "gemini"
 
 
 def test_interpretation_scope_prompts_are_distinct_and_evidence_is_source_bound():
