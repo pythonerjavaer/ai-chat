@@ -663,7 +663,7 @@ export function initProductDomains({ api, toast }) {
       if (/^\d/.test(part) || part.length <= 3) return part.toUpperCase();
       return part.charAt(0).toUpperCase() + part.slice(1);
     }).join(" ");
-    const providerName = result.provider === "openrouter" ? "OpenRouter" : "OpenAI";
+    const providerName = result.provider === "openrouter" ? "OpenRouter" : result.provider === "gemini" ? "Gemini" : result.provider === "auto" ? "免费自动" : "OpenAI";
     const generated = result.generated_at ? new Date(result.generated_at).toLocaleString("zh-CN", { hour12: false }) : "";
     const meta = el("small", "interpretation-meta", assistantScopeLabel(scope) + "含义 · " + providerName + (modelName ? " · " + modelName : "") + (result.cache_hit ? " · 缓存" : ""));
     if (generated) meta.title = "生成时间：" + generated + "\n请求模型：" + String(result.requested_model || "") + "\n实际模型：" + rawModel;

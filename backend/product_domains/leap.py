@@ -286,7 +286,10 @@ class TranslationWrite(BaseModel):
 class InterpretationWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["interpret"] = "interpret"
-    provider: Literal["openrouter", "openai"] | None = None
+    # Keep these values aligned with the provider capability IDs exposed to the
+    # reader UI.  In particular, Gemini used to be rendered in the selector
+    # but rejected here by Pydantic before the provider was ever reached.
+    provider: Literal["auto", "openrouter", "gemini", "openai"] | None = None
     scope: Literal["word", "sentence", "paragraph", "chapter", "selection"]
     document_id: str
     # Optional for backward compatibility with already-open reader tabs; new

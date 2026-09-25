@@ -22,6 +22,7 @@ from backend.product_domains.leap import (
     ProgressUpdate,
     WormholeWrite,
     DemoAction,
+    InterpretationWrite,
     create_leap_router,
 )
 from backend.product_domains.public_library import PublicLibraryService, seed_catalog
@@ -421,6 +422,15 @@ def test_interpretation_api_reports_unconfigured_and_uses_injected_frostfire_run
     assert response.status_code == 200
     assert response.json()["structured"]["concise_meaning"] == "分量。"
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("provider", ["auto", "openrouter", "gemini", "openai"])
+def test_interpretation_request_accepts_capability_provider_ids(provider):
+    request = InterpretationWrite(
+        action="interpret", provider=provider, scope="paragraph", document_id="doc-1",
+        paragraph_start=0, paragraph_end=0, source_text="A paragraph.",
+    )
+    assert request.provider == provider
 
 
 def test_interpretation_provider_errors_have_safe_stable_categories():
