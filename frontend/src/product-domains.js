@@ -76,16 +76,16 @@ export function translationTarget(selection, scope) {
 export function classifySelectionScope(selection) {
   const quote = String(selection?.quote || "").trim();
   if (!quote) return "selection";
-  if (isSingleEnglishWord(quote)) return "word";
   if (Number(selection?.paragraph_position) !== Number(selection?.paragraph_end ?? selection?.paragraph_position)) return "selection";
   const paragraph = String(selection?.paragraph_text || "");
   const start = Number(selection?.start_offset) || 0;
   const end = Number(selection?.end_offset) || 0;
+  const paragraphStart = paragraph.search(/\S/u);
+  const paragraphEnd = paragraph.search(/\s*$/u);
+  if (start === paragraphStart && end === paragraphEnd) return "paragraph";
   const sentence = sentenceAtSelection(paragraph, start, end);
   if (start === sentence.start && end === sentence.end) return "sentence";
-  const paragraphStart = paragraph.length - paragraph.trimStart().length;
-  const paragraphEnd = paragraph.trimEnd().length;
-  if (start === paragraphStart && end === paragraphEnd) return "paragraph";
+  if (isSingleEnglishWord(quote)) return "word";
   return "selection";
 }
 

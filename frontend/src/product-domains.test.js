@@ -149,6 +149,74 @@ test("manual selections are classified without changing their exact offsets or t
   assert.deepEqual(partial, before, "classification and quick scope expansion must not mutate the manual selection");
 });
 
+test("complete paragraph selection wins over sentence classification for single-sentence paragraphs", () => {
+  const paragraphText = "It was the best of times, it was the worst of times.";
+  const selection = { paragraph_position: 1, paragraph_end: 1, paragraph_text: paragraphText, quote: paragraphText, start_offset: 0, end_offset: paragraphText.length };
+  assert.equal(sentenceRanges(paragraphText).length, 1);
+  assert.equal(classifySelectionScope(selection), "paragraph");
+  assert.equal(translationTarget(selection, "paragraph").text, paragraphText);
+  const request = buildInterpretationRequest({
+    material: { id: "doc-single", version: 1 },
+    selection,
+    target: { text: paragraphText, paragraphStart: 1, paragraphEnd: 1, start: null, end: null, contextText: paragraphText },
+    scope: "paragraph",
+    provider: "openrouter",
+  });
+  assert.equal(request.scope, "paragraph");
+  assert.equal(request.source_text, paragraphText);
+});
+
+test("paragraph, sentence, word and arbitrary selection scopes use structural offsets", () => {
+  const paragraphText = "Sentence one. Sentence two is longer.";
+  const base = { paragraph_position: 2, paragraph_end: 2, paragraph_text: paragraphText };
+  const second = sentenceRanges(paragraphText)[1];
+  const partialStart = paragraphText.indexOf("two is");
+  const wordStart = paragraphText.indexOf("longer");
+  assert.equal(classifySelectionScope({ ...base, quote: paragraphText, start_offset: 0, end_offset: paragraphText.length }), "paragraph");
+  assert.equal(classifySelectionScope({ ...base, quote: second.text, start_offset: second.start, end_offset: second.end }), "sentence");
+  assert.equal(classifySelectionScope({ ...base, quote: "two is", start_offset: partialStart, end_offset: partialStart + "two is".length }), "selection");
+  assert.equal(classifySelectionScope({ ...base, quote: "longer", start_offset: wordStart, end_offset: wordStart + "longer".length }), "word");
+});
+
+test("paragraph boundary detection tolerates surrounding whitespace and NBSP", () => {
+  const visible = "It was the best of times.";
+  const paragraphText = "\n \u00A0" + visible + "\u00A0 \n";
+  const start = paragraphText.indexOf(visible);
+  const end = start + visible.length;
+  assert.equal(classifySelectionScope({ paragraph_position: 3, paragraph_end: 3, paragraph_text: paragraphText, quote: visible, start_offset: start, end_offset: end }), "paragraph");
+});
+
+test("complete selection across multiple text nodes still classifies as paragraph", () => {
+  const row = { id: "seg-4", stable_anchor: "p-v1-000004", position: 4, content: "First span and second span." };
+  const snapshot = createSelectionSnapshot({
+    material: { id: "doc-span", version: 1, chapters: [{ id: "chapter-1", start_paragraph: 0, end_paragraph: 9 }] },
+    rows: [row],
+    startPosition: 4,
+    endPosition: 4,
+    start: 0,
+    end: row.content.length,
+    quote: row.content,
+  });
+  assert.equal(classifySelectionScope(snapshot), "paragraph");
+});
+
+test("cross-paragraph full visual selection remains explicit selection scope", () => {
+  const rows = [
+    { id: "seg-1", stable_anchor: "p-v1-000001", position: 1, content: "First paragraph." },
+    { id: "seg-2", stable_anchor: "p-v1-000002", position: 2, content: "Second paragraph." },
+  ];
+  const snapshot = createSelectionSnapshot({
+    material: { id: "doc-cross", version: 1, chapters: [{ id: "chapter-1", start_paragraph: 0, end_paragraph: 9 }] },
+    rows,
+    startPosition: 1,
+    endPosition: 2,
+    start: 0,
+    end: rows[1].content.length,
+    quote: rows.map((row) => row.content).join("\n\n"),
+  });
+  assert.equal(classifySelectionScope(snapshot), "selection");
+});
+
 test("cross-paragraph snapshot retains exact multi-segment bounds and document context", () => {
   const rows = [
     { id: "seg-7", stable_anchor: "p-v2-000007", position: 7, content: "Alpha begins here." },
@@ -189,6 +257,10 @@ test("scope controls are request-free and actions execute the shared current sco
   assert.doesNotMatch(captureFunction, /\bapi\s*\(|runAssistant\s*\(|translateText\s*\(|interpretSelection\s*\(/);
   assert.match(source, /assistantSelectionKey\("translate"/);
   assert.match(source, /assistantSelectionKey\("interpret"/);
+  assert.match(source, /leap\.currentAssistantScope = automaticScope/);
+  assert.match(source, /setScopeButtons\(automaticScope\)/);
+  assert.match(source, /translationTarget\(leap\.selection, scope\)/);
+  assert.match(source, /buildInterpretationRequest\(\{ material: leap\.activeMaterial, selection: leap\.selection, target, scope/);
 });
 
 test("sentence boundaries preserve quotes, abbreviations, decimals and question marks", () => {
