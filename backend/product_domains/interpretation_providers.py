@@ -36,6 +36,7 @@ class InterpretationProvider(Protocol):
     provider_id: str
     label: str
     requested_model: str
+    fallback_model: str
     is_free: bool
     configured: bool
 
@@ -69,6 +70,7 @@ class CallbackInterpretationProvider:
         self.label = "OpenAI" if provider_id == "openai" else "冰焰AI"
         self.runner = runner
         self.requested_model = model
+        self.fallback_model = ""
         self.configured = runner is not None
 
     def generate(
@@ -105,6 +107,7 @@ class OpenRouterInterpretationProvider:
         api_key: str,
         model: str = "openrouter/free",
         *,
+        fallback_model: str = "openrouter/free",
         endpoint: str = OPENROUTER_CHAT_COMPLETIONS_URL,
         site_url: str = "",
         timeout_seconds: int = 60,
@@ -112,6 +115,9 @@ class OpenRouterInterpretationProvider:
     ):
         self.api_key = api_key.strip()
         self.requested_model = model.strip() or "openrouter/free"
+        self.fallback_model = fallback_model.strip()
+        if self.fallback_model == self.requested_model:
+            self.fallback_model = ""
         self.endpoint = endpoint.strip() or OPENROUTER_CHAT_COMPLETIONS_URL
         self.site_url = site_url.strip()
         self.timeout_seconds = max(10, min(120, int(timeout_seconds)))
@@ -134,17 +140,11 @@ class OpenRouterInterpretationProvider:
             "OpenRouter未能完成本次内容解读请求。",
         )
 
-    def generate(
-        self, user_id: int, system_prompt: str, prompt: str, max_output_tokens: int,
+    def _generate_once(
+        self, model: str, system_prompt: str, prompt: str, max_output_tokens: int,
     ) -> InterpretationProviderResult:
-        del user_id
-        if not self.configured:
-            raise InterpretationProviderError(
-                "OPENROUTER_NOT_CONFIGURED", 503,
-                "OpenRouter免费解读尚未配置服务端API Key。",
-            )
         body = json.dumps({
-            "model": self.requested_model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
@@ -196,6 +196,16 @@ class OpenRouterInterpretationProvider:
             actual_model = str(payload.get("model") or "").strip()
             if not text or not actual_model:
                 raise ValueError("missing response content or model")
+            candidate = text
+            if candidate.startswith("```"):
+                lines = candidate.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                candidate = "\n".join(lines).strip()
+            if not isinstance(json.loads(candidate), dict):
+                raise ValueError("response content is not a JSON object")
             usage_payload = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise InterpretationProviderError(
@@ -214,3 +224,28 @@ class OpenRouterInterpretationProvider:
                 "total_tokens": int(usage_payload.get("total_tokens", 0) or 0),
             },
         )
+
+    def generate(
+        self, user_id: int, system_prompt: str, prompt: str, max_output_tokens: int,
+    ) -> InterpretationProviderResult:
+        del user_id
+        if not self.configured:
+            raise InterpretationProviderError(
+                "OPENROUTER_NOT_CONFIGURED", 503,
+                "OpenRouter免费解读尚未配置服务端API Key。",
+            )
+        try:
+            return self._generate_once(
+                self.requested_model, system_prompt, prompt, max_output_tokens,
+            )
+        except InterpretationProviderError as primary_error:
+            if not self.fallback_model:
+                raise
+            try:
+                return self._generate_once(
+                    self.fallback_model, system_prompt, prompt, max_output_tokens,
+                )
+            except InterpretationProviderError as fallback_error:
+                # Preserve a useful category from the final free attempt.  No
+                # paid provider is ever selected by this fallback path.
+                raise fallback_error from primary_error

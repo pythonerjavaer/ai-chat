@@ -1,0 +1,881 @@
+{
+  "generated_at": "2026-09-25T04:49:51Z",
+  "prompt_version": "leap-interpret-v3-evidence-zh",
+  "models": [
+    "openrouter/free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nex-agi/nex-n2.5-mini:free"
+  ],
+  "samples": [
+    {
+      "sample": {
+        "id": "literary-word-bank",
+        "type": "literary_word",
+        "scope": "word",
+        "source_text": "bank",
+        "context_text": "She sat on the bank and watched the river darken."
+      },
+      "results": [
+        {
+          "status": "ok",
+          "requested_model": "openrouter/free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 2.77,
+          "output_length": 217,
+          "usage": {
+            "input_tokens": 281,
+            "output_tokens": 269,
+            "total_tokens": 550
+          },
+          "structured": {
+            "concise_meaning": "河岸",
+            "explanation": "bank指河岸，说明她坐在河流边缘；“watched the river darken”承接这一位置，并让画面转向河水逐渐变暗。",
+            "evidence": [
+              "on the bank",
+              "the river darken"
+            ],
+            "uncertainty": "",
+            "scope": "word"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"河岸\",\n  \"explanation\": \"bank指河岸，说明她坐在河流边缘；“watched the river darken”承接这一位置，并让画面转向河水逐渐变暗。\",\n  \"evidence\": [\n    \"on the bank\",\n    \"the river darken\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"word\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "concise and contextual"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "actual_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 14.645,
+          "output_length": 195,
+          "usage": {
+            "input_tokens": 408,
+            "output_tokens": 376,
+            "total_tokens": 784
+          },
+          "structured": {
+            "concise_meaning": "河岸",
+            "explanation": "在这里，bank 指她坐着的河边土地，即河流的两岸之一。",
+            "evidence": [
+              "She sat on the bank and watched the river darken."
+            ],
+            "uncertainty": "",
+            "scope": "word"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"河岸\",\n  \"explanation\": \"在这里，bank 指她坐着的河边土地，即河流的两岸之一。\",\n  \"evidence\": [\n    \"She sat on the bank and watched the river darken.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"word\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "concise and contextual"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nex-agi/nex-n2.5-mini:free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 4.232,
+          "output_length": 213,
+          "usage": {
+            "input_tokens": 281,
+            "output_tokens": 371,
+            "total_tokens": 652
+          },
+          "structured": {
+            "concise_meaning": "河岸",
+            "explanation": "bank 在这里指河流旁边的陆地，即“河岸”。句子表达她坐在河边，看着河水逐渐变暗。",
+            "evidence": [
+              "bank",
+              "the river",
+              "watched the river darken"
+            ],
+            "uncertainty": "",
+            "scope": "word"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"河岸\",\n  \"explanation\": \"bank 在这里指河流旁边的陆地，即“河岸”。句子表达她坐在河边，看着河水逐渐变暗。\",\n  \"evidence\": [\n    \"bank\",\n    \"the river\",\n    \"watched the river darken\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"word\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "concise and contextual"
+          }
+        }
+      ]
+    },
+    {
+      "sample": {
+        "id": "literary-word-weight",
+        "type": "literary_word",
+        "scope": "word",
+        "source_text": "weight",
+        "context_text": "His promise carried more weight than his title."
+      },
+      "results": [
+        {
+          "status": "error",
+          "requested_model": "openrouter/free",
+          "latency_seconds": 1.729,
+          "error_type": "InterpretationProviderError",
+          "error_code": "INTERPRETATION_PARSE_ERROR",
+          "review": {
+            "invented_background": null,
+            "translation_instead_of_interpretation": null,
+            "overexpanded": null,
+            "faithful_to_context": null,
+            "notes": "no usable structured output"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "actual_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 3.846,
+          "output_length": 186,
+          "usage": {
+            "input_tokens": 405,
+            "output_tokens": 429,
+            "total_tokens": 834
+          },
+          "structured": {
+            "concise_meaning": "影响力",
+            "explanation": "在这里，weight 指的是承诺所具有的说服力或重要程度，比头衔更能影响他人。",
+            "evidence": [
+              "His promise carried more weight than his title."
+            ],
+            "uncertainty": "",
+            "scope": "word"
+          },
+          "raw_output": "{\"concise_meaning\": \"影响力\", \"explanation\": \"在这里，weight 指的是承诺所具有的说服力或重要程度，比头衔更能影响他人。\", \"evidence\": [\"His promise carried more weight than his title.\"], \"uncertainty\": \"\", \"scope\": \"word\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "explains influence rather than literal mass"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nex-agi/nex-n2.5-mini:free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 2.793,
+          "output_length": 218,
+          "usage": {
+            "input_tokens": 279,
+            "output_tokens": 338,
+            "total_tokens": 617
+          },
+          "structured": {
+            "concise_meaning": "分量、影响力",
+            "explanation": "在这里，weight指承诺所具有的影响力或分量。句子通过将其与头衔比较，强调承诺比头衔更有影响力。",
+            "evidence": [
+              "His promise carried more weight than his title."
+            ],
+            "uncertainty": "",
+            "scope": "word"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"分量、影响力\",\n  \"explanation\": \"在这里，weight指承诺所具有的影响力或分量。句子通过将其与头衔比较，强调承诺比头衔更有影响力。\",\n  \"evidence\": [\n    \"His promise carried more weight than his title.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"word\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "explains the comparison in context"
+          }
+        }
+      ]
+    },
+    {
+      "sample": {
+        "id": "literary-sentence-dickens",
+        "type": "literary_sentence",
+        "scope": "sentence",
+        "source_text": "It was the best of times, it was the worst of times.",
+        "context_text": "It was the age of wisdom, it was the age of foolishness."
+      },
+      "results": [
+        {
+          "status": "ok",
+          "requested_model": "openrouter/free",
+          "actual_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "latency_seconds": 10.844,
+          "output_length": 345,
+          "usage": {
+            "input_tokens": 411,
+            "output_tokens": 438,
+            "total_tokens": 849
+          },
+          "structured": {
+            "concise_meaning": "这句话宣告了一个时代同时包含着极端的繁荣与极端的苦难，确立了小说核心的二元对立张力。",
+            "explanation": "原文用平行结构将“最好的时代”与“最坏的时代”并置，不加连接词、不作选择，直接断言两者共存。这不是时间顺序的先后，而是同一历史时刻的双重面貌：革命带来的希望与暴力、启蒙带来的理性与狂热、贵族的奢靡与平民的饥饿同步发生。后文紧接着的“智慧的时代/愚蠢的时代”等排比进一步强化了这种不可调和的共存关系。",
+            "evidence": [
+              "It was the best of times, it was the worst of times."
+            ],
+            "uncertainty": "",
+            "scope": "sentence"
+          },
+          "raw_output": "{ \"concise_meaning\": \"这句话宣告了一个时代同时包含着极端的繁荣与极端的苦难，确立了小说核心的二元对立张力。\", \"explanation\": \"原文用平行结构将“最好的时代”与“最坏的时代”并置，不加连接词、不作选择，直接断言两者共存。这不是时间顺序的先后，而是同一历史时刻的双重面貌：革命带来的希望与暴力、启蒙带来的理性与狂热、贵族的奢靡与平民的饥饿同步发生。后文紧接着的“智慧的时代/愚蠢的时代”等排比进一步强化了这种不可调和的共存关系。\", \"evidence\": [\"It was the best of times, it was the worst of times.\"], \"uncertainty\": \"\", \"scope\": \"sentence\" }",
+          "review": {
+            "invented_background": true,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": true,
+            "faithful_to_context": false,
+            "notes": "invented revolution, aristocracy and hunger background absent from input"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "actual_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 10.837,
+          "output_length": 442,
+          "usage": {
+            "input_tokens": 411,
+            "output_tokens": 533,
+            "total_tokens": 944
+          },
+          "structured": {
+            "concise_meaning": "The era contains both extreme good and extreme bad conditions at the same time.",
+            "explanation": "The sentence juxtaposes opposing evaluations to convey that the period is characterized by simultaneous prosperity and hardship, highlighting contradiction rather than a single uniform state.",
+            "evidence": [
+              "It was the best of times, it was the worst of times."
+            ],
+            "uncertainty": "",
+            "scope": "sentence"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"The era contains both extreme good and extreme bad conditions at the same time.\",\n  \"explanation\": \"The sentence juxtaposes opposing evaluations to convey that the period is characterized by simultaneous prosperity and hardship, highlighting contradiction rather than a single uniform state.\",\n  \"evidence\": [\n    \"It was the best of times, it was the worst of times.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"sentence\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "faithful but violated Chinese output requirement"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nex-agi/nex-n2.5-mini:free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 2.538,
+          "output_length": 238,
+          "usage": {
+            "input_tokens": 288,
+            "output_tokens": 305,
+            "total_tokens": 593
+          },
+          "structured": {
+            "concise_meaning": "同一时代同时处于极端对立的境况，既可能是最好的，也可能是最坏的。",
+            "explanation": "两个“It”指向同一时期；并列强调矛盾状态共存，形成强烈的感叹语气。",
+            "evidence": [
+              "It was the best of times, it was the worst of times."
+            ],
+            "uncertainty": "",
+            "scope": "sentence"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"同一时代同时处于极端对立的境况，既可能是最好的，也可能是最坏的。\",\n  \"explanation\": \"两个“It”指向同一时期；并列强调矛盾状态共存，形成强烈的感叹语气。\",\n  \"evidence\": [\n    \"It was the best of times, it was the worst of times.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"sentence\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "faithful contrast explanation"
+          }
+        }
+      ]
+    },
+    {
+      "sample": {
+        "id": "literary-sentence-austen",
+        "type": "literary_sentence",
+        "scope": "sentence",
+        "source_text": "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.",
+        "context_text": "However little known the feelings or views of such a man may be on his first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families."
+      },
+      "results": [
+        {
+          "status": "error",
+          "requested_model": "openrouter/free",
+          "latency_seconds": 1.859,
+          "error_type": "InterpretationProviderError",
+          "error_code": "INTERPRETATION_PARSE_ERROR",
+          "review": {
+            "invented_background": null,
+            "translation_instead_of_interpretation": null,
+            "overexpanded": null,
+            "faithful_to_context": null,
+            "notes": "no usable structured output"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "actual_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 4.302,
+          "output_length": 527,
+          "usage": {
+            "input_tokens": 442,
+            "output_tokens": 504,
+            "total_tokens": 946
+          },
+          "structured": {
+            "concise_meaning": "Society assumes that any wealthy unmarried man necessarily wants to marry.",
+            "explanation": "The opening line states that it is a universally accepted truth that a single man who has a good fortune is presumed to be in need of a wife, reflecting a social expectation rather than the man's actual desire.",
+            "evidence": [
+              "It is a truth universally acknowledged",
+              "a single man in possession of a good fortune",
+              "must be in want of a wife"
+            ],
+            "uncertainty": "",
+            "scope": "sentence"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"Society assumes that any wealthy unmarried man necessarily wants to marry.\",\n  \"explanation\": \"The opening line states that it is a universally accepted truth that a single man who has a good fortune is presumed to be in need of a wife, reflecting a social expectation rather than the man's actual desire.\",\n  \"evidence\": [\n    \"It is a truth universally acknowledged\",\n    \"a single man in possession of a good fortune\",\n    \"must be in want of a wife\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"sentence\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "faithful but violated Chinese output requirement"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nex-agi/nex-n2.5-mini:free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 2.015,
+          "output_length": 350,
+          "usage": {
+            "input_tokens": 319,
+            "output_tokens": 256,
+            "total_tokens": 575
+          },
+          "structured": {
+            "concise_meaning": "这句话以反讽口吻指出，周围家庭普遍把“有财产的单身男子必然想找妻子”当成不言自明的社会期待。",
+            "explanation": "“普遍公认”并非客观事实，而是在讽刺当地家庭对富有单身汉的婚恋判断和强烈期待。",
+            "evidence": [
+              "a truth universally acknowledged",
+              "a single man in possession of a good fortune",
+              "must be in want of a wife",
+              "surrounding families"
+            ],
+            "uncertainty": "",
+            "scope": "sentence"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"这句话以反讽口吻指出，周围家庭普遍把“有财产的单身男子必然想找妻子”当成不言自明的社会期待。\",\n  \"explanation\": \"“普遍公认”并非客观事实，而是在讽刺当地家庭对富有单身汉的婚恋判断和强烈期待。\",\n  \"evidence\": [\n    \"a truth universally acknowledged\",\n    \"a single man in possession of a good fortune\",\n    \"must be in want of a wife\",\n    \"surrounding families\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"sentence\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "context supports social-expectation reading; irony is an inference"
+          }
+        }
+      ]
+    },
+    {
+      "sample": {
+        "id": "philosophy-plato",
+        "type": "philosophy_paragraph",
+        "scope": "paragraph",
+        "source_text": "The object of education is to teach us to love what is beautiful. Yet education is not the filling of a vessel, but the turning of the whole soul toward what is true.",
+        "context_text": "The passage contrasts passive accumulation with a change in orientation."
+      },
+      "results": [
+        {
+          "status": "ok",
+          "requested_model": "openrouter/free",
+          "actual_model": "cohere/north-mini-code:free",
+          "latency_seconds": 2.629,
+          "output_length": 436,
+          "usage": {
+            "input_tokens": 311,
+            "output_tokens": 432,
+            "total_tokens": 743
+          },
+          "structured": {
+            "concise_meaning": "教育的目的在于培养我们对美的热爱，并引导灵魂向往真理，而非简单地灌输知识。",
+            "explanation": "作者首先指出教育的目标是培养对美的热爱，接着用“然而”转折，强调教育不是被动地“装满容器”（即机械地积累知识），而是积极地“转向整个灵魂”，使之面向真理。这一对比凸显了教育应注重内在转变而非外在知识的堆积。",
+            "evidence": [
+              "The object of education is to teach us to love what is beautiful.",
+              "education is not the filling of a vessel",
+              "but the turning of the whole soul toward what is true."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"教育的目的在于培养我们对美的热爱，并引导灵魂向往真理，而非简单地灌输知识。\",\n  \"explanation\": \"作者首先指出教育的目标是培养对美的热爱，接着用“然而”转折，强调教育不是被动地“装满容器”（即机械地积累知识），而是积极地“转向整个灵魂”，使之面向真理。这一对比凸显了教育应注重内在转变而非外在知识的堆积。\",\n  \"evidence\": [\n    \"The object of education is to teach us to love what is beautiful.\",\n    \"education is not the filling of a vessel\",\n    \"but the turning of the whole soul toward what is true.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "explains the vessel metaphor and contrast"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "actual_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 12.1,
+          "output_length": 809,
+          "usage": {
+            "input_tokens": 468,
+            "output_tokens": 567,
+            "total_tokens": 1035
+          },
+          "structured": {
+            "concise_meaning": "Education should foster a love for beauty, but genuine education is not merely filling the mind with facts; it is reorienting the entire soul toward truth.",
+            "explanation": "The first clause sets the purpose of education as cultivating appreciation for beauty. The second clause introduces a contrast using the metaphor of a vessel: education is not passive accumulation (filling a vessel) but an active, holistic turning of the soul toward truth, emphasizing a transformative shift in orientation rather than superficial acquisition.",
+            "evidence": [
+              "The object of education is to teach us to love what is beautiful.",
+              "Yet education is not the filling of a vessel, but the turning of the whole soul toward what is true."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"Education should foster a love for beauty, but genuine education is not merely filling the mind with facts; it is reorienting the entire soul toward truth.\",\n  \"explanation\": \"The first clause sets the purpose of education as cultivating appreciation for beauty. The second clause introduces a contrast using the metaphor of a vessel: education is not passive accumulation (filling a vessel) but an active, holistic turning of the soul toward truth, emphasizing a transformative shift in orientation rather than superficial acquisition.\",\n  \"evidence\": [\n    \"The object of education is to teach us to love what is beautiful.\",\n    \"Yet education is not the filling of a vessel, but the turning of the whole soul toward what is true.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "faithful but violated Chinese output requirement"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nex-agi/nex-n2.5-mini:free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 2.684,
+          "output_length": 393,
+          "usage": {
+            "input_tokens": 326,
+            "output_tokens": 378,
+            "total_tokens": 704
+          },
+          "structured": {
+            "concise_meaning": "教育的目标是培养对真与美的热爱，并使人整体转向真理，而非被动灌输知识。",
+            "explanation": "原文先界定教育目标是热爱美好；随后以“yet”转折，将教育从“灌满容器”式的被动积累，解释为整个灵魂朝向真理的根本转向，强调内在重定向。",
+            "evidence": [
+              "The object of education is to teach us to love what is beautiful.",
+              "education is not the filling of a vessel, but the turning of the whole soul toward what is true."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"教育的目标是培养对真与美的热爱，并使人整体转向真理，而非被动灌输知识。\",\n  \"explanation\": \"原文先界定教育目标是热爱美好；随后以“yet”转折，将教育从“灌满容器”式的被动积累，解释为整个灵魂朝向真理的根本转向，强调内在重定向。\",\n  \"evidence\": [\n    \"The object of education is to teach us to love what is beautiful.\",\n    \"education is not the filling of a vessel, but the turning of the whole soul toward what is true.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "faithful transformation-versus-filling explanation"
+          }
+        }
+      ]
+    },
+    {
+      "sample": {
+        "id": "philosophy-aurelius",
+        "type": "philosophy_paragraph",
+        "scope": "paragraph",
+        "source_text": "You have power over your mind—not outside events. Realize this, and you will find strength. The impediment to action advances action; what stands in the way becomes the way.",
+        "context_text": "The selected lines concern judgment, agency, and obstacles."
+      },
+      "results": [
+        {
+          "status": "ok",
+          "requested_model": "openrouter/free",
+          "actual_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "latency_seconds": 6.661,
+          "output_length": 908,
+          "usage": {
+            "input_tokens": 469,
+            "output_tokens": 539,
+            "total_tokens": 1008
+          },
+          "structured": {
+            "concise_meaning": "The passage asserts that true power lies in controlling one's mind rather than external events, and that obstacles can be transformed into the path forward.",
+            "explanation": "The first sentence establishes the core Stoic principle of internal agency: the mind is within our control, external events are not. The second sentence links realization of this principle to inner strength. The third sentence reframes obstacles rhetorically: impediments to action actually advance action, and what blocks the way becomes the way. This reversal suggests obstacles are not merely hindrances but essential components of progress.",
+            "evidence": [
+              "You have power over your mind—not outside events.",
+              "Realize this, and you will find strength.",
+              "The impediment to action advances action; what stands in the way becomes the way."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"The passage asserts that true power lies in controlling one's mind rather than external events, and that obstacles can be transformed into the path forward.\",\n  \"explanation\": \"The first sentence establishes the core Stoic principle of internal agency: the mind is within our control, external events are not. The second sentence links realization of this principle to inner strength. The third sentence reframes obstacles rhetorically: impediments to action actually advance action, and what blocks the way becomes the way. This reversal suggests obstacles are not merely hindrances but essential components of progress.\",\n  \"evidence\": [\n    \"You have power over your mind—not outside events.\",\n    \"Realize this, and you will find strength.\",\n    \"The impediment to action advances action; what stands in the way becomes the way.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "faithful but violated Chinese output requirement"
+          }
+        },
+        {
+          "status": "error",
+          "requested_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 5.78,
+          "error_type": "InterpretationProviderError",
+          "error_code": "INTERPRETATION_PARSE_ERROR",
+          "review": {
+            "invented_background": null,
+            "translation_instead_of_interpretation": null,
+            "overexpanded": null,
+            "faithful_to_context": null,
+            "notes": "no usable structured output"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nex-agi/nex-n2.5-mini:free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 2.688,
+          "output_length": 480,
+          "usage": {
+            "input_tokens": 327,
+            "output_tokens": 331,
+            "total_tokens": 658
+          },
+          "structured": {
+            "concise_meaning": "真正的力量来自掌控自己的判断与反应，而非控制外部事件；阻碍不仅能阻止行动，也能成为推动和塑造行动的途径。",
+            "explanation": "段落首先区分了内在自主性与外在事件：人无法决定所有外部发生什么，却可以选择如何理解和回应它们。接着，“障碍促进行动”形成转折：当既有道路受阻时，人必须调整方法、发展能力或重新定向，原本妨碍前进的事物由此转化为行动本身的一部分。",
+            "evidence": [
+              "You have power over your mind—not outside events.",
+              "Realize this, and you will find strength.",
+              "The impediment to action advances action;",
+              "what stands in the way becomes the way."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"真正的力量来自掌控自己的判断与反应，而非控制外部事件；阻碍不仅能阻止行动，也能成为推动和塑造行动的途径。\",\n  \"explanation\": \"段落首先区分了内在自主性与外在事件：人无法决定所有外部发生什么，却可以选择如何理解和回应它们。接着，“障碍促进行动”形成转折：当既有道路受阻时，人必须调整方法、发展能力或重新定向，原本妨碍前进的事物由此转化为行动本身的一部分。\",\n  \"evidence\": [\n    \"You have power over your mind—not outside events.\",\n    \"Realize this, and you will find strength.\",\n    \"The impediment to action advances action;\",\n    \"what stands in the way becomes the way.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "faithful agency and obstacle relation"
+          }
+        }
+      ]
+    },
+    {
+      "sample": {
+        "id": "technical-overfitting",
+        "type": "technical_paragraph",
+        "scope": "paragraph",
+        "source_text": "A model overfits when it learns patterns that are specific to the training data but do not generalize to new samples. Regularization reduces this risk by penalizing unnecessary complexity, although excessive regularization can cause underfitting.",
+        "context_text": "This is a short explanation of the bias-variance tradeoff."
+      },
+      "results": [
+        {
+          "status": "error",
+          "requested_model": "openrouter/free",
+          "latency_seconds": 4.922,
+          "error_type": "InterpretationProviderError",
+          "error_code": "OPENROUTER_PARSE_ERROR",
+          "review": {
+            "invented_background": null,
+            "translation_instead_of_interpretation": null,
+            "overexpanded": null,
+            "faithful_to_context": null,
+            "notes": "no usable structured output"
+          }
+        },
+        {
+          "status": "error",
+          "requested_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 15.303,
+          "error_type": "InterpretationProviderError",
+          "error_code": "INTERPRETATION_PARSE_ERROR",
+          "review": {
+            "invented_background": null,
+            "translation_instead_of_interpretation": null,
+            "overexpanded": null,
+            "faithful_to_context": null,
+            "notes": "no usable structured output"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nex-agi/nex-n2.5-mini:free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 3.432,
+          "output_length": 562,
+          "usage": {
+            "input_tokens": 335,
+            "output_tokens": 467,
+            "total_tokens": 802
+          },
+          "structured": {
+            "concise_meaning": "过拟合是模型记住了训练数据中的特定模式，却无法在新样本上有效泛化；正则化通过惩罚不必要的复杂度来降低过拟合风险，但过度正则化会导致欠拟合。",
+            "explanation": "段落的核心关系是：模型在训练集上学到不适用于新数据的模式，就是过拟合。正则化通过限制或惩罚复杂模型来减少这种风险，体现的是控制复杂度以提高泛化能力的作用。不过，正则化并非越强越好；如果惩罚过多，模型会变得过于简单，从而欠拟合。",
+            "evidence": [
+              "A model overfits when it learns patterns that are specific to the training data but do not generalize to new samples.",
+              "Regularization reduces this risk by penalizing unnecessary complexity",
+              "although excessive regularization can cause underfitting."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"过拟合是模型记住了训练数据中的特定模式，却无法在新样本上有效泛化；正则化通过惩罚不必要的复杂度来降低过拟合风险，但过度正则化会导致欠拟合。\",\n  \"explanation\": \"段落的核心关系是：模型在训练集上学到不适用于新数据的模式，就是过拟合。正则化通过限制或惩罚复杂模型来减少这种风险，体现的是控制复杂度以提高泛化能力的作用。不过，正则化并非越强越好；如果惩罚过多，模型会变得过于简单，从而欠拟合。\",\n  \"evidence\": [\n    \"A model overfits when it learns patterns that are specific to the training data but do not generalize to new samples.\",\n    \"Regularization reduces this risk by penalizing unnecessary complexity\",\n    \"although excessive regularization can cause underfitting.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "correct tradeoff and causal logic"
+          }
+        }
+      ]
+    },
+    {
+      "sample": {
+        "id": "technical-transactions",
+        "type": "technical_paragraph",
+        "scope": "paragraph",
+        "source_text": "Snapshot isolation gives each transaction a consistent view of committed data. It prevents many read anomalies, but concurrent transactions can still produce write skew when they update disjoint rows based on the same earlier snapshot.",
+        "context_text": "The passage distinguishes snapshot consistency from serializability."
+      },
+      "results": [
+        {
+          "status": "ok",
+          "requested_model": "openrouter/free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 4.951,
+          "output_length": 501,
+          "usage": {
+            "input_tokens": 328,
+            "output_tokens": 671,
+            "total_tokens": 999
+          },
+          "structured": {
+            "concise_meaning": "快照隔离让事务看到一致的已提交数据，能减少多种读取异常，但并发事务若基于同一较早快照更新不同行，仍可能发生写偏斜。",
+            "explanation": "段落先说明快照隔离的作用，再指出其限制：即使每个事务看到的是稳定一致的已提交数据，并发更新不同行仍可能形成写偏斜。因此，快照一致性并不等同于排除所有并发写入异常。",
+            "evidence": [
+              "Snapshot isolation gives each transaction a consistent view of committed data.",
+              "It prevents many read anomalies, but concurrent transactions can still produce write skew when they update disjoint rows based on the same earlier snapshot."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"快照隔离让事务看到一致的已提交数据，能减少多种读取异常，但并发事务若基于同一较早快照更新不同行，仍可能发生写偏斜。\",\n  \"explanation\": \"段落先说明快照隔离的作用，再指出其限制：即使每个事务看到的是稳定一致的已提交数据，并发更新不同行仍可能形成写偏斜。因此，快照一致性并不等同于排除所有并发写入异常。\",\n  \"evidence\": [\n    \"Snapshot isolation gives each transaction a consistent view of committed data.\",\n    \"It prevents many read anomalies, but concurrent transactions can still produce write skew when they update disjoint rows based on the same earlier snapshot.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "correctly distinguishes consistency from write-skew protection"
+          }
+        },
+        {
+          "status": "error",
+          "requested_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 16.572,
+          "error_type": "InterpretationProviderError",
+          "error_code": "INTERPRETATION_PARSE_ERROR",
+          "review": {
+            "invented_background": null,
+            "translation_instead_of_interpretation": null,
+            "overexpanded": null,
+            "faithful_to_context": null,
+            "notes": "no usable structured output"
+          }
+        },
+        {
+          "status": "error",
+          "requested_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 5.361,
+          "error_type": "InterpretationProviderError",
+          "error_code": "INTERPRETATION_PARSE_ERROR",
+          "review": {
+            "invented_background": null,
+            "translation_instead_of_interpretation": null,
+            "overexpanded": null,
+            "faithful_to_context": null,
+            "notes": "no usable structured output"
+          }
+        }
+      ]
+    },
+    {
+      "sample": {
+        "id": "finance-duration",
+        "type": "finance_paragraph",
+        "scope": "paragraph",
+        "source_text": "Bond duration estimates how sensitive a bond price is to a change in interest rates. A duration of six implies that, for a small parallel increase of one percentage point in yields, the price would fall by roughly six percent, all else equal.",
+        "context_text": "The estimate is local and assumes a small parallel shift in the yield curve."
+      },
+      "results": [
+        {
+          "status": "ok",
+          "requested_model": "openrouter/free",
+          "actual_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 7.344,
+          "output_length": 994,
+          "usage": {
+            "input_tokens": 485,
+            "output_tokens": 619,
+            "total_tokens": 1104
+          },
+          "structured": {
+            "concise_meaning": "Bond duration quantifies how much a bond's price changes when interest rates shift; a duration of 6 means a 1% rise in yields lowers the price by about 6%, holding other factors constant.",
+            "explanation": "The paragraph states that duration measures price sensitivity to interest‑rate changes. It then gives a concrete example: with a duration of six, a small parallel increase of one percentage point in yields leads to an approximate six percent price decline, assuming all else remains equal. This illustrates the linear, proportional relationship between duration and price change under the condition of a small parallel yield‑curve shift.",
+            "evidence": [
+              "Bond duration estimates how sensitive a bond price is to a change in interest rates.",
+              "A duration of six implies that, for a small parallel increase of one percentage point in yields, the price would fall by roughly six percent, all else equal."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"Bond duration quantifies how much a bond's price changes when interest rates shift; a duration of 6 means a 1% rise in yields lowers the price by about 6%, holding other factors constant.\",\n  \"explanation\": \"The paragraph states that duration measures price sensitivity to interest‑rate changes. It then gives a concrete example: with a duration of six, a small parallel increase of one percentage point in yields leads to an approximate six percent price decline, assuming all else remains equal. This illustrates the linear, proportional relationship between duration and price change under the condition of a small parallel yield‑curve shift.\",\n  \"evidence\": [\n    \"Bond duration estimates how sensitive a bond price is to a change in interest rates.\",\n    \"A duration of six implies that, for a small parallel increase of one percentage point in yields, the price would fall by roughly six percent, all else equal.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "correct but violated Chinese output requirement"
+          }
+        },
+        {
+          "status": "error",
+          "requested_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 60.508,
+          "error_type": "InterpretationProviderError",
+          "error_code": "OPENROUTER_UNAVAILABLE",
+          "review": {
+            "invented_background": null,
+            "translation_instead_of_interpretation": null,
+            "overexpanded": null,
+            "faithful_to_context": null,
+            "notes": "no usable structured output"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nex-agi/nex-n2.5-mini:free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 3.163,
+          "output_length": 490,
+          "usage": {
+            "input_tokens": 342,
+            "output_tokens": 417,
+            "total_tokens": 759
+          },
+          "structured": {
+            "concise_meaning": "债券久期衡量其价格对利率变化的敏感程度；久期为6表示，在其他条件不变时，收益率小幅平行上升1个百分点，债券价格大约下跌6%。",
+            "explanation": "久期反映收益率变动与债券价格反向变动的近似幅度。这里的变化需是小幅、收益率曲线平行移动，且结论以其他条件不变为前提。",
+            "evidence": [
+              "Bond duration estimates how sensitive a bond price is to a change in interest rates.",
+              "A duration of six implies that, for a small parallel increase of one percentage point in yields, the price would fall by roughly six percent, all else equal."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"债券久期衡量其价格对利率变化的敏感程度；久期为6表示，在其他条件不变时，收益率小幅平行上升1个百分点，债券价格大约下跌6%。\",\n  \"explanation\": \"久期反映收益率变动与债券价格反向变动的近似幅度。这里的变化需是小幅、收益率曲线平行移动，且结论以其他条件不变为前提。\",\n  \"evidence\": [\n    \"Bond duration estimates how sensitive a bond price is to a change in interest rates.\",\n    \"A duration of six implies that, for a small parallel increase of one percentage point in yields, the price would fall by roughly six percent, all else equal.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "correctly preserves small parallel shift assumptions"
+          }
+        }
+      ]
+    },
+    {
+      "sample": {
+        "id": "finance-liquidity",
+        "type": "finance_paragraph",
+        "scope": "paragraph",
+        "source_text": "A bank can appear solvent and still fail from a liquidity shock. If depositors withdraw funds faster than assets can be sold without large discounts, forced sales may crystallize losses and weaken capital.",
+        "context_text": "The paragraph separates balance-sheet solvency from cash-flow liquidity."
+      },
+      "results": [
+        {
+          "status": "ok",
+          "requested_model": "openrouter/free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 2.247,
+          "output_length": 445,
+          "usage": {
+            "input_tokens": 330,
+            "output_tokens": 215,
+            "total_tokens": 545
+          },
+          "structured": {
+            "concise_meaning": "银行即使账面偿付能力充足，也可能因流动性冲击而倒闭。",
+            "explanation": "存款人提取资金的速度若超过银行在不大幅折价的情况下出售资产的速度，银行可能被迫低价出售资产；由此实现的损失会削弱资本，最终可能导致本已看似有偿付能力的银行失败。",
+            "evidence": [
+              "A bank can appear solvent and still fail from a liquidity shock.",
+              "If depositors withdraw funds faster than assets can be sold without large discounts",
+              "forced sales may crystallize losses and weaken capital."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"银行即使账面偿付能力充足，也可能因流动性冲击而倒闭。\",\n  \"explanation\": \"存款人提取资金的速度若超过银行在不大幅折价的情况下出售资产的速度，银行可能被迫低价出售资产；由此实现的损失会削弱资本，最终可能导致本已看似有偿付能力的银行失败。\",\n  \"evidence\": [\n    \"A bank can appear solvent and still fail from a liquidity shock.\",\n    \"If depositors withdraw funds faster than assets can be sold without large discounts\",\n    \"forced sales may crystallize losses and weaken capital.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "correct solvency-liquidity distinction"
+          }
+        },
+        {
+          "status": "error",
+          "requested_model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "latency_seconds": 0.256,
+          "error_type": "InterpretationProviderError",
+          "error_code": "OPENROUTER_PARSE_ERROR",
+          "review": {
+            "invented_background": null,
+            "translation_instead_of_interpretation": null,
+            "overexpanded": null,
+            "faithful_to_context": null,
+            "notes": "no usable structured output"
+          }
+        },
+        {
+          "status": "ok",
+          "requested_model": "nex-agi/nex-n2.5-mini:free",
+          "actual_model": "nex-agi/nex-n2.5-mini:free",
+          "latency_seconds": 3.305,
+          "output_length": 480,
+          "usage": {
+            "input_tokens": 330,
+            "output_tokens": 473,
+            "total_tokens": 803
+          },
+          "structured": {
+            "concise_meaning": "银行即使账面仍有偿付能力，也可能因流动性冲击而失败；当存款人提款速度快于资产可无大幅折价出售的速度时，被迫低价出售资产会形成实际损失并削弱资本。",
+            "explanation": "原文区分了偿付能力与流动性：银行可能拥有足够资产，却因无法及时以合理价格变现而无法满足提款需求。折价出售会把潜在损失变为已实现损失，并进一步侵蚀资本。",
+            "evidence": [
+              "A bank can appear solvent and still fail from a liquidity shock.",
+              "If depositors withdraw funds faster than assets can be sold without large discounts, forced sales may crystallize losses and weaken capital."
+            ],
+            "uncertainty": "",
+            "scope": "paragraph"
+          },
+          "raw_output": "{\n  \"concise_meaning\": \"银行即使账面仍有偿付能力，也可能因流动性冲击而失败；当存款人提款速度快于资产可无大幅折价出售的速度时，被迫低价出售资产会形成实际损失并削弱资本。\",\n  \"explanation\": \"原文区分了偿付能力与流动性：银行可能拥有足够资产，却因无法及时以合理价格变现而无法满足提款需求。折价出售会把潜在损失变为已实现损失，并进一步侵蚀资本。\",\n  \"evidence\": [\n    \"A bank can appear solvent and still fail from a liquidity shock.\",\n    \"If depositors withdraw funds faster than assets can be sold without large discounts, forced sales may crystallize losses and weaken capital.\"\n  ],\n  \"uncertainty\": \"\",\n  \"scope\": \"paragraph\"\n}",
+          "review": {
+            "invented_background": false,
+            "translation_instead_of_interpretation": false,
+            "overexpanded": false,
+            "faithful_to_context": true,
+            "notes": "correct liquidity-to-capital causal chain"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -20,8 +20,39 @@ from .interpretation_providers import (
 )
 
 
-PROMPT_VERSION = "leap-interpret-v2-structured"
+PROMPT_VERSION = "leap-interpret-v3-evidence-zh"
 MAX_INTERPRET_CHARACTERS = 20_000
+
+_SCOPE_PROMPTS = {
+    "word": (
+        "输入是一个词及其所在语境。重点说明该词在本句中的具体意思和作用；"
+        "concise_meaning用简洁中文词或短语，explanation最多两句。不要展开词典义项、词源或文外背景。"
+    ),
+    "sentence": (
+        "输入是一句完整句子。说明整句话真正表达什么，并仅在必要时解释指代、语气或隐含关系；"
+        "不要扩展成整段评论，不要逐词翻译。"
+    ),
+    "paragraph": (
+        "输入是完整段落。先说明核心意思，再解释段内关键关系或逻辑。文学材料关注态度、修辞或叙事作用；"
+        "技术材料关注原理、条件和作用；金融材料关注指标、假设、风险或因果。只按实际材料类型选择相关角度。"
+    ),
+    "selection": (
+        "输入是用户精确选中的文字，可能跨句或跨段。只解释这个选区传达的意思及其必要关系，"
+        "不要擅自扩大到整段、整章或整份文档。"
+    ),
+    "chapter": (
+        "输入是当前已取得的章节范围。概括主题、结构及关键论点或事件；若覆盖不完整，必须在uncertainty中"
+        "说明只能解释已加载部分，不得把局部内容称为完整章节。"
+    ),
+}
+
+_FIELD_LIMITS = {
+    "word": (80, 260),
+    "sentence": (260, 520),
+    "paragraph": (360, 1000),
+    "selection": (360, 1000),
+    "chapter": (500, 1800),
+}
 
 
 def classify_provider_failure(exc: BaseException) -> tuple[str, int, str]:
@@ -109,6 +140,7 @@ def init_interpretation_schema(connect: Callable[[], Any]) -> None:
                 result_text TEXT NOT NULL,
                 result_json TEXT NOT NULL DEFAULT '{}',
                 requested_at TEXT NOT NULL DEFAULT '',
+                generated_at TEXT NOT NULL DEFAULT '',
                 provider_status TEXT NOT NULL DEFAULT 'success',
                 coverage_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
@@ -142,6 +174,7 @@ def init_interpretation_schema(connect: Callable[[], Any]) -> None:
             "requested_model": "TEXT NOT NULL DEFAULT ''",
             "result_json": "TEXT NOT NULL DEFAULT '{}'",
             "requested_at": "TEXT NOT NULL DEFAULT ''",
+            "generated_at": "TEXT NOT NULL DEFAULT ''",
             "provider_status": "TEXT NOT NULL DEFAULT 'success'",
         }
         for name, declaration in additions.items():
@@ -177,6 +210,7 @@ class InterpretationService:
                 "configured": item.configured,
                 "free": item.is_free,
                 "requested_model": item.requested_model,
+                "fallback_model": getattr(item, "fallback_model", ""),
             }
             for item in self.providers.values()
         ]
@@ -190,7 +224,14 @@ class InterpretationService:
         }
 
     @staticmethod
-    def _structured_result(text: str, scope: str) -> dict[str, Any]:
+    def _bounded(value: str, limit: int) -> str:
+        value = value.strip()
+        return value if len(value) <= limit else value[: max(1, limit - 1)].rstrip() + "…"
+
+    @classmethod
+    def _structured_result(
+        cls, text: str, scope: str, source: str, context: str,
+    ) -> dict[str, Any]:
         value = text.strip()
         if value.startswith("```"):
             lines = value.splitlines()
@@ -201,28 +242,35 @@ class InterpretationService:
             value = "\n".join(lines).strip()
         try:
             parsed = json.loads(value)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            # Keep genuine provider prose usable.  We do not manufacture an
-            # explanation or evidence when the free router omits JSON.
-            if not value:
-                raise InterpretationProviderError(
-                    "INTERPRETATION_PARSE_ERROR", 502, "解读Provider没有返回可用内容。",
-                )
-            parsed = {"concise_meaning": value, "explanation": "", "evidence": [], "uncertainty": "", "scope": scope}
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            # Free routes occasionally return chain-of-thought or a safety
+            # classifier instead of the requested object.  Treating that prose
+            # as a successful interpretation creates severe style drift.
+            raise InterpretationProviderError(
+                "INTERPRETATION_PARSE_ERROR", 502, "解读Provider没有返回稳定的结构化结果。",
+            ) from exc
         if not isinstance(parsed, dict):
             raise InterpretationProviderError(
                 "INTERPRETATION_PARSE_ERROR", 502, "解读Provider返回格式无法解析。",
             )
-        concise = str(parsed.get("concise_meaning") or parsed.get("meaning") or "").strip()
-        explanation = str(parsed.get("explanation") or "").strip()
+        concise_limit, explanation_limit = _FIELD_LIMITS[scope]
+        concise = cls._bounded(
+            str(parsed.get("concise_meaning") or parsed.get("meaning") or ""), concise_limit,
+        )
+        explanation = cls._bounded(str(parsed.get("explanation") or ""), explanation_limit)
         evidence_value = parsed.get("evidence", [])
         if isinstance(evidence_value, str):
             evidence = [evidence_value.strip()] if evidence_value.strip() else []
         elif isinstance(evidence_value, list):
-            evidence = [str(item).strip() for item in evidence_value if str(item).strip()][:6]
+            evidence = [str(item).strip() for item in evidence_value if str(item).strip()][:4]
         else:
             evidence = []
-        uncertainty = str(parsed.get("uncertainty") or "").strip()
+        # Evidence must be an exact excerpt from the supplied material.  Drop
+        # translated/paraphrased or invented evidence rather than presenting it
+        # as an original quotation.
+        supplied = source + "\n" + context
+        evidence = [item for item in evidence if item in supplied]
+        uncertainty = cls._bounded(str(parsed.get("uncertainty") or ""), 320)
         if not concise and not explanation:
             raise InterpretationProviderError(
                 "INTERPRETATION_PARSE_ERROR", 502, "解读Provider返回格式缺少含义内容。",
@@ -234,6 +282,24 @@ class InterpretationService:
             "uncertainty": uncertainty,
             "scope": scope,
         }
+
+    @staticmethod
+    def _prompts(scope: str, source: str, context: str, coverage_label: str) -> tuple[str, str]:
+        system = (
+            "你是冰焰跃迁域的证据型阅读助手，任务是解释原文含义，不是把原文翻译成中文。"
+            "所有面向用户的说明必须使用简体中文；evidence必须逐字引用输入中的原文，不得翻译或改写。"
+            "只依据提供的原文和辅助上下文，不得编造作者意图、人物关系、章节背景、历史事实或文外知识；"
+            "推断必须明确标为推断，材料不足时写入uncertainty。只返回严格JSON对象，不要输出思考过程、"
+            "Markdown或额外字段。固定字段为concise_meaning、explanation、evidence、uncertainty、scope。"
+            "evidence是最多4条原文短引，uncertainty没有则为空字符串，scope必须与请求范围一致。"
+        )
+        prompt = (
+            f"请求范围：{scope}\n范围规则：{_SCOPE_PROMPTS[scope]}\n实际覆盖：{coverage_label}\n"
+            "质量要求：解释必须说明原文传达的意思或关系，不能只是中文译文；保持简洁，避免通用模板和无关背景。\n\n"
+            f"需要解读的原文：\n{source}\n\n"
+            + (f"仅供消歧的上下文（不得并入处理范围）：\n{context}" if context else "没有额外上下文。")
+        )
+        return system, prompt
 
     @staticmethod
     def _display_text(structured: dict[str, Any]) -> str:
@@ -359,6 +425,7 @@ class InterpretationService:
             "context_text_hash": _digest(context),
             "provider": provider_id,
             "requested_model": selected_provider.requested_model,
+            "fallback_model": getattr(selected_provider, "fallback_model", ""),
             "prompt_version": PROMPT_VERSION,
         }
         request_key = _digest(json.dumps(identity, ensure_ascii=False, sort_keys=True))
@@ -372,33 +439,16 @@ class InterpretationService:
                 result = dict(cached)
                 result["coverage"] = json.loads(result.pop("coverage_json") or "{}")
                 result["structured"] = json.loads(result.get("result_json") or "{}")
+                result["generated_at"] = result.get("generated_at") or result.get("requested_at") or result.get("created_at")
                 result["cache_hit"] = True
                 return result
-
-        scope_guidance = {
-            "word": "解释这个词在本句中的具体作用；必要时说明搭配、隐喻或专业语境，不要只给译词。",
-            "sentence": "解释这句话的意思、关键表达、指代和必要的隐含关系，不扩成整段分析。",
-            "paragraph": "解释段落主旨、论证或叙述逻辑、关键概念及必要上下文关系。",
-            "selection": "只围绕所选文字解释，允许多句或跨段，但不要扩大到整份文档。",
-            "chapter": "解释所覆盖章节内容的主题、结构、关键论点或事件及内部联系。",
-        }[payload["scope"]]
-        system = (
-            "你是冰焰跃迁域的证据型阅读助手。只依据提供的原文和辅助上下文进行内容解读，"
-            "不得把译文当解读，不得编造作者意图、历史背景或文外事实。只返回严格JSON对象，字段为："
-            "concise_meaning（简洁含义）、explanation（解释）、evidence（原文线索字符串数组）、"
-            "uncertainty（材料不足或不确定性，没有则空字符串）、scope（任务范围）。不要使用Markdown代码块。"
-        )
-        prompt = (
-            f"任务范围：{payload['scope']}\n范围要求：{scope_guidance}\n"
-            f"覆盖：{coverage['label']}\n\n需要解读的原文：\n{source}\n\n"
-            + (f"仅供辅助理解的上下文（不得擅自纳入处理范围）：\n{context}" if context else "没有额外上下文。")
-        )
+        system, prompt = self._prompts(payload["scope"], source, context, coverage["label"])
         requested_at = _now()
         try:
             output = selected_provider.generate(
                 user_id, system, prompt, 900 if payload["scope"] == "chapter" else 600,
             )
-            structured = self._structured_result(output.text, payload["scope"])
+            structured = self._structured_result(output.text, payload["scope"], source, context)
         except InterpretationProviderError as exc:
             self._record_attempt(
                 user_id, material["id"], provider_id, selected_provider.requested_model,
@@ -427,15 +477,15 @@ class InterpretationService:
                    (id,cache_key,request_key,user_id,document_id,document_version,document_hash,action,scope,
                     paragraph_start,paragraph_end,selection_start,selection_end,source_text_hash,
                     context_text_hash,provider,requested_model,provider_model,prompt_version,result_text,result_json,
-                    requested_at,provider_status,coverage_json,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    requested_at,generated_at,provider_status,coverage_json,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(cache_key) DO UPDATE SET result_text=excluded.result_text,
                     coverage_json=excluded.coverage_json,updated_at=excluded.updated_at""",
                 (row_id, cache_key, request_key, user_id, material["id"], material["version"], material["content_hash"],
                  "interpret", payload["scope"], rows[0]["position"], rows[-1]["position"],
                  payload.get("selection_start"), payload.get("selection_end"), identity["source_text_hash"],
                  identity["context_text_hash"], output.provider, output.requested_model, output.actual_model, PROMPT_VERSION,
-                 text, json.dumps(structured, ensure_ascii=False), output.requested_at, "success",
+                 text, json.dumps(structured, ensure_ascii=False), output.requested_at, output.requested_at, "success",
                  json.dumps(coverage, ensure_ascii=False), now, now),
             )
             saved = connection.execute(
@@ -444,5 +494,6 @@ class InterpretationService:
         result = dict(saved)
         result["coverage"] = json.loads(result.pop("coverage_json") or "{}")
         result["structured"] = json.loads(result.get("result_json") or "{}")
+        result["generated_at"] = result.get("generated_at") or result.get("requested_at") or result.get("created_at")
         result["cache_hit"] = False
         return result

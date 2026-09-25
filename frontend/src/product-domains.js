@@ -483,7 +483,7 @@ export function initProductDomains({ api, toast }) {
         if (preferred) leap.interpretationProvider = preferred.id;
         interpretationSelect.value = leap.interpretationProvider;
         $("leap-interpretation-provider-status").textContent = preferred
-          ? `${preferred.label} · ${preferred.requested_model}${preferred.free ? " · 免费路由可能限速或更换底层模型" : ""}`
+          ? `${preferred.label} · ${preferred.requested_model}${preferred.fallback_model ? ` · 不可用时转 ${preferred.fallback_model}` : ""}${preferred.free ? " · 不会自动转付费模型" : ""}`
           : interpretation.message;
       }
       const azure = leap.providerMetadata.find((item) => item.id === "azure_translator");
@@ -655,7 +655,16 @@ export function initProductDomains({ api, toast }) {
   }
   function renderInterpretationResult(original, result, scope) {
     const output = $("leap-selection-translation"); output.replaceChildren();
-    output.append(el("small", "", assistantScopeLabel(scope) + "含义 · " + result.provider + " / " + result.provider_model + (result.cache_hit ? " · 缓存" : "")));
+    const rawModel = String(result.provider_model || result.requested_model || "");
+    const modelName = rawModel.split("/").pop().replace(/:free$/i, "").split("-").map((part) => {
+      if (/^\d/.test(part) || part.length <= 3) return part.toUpperCase();
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    }).join(" ");
+    const providerName = result.provider === "openrouter" ? "OpenRouter" : "OpenAI";
+    const generated = result.generated_at ? new Date(result.generated_at).toLocaleString("zh-CN", { hour12: false }) : "";
+    const meta = el("small", "interpretation-meta", assistantScopeLabel(scope) + "含义 · " + providerName + (modelName ? " · " + modelName : "") + (result.cache_hit ? " · 缓存" : ""));
+    if (generated) meta.title = "生成时间：" + generated + "\n请求模型：" + String(result.requested_model || "") + "\n实际模型：" + rawModel;
+    output.append(meta);
     output.append(el("p", "translation-original", original));
     output.append(el("p", "interpretation-result", result.result_text));
     if (result.coverage && !result.coverage.complete) output.append(el("p", "translation-limitation", result.coverage.label));
@@ -908,7 +917,7 @@ export function initProductDomains({ api, toast }) {
     leap.lastTranslation = null;
     const info = (leap.interpretationCapability?.providers || []).find((item) => item.id === leap.interpretationProvider);
     $("leap-interpretation-provider-status").textContent = info
-      ? `${info.label} · ${info.requested_model}${info.free ? " · 免费路由可能限速或更换底层模型" : ""}`
+      ? `${info.label} · ${info.requested_model}${info.fallback_model ? ` · 不可用时转 ${info.fallback_model}` : ""}${info.free ? " · 不会自动转付费模型" : ""}`
       : "当前解读引擎状态未知";
     if (leap.assistantAction === "interpret") renderAssistantIdle("interpret");
   });

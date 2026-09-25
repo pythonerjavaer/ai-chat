@@ -1197,6 +1197,7 @@ interpretation_providers = {
     "openrouter": OpenRouterInterpretationProvider(
         settings.openrouter_api_key,
         settings.openrouter_model,
+        fallback_model=settings.openrouter_interpret_fallback_model,
         endpoint=settings.openrouter_endpoint,
         site_url=settings.public_base_url,
     ),

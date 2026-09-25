@@ -25,6 +25,10 @@ services:
         sync: false
       - key: OPENROUTER_MODEL
         value: openrouter/free
+      - key: OPENROUTER_INTERPRET_MODEL
+        value: nex-agi/nex-n2.5-mini:free
+      - key: OPENROUTER_INTERPRET_FALLBACK_MODEL
+        value: openrouter/free
       - key: OPENROUTER_ENDPOINT
         value: https://openrouter.ai/api/v1/chat/completions
       - key: JWT_SECRET

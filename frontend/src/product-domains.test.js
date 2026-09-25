@@ -106,7 +106,7 @@ test("sentence and paragraph translation send different source text and cache id
 });
 
 test("reading assistant keeps interpretation separate from translation and preserves scope", () => {
-  for (const marker of ["READING ASSISTANT", "leap-assistant-translate-tab", "leap-assistant-interpret-tab", "leap-interpretation-provider", "OpenRouter Free", "/leap/reading-assistant/interpret", "action: \"interpret\""]) {
+  for (const marker of ["READING ASSISTANT", "leap-assistant-translate-tab", "leap-assistant-interpret-tab", "leap-interpretation-provider", "OpenRouter Free", "/leap/reading-assistant/interpret", "action: \"interpret\"", "不会自动转付费模型", "interpretation-meta"]) {
     assert.match(source + html, new RegExp(marker.replaceAll("/", "\\/")));
   }
   const material = { id: "doc-1", version: 4 };

@@ -238,7 +238,7 @@ def test_interpretation_is_evidence_bound_cached_and_separate_from_translation(p
 
     def runner(user_id, system, prompt, max_tokens):
         calls.append((user_id, system, prompt, max_tokens))
-        return {"text": "原文明确表达：第二句更长。\n理解与推断：它与相邻句形成长度对比。"}
+        return {"text": '{"concise_meaning":"第二句强调长度差异。","explanation":"它与相邻句形成长度对比。","evidence":["Sentence two is longer."],"uncertainty":"","scope":"sentence"}'}
 
     service = InterpretationService(product_store, runner, provider_model="test-model")
     payload = {
@@ -277,7 +277,7 @@ def test_interpretation_validates_word_sentence_paragraph_selection_and_chapter_
     seen = []
     service = InterpretationService(
         product_store,
-        lambda _user, _system, prompt, _limit: seen.append(prompt) or {"text": "原文明确表达：测试解读。"},
+        lambda _user, _system, prompt, _limit: seen.append(prompt) or {"text": '{"concise_meaning":"测试解读。","explanation":"原文关系清晰。","evidence":[],"uncertainty":"","scope":"test"}'},
         provider_model="test-model",
     )
     base = {
@@ -411,13 +411,13 @@ def test_interpretation_api_reports_unconfigured_and_uses_injected_frostfire_run
     available_app = FastAPI()
     available_app.include_router(create_leap_router(
         product_store, lambda: {"id": 1},
-        lambda user_id, system, prompt, limit: calls.append((user_id, system, prompt, limit)) or {"text": "原文明确表达：weight在本句中是主语。"},
+        lambda user_id, system, prompt, limit: calls.append((user_id, system, prompt, limit)) or {"text": '{"concise_meaning":"分量。","explanation":"weight在本句中是主语。","evidence":["Weight"],"uncertainty":"","scope":"word"}'},
         "test-model",
     ))
     client = TestClient(available_app)
     response = client.post("/api/leap/reading-assistant/interpret", json=payload)
     assert response.status_code == 200
-    assert response.json()["result_text"].startswith("原文明确表达")
+    assert response.json()["structured"]["concise_meaning"] == "分量。"
     assert len(calls) == 1
 
 
@@ -483,6 +483,54 @@ def test_openrouter_provider_explicitly_reports_unconfigured_and_rate_limited():
     assert rate.value.code == "OPENROUTER_RATE_LIMITED"
 
 
+def test_openrouter_fixed_free_model_falls_back_only_to_free_router():
+    import io
+    import urllib.error
+
+    calls = []
+    def opener(request, timeout):
+        body = json.loads(request.data)
+        calls.append((body["model"], timeout))
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(request.full_url, 503, "unavailable", {}, io.BytesIO(b"{}"))
+        return _OpenRouterResponse({
+            "model": "free/router-selected-model:free",
+            "choices": [{"message": {"content": '{"concise_meaning":"含义","explanation":"解释","evidence":[],"uncertainty":"","scope":"word"}'}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        })
+
+    provider = OpenRouterInterpretationProvider(
+        "secret", "nvidia/nemotron-3-super-120b-a12b:free",
+        fallback_model="openrouter/free", opener=opener,
+    )
+    result = provider.generate(1, "system", "prompt", 100)
+    assert [item[0] for item in calls] == [
+        "nvidia/nemotron-3-super-120b-a12b:free", "openrouter/free",
+    ]
+    assert result.requested_model == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert result.actual_model == "free/router-selected-model:free"
+
+
+def test_interpretation_scope_prompts_are_distinct_and_evidence_is_source_bound():
+    word_system, word_prompt = InterpretationService._prompts(
+        "word", "weight", "His promise carried more weight than his title.", "完整单词",
+    )
+    paragraph_system, paragraph_prompt = InterpretationService._prompts(
+        "paragraph", "A model can overfit.", "", "完整段落",
+    )
+    assert "简体中文" in word_system and "逐字引用" in word_system
+    assert "词典义项" in word_prompt
+    assert "技术材料关注原理" in paragraph_prompt
+    assert word_prompt != paragraph_prompt and word_system == paragraph_system
+
+    structured = InterpretationService._structured_result(
+        '{"concise_meaning":"重要性","explanation":"说明承诺的影响力。","evidence":["more weight","不存在的引文"],"uncertainty":"","scope":"word"}',
+        "word", "weight", "His promise carried more weight than his title.",
+    )
+    assert structured["evidence"] == ["more weight"]
+    assert structured["scope"] == "word"
+
+
 def test_interpretation_provider_choice_cache_and_actual_model_are_isolated(product_store):
     repo = LeapRepository(product_store)
     material = repo.create_material(1, MaterialCreate(title="Provider", text="Weight matters here."))
@@ -519,6 +567,7 @@ def test_interpretation_provider_choice_cache_and_actual_model_are_isolated(prod
     assert first["provider"] == "openrouter"
     assert first["requested_model"] == "openrouter/free"
     assert first["provider_model"] == "free/model-a"
+    assert first["generated_at"] == "2026-09-25T00:00:00+00:00"
     assert first["structured"]["concise_meaning"] == "分量很重要"
     assert repeated["cache_hit"] is True
     assert provider.calls == 1

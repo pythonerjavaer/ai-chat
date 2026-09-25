@@ -1,0 +1,72 @@
+[
+  {
+    "id": "literary-word-bank",
+    "type": "literary_word",
+    "scope": "word",
+    "source_text": "bank",
+    "context_text": "She sat on the bank and watched the river darken."
+  },
+  {
+    "id": "literary-word-weight",
+    "type": "literary_word",
+    "scope": "word",
+    "source_text": "weight",
+    "context_text": "His promise carried more weight than his title."
+  },
+  {
+    "id": "literary-sentence-dickens",
+    "type": "literary_sentence",
+    "scope": "sentence",
+    "source_text": "It was the best of times, it was the worst of times.",
+    "context_text": "It was the age of wisdom, it was the age of foolishness."
+  },
+  {
+    "id": "literary-sentence-austen",
+    "type": "literary_sentence",
+    "scope": "sentence",
+    "source_text": "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.",
+    "context_text": "However little known the feelings or views of such a man may be on his first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families."
+  },
+  {
+    "id": "philosophy-plato",
+    "type": "philosophy_paragraph",
+    "scope": "paragraph",
+    "source_text": "The object of education is to teach us to love what is beautiful. Yet education is not the filling of a vessel, but the turning of the whole soul toward what is true.",
+    "context_text": "The passage contrasts passive accumulation with a change in orientation."
+  },
+  {
+    "id": "philosophy-aurelius",
+    "type": "philosophy_paragraph",
+    "scope": "paragraph",
+    "source_text": "You have power over your mind—not outside events. Realize this, and you will find strength. The impediment to action advances action; what stands in the way becomes the way.",
+    "context_text": "The selected lines concern judgment, agency, and obstacles."
+  },
+  {
+    "id": "technical-overfitting",
+    "type": "technical_paragraph",
+    "scope": "paragraph",
+    "source_text": "A model overfits when it learns patterns that are specific to the training data but do not generalize to new samples. Regularization reduces this risk by penalizing unnecessary complexity, although excessive regularization can cause underfitting.",
+    "context_text": "This is a short explanation of the bias-variance tradeoff."
+  },
+  {
+    "id": "technical-transactions",
+    "type": "technical_paragraph",
+    "scope": "paragraph",
+    "source_text": "Snapshot isolation gives each transaction a consistent view of committed data. It prevents many read anomalies, but concurrent transactions can still produce write skew when they update disjoint rows based on the same earlier snapshot.",
+    "context_text": "The passage distinguishes snapshot consistency from serializability."
+  },
+  {
+    "id": "finance-duration",
+    "type": "finance_paragraph",
+    "scope": "paragraph",
+    "source_text": "Bond duration estimates how sensitive a bond price is to a change in interest rates. A duration of six implies that, for a small parallel increase of one percentage point in yields, the price would fall by roughly six percent, all else equal.",
+    "context_text": "The estimate is local and assumes a small parallel shift in the yield curve."
+  },
+  {
+    "id": "finance-liquidity",
+    "type": "finance_paragraph",
+    "scope": "paragraph",
+    "source_text": "A bank can appear solvent and still fail from a liquidity shock. If depositors withdraw funds faster than assets can be sold without large discounts, forced sales may crystallize losses and weaken capital.",
+    "context_text": "The paragraph separates balance-sheet solvency from cash-flow liquidity."
+  }
+]
