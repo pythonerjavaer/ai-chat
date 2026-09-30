@@ -5550,6 +5550,9 @@ setupRotaryCompasses();
   updateNetwork();
   await loadMusicPreferences();
   const initialParams = new URLSearchParams(window.location.search);
+  // Public portfolio links can open a specific product. Authentication still
+  // happens first; launchProduct resumes the requested product afterwards.
+  const linkedProduct = normalizeProductId(initialParams.get("product"));
   if (initialParams.get("admin") === "usage") {
     elements.adminUsageLauncher.classList.remove("hidden");
     window.setTimeout(openAdminUsage, 80);
@@ -5558,7 +5561,7 @@ setupRotaryCompasses();
   state.token = await storage.get(STORAGE_KEYS.token);
   state.workspace = (await storage.get(STORAGE_KEYS.workspace)) || "general";
   state.activeProduct = await storage.get(STORAGE_KEYS.activeProduct);
-  state.pendingLaunch = await storage.get(STORAGE_KEYS.pendingProduct);
+  state.pendingLaunch = linkedProduct || await storage.get(STORAGE_KEYS.pendingProduct);
   productLaunchReady = true;
   if (Capacitor.isNativePlatform() && !configuredApiBase) {
     elements.authError.textContent = "移动端构建尚未配置正式 HTTPS API 地址。";
