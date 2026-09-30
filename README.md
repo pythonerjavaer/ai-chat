@@ -1,5 +1,12 @@
 # 冰焰 · Frostfire
 
+## 在线交互演示
+
+[**打开个人AI求职信息与决策辅助系统网页**](https://pythonerjavaer.github.io/interview-portfolio/projects/radar.html)
+
+岗位筛选、关注及跟进流程。使用合成示例数据，不调用真实招聘或AI服务。
+
+
 一个面向合同合规与金融文档研究的证据驱动 AI 工作台，也是一个可创建 AI Space“成果胶囊”的轻量平台底座。法律工作台采用寒冰蓝视觉和“条款地图”，金融工作台采用烈焰橙红视觉和“信号面板”；两者共享同一套账号、私人资料库、来源引用和流式对话能力。
 
 当前仓库同时包含 Web、iOS 和 Android 工程。后端使用 FastAPI、SQLite（本地）或 PostgreSQL / Supabase（持久部署）与 OpenAI API；前端使用 Vite、原生 HTML/CSS/JavaScript 和 Capacitor。
