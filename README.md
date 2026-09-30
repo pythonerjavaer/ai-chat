@@ -2,7 +2,7 @@
 
 ## 在线交互演示
 
-[**打开个人AI求职信息与决策辅助系统网页**](https://pythonerjavaer.github.io/interview-portfolio/projects/radar.html)
+[**打开未来雷达**](https://frostfire-ai.onrender.com/?product=recruitment)
 
 岗位筛选、关注及跟进流程。使用合成示例数据，不调用真实招聘或AI服务。
 
