@@ -68,7 +68,7 @@ const FUTURE_RADAR_SCAN_TYPES = Object.freeze(["quick", "deep"]);
 const FUTURE_RADAR_REQUEST_CONTROLLERS = new Set();
 const WORKSPACE_META = {
   legal: { symbol: "§", eyebrow: "FROST", themeName: "寒冰域", label: "寒冰域", hero: "有些东西决定世界如何运行，也决定什么不能被越过。", description: "当前从合同、合规、义务、期限与风险开始。", lens: "来源" },
-  general: { symbol: "✦", eyebrow: "AURORA", themeName: "极光域", label: "极光域", hero: "让散落的信息逐渐形成属于你的知识世界。", description: "当前从资料、文档、对话与可追溯问答开始。", lens: "来源" },
+  general: { symbol: "✦", eyebrow: "TRANSITION", themeName: "跃迁域", label: "跃迁域", hero: "让散落的信息逐渐形成属于你的知识世界。", description: "当前从资料、文档、对话与可追溯问答开始。", lens: "来源" },
   finance: { symbol: "↗", eyebrow: "EMBER", themeName: "烈火域", label: "烈火域", hero: "世界不只需要被理解，还需要决定向哪里前进。", description: "当前从数字、金融、风险、假设与决策分析开始。", lens: "来源" },
 };
 const PHOTON_TRACKS = {

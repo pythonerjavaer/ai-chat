@@ -15,7 +15,7 @@ test("the global product navigation contains every formal product exactly once",
   assert.equal(new Set(PRODUCT_NAV_ITEMS.map((item) => item.id)).size, 10);
   assert.deepEqual(
     PRODUCT_NAV_ITEMS.map((item) => item.label),
-    ["寒冰域", "极光域", "烈火域", "未来雷达", "造界", "共振", "溯源透镜", "八度空间", "光子魅影", "遗忘史诗"],
+    ["寒冰域", "跃迁域", "烈火域", "未来雷达", "造界", "共振", "溯源透镜", "八度空间", "光子魅影", "遗忘史诗"],
   );
 });
 

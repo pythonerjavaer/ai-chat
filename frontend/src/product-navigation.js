@@ -1,6 +1,6 @@
 export const PRODUCT_NAV_ITEMS = Object.freeze([
   { id: "legal", symbol: "§", label: "寒冰域", english: "FROST" },
-  { id: "general", symbol: "✦", label: "极光域", english: "AURORA" },
+  { id: "general", symbol: "✦", label: "跃迁域", english: "TRANSITION" },
   { id: "finance", symbol: "↗", label: "烈火域", english: "EMBER" },
   { id: "recruitment", symbol: "◉", label: "未来雷达", english: "FUTURE RADAR", dialogId: "recruitment-dialog" },
   { id: "forge", symbol: "＋", label: "造界", english: "WORLD FORGE", dialogId: "studio-dialog" },
