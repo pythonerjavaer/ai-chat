@@ -310,6 +310,19 @@ test("Pulse statements use a full-width responsive layout with functional disclo
   assert.match(source, /\["Revenue"[^\n]*openPulsePanel\("finance"\)/);
   assert.match(source, /\["Repeat Rate"[^\n]*openPulsePanel\("analytics"\)/);
   assert.match(source, /article\.addEventListener\("click"[\s\S]*?details\.open/);
+  assert.match(source, /metric\("试算平衡"[\s\S]*?revealFinanceEvidence\("ledger"\)/);
+  assert.match(source, /metric\("营业收入"[\s\S]*?revealFinanceEvidence\("income"\)/);
+  assert.match(source, /metric\("资产负债表"[\s\S]*?revealFinanceEvidence\("balance"\)/);
+});
+
+test("Pulse asset status cards filter real asset passports and can clear the filter", () => {
+  assert.match(html, /id="pulse-asset-filter"/);
+  assert.match(html, /id="pulse-asset-filter-clear"/);
+  assert.match(source, /function renderPulseAssetList\(\)/);
+  assert.match(source, /pulse\.assets\.filter\(\(item\) => item\.status === filter\)/);
+  assert.match(source, /activateCard\(card\(row\[0\]/);
+  assert.match(source, /pulse\.assetStatusFilter = row\[0\]/);
+  assert.match(source, /pulse-asset-filter-clear[^\n]*renderPulseAssetList\(\)/);
 });
 
 test("product pages keep small screens readable and contain dense model tables", () => {

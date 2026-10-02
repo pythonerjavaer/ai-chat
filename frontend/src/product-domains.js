@@ -304,7 +304,7 @@ export function initProductDomains({ api, toast }) {
   let pulseLoadGeneration = 0;
   let storageLoadGeneration = 0;
   const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], translationMode: "original", translationProvider: "browser_local", translationProviders: {}, providerMetadata: [], translationCache: new Map(), translationGeneration: 0, cloudConsent: new Set(), cloudProviderFailed: false, lastTranslation: null, currentTranslationScope: null, assistantAction: "translate", currentAssistantScope: null, assistantResults: new Map(), assistantLast: {}, assistantStates: { translate: { status: "idle", error: "" }, interpret: { status: "idle", error: "" } }, assistantGeneration: 0, assistantController: null, interpretationCapability: null, interpretationProvider: "auto", interpretationConsent: new Set(), translationSession: { browser_local: 0, ollama_local: 0, azure_translator: 0, cacheSaved: 0 } };
-  const pulse = { mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [], inspections: [], expenses: [], selectedOrder: null };
+  const pulse = { mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [], inspections: [], expenses: [], selectedOrder: null, assetStatusFilter: "" };
 
   function status(id, text, tone = "") { const node = $(id); node.textContent = text; node.dataset.tone = tone; }
   function leapDemo() { return leap.mode === "demo"; }
@@ -1186,6 +1186,18 @@ export function initProductDomains({ api, toast }) {
     const host = $("pulse-journey"); host.replaceChildren();
     steps.forEach((row, index) => { const node = el("li", row[1] ? "done" : "", String(index + 1) + ". " + row[0]); host.append(node); });
   }
+  function renderPulseAssetList() {
+    const filter = pulse.assetStatusFilter;
+    const visible = filter ? pulse.assets.filter((item) => item.status === filter) : pulse.assets;
+    const filterBanner = $("pulse-asset-filter");
+    filterBanner.classList.toggle("hidden", !filter);
+    filterBanner.querySelector("span").textContent = filter ? `资产状态：${filter} · ${visible.length} 件` : "";
+    list($("pulse-asset-list"), visible, (item) => {
+      const sku = pulse.skus.find((row) => row.id === item.sku_id);
+      const node = card(item.asset_code, item.status + " · " + ((sku && sku.size) || "尺寸未记"), ((sku && sku.name) || "未知SKU") + " · 采购成本 " + money(item.purchase_cost_cents, pulse.currency));
+      return activateCard(node, () => openAsset(item.id));
+    }, filter ? "当前状态没有资产，可显示全部资产。" : "先创建SKU并登记实物资产。");
+  }
   function renderPulse() {
     $("pulse-workspace-badge").textContent = pulseDemo() ? "DEMO DATA · 隔离公司" : "真实 Oia 数据";
     $("pulse-demo-banner").classList.toggle("hidden", !pulseDemo());
@@ -1206,18 +1218,18 @@ export function initProductDomains({ api, toast }) {
     ];
     $("pulse-metrics").replaceChildren(...metrics.map((item) => metric(...item))); renderTrend();
     const groups = {}; pulse.assets.forEach((item) => { groups[item.status] = (groups[item.status] || 0) + 1; });
-    $("pulse-asset-status").replaceChildren(...Object.entries(groups).map((row) => card(row[0], row[1] + " 件", Math.round(row[1] * 100 / Math.max(1, pulse.assets.length)) + "%")));
+    $("pulse-asset-status").replaceChildren(...Object.entries(groups).map((row) => activateCard(card(row[0], row[1] + " 件", Math.round(row[1] * 100 / Math.max(1, pulse.assets.length)) + "% · 点击查看该状态资产"), () => {
+      pulse.assetStatusFilter = row[0];
+      renderPulseAssetList();
+      tab(pulseDialog, "assets");
+    })));
     list($("pulse-exceptions"), (pulse.dashboard && pulse.dashboard.recent_exceptions) || [], (item) => card(item.kind, item.count + " 条", item.detail), "当前没有需要处理的异常。");
     list($("pulse-order-list"), pulse.orders, (item) => {
       const customer = pulse.customers.find((row) => row.id === item.customer_id);
       const node = card("#" + item.id.slice(-8) + " · " + ((customer && customer.name) || "未知客户"), item.status + " · " + date(item.start_at) + " → " + date(item.end_at), money(item.total_cents, item.currency || pulse.currency) + " · 点击查看完整证据链");
       return activateCard(node, () => openOrder(item.id));
     }, "创建客户和订单后，交易工作台会显示完整业务链。");
-    list($("pulse-asset-list"), pulse.assets, (item) => {
-      const sku = pulse.skus.find((row) => row.id === item.sku_id);
-      const node = card(item.asset_code, item.status + " · " + ((sku && sku.size) || "尺寸未记"), ((sku && sku.name) || "未知SKU") + " · 采购成本 " + money(item.purchase_cost_cents, pulse.currency));
-      return activateCard(node, () => openAsset(item.id));
-    }, "先创建SKU并登记实物资产。");
+    renderPulseAssetList();
     pulseChoices(); renderJourney(pulse.selectedOrder);
     $("pulse-sku-form").closest("details").classList.toggle("hidden", pulseDemo());
     $("pulse-asset-form").classList.toggle("hidden", pulseDemo());
@@ -1317,11 +1329,21 @@ export function initProductDomains({ api, toast }) {
       });
       return article;
     };
+    const revealFinanceEvidence = (kind) => {
+      if (kind === "ledger") {
+        $("pulse-ledger-list").scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      const report = $("pulse-statements").children[kind === "balance" ? 1 : 0];
+      if (!report) return;
+      report.querySelector("details").open = true;
+      report.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
     $("pulse-finance-output").replaceChildren(
-      metric("试算平衡", trial.balanced ? "借贷平衡" : "需核查", "借方 " + money(trial.total_debit, pulse.currency) + " · 贷方 " + money(trial.total_credit, pulse.currency)),
-      metric("营业收入", money(income.revenue_total, pulse.currency), "押金不计入收入"),
-      metric("经营利润", money(income.operating_profit, pulse.currency), income.data_quality === "partial" ? "成本数据不完整" : "基于已入账凭证"),
-      metric("资产负债表", balance.balanced ? "平衡" : "需核查", money(balance.assets_total, pulse.currency) + " 资产")
+      metric("试算平衡", trial.balanced ? "借贷平衡" : "需核查", "借方 " + money(trial.total_debit, pulse.currency) + " · 贷方 " + money(trial.total_credit, pulse.currency), () => revealFinanceEvidence("ledger")),
+      metric("营业收入", money(income.revenue_total, pulse.currency), "押金不计入收入 · 点击查看利润表", () => revealFinanceEvidence("income")),
+      metric("经营利润", money(income.operating_profit, pulse.currency), (income.data_quality === "partial" ? "成本数据不完整" : "基于已入账凭证") + " · 点击查看利润表", () => revealFinanceEvidence("income")),
+      metric("资产负债表", balance.balanced ? "平衡" : "需核查", money(balance.assets_total, pulse.currency) + " 资产 · 点击查看明细", () => revealFinanceEvidence("balance"))
     );
     const revenueRows = entries(income.revenue).length ? entries(income.revenue) : accountEntries(["REVENUE"]);
     const expenseRows = entries(income.expenses).length ? entries(income.expenses) : accountEntries(["EXPENSE"]);
@@ -1600,8 +1622,9 @@ export function initProductDomains({ api, toast }) {
       event.currentTarget.reset(); await loadPulse(); const latest = pulseDemo() ? pulse.orders[pulse.orders.length - 1] : pulse.orders[0]; if (latest) await openOrder(latest.id); toast("订单已创建，具体资产已被占用。");
     } catch (error) { status("pulse-status", error.message, "error"); }
   });
-  $("pulse-real-mode").addEventListener("click", async () => { pulse.mode = "real"; pulse.selectedOrder = null; await loadPulse(); tab(pulseDialog, "overview"); });
-  $("pulse-demo-mode").addEventListener("click", async () => { pulse.mode = "demo"; pulse.selectedOrder = null; await loadPulse(); tab(pulseDialog, "overview"); });
+  $("pulse-asset-filter-clear").addEventListener("click", () => { pulse.assetStatusFilter = ""; renderPulseAssetList(); });
+  $("pulse-real-mode").addEventListener("click", async () => { pulse.mode = "real"; pulse.selectedOrder = null; pulse.assetStatusFilter = ""; await loadPulse(); tab(pulseDialog, "overview"); });
+  $("pulse-demo-mode").addEventListener("click", async () => { pulse.mode = "demo"; pulse.selectedOrder = null; pulse.assetStatusFilter = ""; await loadPulse(); tab(pulseDialog, "overview"); });
   $("pulse-demo-reset").addEventListener("click", async () => { applyPulseDemo(await api("/pulse/demo/reset", { method: "POST" })); renderPulse(); toast("Oia Demo Company 已恢复到会计一致的六个月样本。"); });
 
   leapDialog.querySelectorAll("[data-domain-tab]").forEach((node) => node.addEventListener("click", async () => { tab(leapDialog, node.dataset.domainTab); if (node.dataset.domainTab === "library" && !leap.libraryLoaded) { try { await loadLibrary(); } catch (error) { $("leap-library-status").textContent = error.message; } } }));

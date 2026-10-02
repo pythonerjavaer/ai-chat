@@ -154,3 +154,15 @@ test("source-health status is an explicit control that opens its detailed panel"
   assert.match(appSource, /查看 \$\{errors\} 个异常信源的名称、检查时间与错误原因/);
   assert.match(appSource, /api\("\/future-radar\/sources\?enabled=true"\)/);
 });
+
+test("pipeline stage cards open the related evidence view", () => {
+  const start = appSource.indexOf("function renderFutureRadarPipelineSummary(");
+  const end = appSource.indexOf("\nfunction showFutureRadarBridgeDetails", start);
+  const source = appSource.slice(start, end);
+  assert.match(source, /ingest: "sources", extract: "jobs", validate: "bridge", prioritize: "jobs", deliver: "events"/);
+  assert.match(source, /makeElement\(destination \? "button" : "article"/);
+  assert.match(source, /card\.addEventListener\("click"/);
+  assert.match(source, /showFutureRadarMetric\("VERIFIED"\)/);
+  assert.match(source, /selectRecruitmentTier\("FOCUS"\)/);
+  assert.match(source, /activateFutureRadarTab\(destination\)/);
+});

@@ -3068,7 +3068,22 @@ function renderFutureRadarPipelineSummary(payload = state.futureRadar.pipelineSu
   }
   const list = makeElement("div", "radar-pipeline-stages");
   for (const stage of stages) {
-    const card = makeElement("article", `radar-pipeline-stage ${stage.status === "ready" ? "ready" : "pending"}`);
+    const destinations = { ingest: "sources", extract: "jobs", validate: "bridge", prioritize: "jobs", deliver: "events" };
+    const destination = destinations[stage.id];
+    const card = makeElement(destination ? "button" : "article", `radar-pipeline-stage ${stage.status === "ready" ? "ready" : "pending"}`);
+    if (destination) {
+      card.type = "button";
+      card.title = `查看${stage.label || "处理阶段"}的记录与依据`;
+      card.addEventListener("click", () => {
+        if (stage.id === "validate") showFutureRadarMetric("VERIFIED");
+        else if (stage.id === "extract") resetFutureRadarFilters();
+        else if (stage.id === "prioritize") {
+          activateFutureRadarTab("jobs");
+          selectRecruitmentTier("FOCUS");
+        } else activateFutureRadarTab(destination);
+        document.querySelector(`[data-radar-panel="${stage.id === "validate" ? "jobs" : destination}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
     card.append(
       makeElement("small", "", stage.status === "ready" ? "READY" : "WAITING"),
       makeElement("strong", "", Number(stage.count || 0).toLocaleString("zh-CN")),

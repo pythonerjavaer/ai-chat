@@ -424,6 +424,8 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .radar-pipeline-heading { color: #bcecf0; font-size: 9px; letter-spacing: .04em; }
 .radar-pipeline-stages { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
 .radar-pipeline-stage { position: relative; display: grid; gap: 3px; min-width: 0; padding: 8px; border: 1px solid rgba(130,218,228,.12); border-radius: 8px; background: rgba(6,23,32,.5); }
+.radar-pipeline-stage:is(button) { color: inherit; text-align: left; cursor: pointer; font: inherit; }
+.radar-pipeline-stage:is(button):hover, .radar-pipeline-stage:is(button):focus-visible { border-color: rgba(99,216,230,.65); background: rgba(47,137,153,.16); outline: 2px solid rgba(99,216,230,.3); outline-offset: 2px; }
 .radar-pipeline-stage:not(:last-child)::after { content: "›"; position: absolute; z-index: 1; right: -7px; top: 30%; color: #6ab8be; font-weight: 900; }
 .radar-pipeline-stage small { color: #648d99; font-size: 6px; font-weight: 900; letter-spacing: .08em; }
 .radar-pipeline-stage strong { color: #ecfeff; font-size: 16px; line-height: 1.1; }
@@ -2412,6 +2414,10 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 .domain-record-card.clickable { cursor:pointer; }.domain-record-card.clickable:hover { border-color:rgba(var(--domain-accent),.4); transform:translateY(-1px); }
 .pulse-metric { min-width:0; text-align:left; cursor:default; font:inherit; }
 .pulse-metric:is(button) { cursor:pointer; }
+.pulse-asset-filter { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; padding:10px 12px; border:1px solid rgba(var(--domain-accent),.25); border-radius:10px; color:#d5edf2; background:rgba(var(--domain-accent),.07); font-size:12px; }
+.pulse-asset-filter.hidden { display:none; }
+.pulse-asset-filter button { border:0; background:none; color:#a9e8eb; cursor:pointer; font:inherit; font-weight:700; }
+.pulse-asset-filter button:hover,.pulse-asset-filter button:focus-visible { text-decoration:underline; outline:2px solid rgba(var(--domain-accent),.5); outline-offset:3px; }
 .finance-workspace > .pulse-ledger-panel,.finance-workspace > .detail-rail { min-width:0; }
 .finance-workspace .domain-list.grid-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
 .finance-workspace .detail-rail { min-height:0; }
