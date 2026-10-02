@@ -1874,13 +1874,21 @@ def future_radar_relationship_graph(user: User) -> dict:
                 "message": "请配置 Neo4j；PostgreSQL 岗位池不受影响。"}
     from .future_radar import personal
 
+    started = time.perf_counter()
     jobs = future_radar_service.repository.list_graph_opportunities(
         application_states=personal.application_states(database.connect, user["id"]),
         public_url=_public_reference_url,
         input_sanitizer=lambda job: _public_search_update(job, include_detail=True),
         company_aliases=_radar_company_aliases(),
     )
+    read_finished = time.perf_counter()
     graph = neo4j_opportunity_graph.sync_opportunities(jobs)
+    logging.getLogger("uvicorn.error").info(
+        "radar_graph_timing rows=%d read_ms=%d neo4j_ms=%d total_ms=%d",
+        len(jobs), round((read_finished - started) * 1000),
+        round((time.perf_counter() - read_finished) * 1000),
+        round((time.perf_counter() - started) * 1000),
+    )
     if graph.get("status") != "synced":
         return graph
     nodes: dict[str, dict[str, str]] = {}
@@ -2066,6 +2074,7 @@ def future_radar_opportunities(
     memory_before = log_memory_checkpoint(
         logger, "job_pool_read", "before", page=page, page_size=page_size, view=view,
     )
+    started = time.perf_counter()
     filters = {
         "application_status": application_status,
         "status": status_filter, "verification_status": verification_status,
@@ -2085,8 +2094,10 @@ def future_radar_opportunities(
     }
     profile = database.get_recruitment_profile(user["id"])
     from .future_radar import personal
+    application_states = personal.application_states(database.connect, user["id"])
+    inputs_finished = time.perf_counter()
     result = future_radar_service.repository.list_opportunities(
-        application_states=personal.application_states(database.connect, user["id"]),
+        application_states=application_states,
         page=page, page_size=page_size, filters=filters,
         public_url=_public_reference_url,
         prepare=lambda job: _public_radar_opportunity(job, profile),
@@ -2095,6 +2106,7 @@ def future_radar_opportunities(
         company_aliases=_radar_company_aliases(),
         cache_scope=_radar_scoring_scope(user["id"], profile),
     )
+    pool_finished = time.perf_counter()
     if not compact:
         # Older clients keep their aliases. The current UI explicitly asks for
         # compact mode so large scored records are serialized/sent only once.
@@ -2112,6 +2124,13 @@ def future_radar_opportunities(
     # These public records contain only JSON-compatible primitives. Avoid
     # FastAPI recursively encoding the same large compatibility lists again.
     response = JSONResponse(content=result)
+    logging.getLogger("uvicorn.error").info(
+        "radar_request_timing inputs_ms=%d pool_ms=%d metadata_response_ms=%d total_ms=%d",
+        round((inputs_finished - started) * 1000),
+        round((pool_finished - inputs_finished) * 1000),
+        round((time.perf_counter() - pool_finished) * 1000),
+        round((time.perf_counter() - started) * 1000),
+    )
     log_memory_checkpoint(
         logger, "job_pool_read", "after", before_mb=memory_before,
         page=page, page_size=page_size, view=view, total=result.get("total"),
@@ -2931,7 +2950,20 @@ def save_recruitment_profile(request: RecruitmentProfileRequest, user: Consented
 
 
 @app.get("/api/recruitment/jobs")
-def recruitment_jobs(user: User) -> dict:
+def recruitment_jobs(user: User, summary_only: bool = False) -> dict:
+    if summary_only:
+        # The unified Radar owns the displayed opportunity pool. Read its
+        # external-monitor handoff/watch status without loading and scoring
+        # every legacy job merely to paint the synchronization indicator.
+        return {
+            "jobs": [],
+            "summary_only": True,
+            "data_status": {
+                "mode": "radar_status_summary",
+                "chatgpt_sync": public_chatgpt_sync_status(),
+                "watches": database.recruitment_watch_summary(user["id"]),
+            },
+        }
     profile = database.get_recruitment_profile(user["id"])
     available_jobs = database.list_recruitment_jobs()
     watch_summary = database.recruitment_watch_summary(user["id"])

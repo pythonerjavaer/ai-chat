@@ -91,7 +91,11 @@ def _redact_public_text(value: Any, *, limit: int) -> str:
     # Redact before applying the output limit; truncating first could preserve
     # the prefix of a credential that crosses the excerpt boundary.
     text = clean_text(value, limit=1_500_000)
-    text = _PUBLIC_EMAIL.sub("[redacted-email]", text)
+    # Every match requires an @. Avoid the regex engine's repeated prefix
+    # scan over long contact-free Unicode prose; redaction still precedes
+    # truncation and remains byte-for-byte equivalent when a contact exists.
+    if "@" in text:
+        text = _PUBLIC_EMAIL.sub("[redacted-email]", text)
     for pattern in _PUBLIC_PHONES:
         text = pattern.sub("[redacted-phone]", text)
     for pattern in _PUBLIC_SECRETS:
@@ -127,7 +131,7 @@ def _public_reference_url(value: Any) -> str | None:
         )
     phone_check_url = decoded_parts._replace(path=phone_check_path).geturl()
     if (
-        _PUBLIC_EMAIL.search(decoded)
+        ("@" in decoded and _PUBLIC_EMAIL.search(decoded))
         or any(pattern.search(phone_check_url) for pattern in _PUBLIC_PHONES)
         or any(pattern.search(decoded) for pattern in _PUBLIC_SECRETS)
     ):

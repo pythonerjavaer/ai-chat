@@ -1033,24 +1033,28 @@ def _curated_job_tier_anchor(
         "intern", "internship", "实习", "director", "总监", "assistant", "助理",
         "support", "支持", "operations", "运营", "客服", "销售",
     }
-    duty_job = {**job, "title": ""}
-    duty_text = _role_source_text(duty_job)
-    duty_tags = set(_normalize_role_tags(duty_job))
-    named_example_has_core_evidence = bool(
-        duty_text
-        and duty_tags.intersection(HIGH_VALUE_ROLE_TAGS | PROFESSIONAL_ROLE_TAGS)
-    )
     named_company = str(
         (organization or {}).get("employer_identity") or job.get("company") or ""
     )
+    named_example_has_core_evidence = None
     for company_marker, title_marker, tier in CURATED_ROLE_TIER_RULES:
         if (
             _company_matches_marker(named_company, company_marker)
             and _identity_text(title_marker) in title
             and not _contains_any(str(job.get("title") or "").casefold(), excluded_named_example_titles)
-            and named_example_has_core_evidence
         ):
-            return tier, "named_example"
+            # Most jobs cannot match a named calibration. Parse their duty
+            # evidence only after the unchanged company/title guards match.
+            if named_example_has_core_evidence is None:
+                duty_job = {**job, "title": ""}
+                duty_text = _role_source_text(duty_job)
+                duty_tags = set(_normalize_role_tags(duty_job, source_text=duty_text))
+                named_example_has_core_evidence = bool(
+                    duty_text
+                    and duty_tags.intersection(HIGH_VALUE_ROLE_TAGS | PROFESSIONAL_ROLE_TAGS)
+                )
+            if named_example_has_core_evidence:
+                return tier, "named_example"
     return None, None
 
 
@@ -1171,8 +1175,11 @@ def _normalized_industry_tags(job: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(result))
 
 
-def _normalize_role_tags(job: dict[str, Any]) -> list[str]:
-    source_text = _role_source_text(job)
+def _normalize_role_tags(
+    job: dict[str, Any], *, source_text: str | None = None,
+) -> list[str]:
+    if source_text is None:
+        source_text = _role_source_text(job)
     # A broad campaign's precomputed role tags are not evidence of this job's
     # duties. Re-derive scoring tags from the actual title/work instead of
     # perpetuating a stale or over-broad AI/finance annotation.
@@ -1182,9 +1189,13 @@ def _normalize_role_tags(job: dict[str, Any]) -> list[str]:
     ]
 
 
-def _role_text(job: dict[str, Any], role_tags: list[str] | None = None) -> str:
-    normalized = role_tags if role_tags is not None else _normalize_role_tags(job)
-    return f"{_role_source_text(job)} {' '.join(normalized)}".strip()
+def _role_text(
+    job: dict[str, Any], role_tags: list[str] | None = None, *, source_text: str | None = None,
+) -> str:
+    if source_text is None:
+        source_text = _role_source_text(job)
+    normalized = role_tags if role_tags is not None else _normalize_role_tags(job, source_text=source_text)
+    return f"{source_text} {' '.join(normalized)}".strip()
 
 
 def _is_low_value_role(role_tags: list[str], role_text: str, title: str = "") -> bool:
@@ -1295,10 +1306,12 @@ def job_matches_profile(job: dict[str, Any], profile: dict[str, Any]) -> bool:
 
 def _score_dimensions(
     job: dict[str, Any], profile: dict[str, Any], role_tags: list[str],
-    organization: dict[str, Any],
+    organization: dict[str, Any], *, role_text: str | None = None,
+    low_value_role: bool | None = None,
 ) -> tuple[dict[str, int], list[str], list[str], list[str]]:
     text = _job_text(job)
-    role_text = _role_text(job, role_tags)
+    if role_text is None:
+        role_text = _role_text(job, role_tags)
     city_text = f"{job.get('city', '')} {job.get('title', '')}".casefold()
     tags = {str(tag).strip() for tag in (job.get("tags") or [])}
     role_tag_set = set(role_tags)
@@ -1324,7 +1337,8 @@ def _score_dimensions(
         positives.append("实际招聘平台具有较强资源；平台基准不直接决定岗位 T 级")
 
     high_value_role = bool(role_tag_set.intersection(HIGH_VALUE_ROLE_TAGS))
-    low_value_role = _is_low_value_role(role_tags, role_text, str(job.get("title") or ""))
+    if low_value_role is None:
+        low_value_role = _is_low_value_role(role_tags, role_text, str(job.get("title") or ""))
     job_quality = 8
     if high_value_role or _contains_any(role_text, set(CORE_ROLE_TERMS)):
         job_quality += 4
@@ -1528,7 +1542,8 @@ def _group_contributions(dimensions: dict[str, int]) -> dict[str, int]:
 
 def _calibrated_job_score(
     job: dict[str, Any], dimensions: dict[str, int], role_tags: list[str],
-    organization: dict[str, Any], institution: dict[str, Any],
+    organization: dict[str, Any], institution: dict[str, Any], *,
+    role_text: str | None = None, low_value_role: bool | None = None,
 ) -> tuple[int, str | None, str | None]:
     """Apply narrow evidence-based calibration without rewriting dimensions."""
     raw_score = max(0, min(100, sum(dimensions.values())))
@@ -1578,8 +1593,10 @@ def _calibrated_job_score(
         reasons.append(f"实际招聘主体为{organization.get('label', '非总部层级')}")
 
     role_tag_set = set(role_tags)
-    role_text = _role_text(job, role_tags)
-    low_value_role = _is_low_value_role(role_tags, role_text, str(job.get("title") or ""))
+    if role_text is None:
+        role_text = _role_text(job, role_tags)
+    if low_value_role is None:
+        low_value_role = _is_low_value_role(role_tags, role_text, str(job.get("title") or ""))
     if low_value_role and anchor_kind != "first_release":
         ceiling = min(ceiling, 64)
         reasons.append("纯销售、客服、重复运营或普通支持岗位不高于 T3")
@@ -1656,7 +1673,8 @@ def _score_system_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str,
     primary_category = _primary_category(job, categories)
     organization_category = _normalized_organization_category(job)
     industry_tags = _normalized_industry_tags(job)
-    role_tags = _normalize_role_tags(job)
+    source_text = _role_source_text(job)
+    role_tags = _normalize_role_tags(job, source_text=source_text)
     days_left = _days_left(job)
     organization = _organization_assessment(job)
     institution = _institution_baseline(job, organization)
@@ -1699,10 +1717,17 @@ def _score_system_job(job: dict[str, Any], profile: dict[str, Any]) -> dict[str,
             "role_tags": role_tags,
         }
 
-    dimensions, positives, negatives, fit_tags = _score_dimensions(job, profile, role_tags, organization)
+    # These derived values are local to this score call, not retained job or
+    # profile text. Dimensions and calibration inspect exactly the same role.
+    role_text = _role_text(job, role_tags, source_text=source_text)
+    low_value_role = _is_low_value_role(role_tags, role_text, str(job.get("title") or ""))
+    dimensions, positives, negatives, fit_tags = _score_dimensions(
+        job, profile, role_tags, organization, role_text=role_text, low_value_role=low_value_role,
+    )
     raw_score = max(0, min(100, sum(dimensions.values())))
     score, calibration_reason, anchor_kind = _calibrated_job_score(
         job, dimensions, role_tags, organization, institution,
+        role_text=role_text, low_value_role=low_value_role,
     )
     manual_override = bool(anchor_kind)
     group_scores = _normalized_group_scores(dimensions)

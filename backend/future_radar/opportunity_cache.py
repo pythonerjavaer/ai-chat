@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -21,6 +22,7 @@ import time
 import uuid
 from collections import OrderedDict
 from concurrent.futures import Future
+from copy import deepcopy
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Hashable
@@ -262,6 +264,72 @@ def opportunity_scoring_input(public_item: dict[str, Any]) -> dict[str, Any]:
                 for source in public_item[field]
             ]
     return stable
+
+
+def encode_scoring_overrides(overrides: dict[str, Any]) -> bytes | dict[str, Any]:
+    """Compact derived public fields only when JSON preserves their types.
+
+    Legacy/custom presenters may return tuples, non-string keys or custom
+    objects. Keep those dictionaries on the original deepcopy path. Shared
+    mutable containers also stay there so their aliasing is preserved.
+    """
+    containers: set[int] = set()
+
+    def lossless(value: Any) -> bool:
+        kind = type(value)
+        if value is None or kind is str or kind is bool or kind is int:
+            return True
+        if kind is float:
+            return math.isfinite(value)
+        if (kind is not dict and kind is not list) or id(value) in containers:
+            return False
+        containers.add(id(value))
+        if kind is dict:
+            return all(type(key) is str and lossless(item) for key, item in value.items())
+        return all(lossless(item) for item in value)
+
+    try:
+        if lossless(overrides):
+            return json.dumps(overrides, ensure_ascii=False, separators=(",", ":"),
+                              allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError, UnicodeError):
+        # Unencodable custom strings/integers or deeply nested values must
+        # not change the pre-existing presenter contract.
+        pass
+    return overrides
+
+
+# JSON normally recreates every dictionary key for each record. Share only
+# fixed code-owned scoring schema names, as the original presenter did; never
+# globally intern arbitrary job/profile text or a custom presenter's keys.
+_SCORING_FIELD_KEYS = {key: key for key in """
+    available_in_main_pool background_utilization base_platform_points
+    base_platform_score basis calibration_adjustment calibration_reason
+    career_ceiling career_fit career_value career_value_score city compensation
+    confidence contribution days_left dimension_scores employer_categories
+    employer_identity employer_platform employer_score entity_name entity_source
+    evidence fit_tags further_education institution_identity institution_reason
+    institution_score institution_tier_code is_group_headquarters is_specific_job
+    job_condition_score job_conditions job_quality job_score label level
+    listing_kind manual_override match_reasons match_score mobility
+    negative_reasons note opportunity_kind organization_assessment platform
+    platform_adjustment platform_band platform_points platform_score
+    positive_reasons probability quant_barrier rating_source rating_status
+    raw_job_score reason review_label role_function role_score role_tags scope
+    score score_breakdown scoring_factors scoring_status scoring_version
+    source_id source_rating source_ratings source_updated_at system_job_score
+    system_tier_code technical_hard tier_bucket tier_code uncertainty_policy
+    weight work_life_balance
+""".split()}
+
+
+def _canonical_scoring_keys(item: dict[str, Any]) -> dict[str, Any]:
+    return {_SCORING_FIELD_KEYS.get(key, key): value for key, value in item.items()}
+
+
+def decode_scoring_overrides(value: bytes | dict[str, Any]) -> dict[str, Any]:
+    """Return a fresh result without sharing mutable cached derived fields."""
+    return json.loads(value, object_hook=_canonical_scoring_keys) if type(value) is bytes else deepcopy(value)
 
 
 def _retained_size(value: Any) -> int:

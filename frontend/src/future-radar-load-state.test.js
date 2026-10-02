@@ -46,6 +46,7 @@ class Element {
   get textContent() { return this._text + this.children.map((node) => typeof node === "string" ? node : node.textContent).join(" "); }
   set textContent(value) { this._text = String(value); this.children = []; }
   scrollIntoView() {}
+  showModal() { this.open = true; }
   close() { this.open = false; }
 }
 function descendants(node) {
@@ -91,6 +92,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     "futureRadarFilterStatus", "futureRadarFilterEvent", "futureRadarFilterVerification", "futureRadarEvents",
     "recruitmentRoles", "recruitmentIndustries", "recruitmentLocations",
     "settingsDialog", "consentDialog", "worldMapDialog", "appView", "authView", "password",
+    "homeDeadlineAlerts", "homeAlertTitle", "homeAlertList",
   ].map((name) => [name, new Element()]));
   elements.recruitmentDialog = new Element("dialog");
   elements.recruitmentDialog.open = true;
@@ -126,6 +128,9 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
       if (path === "/recruitment/jobs") {
         if (controls.legacyFail) throw new Error("legacy unavailable");
         return { jobs: oldJobs, monitor_pools: [], data_status: { message: "当前筛选 6 个岗位；待核验不进入主池。" } };
+      }
+      if (path === "/recruitment/jobs?summary_only=true") {
+        return { data_status: { chatgpt_sync: { status: "synced", connected_source_count: 9 } } };
       }
       if (path.startsWith("/future-radar/opportunities/")) {
         if (controls.detailFail) throw new Error("detail unavailable");
@@ -179,12 +184,14 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   for (const name of ["renderFutureRadarPagination", "syncFutureRadarProgramFilter",
     "renderFutureRadarPrograms", "mergeFutureRadarEvents", "syncFutureRadarSourceFilter",
     "renderFutureRadarSources", "renderFutureRadarRuns", "renderRecruitmentProfile",
-    "loadRecruitmentMonitors", "loadRecruitmentWatches", "renderRecruitmentWatches", "renderHomeRecruitmentAlerts", "renderRecruitmentMonitors", "renderRecruitmentSyncStatus",
-    "renderFutureRadarRunAvailability", "applyIncrementalRadarMetrics", "addRecruitmentWatchFromJob", "showToast", "renderMusicUI", "closeOpenProductDialogs", "setAuthMode"]) context[name] = noop;
+    "loadRecruitmentMonitors", "loadRecruitmentWatches", "renderRecruitmentWatches", "renderRecruitmentMonitors", "renderRecruitmentSyncStatus",
+    "renderFutureRadarRunAvailability", "applyIncrementalRadarMetrics", "addRecruitmentWatchFromJob", "showToast", "renderMusicUI", "closeOpenProductDialogs", "setAuthMode", "updateProductSwitchers", "playSceneEntry",
+    "applyUser", "openWorldMap", "loadWorkspaces", "loadSessions", "loadDocuments", "newConversation"]) context[name] = noop;
   vm.createContext(context);
-  context.readFutureRadarDashboard = () => context.api("/future-radar/dashboard");
+  context.readFutureRadarDashboard = (options) => context.api("/future-radar/dashboard", options);
   const functions = [
     "let recruitmentAutoFilterTimer = null;",
+    extract("async function enterApp()", "\nfunction applyUser"),
     extract("function endFutureRadarSession(", "\nasync function loadWorkspaces"),
     extract("function stopFutureRadarRunStatusPolling(", "\nfunction scheduleFutureRadarRunStatusPoll"),
     extract("function stopFutureRadarPolling(", "\nasync function runFutureRadarNow"),
@@ -197,10 +204,12 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     extract("function renderFutureRadarPagination(", "\nfunction syncFutureRadarSourceFilter"),
     extract("function resetFutureRadarFilters(", "\nfunction applyIncrementalRadarMetrics"),
     extract("async function loadFutureRadarSnapshot(", "\nfunction stopFutureRadarPolling"),
+    extract("function recruitmentDaysLeft(", "\nfunction recruitmentVerification"),
     extract("function recruitmentVerification(", "\nfunction recruitmentScoringFactors"),
     extract("function renderRecruitmentDeadlineAlerts(", "\nfunction selectedRecruitmentStarfields"),
     extract("function selectRecruitmentTier(", "\nasync function addRecruitmentWatchFromJob"),
     extract("async function refreshRecruitment(", "\nasync function refreshRecruitmentSource"),
+    extract("async function openRecruitment(", "\nlet recruitmentAutoFilterTimer"),
     extract("async function saveRecruitment(", "\nfunction scheduleRecruitmentAutoFilter"),
   ].join("\n");
   vm.runInContext(functions, context);
@@ -310,11 +319,90 @@ test("lightweight dashboard and ChatGPT inventory fill metrics before the full p
   assert.deepEqual(values, ["49", "2", "4", "8", "45", "27", "15"]);
 });
 
-test("manual Radar refresh reads the lightweight dashboard before slow compatibility APIs", async () => {
+test("manual Radar refresh shares one lightweight dashboard read and uses only a compatibility summary", async () => {
   const r = runtime({ fail: false });
   await r.run("refreshRecruitment()");
-  assert.equal(r.calls[0], "/future-radar/dashboard");
-  assert.equal(r.requestOptions[0].timeoutMs, 60000);
+  const dashboard = r.calls.indexOf("/future-radar/dashboard");
+  assert.ok(dashboard >= 0);
+  assert.equal(r.calls.filter((path) => path === "/future-radar/dashboard").length, 1);
+  assert.equal(r.requestOptions[dashboard].timeoutMs, 60000);
+  assert.equal(r.calls.filter((path) => path === "/recruitment/jobs?summary_only=true").length, 1);
+  assert.equal(r.calls.includes("/recruitment/jobs"), false);
+});
+
+test("authenticated startup reads only a bounded deadline preview without replacing either full pool", async () => {
+  const r = runtime({ fail: false });
+  const savedLegacy = r.state.recruitmentJobs;
+  const savedPool = r.state.futureRadar.jobs;
+  const today = new Date();
+  const end = new Date(today);
+  end.setDate(end.getDate() + 15);
+  const date = (value) => [value.getFullYear(), String(value.getMonth() + 1).padStart(2, "0"), String(value.getDate()).padStart(2, "0")].join("-");
+  r.controls.opportunityHandler = () => ({ items: Array.from({ length: 12 }, (_, i) => ({
+    ...pendingJob(`deadline-${i}`), status: "open", closing_date: date(end),
+    main_application_url: i === 0 ? "https://apply.example.com/deadline-0" : null,
+  })), total: 266 });
+  await r.run("enterApp()");
+  const query = new URLSearchParams(r.calls[0].split("?")[1]);
+  assert.equal(r.calls.length, 1);
+  assert.equal(r.calls[0].startsWith("/future-radar/opportunities?"), true);
+  assert.equal(query.get("status"), "open");
+  assert.equal(query.get("closing_after"), date(today));
+  assert.equal(query.get("closing_before"), date(end));
+  assert.equal(query.get("sort"), "closing");
+  assert.equal(query.get("priority_only"), "true");
+  assert.equal(query.get("page"), "1");
+  assert.equal(query.get("page_size"), "12");
+  assert.equal(query.get("compact"), "true");
+  assert.equal(r.requestOptions[0].timeoutMs, FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS);
+  assert.equal(r.state.recruitmentJobs, savedLegacy);
+  assert.equal(r.state.futureRadar.jobs, savedPool);
+  assert.equal(r.state.futureRadar.jobsLoaded, false);
+  assert.equal(r.elements.homeAlertList.children.length, 12);
+  assert.equal(r.elements.homeAlertList.children[0].href, "https://apply.example.com/deadline-0");
+  assert.equal(r.elements.homeAlertList.children[1].href, "https://careers.example.com/campus/deadline-1");
+  assert.match(r.elements.homeAlertTitle.textContent, /共 266 个关键时间窗.*展示最近 12 个/);
+});
+
+test("home preview failure does not request legacy inventory, and late old-session results do not paint", async () => {
+  const failed = runtime();
+  await failed.run("enterApp()");
+  assert.equal(failed.calls.length, 1);
+  assert.equal(failed.calls.includes("/recruitment/jobs"), false);
+  assert.match(failed.elements.homeDeadlineAlerts.className, /hidden/);
+  const r = runtime({ fail: false });
+  const response = deferred();
+  r.controls.opportunityHandler = () => response.promise;
+  const loading = r.run("loadHomeRecruitmentAlerts()");
+  r.state.token = Symbol("replacement-session");
+  response.resolve({ items: [{ ...pendingJob("private-old-session"), days_left: 3 }], total: 1 });
+  await loading;
+  assert.equal(r.state.recruitmentHomePreview, undefined);
+  assert.equal(r.elements.homeAlertList.children.length, 0);
+});
+
+test("unknown preview totals are labelled as a bounded preview and retain watch changes", () => {
+  const r = runtime();
+  r.context.homeJobs = [{ ...pendingJob("deadline"), days_left: 2, url: "https://careers.example.com/deadline" }];
+  r.context.homeWatches = [{ change_pending: true, name: "官网哨站", url: "https://careers.example.com" }];
+  r.run("renderHomeRecruitmentAlerts(homeJobs, homeWatches, {total: null})");
+  assert.match(r.elements.homeAlertTitle.textContent, /预览 1 个（最多 12 个）.*1 个官网有变化/);
+  assert.equal(r.elements.homeAlertList.children.length, 2);
+});
+
+test("a watch refresh repaints changed official pages alongside the bounded home preview", async () => {
+  const r = runtime({ fail: false });
+  r.state.recruitmentHomePreview = { jobs: [{ ...pendingJob("deadline"), days_left: 2,
+    url: "https://careers.example.com/deadline" }], total: 24 };
+  r.context.document.getElementById = () => null;
+  r.controls.apiHandler = (path) => path === "/recruitment/watches"
+    ? { watches: [{ change_pending: true, name: "官网哨站", url: "https://careers.example.com" }] }
+    : undefined;
+  vm.runInContext(extract("async function loadRecruitmentWatches()", "\nfunction renderRecruitmentWatches"), r.context);
+  await r.run("loadRecruitmentWatches()");
+  assert.deepEqual(r.calls, ["/recruitment/watches"]);
+  assert.match(r.elements.homeAlertTitle.textContent, /共 24 个关键时间窗.*展示最近 1 个.*1 个官网有变化/);
+  assert.equal(r.elements.homeAlertList.children.length, 2);
 });
 
 test("deadline alerts include ChatGPT-screened source dates without calling them official", () => {
@@ -578,6 +666,69 @@ test("legacy profile compatibility failure cannot block a successful main pool r
   assert.equal(r.state.futureRadar.jobsLoaded, true);
   assert.equal(r.cards().length, 50);
   assert.equal(r.state.futureRadar.totalJobs, 255);
+});
+
+test("actual Radar open starts the main pool without an unpaginated legacy scorer", async () => {
+  const r = runtime({ fail: false });
+  let finishProfile, finishSummary;
+  const profile = new Promise((resolve) => { finishProfile = resolve; });
+  const summary = new Promise((resolve) => { finishSummary = resolve; });
+  const paintedBridge = [];
+  r.elements.recruitmentDialog.open = false;
+  r.elements.recruitmentStatus.textContent = "正在读取主机会池…";
+  r.elements.futureRadarError.textContent = "服务暂时繁忙";
+  r.context.startFutureRadarPolling = () => r.calls.push("start-polling");
+  r.context.chatgptSyncFromJobs = (payload) => payload?.data_status?.chatgpt_sync || null;
+  r.context.renderRecruitmentSyncStatus = (payload) => paintedBridge.push(payload);
+  r.controls.apiHandler = (path) => path === "/recruitment/profile" ? profile
+    : path === "/recruitment/jobs?summary_only=true" ? summary : undefined;
+
+  const opening = r.run("openRecruitment()");
+  await new Promise(setImmediate);
+
+  assert.equal(r.elements.recruitmentDialog.open, true);
+  assert.equal(r.calls.filter((path) => path.startsWith("/future-radar/opportunities?")).length, 1);
+  assert.equal(r.calls.filter((path) => path === "/future-radar/dashboard").length, 1);
+  assert.ok(r.calls.includes("/recruitment/profile"));
+  assert.ok(r.calls.includes("/recruitment/jobs?summary_only=true"));
+  assert.ok(!r.calls.includes("/recruitment/jobs"));
+  assert.equal(r.state.futureRadar.jobsLoaded, true, "Profile and bridge reads cannot delay pool paint");
+  assert.equal(r.state.futureRadar.totalJobs, 255);
+  assert.equal(r.cards().length, 50);
+  assert.match(r.elements.recruitmentStatus.textContent, /当前筛选 255 个机会/);
+  assert.doesNotMatch(r.elements.recruitmentStatus.textContent, /正在读取|正在刷新|服务暂时繁忙/);
+  assert.equal(r.elements.futureRadarError.textContent, "");
+  assert.match(r.elements.futureRadarLoading.className, /hidden/);
+
+  const bridge = { status: "synced", connected_source_count: 9 };
+  finishSummary({ data_status: { chatgpt_sync: bridge } });
+  finishProfile({ desired_roles: ["数据分析"] });
+  await opening;
+
+  assert.deepEqual(r.state.recruitmentProfile.desired_roles, ["数据分析"]);
+  assert.equal(paintedBridge.at(-1), bridge);
+  assert.equal(r.calls.at(-1), "start-polling");
+  assert.equal(r.state.futureRadar.totalJobs, 255);
+  assert.ok(!r.calls.includes("/recruitment/jobs"));
+});
+
+test("actual Radar open retains legacy compatibility only for absent or unsupported endpoints", async () => {
+  for (const status of [404, 501, 500]) {
+    const r = runtime({ fail: false });
+    r.context.startFutureRadarPolling = () => {};
+    r.controls.opportunityHandler = () => Promise.reject(Object.assign(new Error("safe failure"), { status }));
+
+    await r.run("openRecruitment()");
+
+    assert.equal(r.calls.filter((path) => path === "/recruitment/jobs").length,
+      status === 500 ? 0 : 1);
+    assert.equal(r.calls.filter((path) => path.startsWith("/future-radar/opportunities?")).length, 1);
+    assert.equal(r.state.futureRadar.jobsUnavailable, status !== 500);
+    assert.equal(r.state.futureRadar.jobsLoaded, false);
+    assert.equal(r.elements.futureRadarOpportunityCount.textContent, "—");
+    assert.equal(r.cards().length, 0, "Compatibility rows must not masquerade as a unified pool");
+    assert.match(r.elements.recruitmentStatus.textContent, /主机会池加载失败/);
+  }
 });
 
 test("return to all clears deadline and tier filters without widening to closed opportunities", async () => {

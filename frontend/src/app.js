@@ -136,6 +136,7 @@ const state = {
   recruitmentTierFilter: "BALANCED",
   recruitmentWatches: [],
   recruitmentSyncStatus: null,
+  recruitmentHomePreview: null,
   futureRadar: {
     dashboard: null,
     view: "companies",
@@ -147,6 +148,7 @@ const state = {
     jobs: [],
     jobsLoaded: false,
     jobsError: "",
+    jobsUnavailable: false,
     totalJobs: 0,
     page: 1,
     pageSize: 20,
@@ -836,16 +838,27 @@ async function enterApp() {
 }
 
 async function loadHomeRecruitmentAlerts() {
+  if (!state.token) return;
+  const sessionToken = state.token;
+  const now = new Date();
+  const closingBefore = new Date(now);
+  closingBefore.setDate(closingBefore.getDate() + 15);
+  const date = (value) => [value.getFullYear(), String(value.getMonth() + 1).padStart(2, "0"), String(value.getDate()).padStart(2, "0")].join("-");
+  const query = new URLSearchParams({
+    status: "open", closing_after: date(now), closing_before: date(closingBefore),
+    sort: "closing", priority_only: "true", page: "1", page_size: "12", compact: "true",
+  });
   try {
-    const [data, watchData] = await Promise.all([
-      api("/recruitment/jobs"),
-    ]);
-    state.recruitmentJobs = data.jobs || [];
-    const syncStatus = chatgptSyncFromJobs(data);
-    if (syncStatus) renderRecruitmentSyncStatus(syncStatus);
-    renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
+    // The home screen only needs a bounded deadline preview, not a second
+    // unpaginated inventory scorer or a replacement for the full Radar pool.
+    const data = await api(`/future-radar/opportunities?${query}`, { timeoutMs: FUTURE_RADAR_OPPORTUNITY_READ_TIMEOUT_MS });
+    if (sessionToken !== state.token) return;
+    const jobs = (data.items || []).map((job) => ({ ...job, url: job.main_application_url || job.official_url }));
+    const total = data.total == null ? NaN : Number(data.total);
+    state.recruitmentHomePreview = { jobs, total: Number.isFinite(total) && total >= 0 ? total : null };
+    renderHomeRecruitmentAlerts(jobs, state.recruitmentWatches, state.recruitmentHomePreview);
   } catch (_) {
-    elements.homeDeadlineAlerts.classList.add("hidden");
+    if (sessionToken === state.token) elements.homeDeadlineAlerts.classList.add("hidden");
   }
 }
 
@@ -858,7 +871,7 @@ function watchHasFreshChange(watch) {
   return Number.isFinite(timestamp) && Date.now() - timestamp <= 7 * 24 * 60 * 60 * 1000;
 }
 
-function renderHomeRecruitmentAlerts(jobs, watches = state.recruitmentWatches) {
+function renderHomeRecruitmentAlerts(jobs, watches = state.recruitmentWatches, preview = null) {
   const urgent = jobs
     .map((job) => ({ ...job, days_left: recruitmentDaysLeft(job) }))
     .filter((job) => Number.isInteger(job.days_left) && job.days_left >= 0 && job.days_left <= 15)
@@ -870,7 +883,11 @@ function renderHomeRecruitmentAlerts(jobs, watches = state.recruitmentWatches) {
     return;
   }
   const labels = [];
-  if (urgent.length) labels.push(`${urgent.length} 个关键时间窗正在收束`);
+  if (urgent.length) labels.push(preview
+    ? preview.total == null
+      ? `近期关键时间窗预览 ${urgent.length} 个（最多 12 个）`
+      : `共 ${preview.total} 个关键时间窗正在收束 · 展示最近 ${urgent.length} 个`
+    : `${urgent.length} 个关键时间窗正在收束`);
   if (changedWatches.length) labels.push(`${changedWatches.length} 个官网有变化`);
   elements.homeAlertTitle.textContent = labels.join(" · ");
   urgent.forEach((job) => {
@@ -948,6 +965,8 @@ function endFutureRadarSession(expired = false) {
   state.futureRadar.loading = false;
   state.futureRadar.polling = false;
   state.futureRadar.jobsLoaded = false;
+  state.futureRadar.jobsUnavailable = false;
+  state.recruitmentHomePreview = null;
   state.futureRadar.jobs = [];
   state.futureRadar.view = "companies";
   state.futureRadar.page = 1;
@@ -2855,8 +2874,8 @@ function canPollFutureRadar() {
   return Boolean(state.token && elements.recruitmentDialog?.open && !document.hidden);
 }
 
-function readFutureRadarDashboard() {
-  return radarPollingGate.dashboard(() => api("/future-radar/dashboard"), state.token);
+function readFutureRadarDashboard(options) {
+  return radarPollingGate.dashboard(() => api("/future-radar/dashboard", options), state.token);
 }
 
 function resumeFutureRadarRunStatusPolling() {
@@ -3771,6 +3790,7 @@ function applyFutureRadarJobsPayload(payload, query = futureRadarJobsQuery()) {
   state.futureRadar.deadlineJobs = view === "companies" ? payload.deadline_opportunities || [] : [];
   state.futureRadar.jobsLoaded = true;
   state.futureRadar.jobsError = "";
+  state.futureRadar.jobsUnavailable = false;
   state.futureRadar.jobsAppliedQuery = query;
   state.futureRadar.jobsAppliedTier = params.get("balanced_only") === "true"
     ? "BALANCED" : params.get("priority_only") === "true" ? "FOCUS" : params.get("tier_code") || "ALL";
@@ -4058,6 +4078,7 @@ async function loadFutureRadarJobPage(page, force = false, { scroll = true, dela
     } catch (error) {
       if (current()) {
         state.futureRadar.jobsLoading = false;
+        state.futureRadar.jobsUnavailable = [404, 501].includes(Number(error.status));
         setFutureRadarLoading(false, recordFutureRadarOpportunityFailure(error));
         renderFutureRadarOpportunityOverview();
         renderRecruitmentJobs(state.futureRadar.jobs);
@@ -4112,7 +4133,13 @@ async function loadFutureRadarSnapshot() {
   const jobsRequestId = state.futureRadar.jobsRequestId;
   const sourcesRequestId = state.futureRadar.sourcesRequestId = (state.futureRadar.sourcesRequestId || 0) + 1;
   const requests = [
-    ["dashboard", readFutureRadarDashboard()],
+    ["dashboard", readFutureRadarDashboard({ timeoutMs: 60000 }).then((payload) => {
+      if (sessionToken === state.token && snapshotRequestId === state.futureRadar.snapshotRequestId) {
+        state.futureRadar.dashboard = payload;
+        renderFutureRadarDashboard(payload);
+      }
+      return payload;
+    })],
     ["pipeline", api("/future-radar/pipeline-summary").then((payload) => {
       if (sessionToken === state.token && snapshotRequestId === state.futureRadar.snapshotRequestId) renderFutureRadarPipelineSummary(payload);
       return payload;
@@ -4397,6 +4424,9 @@ async function loadRecruitmentWatches() {
     if (token !== state.token) return;
     state.recruitmentWatches = data.watches || [];
     renderRecruitmentWatches(state.recruitmentWatches);
+    if (state.recruitmentHomePreview) {
+      renderHomeRecruitmentAlerts(state.recruitmentHomePreview.jobs, state.recruitmentWatches, state.recruitmentHomePreview);
+    }
   } catch (_) {
     if (token !== state.token) return;
     if (status) status.textContent = "哨站状态暂时无法读取";
@@ -5336,43 +5366,49 @@ async function addRecruitmentWatchFromJob(job, button) {
 
 async function refreshRecruitment() {
   if (!state.token) return null;
-  // A manual Radar open should paint the small database aggregate before any
-  // compatibility or full-pool request. This is a plain server read: it does
-  // not run a scan, call a model, or consume OpenAI tokens.
-  // Render free instances can need tens of seconds to establish the first
-  // database connection, so let this continue in parallel with the full pool.
-  void api("/future-radar/dashboard", { timeoutMs: 60000 })
-    .then((dashboard) => {
-      state.futureRadar.dashboard = dashboard;
-      renderFutureRadarDashboard(dashboard);
-    })
-    .catch(() => renderFutureRadarDashboard(state.futureRadar.dashboard || {}));
+  const sessionToken = state.token;
   void loadRecruitmentMonitors();
   void loadRecruitmentWatches();
-  let legacyData = null;
-  try {
-    const [profile, data] = await Promise.all([
-      api("/recruitment/profile"),
-      api("/recruitment/jobs"),
-    ]);
-    legacyData = data;
-    state.recruitmentProfile = profile;
-    state.recruitmentJobs = data.jobs || [];
-    renderRecruitmentProfile(profile);
-    renderRecruitmentJobs(state.recruitmentJobs);
-    renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(state.recruitmentJobs));
-    renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
-    renderRecruitmentSyncStatus(chatgptSyncFromJobs(data));
-    renderFutureRadarOpportunityStatus();
-  } catch (error) {
-    elements.recruitmentError.textContent = translateError(error.message);
-    renderFutureRadarOpportunityStatus();
-    renderRecruitmentSyncStatus(state.recruitmentSyncStatus);
+  // Start the paginated, authoritative pool immediately. The old unbounded
+  // legacy read scored a second full inventory before this request began.
+  const snapshot = loadFutureRadarSnapshot();
+  const profile = api("/recruitment/profile").then((payload) => {
+    if (sessionToken !== state.token) return;
+    state.recruitmentProfile = payload;
+    renderRecruitmentProfile(payload);
+  }).catch((error) => {
+    if (sessionToken === state.token) elements.recruitmentError.textContent = translateError(error.message);
+  });
+  // Keep bridge/watch compatibility metadata without listing or scoring its
+  // jobs. Neither this summary nor the profile blocks the pool's own paint.
+  const summary = api("/recruitment/jobs?summary_only=true").then((payload) => {
+    if (sessionToken !== state.token) return null;
+    renderRecruitmentSyncStatus(chatgptSyncFromJobs(payload));
+    return payload;
+  }).catch(() => {
+    if (sessionToken === state.token) renderRecruitmentSyncStatus(state.recruitmentSyncStatus);
+    return null;
+  });
+  const [opportunitiesReadable, , compatibilityData] = await Promise.all([snapshot, profile, summary]);
+  if (sessionToken !== state.token) return null;
+  if (!opportunitiesReadable && state.futureRadar.jobsUnavailable) {
+    // Only an absent/unsupported Radar endpoint enables legacy compatibility.
+    // A slow or failed main pool must not launch another whole-pool scorer or
+    // silently replace its filtered counts with the legacy inventory.
+    try {
+      const data = await api("/recruitment/jobs");
+      if (sessionToken !== state.token) return null;
+      state.recruitmentJobs = data.jobs || [];
+      renderRecruitmentJobs(state.recruitmentJobs);
+      renderRecruitmentDeadlineAlerts(filterRecruitmentByStarfield(futureRadarDisplayJobs()));
+      renderHomeRecruitmentAlerts(state.recruitmentJobs, state.recruitmentWatches);
+      renderRecruitmentSyncStatus(chatgptSyncFromJobs(data));
+    } catch (error) {
+      if (sessionToken === state.token) elements.recruitmentError.textContent = translateError(error.message);
+    }
   }
-  // Profile/watch compatibility requests must not prevent the main pool from
-  // loading, and their success does not mean the main pool loaded correctly.
-  const opportunitiesReadable = await loadFutureRadarSnapshot();
-  return opportunitiesReadable ? legacyData : null;
+  renderFutureRadarOpportunityStatus();
+  return opportunitiesReadable ? compatibilityData : null;
 }
 
 async function refreshRecruitmentSource() {

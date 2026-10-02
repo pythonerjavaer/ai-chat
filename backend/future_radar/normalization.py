@@ -65,6 +65,12 @@ _OPERATOR_BRANDS = {
     "china_telecom": ("天翼云科技有限公司", "天翼云", "中国电信云计算研究院", "中国电信研究院", "中国电信云网运营部", "中电信人工智能科技北京有限公司", "中电信数智科技有限公司", "中电信数智科技有限公司集成公司", "中电信量子信息科技集团有限公司", "天翼安全科技有限公司", "天翼物联科技有限公司", "天翼数字生活科技有限公司", "天翼视联科技股份有限公司", "中电信数政科技有限公司"),
     "china_unicom": ("联通数字科技有限公司", "联通数科", "联通智网科技股份有限公司", "联通软件研究院", "中国联通软件研究院", "中国联通研究院", "联通在线信息科技有限公司", "联通数字科技有限公司数科本部"),
 }
+# The directory is code-owned and static. Normalize its brand names once,
+# rather than repeating the same Unicode/regex work for every displayed job.
+_NORMALIZED_OPERATOR_BRANDS = {
+    operator: tuple(normalized_key(name) for name in brands)
+    for operator, brands in _OPERATOR_BRANDS.items()
+}
 _OPERATOR_REGIONS = (
     "北京", "天津", "上海", "重庆", "河北", "河南", "云南", "辽宁", "黑龙江", "湖南",
     "安徽", "山东", "新疆", "江苏", "浙江", "江西", "湖北", "广西", "甘肃", "山西",
@@ -84,7 +90,7 @@ def canonical_telecom_operator(company: Any) -> str | None:
     if any(marker in key for marker in ("招聘", "合作伙伴", "代理商", "加盟", "外包", "服务商")):
         return None
     for operator, roots in _OPERATOR_ROOTS.items():
-        brands = tuple(normalized_key(name) for name in _OPERATOR_BRANDS[operator])
+        brands = _NORMALIZED_OPERATOR_BRANDS[operator]
         if key in roots or key in brands:
             return operator
         for root in (*roots, *brands):

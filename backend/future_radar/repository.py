@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
+import time
 import uuid
 from collections import deque
 from contextlib import contextmanager
@@ -22,9 +24,9 @@ from .normalization import (
 from .opportunity_cache import (
     BoundedScoringCache, CACHE_FORMAT_VERSION, RevisionChanged,
     OPPORTUNITY_FRESHNESS_FIELDS, date_boundary, opaque_digest,
+    encode_scoring_overrides, decode_scoring_overrides,
     opportunity_scoring_input, read_opportunity_revision,
 )
-
 
 JSON_SOURCE_FIELDS = ("adapter_config", "query_config", "region_config")
 JSON_RUN_FIELDS = ("errors", "source_ids")
@@ -1986,11 +1988,11 @@ class RadarRepository:
             # row's JD and provenance here would consume the cache budget
             # again even though the live pool already owns those fields.
             return {
-                "overrides": {
+                "overrides": encode_scoring_overrides({
                     field: value for field, value in prepared.items()
                     if field not in OPPORTUNITY_FRESHNESS_FIELDS
                     and (field not in public_input or value != public_input[field])
-                },
+                }),
                 "removed": tuple(field for field in public_input if field not in prepared
                                  and field not in OPPORTUNITY_FRESHNESS_FIELDS),
             }
@@ -1999,7 +2001,7 @@ class RadarRepository:
         # Pool assembly assigns grouping/tier buckets, and callers can mutate
         # responses. Neither may mutate the shared per-record cache value.
         item = deepcopy(public_input)
-        item.update(deepcopy(cached["overrides"]))
+        item.update(decode_scoring_overrides(cached["overrides"]))
         for field in cached["removed"]:
             item.pop(field, None)
         return item
@@ -2012,9 +2014,11 @@ class RadarRepository:
         record_cache_scope: tuple[Any, ...] | None = None,
         prepare_sanitized: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
     ) -> _PreparedOpportunityPool:
+        started = time.perf_counter()
         rows = self._opportunity_rows(
             filters=filters, public_url=public_url, company_aliases=company_aliases,
         )
+        read_finished = time.perf_counter()
         # Scoring is profile dependent. Score the complete deduplicated match
         # set before tier filtering/pagination, never only the first 50 rows.
         items = tuple(self._prepare_opportunity_record(
@@ -2022,6 +2026,7 @@ class RadarRepository:
             record_cache_scope=record_cache_scope,
             prepare_sanitized=prepare_sanitized,
         ) for row in rows)
+        scoring_finished = time.perf_counter()
         tier_counts = {key: 0 for key in (
             "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY",
         )}
@@ -2052,6 +2057,14 @@ class RadarRepository:
             for index, row in enumerate(rows)
             for alias in (row["_member_ids"] | row["_member_external_ids"])
         }
+        # Only counts/durations belong in diagnostics. Never log job text,
+        # query values, account/profile contents or connection credentials.
+        logging.getLogger("uvicorn.error").info(
+            "radar_pool_timing rows=%d read_ms=%d scoring_ms=%d grouping_ms=%d",
+            len(rows), round((read_finished - started) * 1000),
+            round((scoring_finished - read_finished) * 1000),
+            round((time.perf_counter() - scoring_finished) * 1000),
+        )
         return _PreparedOpportunityPool(items, tier_counts, category_counts, aliases,
                                         tuple(frozenset(row["_member_ids"]) for row in rows))
 
