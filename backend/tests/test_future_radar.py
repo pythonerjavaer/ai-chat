@@ -2012,6 +2012,7 @@ def test_future_radar_pipeline_summary_exposes_all_processing_stages(
     radar_service, monkeypatch
 ):
     monkeypatch.setattr(main, "future_radar_service", radar_service)
+    monkeypatch.setattr(radar_service.repository, "list_opportunities", lambda **_: (_ for _ in ()).throw(AssertionError("summary must not score the full pool")))
     user = database.create_user(
         "future-radar-pipeline-user",
         main.hash_password("correct-horse-123"),
@@ -2026,7 +2027,8 @@ def test_future_radar_pipeline_summary_exposes_all_processing_stages(
     assert [stage["label"] for stage in result["stages"]] == [
         "数据接入", "结构化抽取", "规则校验", "优先级评估", "结果推送",
     ]
-    assert all(isinstance(stage["count"], int) for stage in result["stages"])
+    assert all(isinstance(stage["count"], int) for stage in result["stages"] if stage["id"] != "prioritize")
+    assert result["stages"][3]["count"] is None  # Personalized count is loaded by the opportunity pool.
     assert all(stage["status"] in {"ready", "needs_source"} for stage in result["stages"])
 
 

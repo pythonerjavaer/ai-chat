@@ -1805,22 +1805,6 @@ def future_radar_pipeline_summary(user: User) -> dict:
     from .future_radar import personal
 
     dashboard = _public_radar_dashboard(future_radar_service.repository.dashboard())
-    profile = database.get_recruitment_profile(user["id"])
-    application_states = personal.application_states(database.connect, user["id"])
-    opportunities = future_radar_service.repository.list_opportunities(
-        application_states=application_states,
-        page=1,
-        page_size=10,
-        filters={
-            "status": "active", "sort": "closing", "active_only": True,
-            "priority_only": True, "view": "jobs",
-        },
-        public_url=_public_reference_url,
-        prepare=lambda job: _public_radar_opportunity(job, profile),
-        input_sanitizer=_public_search_update,
-        company_aliases=_radar_company_aliases(),
-        cache_scope=_radar_scoring_scope(user["id"], profile),
-    )
     pending_events, through_event_id = personal.pending_events(database.connect, user["id"])
     counts = dashboard["counts"]
     return {
@@ -1828,12 +1812,12 @@ def future_radar_pipeline_summary(user: User) -> dict:
             {"id": "ingest", "label": "数据接入", "count": dashboard["sources"]["enabled"], "status": "ready" if dashboard["sources"]["enabled"] else "needs_source"},
             {"id": "extract", "label": "结构化抽取", "count": counts["total_jobs"], "status": "ready"},
             {"id": "validate", "label": "规则校验", "count": counts["verified"], "pending": counts["pending"] + counts["conflicted"], "status": "ready"},
-            {"id": "prioritize", "label": "优先级评估", "count": opportunities.get("total", 0), "status": "ready"},
+            # Priority is personalized and computed by the opportunity pool.
+            # Do not run that expensive projection merely to paint this summary.
+            {"id": "prioritize", "label": "优先级评估", "count": None, "status": "ready"},
             {"id": "deliver", "label": "结果推送", "count": len(pending_events), "status": "ready"},
         ],
         "closing_soon": counts["closing_soon"],
-        "priority_items": opportunities.get("items", []),
-        "deadline_items": opportunities.get("deadline_opportunities", []),
         "pending_notification_count": len(pending_events),
         "through_event_id": through_event_id,
         "last_successful_scan": dashboard.get("last_successful_scan"),

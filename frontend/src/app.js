@@ -3104,8 +3104,8 @@ function renderFutureRadarPipelineSummary(payload = state.futureRadar.pipelineSu
       });
     }
     card.append(
-      makeElement("small", "", stage.status === "ready" ? "READY" : "WAITING"),
-      makeElement("strong", "", Number(stage.count || 0).toLocaleString("zh-CN")),
+      makeElement("small", "", stage.status === "ready" ? "READY" : stage.status === "loading" ? "读取中" : "WAITING"),
+      makeElement("strong", "", stage.count == null ? "—" : Number(stage.count).toLocaleString("zh-CN")),
       makeElement("span", "", stage.label || stage.id || "处理阶段"),
     );
     if (Number(stage.pending || 0) > 0) {
@@ -3115,7 +3115,9 @@ function renderFutureRadarPipelineSummary(payload = state.futureRadar.pipelineSu
   }
   container.appendChild(list);
   const notes = makeElement("p", "radar-pipeline-note");
-  notes.textContent = `近期截止 ${Number(payload.closing_soon || 0).toLocaleString("zh-CN")} · 待查看推送 ${Number(payload.pending_notification_count || 0).toLocaleString("zh-CN")} · 截止日期与来源依据见下方岗位卡片`;
+  notes.textContent = payload.loading
+    ? "正在读取链路统计；点击阶段可先查看对应记录。"
+    : `近期截止 ${Number(payload.closing_soon || 0).toLocaleString("zh-CN")} · 待查看推送 ${Number(payload.pending_notification_count || 0).toLocaleString("zh-CN")} · 优先级数量按个人筛选在机会池计算`;
   container.appendChild(notes);
 }
 
@@ -4040,6 +4042,13 @@ async function loadFutureRadarSnapshot() {
   const sessionToken = state.token;
   const snapshotRequestId = (state.futureRadar.snapshotRequestId || 0) + 1;
   state.futureRadar.snapshotRequestId = snapshotRequestId;
+  renderFutureRadarPipelineSummary({ loading: true, stages: [
+    { id: "ingest", label: "数据接入", count: null, status: "loading" },
+    { id: "extract", label: "结构化抽取", count: null, status: "loading" },
+    { id: "validate", label: "规则校验", count: null, status: "loading" },
+    { id: "prioritize", label: "优先级评估", count: null, status: "loading" },
+    { id: "deliver", label: "结果推送", count: null, status: "loading" },
+  ] });
   // Opportunity results render as soon as that read completes, independently
   // of slower source/program/run metadata. It shares the filter request owner.
   const jobs = loadFutureRadarJobPage(state.futureRadar.page, true, { scroll: false });

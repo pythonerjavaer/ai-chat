@@ -822,15 +822,19 @@ test("source health loads and counts errors before a slow opportunity pool finis
 test("pipeline controls render before a slow opportunity pool", async () => {
   const r = runtime({ fail: false });
   const pool = deferred();
+  const pipeline = deferred();
   r.controls.opportunityHandler = () => pool.promise;
   r.controls.apiHandler = (path) => path === "/future-radar/pipeline-summary"
-    ? { stages: [{ id: "ingest", label: "数据接入", count: 12, status: "ready" }] }
+    ? pipeline.promise
     : undefined;
   const snapshot = r.run("loadFutureRadarSnapshot()");
-  await new Promise(setImmediate);
   const stage = descendants(r.elements.futureRadarPipeline).find((el) => el.className.split(" ").includes("radar-pipeline-stage"));
   assert.equal(stage?.tag, "button");
   assert.equal(typeof stage.listeners.click, "function");
+  assert.match(r.elements.futureRadarPipeline.textContent, /读取中.*—/);
+  pipeline.resolve({ stages: [{ id: "ingest", label: "数据接入", count: 12, status: "ready" }] });
+  await new Promise(setImmediate);
+  assert.match(r.elements.futureRadarPipeline.textContent, /READY.*12/);
   assert.equal(r.state.futureRadar.jobsLoading, true);
   pool.resolve(tierPayload("T2"));
   await snapshot;
