@@ -8,6 +8,7 @@ RUN npm ci
 COPY frontend/index.html frontend/vite.config.js ./
 COPY frontend/public ./public
 COPY frontend/src ./src
+COPY frontend/octave ./octave
 RUN npm run build
 
 

@@ -167,6 +167,10 @@ cp backend/.env.example backend/.env
 JWT_SECRET=replace_with_a_long_random_value
 AI_MODEL=gpt-4o-mini
 EMBEDDING_MODEL=text-embedding-3-small
+LEAP_MODEL_PROVIDER=openai
+LEAP_OLLAMA_BASE_URL=http://127.0.0.1:11434
+LEAP_OLLAMA_CHAT_MODEL=qwen3:1.7b
+LEAP_OLLAMA_EMBEDDING_MODEL=qwen3-embedding:0.6b
 DATABASE_PATH=
 CORS_ORIGINS=http://127.0.0.1:5500,http://localhost:5500
 FUTURE_RADAR_ENABLED=true

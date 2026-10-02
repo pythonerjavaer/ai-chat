@@ -592,7 +592,7 @@ def test_mock_five_round_lifecycle_and_repeated_round_is_idempotent(radar_servic
     job1 = radar_service.repository.get_job("mock-2027-job-01")
     assert job1 is not None
     assert any(
-        event["event_type"] == "UPDATED" and "closing_date" in event["changed_fields"]
+        event["event_type"] == "DEADLINE_CHANGED" and "closing_date" in event["changed_fields"]
         for event in job1["events"]
     )
 
@@ -844,7 +844,7 @@ def test_wrapped_provider_quota_failure_remains_safe():
     assert _safe_source_failure(source, wrapper) == (code, message)
     public = main._public_radar_source({
         "platform": "wechat", "adapter_config": {"adapter": "wechat_web_search"},
-        "last_error_at": "2026-09-07", "last_error": message,
+        "status": "error", "last_error_at": "2026-09-07", "last_error": message,
     })
     assert public["last_error"] == message
 
@@ -1813,21 +1813,33 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
     })
     monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
     monkeypatch.setattr(main, "future_radar_service", radar_service)
-    radar_service.repository.patch_source(
-        "mock-future-radar",
-        {"enabled": True, "adapter_config": {"adapter": "mock", "round": 2}},
-    )
-    # Seed deterministic pagination data directly. The public scan endpoint is
-    # intentionally not allowed to invoke mock/manual sources.
-    seeded = radar_service.run(
-        trigger_type="test_seed", source_ids=["mock-future-radar"], force=True
-    )
-    assert seeded["new_jobs"] == 12
-    radar_service.adapter_factory = lambda _source: StaticAdapter(
-        AdapterResult(content_hash="user-deterministic-refresh", snapshot_complete=False)
-    )
-
     with TestClient(main.app) as client:
+        # App startup removes development-only mock sources. Recreate the
+        # deterministic fixture after startup, then replace its adapter so the
+        # public scan endpoint still cannot invoke mock/manual sources.
+        radar_service.repository.create_source({
+            "id": "mock-future-radar",
+            "name": "Future Radar Mock Lifecycle",
+            "platform": "mock",
+            "source_type": "manual",
+            "enabled": True,
+            "priority": 100,
+            "trust_level": "verification",
+            "interval_minutes": 1_440,
+            "adapter_config": {"adapter": "mock", "round": 2},
+            "query_config": {},
+            "region_config": {},
+            "status": "healthy",
+            "verification_status": "verified",
+        })
+        seeded = radar_service.run(
+            trigger_type="test_seed", source_ids=["mock-future-radar"], force=True
+        )
+        assert seeded["new_jobs"] == 12
+        radar_service.adapter_factory = lambda _source: StaticAdapter(
+            AdapterResult(content_hash="user-deterministic-refresh", snapshot_complete=False)
+        )
+
         unauthorized = client.post(
             "/api/future-radar/run",
             json={"source_ids": ["mock-future-radar"], "force": True},
@@ -1994,6 +2006,55 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
             json={"version": "FROSTFIRE_SYNC_V2", "source_id": "strict-schema-source"},
         )
         assert wrong_version.status_code == 422
+
+
+def test_future_radar_pipeline_summary_exposes_all_processing_stages(
+    radar_service, monkeypatch
+):
+    monkeypatch.setattr(main, "future_radar_service", radar_service)
+    user = database.create_user(
+        "future-radar-pipeline-user",
+        main.hash_password("correct-horse-123"),
+        main.PRIVACY_VERSION,
+    )
+
+    result = main.future_radar_pipeline_summary(user)
+
+    assert [stage["id"] for stage in result["stages"]] == [
+        "ingest", "extract", "validate", "prioritize", "deliver",
+    ]
+    assert [stage["label"] for stage in result["stages"]] == [
+        "数据接入", "结构化抽取", "规则校验", "优先级评估", "结果推送",
+    ]
+    assert all(isinstance(stage["count"], int) for stage in result["stages"])
+    assert all(stage["status"] in {"ready", "needs_source"} for stage in result["stages"])
+
+
+def test_future_radar_timeseries_aggregates_scan_and_opportunity_event_history(radar_service):
+    user = database.create_user(
+        "future-radar-timeseries-user",
+        main.hash_password("correct-horse-123"),
+        main.PRIVACY_VERSION,
+    )
+    today = date.today().isoformat()
+    timestamp = f"{today}T12:00:00+00:00"
+    with database.connect() as connection:
+        connection.execute("""INSERT INTO radar_runs
+            (id,trigger_type,scan_type,started_at,finished_at,status,sources_succeeded,
+             new_jobs,updated_jobs,closed_jobs,created_at)
+            VALUES(?,?,?,?,?,'success',2,3,1,1,?)""",
+                           ("timeseries-run", "manual_quick", "quick", timestamp, timestamp, timestamp))
+        connection.execute("""INSERT INTO radar_events
+            (event_key,entity_type,entity_id,external_id,event_type,changed_fields,detected_at)
+            VALUES(?,?,?,?,?,?,?)""",
+                           ("timeseries-new-event", "job", "job-1", "public-1", "NEW", "[]", timestamp))
+    result = main.future_radar_timeseries(user, days=30)
+    point = next(item for item in result["points"] if item["day"] == today)
+    assert point["runs"] == 1
+    assert point["sources_succeeded"] == 2
+    assert point["new_jobs"] == 3
+    assert point["new_events"] == 1
+    assert result["method"].startswith("PostgreSQL" if main.settings.database_backend == "postgres" else "SQLite")
 
 
 def test_future_radar_api_quick_run_lock_survives_refresh_and_releases_immediately(
@@ -2758,6 +2819,12 @@ def test_manual_scan_source_families_ignore_scheduler_intervals(radar_service):
         source_type="openai_web_search",
         adapter_config={"adapter": "openai_web_search"},
     )
+    api = create_source(
+        radar_service,
+        "manual-quick-rest-api",
+        source_type="official_api",
+        adapter_config={"adapter": "official_api"},
+    )
     radar_service.repository.patch_source(quick["id"], {"interval_minutes": 43_200})
     radar_service.repository.patch_source(deep["id"], {"interval_minutes": 43_200})
     radar_service.repository.update_source_success(
@@ -2776,9 +2843,11 @@ def test_manual_scan_source_families_ignore_scheduler_intervals(radar_service):
         for source in radar_service.repository.manual_scan_sources("deep")
     }
     assert quick["id"] in quick_ids
+    assert api["id"] in quick_ids
     assert deep["id"] not in quick_ids
     assert deep["id"] in deep_ids
-    assert quick["id"] not in deep_ids
+    assert quick["id"] in deep_ids
+    assert api["id"] not in deep_ids
     assert radar_service.repository.deep_scan_retry_after() == 0
 
 

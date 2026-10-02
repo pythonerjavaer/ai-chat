@@ -1,5 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const money = (cents, currency = "AUD") => new Intl.NumberFormat("zh-CN", { style: "currency", currency, maximumFractionDigits: 2 }).format((Number(cents) || 0) / 100);
+const percent = (value) => value == null ? "样本不足" : `${(Number(value) * 100).toFixed(1)}%`;
 const date = (value) => value ? new Date(value).toLocaleDateString("zh-CN") : "—";
 const iso = (value) => value ? new Date(value).toISOString() : new Date().toISOString();
 const READER_PAGE_SIZE = 100;
@@ -228,6 +229,14 @@ export class AzureTranslationProvider {
   async lookupWord(payload) { return this.translate(payload, true); }
 }
 
+export class OllamaTranslationProvider {
+  constructor(api) { this.api = api; this.id = "ollama_local"; this.model = "qwen3:1.7b"; }
+  async translate(payload, lookup = false) {
+    return this.api("/leap/translation/" + (lookup ? "lookup" : "translate"), { method: "POST", body: JSON.stringify({ ...payload, provider: this.id, provider_model: this.model }) });
+  }
+  async lookupWord(payload) { return this.translate(payload, true); }
+}
+
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -244,6 +253,21 @@ function card(title, meta = "", body = "") {
   const node = el("article", "domain-record-card");
   const head = el("div"); head.append(el("strong", "", title), el("small", "", meta));
   node.append(head, el("p", "", body));
+  return node;
+}
+function activateCard(node, onActivate) {
+  node.classList.add("clickable");
+  node.tabIndex = 0;
+  node.setAttribute("role", "button");
+  node.addEventListener("click", (event) => {
+    if (event.target.closest("button, a, input, select, textarea, summary")) return;
+    onActivate();
+  });
+  node.addEventListener("keydown", (event) => {
+    if (event.target !== node || !["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    onActivate();
+  });
   return node;
 }
 function blank(text) { const node = el("div", "domain-empty"); node.append(el("p", "", text)); return node; }
@@ -271,7 +295,7 @@ export function initProductDomains({ api, toast }) {
   const leapDialog = $("leap-domain-dialog");
   const pulseDialog = $("pulse-domain-dialog");
   let authGeneration = 0;
-  const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], translationMode: "original", translationProvider: "browser_local", translationProviders: {}, providerMetadata: [], translationCache: new Map(), translationGeneration: 0, cloudConsent: new Set(), cloudProviderFailed: false, lastTranslation: null, currentTranslationScope: null, assistantAction: "translate", currentAssistantScope: null, assistantResults: new Map(), assistantLast: {}, assistantStates: { translate: { status: "idle", error: "" }, interpret: { status: "idle", error: "" } }, assistantGeneration: 0, assistantController: null, interpretationCapability: null, interpretationProvider: "auto", interpretationConsent: new Set(), translationSession: { browser_local: 0, azure_translator: 0, cacheSaved: 0 } };
+  const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], translationMode: "original", translationProvider: "browser_local", translationProviders: {}, providerMetadata: [], translationCache: new Map(), translationGeneration: 0, cloudConsent: new Set(), cloudProviderFailed: false, lastTranslation: null, currentTranslationScope: null, assistantAction: "translate", currentAssistantScope: null, assistantResults: new Map(), assistantLast: {}, assistantStates: { translate: { status: "idle", error: "" }, interpret: { status: "idle", error: "" } }, assistantGeneration: 0, assistantController: null, interpretationCapability: null, interpretationProvider: "auto", interpretationConsent: new Set(), translationSession: { browser_local: 0, ollama_local: 0, azure_translator: 0, cacheSaved: 0 } };
   const pulse = { mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [], inspections: [], expenses: [], selectedOrder: null };
 
   function status(id, text, tone = "") { const node = $(id); node.textContent = text; node.dataset.tone = tone; }
@@ -309,10 +333,34 @@ export function initProductDomains({ api, toast }) {
     renderLeap();
     status("leap-status", (leapDemo() ? "DEMO · " : "") + leap.materials.length + " 份材料 · " + leap.excerpts.length + " 条证据 · " + leap.wormholes.length + " 条思想连接", "ok");
   }
+  async function loadLeapKnowledgeStorageStatus() {
+    const node = $("leap-knowledge-storage-status");
+    if (leapDemo()) {
+      node.textContent = "演示空间与真实索引隔离 · PostgreSQL/pgvector 仅处理真实工作区材料";
+      node.dataset.tone = "neutral";
+      return;
+    }
+    node.textContent = "正在读取 PostgreSQL/pgvector 检索状态…";
+    try {
+      const result = await api("/leap/knowledge/storage");
+      const store = result.vector_store || {};
+      if (store.status === "ready") {
+        const chunks = Number(store.indexed_chunks || 0);
+        node.textContent = `检索索引：PostgreSQL + pgvector 已连接 · 当前账户 ${chunks} 个向量文本块；原文与业务数据仍保存在 SQLite`;
+        node.dataset.tone = "ok";
+      } else {
+        node.textContent = `检索索引：PostgreSQL/pgvector 暂不可用（${store.status || "unknown"}），当前问答自动使用 SQLite 回退检索；原始材料不受影响`;
+        node.dataset.tone = "warning";
+      }
+    } catch (error) {
+      node.textContent = `无法读取检索索引状态：${error.message || "服务暂不可用"}。原始材料仍保存在 SQLite。`;
+      node.dataset.tone = "warning";
+    }
+  }
   function materialCard(item) {
     const count = item.paragraph_count == null ? (item.paragraphs || []).length : item.paragraph_count;
     const node = card(item.title, (item.author || item.kind || "作者未知") + " · 已读 " + (item.progress_percent || 0) + "%", count + " 段 · " + ((item.tags || [item.kind]).filter(Boolean).join(" / ") || "未添加主题"));
-    node.classList.add("clickable"); node.addEventListener("click", () => openMaterial(item.id)); return node;
+    return activateCard(node, () => openMaterial(item.id));
   }
   function wormholeCard(item) {
     const left = leap.excerpts.find((row) => row.id === item.left_excerpt_id);
@@ -358,13 +406,13 @@ export function initProductDomains({ api, toast }) {
     const evidence = [...((leap.home && leap.home.recent_excerpts) || []), ...((leap.home && leap.home.recent_notes) || [])].slice(0, 6);
     list($("leap-home-evidence"), evidence, (item) => {
       const node = card(item.topic || item.material_title || materialTitle(item.material_id), item.quote ? "原文摘录" : "我的理解", item.quote || item.content);
-      if (item.material_id) { node.classList.add("clickable"); node.addEventListener("click", () => jumpEvidence(item)); } return node;
+      if (item.material_id) activateCard(node, () => jumpEvidence(item)); return node;
     }, "建立摘录后，首页会显示最近证据。");
     list($("leap-home-wormholes"), (leap.home && leap.home.recent_wormholes) || leap.wormholes.slice(0, 4), wormholeCard, "连接两条证据后，思想关系会出现在这里。");
     list($("leap-home-clashes"), (leap.home && leap.home.recent_clashes) || leap.clashes.slice(0, 3), clashCard, "用两组证据形成第一张思想对撞记录。");
     timeline($("leap-home-timeline")); timeline($("leap-timeline"));
     const currentEvidence = leap.activeMaterial ? leap.excerpts.filter((item) => item.material_id === leap.activeMaterial.id) : leap.excerpts.slice(0, 8);
-    list($("leap-excerpt-list"), currentEvidence, (item) => { const node = card(item.material_title || materialTitle(item.material_id), "段落 " + (Number(item.paragraph_position) + 1), item.quote); node.classList.add("clickable"); node.addEventListener("click", () => jumpEvidence(item)); return node; }, "选中正文并保存后，证据会出现在这里。");
+    list($("leap-excerpt-list"), currentEvidence, (item) => activateCard(card(item.material_title || materialTitle(item.material_id), "段落 " + (Number(item.paragraph_position) + 1), item.quote), () => jumpEvidence(item)), "选中正文并保存后，证据会出现在这里。");
     list($("leap-wormhole-list"), leap.wormholes, wormholeCard, "至少保存两条摘录，再建立一条可回溯的思想虫洞。");
     list($("leap-clash-list"), leap.clashes, clashCard, "选择两侧观点与证据，完成第一张思想对撞记录。");
     [["leap-wormhole-left", "选择证据A"], ["leap-wormhole-right", "选择证据B"], ["leap-clash-a", "选择A的证据"], ["leap-clash-b", "选择B的证据"]].forEach((pair) => choices($(pair[0]), leap.excerpts, (item) => (item.material_title || materialTitle(item.material_id)) + " · " + item.quote.slice(0, 42), pair[1]));
@@ -459,6 +507,7 @@ export function initProductDomains({ api, toast }) {
   async function loadTranslationCapabilities() {
     leap.translationProviders = {
       browser_local: new BrowserLocalTranslationProvider(window),
+      ollama_local: new OllamaTranslationProvider(api),
       azure_translator: new AzureTranslationProvider(api),
     };
     try {
@@ -467,6 +516,8 @@ export function initProductDomains({ api, toast }) {
       try { interpretation = await api("/leap/reading-assistant/capabilities"); }
       catch (_) { interpretation = { available: false, message: "内容解读能力状态暂时无法读取。" }; }
       leap.providerMetadata = capabilities.providers || [];
+      const ollamaTranslation = leap.providerMetadata.find((item) => item.id === "ollama_local");
+      if (ollamaTranslation?.model_version) leap.translationProviders.ollama_local.model = ollamaTranslation.model_version;
       leap.interpretationCapability = interpretation;
       const interpretationSelect = $("leap-interpretation-provider");
       if (interpretationSelect) {
@@ -475,6 +526,7 @@ export function initProductDomains({ api, toast }) {
           const info = providers.find((item) => item.id === option.value);
           option.disabled = !info?.configured;
           if (option.value === "auto") option.textContent = info?.configured ? "免费 · 自动" : "免费 · 自动（未配置）";
+          if (option.value === "ollama") option.textContent = info?.configured ? "本地 · Ollama" : "本地 · Ollama（未运行/未配置）";
           if (option.value === "openrouter") option.textContent = info?.configured ? "免费 · OpenRouter Free" : "免费 · OpenRouter（未配置）";
           if (option.value === "gemini") option.textContent = info?.configured ? "免费 · Gemini" : "免费 · Gemini（未配置）";
           if (option.value === "openai") option.textContent = info?.configured ? "OpenAI" : "OpenAI（当前不可用）";
@@ -492,6 +544,8 @@ export function initProductDomains({ api, toast }) {
       const azure = leap.providerMetadata.find((item) => item.id === "azure_translator");
       const azureOption = [...$("leap-translation-provider").options].find((item) => item.value === "azure_translator");
       if (azureOption) { azureOption.disabled = !azure?.configured; azureOption.textContent = azure?.configured ? "云端 · Microsoft Azure" : "云端 · Azure（未配置）"; }
+      const localOption = [...$("leap-translation-provider").options].find((item) => item.value === "ollama_local");
+      if (localOption) { localOption.disabled = !ollamaTranslation?.configured; localOption.textContent = ollamaTranslation?.configured ? `本地 · Ollama (${ollamaTranslation.model_version})` : "本地 · Ollama（未运行/未配置）"; }
       const totals = (usage.providers || []).map((item) => item.provider + " " + Number(item.translated_characters || 0).toLocaleString() + "字").join(" · ") || "尚无翻译请求";
       const current = Object.entries(leap.translationSession).filter(([key]) => key !== "cacheSaved").map(([key, value]) => key + " " + value.toLocaleString() + "字").join(" · ");
       $("leap-translation-usage").textContent = "本次 " + current + " · 本次缓存节省 " + leap.translationSession.cacheSaved.toLocaleString() + "字 · 本月 " + usage.month + " / " + totals + " · 累计缓存节省 " + Number(usage.total_cache_hit_characters || 0).toLocaleString() + " 字";
@@ -502,6 +556,9 @@ export function initProductDomains({ api, toast }) {
     const info = leap.providerMetadata.find((item) => item.id === leap.translationProvider);
     if (leap.translationProvider === "browser_local") {
       $("leap-translation-capability").textContent = "Chrome 内置 Translator · 浏览器/设备运行 · 首次可能下载语言包 · 内部模型与大小由Chrome管理";
+    } else if (leap.translationProvider === "ollama_local") {
+      const local = leap.providerMetadata.find((item) => item.id === "ollama_local");
+      $("leap-translation-capability").textContent = local?.configured ? `本机 Ollama · ${local.model_version} · 文本只发往本机服务` : "本地 Ollama 尚未运行或配置";
     } else {
       $("leap-translation-capability").textContent = info?.configured ? "Azure Translator v3 · 后端调用 · 密钥不会进入浏览器" : "Azure尚未配置，当前不可用";
     }
@@ -550,7 +607,7 @@ export function initProductDomains({ api, toast }) {
       result = await persistLocalTranslation(payload, result);
     } else {
       try { result = scope === "word" ? await provider.lookupWord(payload) : await provider.translate(payload); }
-      catch (error) { leap.cloudProviderFailed = true; throw error; }
+      catch (error) { if (provider.id === "azure_translator") leap.cloudProviderFailed = true; throw error; }
     }
     if (result.cache_hit) leap.translationSession.cacheSaved += value.length;
     else leap.translationSession[provider.id] += value.length + (scope === "word" ? paragraph.content.length : 0);
@@ -848,6 +905,29 @@ export function initProductDomains({ api, toast }) {
     toast("摘录已保存，并绑定到原文位置。");
   }
   async function jumpEvidence(item) { if (item) await openMaterial(item.material_id, Number(item.paragraph_position)); }
+  function renderKnowledgeAnswer(result) {
+    const output = $("leap-knowledge-results");
+    output.replaceChildren();
+    output.append(el("small", "leap-knowledge-mode", `检索模式 · ${result.mode || "extractive_rag"}`));
+    output.append(el("p", "leap-knowledge-answer", result.answer || "未返回答案。"));
+    const citations = Array.isArray(result.citations) ? result.citations : [];
+    if (!citations.length) {
+      output.append(el("p", "leap-knowledge-empty", "本次回答没有可引用的材料证据。"));
+      return;
+    }
+    const evidence = el("div", "leap-knowledge-citations");
+    evidence.append(el("strong", "", `引用证据 · ${citations.length}`));
+    for (const citation of citations) {
+      const item = el("article", "leap-knowledge-citation");
+      item.append(el("span", "", `${citation.material_title || "材料"} · 第${Number(citation.paragraph_start || 0) + 1}–${Number(citation.paragraph_end || 0) + 1}段`));
+      item.append(action("回到原文", async () => {
+        try { await openMaterial(citation.material_id, Number(citation.paragraph_start || 0)); }
+        catch (error) { status("leap-status", error.message, "error"); }
+      }));
+      evidence.append(item);
+    }
+    output.append(evidence);
+  }
 
   function showAssistantTab(actionName) {
     leap.assistantAction = actionName;
@@ -942,15 +1022,44 @@ export function initProductDomains({ api, toast }) {
   $("leap-material-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
-      const data = Object.fromEntries(new FormData(event.currentTarget)); data.tags = data.tags.split(",").map((item) => item.trim()).filter(Boolean);
+      const form = event.currentTarget;
+      const data = Object.fromEntries(new FormData(form)); data.tags = data.tags.split(",").map((item) => item.trim()).filter(Boolean);
       const saved = await api("/leap/materials", { method: "POST", body: JSON.stringify(data) });
-      event.currentTarget.reset(); await loadLeap(); await openMaterial(saved.id); toast("材料已保存，现在可以直接选取证据。");
+      form.reset(); await loadLeap(); await openMaterial(saved.id); toast("材料已保存，现在可以直接选取证据。");
     } catch (error) { status("leap-status", error.message, "error"); }
   });
   $("leap-file").addEventListener("change", async (event) => {
     const file = event.target.files && event.target.files[0]; if (!file) return;
     try { const data = new FormData(); data.append("file", file); const saved = await api("/leap/materials/import", { method: "POST", body: data, timeoutMs: 30000 }); event.target.value = ""; await loadLeap(); await openMaterial(saved.id); }
     catch (error) { status("leap-status", error.message, "error"); }
+  });
+  $("leap-knowledge-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (leapDemo()) return status("leap-status", "知识库问答只处理真实工作区材料；演示空间中的内容不会发送到模型服务。", "error");
+    const form = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form));
+    const generate = form.elements.generate.checked;
+    if (!window.confirm(`将按需处理你的跃迁域材料块与问题以完成向量检索${generate ? "及模型回答" : ""}。将使用服务器配置的本地或云端模型；仅本地模型不产生第三方 API 调用费用。是否继续？`)) return;
+    const output = $("leap-knowledge-results"); output.replaceChildren(el("p", "", "正在切块检索材料并整理证据…"));
+    try {
+      const result = await api("/leap/knowledge/ask", { method: "POST", body: JSON.stringify({ question: String(data.question || "").trim(), limit: 6, target_language: data.target_language || "zh-CN", generate }) , timeoutMs: 90000 });
+      renderKnowledgeAnswer(result);
+    } catch (error) {
+      output.replaceChildren(el("p", "leap-knowledge-error", error.message || "知识库问答暂时不可用。"));
+    }
+  });
+  $("leap-knowledge-reindex").addEventListener("click", async () => {
+    if (leapDemo()) return status("leap-status", "演示材料无需建立真实语义索引。", "error");
+    if (!window.confirm("将使用当前配置的 Embedding 模型为你的跃迁域材料重建语义向量；云端模型可能产生 API 费用，本地模型在本机运行。继续吗？")) return;
+    const button = $("leap-knowledge-reindex"); button.disabled = true;
+    try {
+      const result = await api("/leap/knowledge/reindex?force=true", { method: "POST", timeoutMs: 120000 });
+      const archiveStatuses = [...new Set((result.items || []).map((item) => item.mongo_archive?.status).filter(Boolean))];
+      const archive = archiveStatuses.length ? ` · MongoDB 文档归档：${archiveStatuses.join("/")}` : "";
+      status("leap-status", `语义索引已更新 · ${result.material_count || 0} 份材料 · ${result.chunk_count || 0} 个文本块 · ${result.embedding_model || "本地回退"}${archive}`, archiveStatuses.includes("unavailable") ? "error" : "ok");
+      await loadLeapKnowledgeStorageStatus();
+    } catch (error) { status("leap-status", error.message, "error"); }
+    finally { button.disabled = false; }
   });
   $("leap-note-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -982,7 +1091,7 @@ export function initProductDomains({ api, toast }) {
         ...leap.clashes.filter((item) => JSON.stringify(item).toLowerCase().includes(q)).map((item) => ({ kind: "clash", label: item.title, context: item.judgment })),
       ];
     } else results = await api("/leap/search?q=" + encodeURIComponent(query));
-    list($("leap-search-results"), results, (item) => { const node = card(item.label, item.kind, item.context || ""); if (item.material_id || item.kind === "material") { node.classList.add("clickable"); node.addEventListener("click", () => openMaterial(item.material_id || item.id, item.position == null ? null : item.position)); } return node; }, "没有找到匹配内容。");
+    list($("leap-search-results"), results, (item) => { const node = card(item.label, item.kind, item.context || ""); return item.material_id || item.kind === "material" ? activateCard(node, () => openMaterial(item.material_id || item.id, item.position == null ? null : item.position)) : node; }, "没有找到匹配内容。");
   });
   leapDialog.querySelectorAll("[data-universe-filter]").forEach((node) => node.addEventListener("click", () => renderUniverse(node.dataset.universeFilter)));
   $("leap-real-mode").addEventListener("click", async () => { leap.mode = "real"; leap.activeMaterial = null; await loadLeap(); tab(leapDialog, "home"); });
@@ -1010,8 +1119,10 @@ export function initProductDomains({ api, toast }) {
     applyPulseDemo(await api("/pulse/demo/action", { method: "POST", body: JSON.stringify({ action: kind, payload }) })); renderPulse();
   }
   function metric(label, value, hint, fn) {
-    const node = el("button", "pulse-metric"); node.type = "button"; node.append(el("small", "", label), el("strong", "", String(value)), el("p", "", hint));
-    if (fn) node.addEventListener("click", fn); else node.disabled = true; return node;
+    const node = el(fn ? "button" : "article", "pulse-metric");
+    if (fn) { node.type = "button"; node.addEventListener("click", fn); }
+    node.append(el("small", "", label), el("strong", "", String(value)), el("p", "", hint));
+    return node;
   }
   function renderTrend() {
     const host = $("pulse-trend"); host.replaceChildren(); const rows = (pulse.dashboard && pulse.dashboard.trends) || [];
@@ -1047,18 +1158,18 @@ export function initProductDomains({ api, toast }) {
     $("pulse-demo-banner").classList.toggle("hidden", !pulseDemo());
     const m = (pulse.dashboard && pulse.dashboard.metrics) || {};
     const metrics = [
-      ["Revenue", money(m.revenue, pulse.currency), "已过账租赁收入，不含押金", () => tab(pulseDialog, "finance")],
+      ["Revenue", money(m.revenue, pulse.currency), "已过账租赁收入，不含押金", () => openPulsePanel("finance")],
       ["Orders", m.orders || 0, "有效租赁订单", () => tab(pulseDialog, "transaction")],
-      ["Cash In", money(m.cash_in, pulse.currency), "租金与押金实收", () => tab(pulseDialog, "finance")],
-      ["Cash Out", money(m.cash_out, pulse.currency), "退款与已付经营费用", () => tab(pulseDialog, "finance")],
-      ["Operating Expenses", money(m.operating_expenses, pulse.currency), "包含非现金折旧", () => tab(pulseDialog, "finance")],
-      ["Operating Profit", money(m.operating_profit, pulse.currency), "收入减已记录费用", () => tab(pulseDialog, "finance")],
+      ["Cash In", money(m.cash_in, pulse.currency), "租金与押金实收", () => openPulsePanel("finance")],
+      ["Cash Out", money(m.cash_out, pulse.currency), "退款与已付经营费用", () => openPulsePanel("finance")],
+      ["Operating Expenses", money(m.operating_expenses, pulse.currency), "包含非现金折旧", () => openPulsePanel("finance")],
+      ["Operating Profit", money(m.operating_profit, pulse.currency), "收入减已记录费用", () => openPulsePanel("finance")],
       ["Deposits Held", money(m.deposits_held, pulse.currency), "负债，不计入收入", () => tab(pulseDialog, "transaction")],
-      ["Receivables", money(m.outstanding_receivables || 0, pulse.currency), "未收应收款", () => tab(pulseDialog, "finance")],
+      ["Receivables", money(m.outstanding_receivables || 0, pulse.currency), "未收应收款", () => openPulsePanel("finance")],
       ["Asset Utilization", String(m.asset_utilization == null ? (m.asset_utilization_proxy || 0) : m.asset_utilization) + "%", "非可用资产 / 全部资产", () => tab(pulseDialog, "assets")],
       ["Available Assets", m.available_assets == null ? pulse.assets.filter((item) => item.status === "available").length : m.available_assets, "当前可预约实物", () => tab(pulseDialog, "assets")],
       ["Average Order Value", money(m.average_order_value, pulse.currency), "有效订单成交额均值", () => tab(pulseDialog, "transaction")],
-      ["Repeat Rate", String(m.repeat_customer_rate || 0) + "%", "两笔及以上订单客户", () => tab(pulseDialog, "analytics")],
+      ["Repeat Rate", String(m.repeat_customer_rate || 0) + "%", "两笔及以上订单客户", () => openPulsePanel("analytics")],
     ];
     $("pulse-metrics").replaceChildren(...metrics.map((item) => metric(...item))); renderTrend();
     const groups = {}; pulse.assets.forEach((item) => { groups[item.status] = (groups[item.status] || 0) + 1; });
@@ -1067,12 +1178,12 @@ export function initProductDomains({ api, toast }) {
     list($("pulse-order-list"), pulse.orders, (item) => {
       const customer = pulse.customers.find((row) => row.id === item.customer_id);
       const node = card("#" + item.id.slice(-8) + " · " + ((customer && customer.name) || "未知客户"), item.status + " · " + date(item.start_at) + " → " + date(item.end_at), money(item.total_cents, item.currency || pulse.currency) + " · 点击查看完整证据链");
-      node.classList.add("clickable"); node.addEventListener("click", () => openOrder(item.id)); return node;
+      return activateCard(node, () => openOrder(item.id));
     }, "创建客户和订单后，交易工作台会显示完整业务链。");
     list($("pulse-asset-list"), pulse.assets, (item) => {
       const sku = pulse.skus.find((row) => row.id === item.sku_id);
       const node = card(item.asset_code, item.status + " · " + ((sku && sku.size) || "尺寸未记"), ((sku && sku.name) || "未知SKU") + " · 采购成本 " + money(item.purchase_cost_cents, pulse.currency));
-      node.classList.add("clickable"); node.addEventListener("click", () => openAsset(item.id)); return node;
+      return activateCard(node, () => openAsset(item.id));
     }, "先创建SKU并登记实物资产。");
     pulseChoices(); renderJourney(pulse.selectedOrder);
     $("pulse-sku-form").closest("details").classList.toggle("hidden", pulseDemo());
@@ -1092,7 +1203,7 @@ export function initProductDomains({ api, toast }) {
     evidence.append(detail("Inspection", (order.inspections || []).map((item) => item.condition_status + " · " + item.resolution_status).join("\n") || "尚无"));
     evidence.append(detail("Expenses", (order.expenses || []).map((item) => item.category + " " + money(item.amount_cents, pulse.currency)).join("\n") || "尚无"));
     const journals = el("div", "domain-list compact-list");
-    (order.journals || []).forEach((journal) => { const node = card(journal.description, journal.posting_date, journal.lines ? journal.lines.map((line) => line.account_code + " " + (line.debit_cents ? "Dr " : "Cr ") + money(line.debit_cents || line.credit_cents, pulse.currency)).join("\n") : "点击查看会计分录"); node.classList.add("clickable"); node.addEventListener("click", () => showJournal(journal)); journals.append(node); });
+    (order.journals || []).forEach((journal) => { const node = card(journal.description, journal.posting_date, journal.lines ? journal.lines.map((line) => line.account_code + " " + (line.debit_cents ? "Dr " : "Cr ") + money(line.debit_cents || line.credit_cents, pulse.currency)).join("\n") : "点击查看会计分录"); journals.append(activateCard(node, () => showJournal(journal))); });
     evidence.append(journals); host.append(evidence);
   }
   async function orderAction(kind, order) {
@@ -1126,7 +1237,7 @@ export function initProductDomains({ api, toast }) {
     const head = el("header"); head.append(el("small", "", "DIGITAL ASSET PASSPORT"), el("h3", "", asset.asset_code), el("p", "", asset.status)); host.append(head);
     [["SKU", sku.name], ["Size", sku.size], ["Acquisition", asset.acquisition_date], ["Purchase Cost", money(asset.purchase_cost_cents, pulse.currency)], ["Lifetime Revenue", money(data.lifetime_revenue, pulse.currency)], ["Rental Count", data.rental_count], ["Direct Cost", money(data.recorded_direct_cost == null ? (data.cleaning_cost || 0) + (data.repair_cost || 0) : data.recorded_direct_cost, pulse.currency)], ["Contribution", money(data.contribution, pulse.currency)], ["Payback", String(data.payback_progress == null ? (data.roi == null ? 0 : Math.round(data.roi * 100)) : data.payback_progress) + "%"]].forEach((row) => host.append(detail(row[0], row[1])));
     const history = el("div", "domain-list compact-list");
-    (data.rental_history || data.history || []).forEach((item) => { const node = card((item.id || item.event_type).slice(-8), item.status || date(item.occurred_at), item.total_cents ? money(item.total_cents, pulse.currency) : (item.notes || "")); if (item.items) node.addEventListener("click", () => { tab(pulseDialog, "transaction"); openOrder(item.id); }); history.append(node); }); host.append(history);
+    (data.rental_history || data.history || []).forEach((item) => { const node = card((item.id || item.event_type).slice(-8), item.status || date(item.occurred_at), item.total_cents ? money(item.total_cents, pulse.currency) : (item.notes || "")); history.append(item.items ? activateCard(node, () => { tab(pulseDialog, "transaction"); openOrder(item.id); }) : node); }); host.append(history);
   }
   function showJournal(journal) {
     tab(pulseDialog, "finance"); const host = $("pulse-journal-detail"); host.replaceChildren();
@@ -1142,16 +1253,141 @@ export function initProductDomains({ api, toast }) {
       const rows = await Promise.all([api("/pulse/trial-balance?date_from=" + pulse.dateFrom + "&date_to=" + pulse.dateTo), api("/pulse/statements?date_from=" + pulse.dateFrom + "&date_to=" + pulse.dateTo), api("/pulse/accounts"), api("/pulse/general-ledger?date_from=" + pulse.dateFrom + "&date_to=" + pulse.dateTo)]);
       trial = rows[0]; statements = rows[1]; accounts = rows[2]; ledger = rows[3];
     }
-    $("pulse-finance-output").replaceChildren(metric("Trial Balance", trial.balanced ? "Balanced" : "Integrity Error", "Debit " + money(trial.total_debit, pulse.currency) + " · Credit " + money(trial.total_credit, pulse.currency)), metric("Revenue", money(statements.income_statement.revenue_total, pulse.currency), "押金不计入收入"), metric("Operating Profit", money(statements.income_statement.operating_profit, pulse.currency), "包含非现金折旧"), metric("Balance Sheet", statements.balance_sheet.balanced ? "A = L + E" : "Opening Balance Gap", money(statements.balance_sheet.assets_total, pulse.currency) + " assets"));
-    const expenses = statements.income_statement.expenses_total == null ? Object.values(statements.income_statement.expenses || {}).reduce((a, b) => a + b, 0) : statements.income_statement.expenses_total;
-    const liabilities = statements.balance_sheet.liabilities_total == null ? Object.values(statements.balance_sheet.liabilities || {}).reduce((a, b) => a + b, 0) : statements.balance_sheet.liabilities_total;
-    const equity = statements.balance_sheet.equity_total == null ? Object.values(statements.balance_sheet.equity || {}).reduce((a, b) => a + b, 0) : statements.balance_sheet.equity_total;
-    $("pulse-statements").replaceChildren(card("Income Statement", "P&L", "Revenue " + money(statements.income_statement.revenue_total, pulse.currency) + "\nExpenses " + money(expenses, pulse.currency) + "\nProfit " + money(statements.income_statement.operating_profit, pulse.currency)), card("Balance Sheet", statements.balance_sheet.balanced ? "BALANCED" : "CHECK", "Assets " + money(statements.balance_sheet.assets_total, pulse.currency) + "\nLiabilities " + money(liabilities, pulse.currency) + "\nEquity " + money(equity, pulse.currency)), card("Cash Flow", "DIRECT METHOD", "Operating " + money(statements.cash_flow.operating, pulse.currency) + "\nInvesting " + money(statements.cash_flow.investing, pulse.currency) + "\nFinancing " + money(statements.cash_flow.financing, pulse.currency)));
+    const income = statements.income_statement || {};
+    const balance = statements.balance_sheet || {};
+    const cashFlow = statements.cash_flow || {};
+    const entries = (values) => Object.entries(values || {}).filter(([, value]) => Number.isFinite(Number(value)));
+    const accountEntries = (types) => (accounts || []).filter((item) => types.includes(String(item.account_type || "").toUpperCase()))
+      .map((item) => [item.name, Math.abs(Number(item.closing_balance || 0))]);
+    const reportCard = (title, badge, summary, detailRows, note = "") => {
+      const article = el("article", "pulse-statement-card");
+      const heading = el("header", "pulse-statement-heading");
+      heading.append(el("h4", "", title), el("span", "", badge)); article.append(heading);
+      const totals = el("dl", "pulse-statement-totals");
+      summary.forEach(([label, value]) => { const row = el("div", "pulse-statement-row"); row.append(el("dt", "", label), el("dd", "", money(value, pulse.currency))); totals.append(row); });
+      article.append(totals);
+      if (note) article.append(el("p", "pulse-statement-note", note));
+      const details = document.createElement("details"); details.className = "pulse-statement-details";
+      details.append(el("summary", "", "查看科目构成"));
+      const list = el("dl", "pulse-statement-lines");
+      if (detailRows.length) detailRows.forEach(([label, value]) => { const row = el("div", "pulse-statement-row"); row.append(el("dt", "", label), el("dd", "", money(value, pulse.currency))); list.append(row); });
+      else list.append(el("p", "pulse-statement-empty", "当前期间没有可展开的科目明细。"));
+      details.append(list); article.append(details);
+      article.tabIndex = 0;
+      article.setAttribute("aria-label", `${title}，按回车展开或收起科目构成`);
+      article.addEventListener("click", (event) => {
+        if (!event.target.closest("details")) details.open = !details.open;
+      });
+      article.addEventListener("keydown", (event) => {
+        if (event.target !== article || !["Enter", " "].includes(event.key)) return;
+        event.preventDefault(); details.open = !details.open;
+      });
+      return article;
+    };
+    $("pulse-finance-output").replaceChildren(
+      metric("试算平衡", trial.balanced ? "借贷平衡" : "需核查", "借方 " + money(trial.total_debit, pulse.currency) + " · 贷方 " + money(trial.total_credit, pulse.currency)),
+      metric("营业收入", money(income.revenue_total, pulse.currency), "押金不计入收入"),
+      metric("经营利润", money(income.operating_profit, pulse.currency), income.data_quality === "partial" ? "成本数据不完整" : "基于已入账凭证"),
+      metric("资产负债表", balance.balanced ? "平衡" : "需核查", money(balance.assets_total, pulse.currency) + " 资产")
+    );
+    const revenueRows = entries(income.revenue).length ? entries(income.revenue) : accountEntries(["REVENUE"]);
+    const expenseRows = entries(income.expenses).length ? entries(income.expenses) : accountEntries(["EXPENSE"]);
+    const assetRows = entries(balance.assets).length ? entries(balance.assets) : accountEntries(["ASSET"]);
+    const liabilityRows = entries(balance.liabilities).length ? entries(balance.liabilities) : accountEntries(["LIABILITY"]);
+    const equityRows = entries(balance.equity).length ? entries(balance.equity) : accountEntries(["EQUITY"]);
+    const incomeExpenses = income.expenses_total == null ? expenseRows.reduce((sum, [, value]) => sum + value, 0) : income.expenses_total;
+    const liabilities = balance.liabilities_total == null ? liabilityRows.reduce((sum, [, value]) => sum + value, 0) : balance.liabilities_total;
+    const equity = balance.equity_total == null ? equityRows.reduce((sum, [, value]) => sum + value, 0) : balance.equity_total;
+    const cashRows = [["经营活动", cashFlow.operating || 0], ["投资活动", cashFlow.investing || 0], ["融资活动", cashFlow.financing || 0], ["未分类", cashFlow.unclassified || 0]];
+    const incomeDetails = [...revenueRows.map(([name, value]) => ["收入 · " + name, value]), ...expenseRows.map(([name, value]) => ["费用 · " + name, value])];
+    const balanceDetails = [...assetRows.map(([name, value]) => ["资产 · " + name, value]), ...liabilityRows.map(([name, value]) => ["负债 · " + name, value]), ...equityRows.map(([name, value]) => ["权益 · " + name, value])];
+    $("pulse-statements").replaceChildren(
+      reportCard("利润表", "损益 · P&L", [["营业收入", income.revenue_total || 0], ["经营费用", incomeExpenses], ["经营利润", income.operating_profit || 0]], incomeDetails, income.note || undefined),
+      reportCard("资产负债表", balance.balanced ? "平衡" : "需核查", [["资产", balance.assets_total || 0], ["负债", liabilities], ["所有者权益", equity]], balanceDetails, balance.note || undefined),
+      reportCard("现金流量表", "直接法", [["经营活动", cashFlow.operating || 0], ["投资活动", cashFlow.investing || 0], ["融资活动", cashFlow.financing || 0]], cashRows, "现金流按已入账事件分类；未分类金额在明细中单独显示。")
+    );
     list($("pulse-ledger-list"), ledger.accounts.filter((item) => item.debit || item.credit || item.closing_balance), (item) => card(item.code + " · " + item.name, item.account_type, "Debit " + money(item.debit || 0, pulse.currency) + " · Credit " + money(item.credit || 0, pulse.currency) + " · Balance " + money(item.closing_balance || 0, pulse.currency)), "本期无总账发生额。");
     list($("pulse-account-list"), accounts, (item) => card(item.code + " · " + item.name, item.account_type, item.role || "会计科目"), "尚无会计科目。");
   }
+  function ensurePulseProfilePanels() {
+    if ($("pulse-profile-dimensions")) return;
+    const anchor = $("pulse-segment-output");
+    const section = document.createElement("section"); section.className = "pulse-customer-profiles";
+    section.append(el("div", "domain-section-heading", "客户群体画像与订单风险（只做群体描述，不做个人评分）"));
+    const risk = document.createElement("div"); risk.id = "pulse-profile-risk"; risk.className = "pulse-metrics compact-metrics";
+    const profiles = document.createElement("div"); profiles.id = "pulse-profile-dimensions"; profiles.className = "domain-list compact-list";
+    const orderProfiles = document.createElement("div"); orderProfiles.id = "pulse-order-context-profiles"; orderProfiles.className = "domain-list compact-list";
+    const costs = document.createElement("div"); costs.id = "pulse-cost-summary"; costs.className = "domain-list compact-list";
+    const deposits = document.createElement("div"); deposits.id = "pulse-deposit-scenarios"; deposits.className = "domain-list compact-list";
+    section.append(risk, el("h4", "", "客户维度画像（小于5人的分组已隐藏）"), profiles,
+      el("h4", "", "订单情境：同行/套数/折扣/急迫度/加购/定金/取消"), orderProfiles,
+      el("h4", "", "主要成本结构"), costs,
+      el("h4", "", "押金 A$50 vs A$100：损失覆盖敏感性"), deposits);
+    anchor.parentElement.insertBefore(section, anchor);
+  }
+  function ensurePulseForecastDemoButton() {
+    if ($("pulse-ml-demo-button")) return;
+    const host = $("pulse-eda-method").parentElement;
+    const controls = document.createElement("div"); controls.className = "domain-actions";
+    const demoButton = action("载入合成模型演示（12年模拟序列）", async () => {
+      try {
+        const demo = await api("/pulse/analytics/synthetic-ml-demo");
+        renderPulseLine(demo.monthly_rows, demo.forecast);
+        const result = demo.forecast?.ml_comparison || {};
+        const modelNames = { last_value_baseline: "上月值基线", random_forest: "随机森林（Random Forest）", adaboost: "AdaBoost", bayesian_ridge: "贝叶斯岭回归（Bayesian Ridge）", pytorch_lstm: "PyTorch 长短期记忆网络（LSTM）" };
+        const comparison = result.status === "ok"
+          ? `时间顺序回测 MAE：${result.models.map((item) => `${modelNames[item.model] || item.model} ${money(Math.round(item.mae), pulse.currency)}`).join("；")}；当前选择 ${modelNames[result.selected_model] || result.selected_model}（${result.selection_rule || "以回测误差为准"}）。`
+          : "ML候选模型样本门槛未满足。";
+        $("pulse-time-series-forecast").textContent = `${demo.disclaimer} 金额校准：${demo.calibration?.source || "未提供"}。${comparison} 仅用于演示方法，不是实际经营预测。`;
+      } catch (error) { status("pulse-status", error.message, "error"); }
+    }, "domain-secondary"); demoButton.id = "pulse-ml-demo-button";
+    const restore = action("恢复当前经营数据", () => loadPulseAnalytics(), "domain-secondary");
+    controls.append(demoButton, restore); host.append(controls);
+  }
+  function renderPulseCustomerProfiles(data) {
+    ensurePulseProfilePanels();
+    const risk = data.customer_risk_summary || {};
+    $("pulse-profile-risk").replaceChildren(
+      metric("逾期归还", risk.late_return_orders || 0, "实际归还晚于计划时间"),
+      metric("当前超期", risk.current_overdue_orders || 0, "仍在租且已超过计划归还时间"),
+      metric("损坏订单", risk.damaged_orders || 0, "有验收记录"),
+      metric("遗失订单", risk.missing_orders || 0, "有验收记录"),
+      metric("临时取消", risk.last_minute_cancellations || 0, "需显式记录取消原因"),
+      metric("定金记录", risk.deposit_paid_orders || 0, "已有定金收款记录"));
+    const fieldLabels = { gender: "性别", age_band: "年龄段", profession: "职业/专业", education_level: "学历", region: "地区", acquisition_channel: "获客渠道", referral_status: "转介绍", moments_visibility: "朋友圈对我可见性" };
+    const customerHost = $("pulse-profile-dimensions"); customerHost.replaceChildren();
+    Object.entries((data.customer_dimensions || {}).dimensions || {}).forEach(([field, breakdown]) => {
+      const detail = document.createElement("details"); detail.className = "domain-drawer";
+      const summary = document.createElement("summary"); summary.textContent = `${fieldLabels[field] || field} · ${breakdown.groups.length} 个可展示分组`;
+      detail.append(summary);
+      const groupList = document.createElement("div"); groupList.className = "domain-list compact-list";
+      (breakdown.groups || []).forEach((item) => groupList.append(card(item.category,
+        `${item.customers} 位 · 新客 ${item.new_customers} / 复购 ${item.repeat_customers}`,
+        `逾期归还 ${percent(item.late_return_rate)} · 损坏 ${percent(item.damage_rate)} · 遗失 ${percent(item.missing_rate)} · 样本：归还 ${item.return_observation_orders} / 验收 ${item.inspected_orders}`)));
+      if (!breakdown.groups?.length) groupList.append(el("p", "domain-empty", "有效群组不足；小于5人的组不显示。"));
+      detail.append(groupList); customerHost.append(detail);
+    });
+    const orderHost = $("pulse-order-context-profiles"); orderHost.replaceChildren();
+    const orderLabels = { party_size_group: "同行人数", planned_sets_group: "计划套数", discount_pressure: "折扣诉求", subjective_urgency: "主观急迫度", objective_urgency: "客观急迫度（按提前量）", flower_add_on: "小熊手工花加购", deposit_paid: "定金记录", cancellation_type: "取消/爽约" };
+    Object.entries((data.order_context_profiles || {}).dimensions || {}).forEach(([field, breakdown]) => {
+      const details = document.createElement("details"); details.className = "domain-drawer";
+      const summary = document.createElement("summary"); summary.textContent = `${orderLabels[field] || field} · ${breakdown.groups.length} 个可展示分组`;
+      details.append(summary);
+      const listHost = document.createElement("div"); listHost.className = "domain-list compact-list";
+      (breakdown.groups || []).forEach((item) => listHost.append(card(item.category,
+        `${item.orders} 笔 · 临时取消 ${item.last_minute_cancellations} · 未按约到场 ${item.no_shows}`,
+        `逾期归还 ${percent(item.late_return_rate)} · 损坏 ${percent(item.damage_rate)} · 遗失 ${percent(item.missing_rate)} · 当前超期 ${item.current_overdue_orders}`)));
+      if (!breakdown.groups?.length) listHost.append(el("p", "domain-empty", "有效订单群组不足；小于5笔的组不显示。"));
+      details.append(listHost); orderHost.append(details);
+    });
+    list($("pulse-cost-summary"), (data.cost_analysis || {}).categories || [], (item) => card(item.category, `${item.entries} 笔记录`, money(item.amount_cents, pulse.currency)), "尚无已录入成本。");
+    list($("pulse-deposit-scenarios"), (data.deposit_coverage || {}).scenarios || [], (item) => card(money(item.deposit_cents, pulse.currency), `${item.observations} 个${data.deposit_coverage.synthetic ? "合成" : "已记录"}损失样本 · 覆盖 ${percent(item.coverage_ratio)}`, `记录/假设损失 ${money(item.total_loss_cents, pulse.currency)} · 可覆盖 ${money(item.covered_cents, pulse.currency)} · 剩余暴露 ${money(item.residual_loss_cents, pulse.currency)}`), "暂无押金情景。");
+  }
   async function loadPulseAnalytics() {
     const data = pulseDemo() ? pulse.analytics : await api("/pulse/analytics?date_from=" + pulse.dateFrom + "&date_to=" + pulse.dateTo);
+    ensurePulseForecastDemoButton();
+    renderPulseEda(data.eda || {});
+    renderPulseCustomerProfiles(data);
     const revenue = data.revenue_by_sku || (data.sales && data.sales.revenue_by_sku) || [];
     list($("pulse-analytics-output"), revenue, (item) => card(item.name, item.orders + " 单 · " + (item.size || ""), money(item.revenue, pulse.currency)), "尚无已确认租赁收入。");
     const summary = data.customer_summary || {};
@@ -1159,10 +1395,154 @@ export function initProductDomains({ api, toast }) {
     list($("pulse-channel-output"), summary.channel_revenue || [], (item) => card(item.channel, "ACQUISITION CHANNEL", money(item.revenue, pulse.currency)), "尚无渠道收入数据。");
     list($("pulse-cohort-output"), summary.cohorts || [], (item) => card(item.cohort + " Cohort", item.customers + " 位客户 · " + item.orders + " 单", money(item.revenue, pulse.currency)), "真实客户积累后显示 Cohort。");
     list($("pulse-segment-output"), data.customers || [], (item) => card(item.name, item.segment + " · " + item.orders + " 单", money(item.lifetime_revenue, pulse.currency) + " · Recency " + (item.recency_days == null ? "—" : item.recency_days) + "天"), "尚无客户行为数据。");
-    list($("pulse-asset-analytics"), data.top_assets || [], (item) => { const node = card(item.asset_code, item.rental_count + " 次租赁 · 利用率 " + (item.utilization == null ? "—" : item.utilization + "%"), money(item.lifetime_revenue, pulse.currency) + " · 回本 " + item.payback_progress + "% · 每可用日 " + money(item.revenue_per_available_day || 0, pulse.currency)); node.classList.add("clickable"); node.addEventListener("click", () => { tab(pulseDialog, "assets"); openAsset(item.id); }); return node; }, "真实资产经营记录出现后显示资产经济性。");
+    list($("pulse-asset-analytics"), data.top_assets || [], (item) => { const node = card(item.asset_code, item.rental_count + " 次租赁 · 利用率 " + (item.utilization == null ? "—" : item.utilization + "%"), money(item.lifetime_revenue, pulse.currency) + " · 回本 " + item.payback_progress + "% · 每可用日 " + money(item.revenue_per_available_day || 0, pulse.currency)); return activateCard(node, () => { tab(pulseDialog, "assets"); openAsset(item.id); }); }, "真实资产经营记录出现后显示资产经济性。");
     list($("pulse-insight-list"), data.insights || [], (item) => card(item.title, item.period + " · Metric " + item.metric, item.calculation + "\nEvidence: " + (item.evidence_ids || []).join(", ")), "数据不足时不编造经营洞察。");
   }
 
+  function svgNode(tag, attrs = {}, label = "") {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, String(value)));
+    if (label) node.textContent = label;
+    return node;
+  }
+  function renderPulseEda(eda) {
+    const order = (eda.distributions || {}).order_value_cents || {};
+    const monthly = (eda.distributions || {}).monthly_revenue_cents || {};
+    $("pulse-eda-method").textContent = eda.methodology || "按当前期间从服务端聚合数据计算；数据不足时明确标记。";
+    const metricRows = [
+      ["订单金额均值", order.mean, "AUD / 订单"], ["订单金额中位数", order.median, "AUD / 订单"],
+      ["月收入均值", monthly.mean, "AUD / 月"], ["月收入中位数", monthly.median, "AUD / 月"],
+    ];
+    $("pulse-eda-summary").replaceChildren(...metricRows.map(([label, value, unit]) =>
+      metric(label, value == null ? "—" : money(Math.round(value), pulse.currency), unit)));
+    renderPulseLine(eda.monthly_trends || [], eda.revenue_forecast || {});
+    const forecast = eda.revenue_forecast || {};
+    $("pulse-time-series-forecast").textContent = forecast.status === "ok"
+      ? `3个月线性趋势基线（非季节模型）：${forecast.points.map((point) => `${point.period} ${money(Math.round(point.revenue), pulse.currency)}（95%区间 ${money(Math.round(point.lower_95), pulse.currency)}–${money(Math.round(point.upper_95), pulse.currency)}）`).join(" · ")}。${forecast.assumptions.join("；")}`
+      : `时间序列样本不足（${forecast.observations || 0}/${forecast.minimum_months || 3}个月），暂不外推。`;
+    renderPulseBoxplot(order);
+    renderPulsePca(eda.pca || {});
+  }
+  function renderPulseLine(rows, forecast) {
+    const host = $("pulse-revenue-chart"); host.replaceChildren();
+    if (!rows.length) { host.textContent = "所选期间没有月度收入记录。"; return; }
+    const width = 620, height = 220, left = 48, right = 14, top = 18, bottom = 38;
+    const forecastRows = forecast.status === "ok" ? forecast.points || [] : [];
+    const allRows = [...rows, ...forecastRows];
+    const values = allRows.map((row) => Number(row.revenue || 0) / 100);
+    const max = Math.max(1, ...values), min = Math.min(0, ...values);
+    const x = (i) => left + (allRows.length === 1 ? 0 : i * (width - left - right) / (allRows.length - 1));
+    const y = (v) => height - bottom - (v - min) * (height - top - bottom) / Math.max(1, max - min);
+    const svg = svgNode("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "月度收入折线图" });
+    [0, .5, 1].forEach((ratio) => {
+      const yy = top + ratio * (height - top - bottom);
+      svg.append(svgNode("line", { x1: left, y1: yy, x2: width - right, y2: yy, class: "pulse-chart-gridline" }));
+      svg.append(svgNode("text", { x: left - 7, y: yy + 4, "text-anchor": "end", class: "pulse-chart-axis" }, money(Math.round(max * (1 - ratio)), pulse.currency)));
+    });
+    const actualPoints = rows.map((row, index) => `${x(index)},${y(Number(row.revenue || 0) / 100)}`).join(" ");
+    svg.append(svgNode("polyline", { points: actualPoints, class: "pulse-chart-line" }));
+    if (forecastRows.length) {
+      const forecastPoints = [`${x(rows.length - 1)},${y(Number(rows.at(-1).revenue || 0) / 100)}`,
+        ...forecastRows.map((row, index) => `${x(rows.length + index)},${y(Number(row.revenue || 0) / 100)}`)].join(" ");
+      svg.append(svgNode("polyline", { points: forecastPoints, class: "pulse-chart-line pulse-chart-forecast" }));
+      forecastRows.forEach((row, index) => svg.append(svgNode("circle", { cx: x(rows.length + index), cy: y(Number(row.revenue || 0) / 100), r: 4, class: "pulse-chart-forecast-point" })));
+    }
+    rows.forEach((row, index) => {
+      svg.append(svgNode("circle", { cx: x(index), cy: y(values[index]), r: 4, class: "pulse-chart-point" }));
+      svg.append(svgNode("text", { x: x(index), y: height - 12, "text-anchor": "middle", class: "pulse-chart-axis" }, String(row.period || "").slice(5)));
+    });
+    host.append(svg);
+  }
+  function renderPulseBoxplot(stats) {
+    const host = $("pulse-order-boxplot"); host.replaceChildren();
+    if (!stats.count) { host.textContent = "订单样本不足，无法绘制箱线图。"; return; }
+    const vals = [stats.min, stats.whisker_low, stats.q1, stats.median, stats.q3, stats.whisker_high, stats.max, stats.mean].filter(Number.isFinite);
+    const min = Math.min(...vals), max = Math.max(...vals), span = Math.max(1, max - min);
+    const pos = (value) => 20 + ((value - min) / span) * 360;
+    const line = (left, right, cls) => { const node = document.createElement("i"); node.className = cls; node.style.left = `${pos(left) / 4}%`; node.style.width = `${Math.max(1, (right - left) / span * 90)}%`; return node; };
+    const shell = document.createElement("div"); shell.className = "pulse-boxplot-track";
+    shell.append(line(stats.whisker_low, stats.whisker_high, "pulse-boxplot-whisker"));
+    const box = line(stats.q1, stats.q3, "pulse-boxplot-box"); shell.append(box);
+    const medianMark = line(stats.median, stats.median, "pulse-boxplot-median"); medianMark.style.width = "2px"; shell.append(medianMark);
+    const meanMark = line(stats.mean, stats.mean, "pulse-boxplot-mean"); meanMark.style.width = "2px"; shell.append(meanMark);
+    (stats.outliers || []).forEach((value) => { const dot = document.createElement("i"); dot.className = "pulse-boxplot-outlier"; dot.style.left = `${pos(value) / 4}%`; dot.title = money(Math.round(value), pulse.currency); shell.append(dot); });
+    const labels = document.createElement("div"); labels.className = "pulse-boxplot-labels";
+    labels.textContent = `Min ${money(Math.round(stats.min), pulse.currency)} · Q1 ${money(Math.round(stats.q1), pulse.currency)} · Median ${money(Math.round(stats.median), pulse.currency)} · Q3 ${money(Math.round(stats.q3), pulse.currency)} · Max ${money(Math.round(stats.max), pulse.currency)}`;
+    const legend = document.createElement("small"); legend.className = "pulse-chart-caption"; legend.textContent = `n=${stats.count} · 均值 ${money(Math.round(stats.mean), pulse.currency)} · 异常值 ${stats.outliers.length}（1.5×IQR规则）`;
+    host.append(shell, labels, legend);
+  }
+  function renderPulsePca(pca) {
+    const host = $("pulse-pca-chart"), loadings = $("pulse-pca-loadings"); host.replaceChildren(); loadings.replaceChildren();
+    if (pca.status !== "ok" || !pca.points?.length) {
+      $("pulse-pca-caption").textContent = `有效客户样本不足（当前 ${pca.observations || 0}，至少需要 ${pca.minimum_rows || 3} 条），不会生成虚假投影。`;
+      return;
+    }
+    const ratios = pca.explained_variance_ratio || [];
+    $("pulse-pca-caption").textContent = `${pca.method} + ${pca.segmentation_method || "KMeans"} · ${pca.observations} 位客户 · PC1 ${(ratios[0] || 0) * 100}% + PC2 ${(ratios[1] || 0) * 100}% 方差解释率`;
+    const width = 620, height = 260, pad = 28;
+    const xs = pca.points.map((point) => point.pc1), ys = pca.points.map((point) => point.pc2);
+    const spanX = Math.max(1, Math.max(...xs) - Math.min(...xs)), spanY = Math.max(1, Math.max(...ys) - Math.min(...ys));
+    const svg = svgNode("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "PCA客户特征散点图" });
+    pca.points.forEach((point, index) => {
+      const cx = pad + (point.pc1 - Math.min(...xs)) / spanX * (width - 2 * pad);
+      const cy = height - pad - (point.pc2 - Math.min(...ys)) / spanY * (height - 2 * pad);
+      const clusterColors = ["#71ddd2", "#ffbd75", "#b79cff", "#ff8f9f"];
+      const dot = svgNode("circle", { cx, cy, r: 6, class: "pulse-pca-point", fill: clusterColors[(point.cluster || 0) % clusterColors.length], tabindex: 0 });
+      dot.append(svgNode("title", {}, point.label)); svg.append(dot);
+      svg.append(svgNode("text", { x: cx + 8, y: cy - 8, class: "pulse-chart-axis" }, `客户${index + 1}`));
+    });
+    host.append(svg);
+    (pca.components || []).forEach((component) => {
+      const top = component.loadings.slice(0, 4).map((item) => `${item.feature} ${item.weight > 0 ? "+" : ""}${item.weight}`).join(" · ");
+      const row = document.createElement("p"); row.textContent = `${component.name}：${top}`; loadings.append(row);
+    });
+  }
+
+  function addPulseSelect(form, name, labelText, options, beforeName = "notes") {
+    const label = document.createElement("label");
+    const caption = document.createElement("span"); caption.textContent = labelText;
+    const select = document.createElement("select"); select.name = name;
+    options.forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; select.append(option); });
+    label.append(caption, select);
+    const before = form.querySelector(`[name="${beforeName}"]`);
+    form.insertBefore(label, before || null);
+  }
+  function addPulseInput(form, name, labelText, type, min, max) {
+    const label = document.createElement("label");
+    const caption = document.createElement("span"); caption.textContent = labelText;
+    const input = document.createElement("input"); input.name = name; input.type = type;
+    if (min != null) input.min = String(min); if (max != null) input.max = String(max);
+    if (type === "number") { input.value = "1"; input.step = "1"; }
+    label.append(caption, input);
+    const before = form.querySelector('[name="notes"]'); form.insertBefore(label, before || null);
+  }
+  function ensurePulseCaptureFields() {
+    const customerForm = $("pulse-customer-form");
+    if (!customerForm.dataset.profileFields) {
+      customerForm.dataset.profileFields = "added";
+      const hint = document.createElement("small"); hint.textContent = "可选画像字段；性别、学历、职业及朋友圈可见性不参与个人风险评分。朋友圈仅记录对你可见/不可见/未确认，不读取内容。";
+      const notes = customerForm.querySelector('[name="notes"]'); customerForm.insertBefore(hint, notes || null);
+      addPulseInput(customerForm, "profession", "职业/专业领域（可选）", "text");
+      addPulseSelect(customerForm, "education_level", "最高学历（可选）", [["", "未填写"], ["secondary", "中学/高中"], ["undergraduate", "本科"], ["postgraduate", "硕士"], ["doctorate", "博士"], ["other", "其他"], ["not_disclosed", "不愿透露"]]);
+      addPulseSelect(customerForm, "referral_status", "是否转介绍", [["unknown", "未知/未填写"], ["yes", "是"], ["no", "否"]]);
+      addPulseSelect(customerForm, "moments_visibility", "朋友圈对我可见性", [["unknown", "未确认"], ["visible_to_me", "对我可见"], ["hidden_from_me", "对我不可见"]]);
+      addPulseSelect(customerForm, "gender", "性别（可选，自行提供）", [["", "未填写"], ["female", "女性"], ["male", "男性"], ["non_binary", "非二元"], ["not_disclosed", "不愿透露"]]);
+      addPulseSelect(customerForm, "age_band", "年龄段（可选，自行提供）", [["", "未填写"], ["18_24", "18–24"], ["25_34", "25–34"], ["35_44", "35–44"], ["45_54", "45–54"], ["55_plus", "55+"], ["not_disclosed", "不愿透露"]]);
+      addPulseInput(customerForm, "region", "地区（可选）", "text");
+    }
+    const orderForm = $("pulse-order-form");
+    if (!orderForm.dataset.contextFields) {
+      orderForm.dataset.contextFields = "added";
+      addPulseInput(orderForm, "party_size", "同行人数", "number", 1, 50);
+      addPulseInput(orderForm, "planned_sets", "计划租赁套数", "number", 1, 50);
+      addPulseSelect(orderForm, "discount_pressure", "折扣诉求强度", [["unknown", "未记录"], ["none", "无"], ["standard", "一般"], ["strong", "强烈"]]);
+      addPulseSelect(orderForm, "subjective_urgency", "主观急迫度（客户自述）", [["unknown", "未询问"], ["low", "低"], ["medium", "中"], ["high", "高"]]);
+      const note = document.createElement("small"); note.textContent = "客观急迫度由下单至租赁开始的提前时间计算；朋友圈可见性记录在客户档案。手工花可作为 SKU 加购记录。";
+      const before = orderForm.querySelector('[name="notes"]'); orderForm.insertBefore(note, before || null);
+    }
+  }
+
+  ensurePulseCaptureFields();
   $("pulse-customer-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     try { const data = Object.fromEntries(new FormData(event.currentTarget)); if (pulseDemo()) await pulseAction("customer", data); else await api("/pulse/customers", { method: "POST", body: JSON.stringify(data) }); event.currentTarget.reset(); await loadPulse(); toast("客户已保存，可立即创建租赁订单。"); }
@@ -1182,8 +1562,8 @@ export function initProductDomains({ api, toast }) {
     event.preventDefault();
     try {
       const data = Object.fromEntries(new FormData(event.currentTarget)); const sku = pulse.skus.find((item) => item.id === data.sku_id);
-      if (pulseDemo()) await pulseAction("order", { customer_id: data.customer_id, asset_id: data.asset_id, start_at: iso(data.start_at), end_at: iso(data.end_at), amount_cents: data.unit_price ? Math.round(Number(data.unit_price) * 100) : (sku && sku.current_price_cents), channel: data.channel });
-      else await api("/pulse/orders", { method: "POST", body: JSON.stringify({ customer_id: data.customer_id, start_at: iso(data.start_at), end_at: iso(data.end_at), channel: data.channel || "", delivery_method: data.delivery_method || "", discount_cents: 0, notes: data.notes || "", items: [{ sku_id: data.sku_id, asset_id: data.asset_id, quantity: 1, unit_price_cents: data.unit_price ? Math.round(Number(data.unit_price) * 100) : null }] }) });
+      if (pulseDemo()) await pulseAction("order", { customer_id: data.customer_id, asset_id: data.asset_id, start_at: iso(data.start_at), end_at: iso(data.end_at), amount_cents: data.unit_price ? Math.round(Number(data.unit_price) * 100) : (sku && sku.current_price_cents), channel: data.channel, party_size: Number(data.party_size || 1), planned_sets: Number(data.planned_sets || 1), discount_pressure: data.discount_pressure || "unknown", subjective_urgency: data.subjective_urgency || "unknown" });
+      else await api("/pulse/orders", { method: "POST", body: JSON.stringify({ customer_id: data.customer_id, start_at: iso(data.start_at), end_at: iso(data.end_at), party_size: Number(data.party_size || 1), planned_sets: Number(data.planned_sets || 1), discount_pressure: data.discount_pressure || "unknown", subjective_urgency: data.subjective_urgency || "unknown", channel: data.channel || "", delivery_method: data.delivery_method || "", discount_cents: 0, notes: data.notes || "", items: [{ sku_id: data.sku_id, asset_id: data.asset_id, quantity: 1, unit_price_cents: data.unit_price ? Math.round(Number(data.unit_price) * 100) : null }] }) });
       event.currentTarget.reset(); await loadPulse(); const latest = pulseDemo() ? pulse.orders[pulse.orders.length - 1] : pulse.orders[0]; if (latest) await openOrder(latest.id); toast("订单已创建，具体资产已被占用。");
     } catch (error) { status("pulse-status", error.message, "error"); }
   });
@@ -1192,14 +1572,23 @@ export function initProductDomains({ api, toast }) {
   $("pulse-demo-reset").addEventListener("click", async () => { applyPulseDemo(await api("/pulse/demo/reset", { method: "POST" })); renderPulse(); toast("Oia Demo Company 已恢复到会计一致的六个月样本。"); });
 
   leapDialog.querySelectorAll("[data-domain-tab]").forEach((node) => node.addEventListener("click", async () => { tab(leapDialog, node.dataset.domainTab); if (node.dataset.domainTab === "library" && !leap.libraryLoaded) { try { await loadLibrary(); } catch (error) { $("leap-library-status").textContent = error.message; } } }));
-  pulseDialog.querySelectorAll("[data-domain-tab]").forEach((node) => node.addEventListener("click", async () => { tab(pulseDialog, node.dataset.domainTab); if (node.dataset.domainTab === "finance") await loadFinance(); if (node.dataset.domainTab === "analytics") await loadPulseAnalytics(); }));
+  async function openPulsePanel(name) {
+    tab(pulseDialog, name);
+    try {
+      if (name === "finance") await loadFinance();
+      if (name === "analytics") await loadPulseAnalytics();
+    } catch (error) {
+      status("pulse-status", `无法加载${name === "finance" ? "财务报表" : "经营洞察"}：${error.message}`, "error");
+    }
+  }
+  pulseDialog.querySelectorAll("[data-domain-tab]").forEach((node) => node.addEventListener("click", () => openPulsePanel(node.dataset.domainTab)));
   $("leap-domain-close").addEventListener("click", () => leapDialog.close());
   $("pulse-domain-close").addEventListener("click", () => pulseDialog.close());
   leapDialog.addEventListener("cancel", (event) => { event.preventDefault(); leapDialog.close(); });
   pulseDialog.addEventListener("cancel", (event) => { event.preventDefault(); pulseDialog.close(); });
 
   return {
-    async openLeap() { if (!leapDialog.open) leapDialog.showModal(); tab(leapDialog, "home"); try { await Promise.all([loadLeap(), loadTranslationCapabilities()]); } catch (error) { status("leap-status", error.message, "error"); } },
+    async openLeap() { if (!leapDialog.open) leapDialog.showModal(); tab(leapDialog, "home"); try { await Promise.all([loadLeap(), loadTranslationCapabilities(), loadLeapKnowledgeStorageStatus()]); } catch (error) { status("leap-status", error.message, "error"); } },
     async openPulse() { if (!pulseDialog.open) pulseDialog.showModal(); tab(pulseDialog, "overview"); try { await loadPulse(); } catch (error) { status("pulse-status", error.message, "error"); } },
     reset() {
       authGeneration += 1;

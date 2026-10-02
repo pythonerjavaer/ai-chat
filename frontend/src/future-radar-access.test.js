@@ -33,8 +33,8 @@ test("manual Quick and Deep scans use per-type run state and a short completion 
   const end = appSource.indexOf("\nfunction renderRecruitmentProfile", start);
   const functionSource = appSource.slice(start, end);
 
-  assert.match(indexSource, /id="future-radar-run"[\s\S]*QUICK SCAN/);
-  assert.match(indexSource, /id="future-radar-deep-run"[\s\S]*DEEP SCAN/);
+  assert.match(indexSource, /id="future-radar-run"[\s\S]*REST API \/ ATS/);
+  assert.match(indexSource, /id="future-radar-deep-run"[\s\S]*WEB SCRAPING/);
   assert.match(appSource, /FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS = 20/);
   assert.doesNotMatch(appSource, /FUTURE_RADAR_MANUAL_COOLDOWN_SECONDS|5 \* 60/);
   assert.match(functionSource, /JSON\.stringify\(\{ scan_type: scanType \}\)/);
@@ -45,6 +45,15 @@ test("manual Quick and Deep scans use per-type run state and a short completion 
   assert.match(functionSource, /futureRadarRunErrorCopy/);
   assert.match(functionSource, /startFutureRadarRunDelay\(scanType, FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS/);
   assert.match(functionSource, /Number\(error\.status\) === 409/);
+});
+
+test("Future Radar exposes event time series and separates REST/ATS from web scraping lanes", () => {
+  assert.match(indexSource, /data-radar-tab="timeseries"/);
+  assert.match(indexSource, /data-radar-panel="timeseries"/);
+  assert.match(appSource, /api\("\/future-radar\/timeseries\?days=90"\)/);
+  assert.match(appSource, /loadFutureRadarTimeseries/);
+  assert.match(indexSource, /快速扫描走 REST API \/ ATS/);
+  assert.match(indexSource, /深度扫描走官网 Web scraping/);
 });
 
 test("profile matching and source synchronization labels describe their real side effects", () => {

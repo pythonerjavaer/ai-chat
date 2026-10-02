@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import importlib.util
 import json
 import logging
 import math
@@ -16,6 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 
+import httpx
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -98,6 +100,11 @@ from .live_sources import (
 )
 from .recruitment_directory import canonical_employer_identity, employer_directory_category
 from .config import settings
+from .portfolio_datastores import GraphDBAcquisitionStore, MongoDocumentArchive, Neo4jOpportunityGraph
+from .finance_analysis import (
+    acquisition_scenario, lifecycle_scenario, init_finance_schema,
+    list_model_runs, save_model_run,
+)
 from .future_radar.wechat.repository import WechatTitleRepository
 from .future_radar.wechat.service import WechatTitleService
 from .future_radar.wechat.routes import create_wechat_router
@@ -123,11 +130,13 @@ from .product_domains import (
     init_leap_schema,
     init_pulse_schema,
 )
+from .storage import connect_postgres
 from .product_domains.interpretation import classify_provider_failure
 from .product_domains.interpretation_providers import (
     CallbackInterpretationProvider,
     FreeInterpretationProvider,
     GeminiInterpretationProvider,
+    OllamaInterpretationProvider,
     OpenRouterInterpretationProvider,
 )
 from .future_radar.adapters import _public_reference_url, _redact_public_text
@@ -203,6 +212,13 @@ future_radar_service = FutureRadarService(
     web_search_enabled=settings.recruitment_web_search_enabled,
     close_confirmations=settings.future_radar_close_confirmations,
     max_workers=settings.future_radar_max_workers,
+)
+mongo_document_archive = MongoDocumentArchive(settings.mongodb_uri, settings.mongodb_database)
+neo4j_opportunity_graph = Neo4jOpportunityGraph(
+    settings.neo4j_uri, settings.neo4j_username, settings.neo4j_password, settings.neo4j_database,
+)
+graphdb_acquisition_store = GraphDBAcquisitionStore(
+    settings.graphdb_url, settings.graphdb_repository, settings.graphdb_username, settings.graphdb_password,
 )
 chatgpt_monitor_ingestion_service = ChatGPTMonitorIngestionService(
     radar=future_radar_service,
@@ -611,6 +627,7 @@ async def source_backfill_recovery_loop() -> None:
 async def lifespan(_: FastAPI):
     startup_rss = log_memory_checkpoint(logger, "app_startup", "before")
     database.init_db()
+    init_finance_schema(database.connect)
     init_leap_schema(database.connect)
     init_pulse_schema(database.connect)
     future_radar_service.seed_registry()
@@ -912,6 +929,49 @@ def current_user(
 User = Annotated[dict, Depends(current_user)]
 
 
+@app.get("/api/integrations/status")
+def portfolio_integration_status(_: User) -> dict:
+    return {"mongodb": mongo_document_archive.status(), "neo4j": neo4j_opportunity_graph.status(),
+            "graphdb": graphdb_acquisition_store.status(),
+            "postgresql": {"configured": settings.database_backend == "postgres",
+                           "status": "primary" if settings.database_backend == "postgres" else "not_primary",
+                           "vector_index_configured": bool(settings.leap_vector_database_url or settings.database_backend == "postgres"),
+                           "vector_index_role": "跃迁域材料分块语义近邻检索"},
+            "duckdb": {"configured": importlib.util.find_spec("duckdb") is not None,
+                       "status": "ready" if importlib.util.find_spec("duckdb") else "package_missing",
+                       "role": "脉冲域用户/日期范围 OLAP"},
+            "pytorch": {"configured": importlib.util.find_spec("torch") is not None,
+                        "status": "ready" if importlib.util.find_spec("torch") else "optional_not_installed",
+                        "role": "长历史月收入预测候选；本机 CPU"}}
+
+
+@app.post("/api/finance/models/lifecycle")
+def run_lifecycle_model(payload: dict, user: User) -> dict:
+    try:
+        result = lifecycle_scenario(payload)
+        result["saved_run"] = save_model_run(database.connect, user["id"], "lifecycle", payload, result)
+        return result
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/finance/models/acquisition")
+def run_acquisition_model(payload: dict, user: User) -> dict:
+    try:
+        result = acquisition_scenario(payload)
+        saved_run = save_model_run(database.connect, user["id"], "acquisition", payload, result)
+        result["saved_run"] = saved_run
+        result["graphdb"] = graphdb_acquisition_store.store_acquisition_run(saved_run["id"], user["id"], result)
+        return result
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/finance/models/history")
+def finance_model_history(user: User, limit: int = Query(default=20, ge=1, le=100)) -> dict:
+    return {"items": list_model_runs(database.connect, user["id"], limit)}
+
+
 def public_user(user: dict) -> dict:
     privacy_accepted = bool(user.get("privacy_accepted_at")) and (
         user.get("privacy_version") == PRIVACY_VERSION
@@ -1195,7 +1255,108 @@ def _run_leap_interpretation(user_id: int, system_prompt: str, prompt: str,
     return {"text": reply, "usage": usage, "model": settings.ai_model}
 
 
+def _run_leap_ollama_embeddings(user_id: int, texts: list[str]) -> list[list[float]]:
+    """Embed private Leap text through the local Ollama service, never a cloud API."""
+    del user_id
+    if not texts:
+        return []
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(180.0, connect=5.0), trust_env=False,
+        ) as client:
+            response = client.post(
+                f"{settings.leap_ollama_base_url}/api/embed",
+                json={"model": settings.leap_ollama_embedding_model, "input": texts, "truncate": True},
+            )
+        response.raise_for_status()
+        body = response.json()
+        embeddings = body.get("embeddings")
+        if not isinstance(embeddings, list) or len(embeddings) != len(texts):
+            raise ValueError("Incomplete local embedding response")
+        vectors = [[float(value) for value in vector] for vector in embeddings]
+        if (not vectors or not vectors[0]
+                or any(len(vector) != len(vectors[0]) for vector in vectors)
+                or any(not math.isfinite(value) for vector in vectors for value in vector)):
+            raise ValueError("Invalid local embedding dimensions")
+        return vectors
+    except Exception as exc:
+        logger.warning("Leap local embedding failure type=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail={
+            "code": "LOCAL_EMBEDDING_UNAVAILABLE",
+            "message": "本地语义嵌入服务暂不可用；请确认 Ollama 已运行并已下载指定模型。",
+        }) from exc
+
+
+def _run_leap_ollama_generation(user_id: int, system_prompt: str, prompt: str,
+                                max_output_tokens: int) -> dict:
+    """Generate a bounded, evidence-grounded answer entirely on this machine."""
+    del user_id
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(240.0, connect=5.0), trust_env=False,
+        ) as client:
+            response = client.post(
+                f"{settings.leap_ollama_base_url}/api/chat",
+                json={
+                    "model": settings.leap_ollama_chat_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                    "think": False,
+                    "options": {"num_predict": max(128, min(int(max_output_tokens), 900))},
+                    "keep_alive": "5m",
+                },
+            )
+        response.raise_for_status()
+        body = response.json()
+        message = body.get("message") or {}
+        answer = str(message.get("content") or "").strip()
+        if not answer:
+            raise ValueError("Empty local generation response")
+        return {
+            "text": answer,
+            "model": settings.leap_ollama_chat_model,
+            "usage": {
+                "input_tokens": int(body.get("prompt_eval_count") or 0),
+                "output_tokens": int(body.get("eval_count") or 0),
+                "total_tokens": int(body.get("prompt_eval_count") or 0) + int(body.get("eval_count") or 0),
+                "billing": "local_no_api_charge",
+            },
+        }
+    except Exception as exc:
+        logger.warning("Leap local generation failure type=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail={
+            "code": "LOCAL_GENERATION_UNAVAILABLE",
+            "message": "本地回答模型暂不可用；请确认 Ollama 已运行并已下载指定模型。",
+        }) from exc
+
+
+def _run_leap_embeddings(user_id: int, texts: list[str]) -> list[list[float]]:
+    """Create bounded semantic batches after the consented user requests RAG."""
+    vectors: list[list[float]] = []
+    try:
+        for offset in range(0, len(texts), 64):
+            batch = texts[offset:offset + 64]
+            enforce_model_request_rate(user_id, 1)
+            vectors.extend(create_embeddings(batch))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Leap embedding provider failure type=%s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail={
+            "code": "EMBEDDING_PROVIDER_ERROR",
+            "message": "语义检索暂时不可用，请稍后重试；原文和本地检索仍然保留。",
+        }) from exc
+    return vectors
+
+
 interpretation_providers = {
+    "ollama": OllamaInterpretationProvider(
+        _run_leap_ollama_generation if settings.leap_model_provider == "ollama" else None,
+        settings.leap_ollama_chat_model,
+    ),
     "openrouter": OpenRouterInterpretationProvider(
         settings.openrouter_api_key,
         settings.openrouter_model,
@@ -1222,8 +1383,28 @@ app.include_router(create_leap_router(
     database.connect,
     current_user,
     consented_user=require_privacy_consent,
+    knowledge_runner=(
+        _run_leap_ollama_generation if settings.leap_model_provider == "ollama"
+        else _run_leap_interpretation if settings.openai_api_key else None
+    ),
+    knowledge_embedder=(
+        _run_leap_ollama_embeddings if settings.leap_model_provider == "ollama"
+        else _run_leap_embeddings if settings.openai_api_key else None
+    ),
+    knowledge_embedding_model=(
+        f"ollama:{settings.leap_ollama_embedding_model}"
+        if settings.leap_model_provider == "ollama" else settings.embedding_model
+    ),
     interpretation_providers=interpretation_providers,
     default_interpretation_provider=settings.ai_interpret_provider,
+    document_archive=mongo_document_archive.archive_leap_edition if settings.mongodb_uri else None,
+    primary_database="PostgreSQL" if settings.database_backend == "postgres" else "SQLite",
+    vector_connect=(
+        lambda: connect_postgres(
+            settings.leap_vector_database_url or settings.database_url,
+            schema="frostfire_leap_vectors", max_size=3,
+        )
+    ) if settings.leap_vector_database_url or settings.database_backend == "postgres" else None,
 ))
 app.include_router(create_pulse_router(database.connect, current_user))
 
@@ -1597,6 +1778,128 @@ def _reject_secret_like_config(value: object, *, path: str = "config") -> None:
 def future_radar_dashboard(user: User) -> dict:
     del user
     return _public_radar_dashboard(future_radar_service.repository.dashboard())
+
+
+@app.get("/api/future-radar/pipeline-summary")
+def future_radar_pipeline_summary(user: User) -> dict:
+    """Expose the end-to-end monitoring chain without changing stored jobs."""
+    from .future_radar import personal
+
+    dashboard = _public_radar_dashboard(future_radar_service.repository.dashboard())
+    profile = database.get_recruitment_profile(user["id"])
+    application_states = personal.application_states(database.connect, user["id"])
+    opportunities = future_radar_service.repository.list_opportunities(
+        application_states=application_states,
+        page=1,
+        page_size=10,
+        filters={
+            "status": "active", "sort": "closing", "active_only": True,
+            "priority_only": True, "view": "jobs",
+        },
+        public_url=_public_reference_url,
+        prepare=lambda job: _public_radar_opportunity(job, profile),
+        input_sanitizer=_public_search_update,
+        company_aliases=_radar_company_aliases(),
+        cache_scope=_radar_scoring_scope(user["id"], profile),
+    )
+    pending_events, through_event_id = personal.pending_events(database.connect, user["id"])
+    counts = dashboard["counts"]
+    return {
+        "stages": [
+            {"id": "ingest", "label": "数据接入", "count": dashboard["sources"]["enabled"], "status": "ready" if dashboard["sources"]["enabled"] else "needs_source"},
+            {"id": "extract", "label": "结构化抽取", "count": counts["total_jobs"], "status": "ready"},
+            {"id": "validate", "label": "规则校验", "count": counts["verified"], "pending": counts["pending"] + counts["conflicted"], "status": "ready"},
+            {"id": "prioritize", "label": "优先级评估", "count": opportunities.get("total", 0), "status": "ready"},
+            {"id": "deliver", "label": "结果推送", "count": len(pending_events), "status": "ready"},
+        ],
+        "closing_soon": counts["closing_soon"],
+        "priority_items": opportunities.get("items", []),
+        "deadline_items": opportunities.get("deadline_opportunities", []),
+        "pending_notification_count": len(pending_events),
+        "through_event_id": through_event_id,
+        "last_successful_scan": dashboard.get("last_successful_scan"),
+        "run_in_progress": dashboard.get("run_in_progress", False),
+    }
+
+
+@app.get("/api/future-radar/timeseries")
+def future_radar_timeseries(user: User, days: int = Query(default=90, ge=7, le=365)) -> dict:
+    """Trend public scan throughput and verified opportunity changes."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    with database.connect() as connection:
+        run_rows = connection.execute("""SELECT substr(started_at,1,10) AS day,
+            COUNT(*) AS runs, SUM(sources_succeeded) AS sources_succeeded,
+            SUM(new_jobs) AS new_jobs, SUM(updated_jobs) AS updated_jobs,
+            SUM(closed_jobs) AS closed_jobs FROM radar_runs
+            WHERE started_at>=? AND status IN ('success','partial_success')
+            GROUP BY substr(started_at,1,10) ORDER BY day""", (cutoff,)).fetchall()
+        event_rows = connection.execute("""SELECT substr(detected_at,1,10) AS day,event_type,COUNT(*) AS count
+            FROM radar_events WHERE detected_at>=? GROUP BY substr(detected_at,1,10),event_type ORDER BY day""",
+                                        (cutoff,)).fetchall()
+    by_day: dict[str, dict[str, int]] = {}
+    for row in run_rows:
+        by_day[str(row["day"])] = {"runs": int(row["runs"] or 0),
+                                   "sources_succeeded": int(row["sources_succeeded"] or 0),
+                                   "new_jobs": int(row["new_jobs"] or 0),
+                                   "updated_jobs": int(row["updated_jobs"] or 0),
+                                   "closed_jobs": int(row["closed_jobs"] or 0),
+                                   "new_events": 0, "updated_events": 0, "closed_events": 0}
+    for row in event_rows:
+        item = by_day.setdefault(str(row["day"]), {"runs": 0, "sources_succeeded": 0,
+            "new_jobs": 0, "updated_jobs": 0, "closed_jobs": 0,
+            "new_events": 0, "updated_events": 0, "closed_events": 0})
+        event = str(row["event_type"] or "").casefold()
+        key = "closed_events" if "closed" in event else "updated_events" if "update" in event else "new_events" if "new" in event else None
+        if key:
+            item[key] += int(row["count"] or 0)
+    history_database = "PostgreSQL" if settings.database_backend == "postgres" else "SQLite"
+    return {"days": days, "from": cutoff, "method": f"{history_database} OLTP run/event history aggregated into daily analytical series",
+            "points": [{"day": day, **by_day[day]} for day in sorted(by_day)],
+            "privacy": "Only aggregate counts from public-source monitoring runs and events are returned; no personal application state."}
+
+
+@app.get("/api/future-radar/graph")
+def future_radar_relationship_graph(user: User) -> dict:
+    """Sync a bounded set of visible job entities and return graph evidence."""
+    if not settings.neo4j_uri:
+        return {"status": "not_configured", "nodes": [], "relationships": [],
+                "message": "请配置 Neo4j；PostgreSQL 岗位池不受影响。"}
+    from .future_radar import personal
+
+    profile = database.get_recruitment_profile(user["id"])
+    result = future_radar_service.repository.list_opportunities(
+        application_states=personal.application_states(database.connect, user["id"]),
+        page=1, page_size=200,
+        filters={"status": "active", "sort": "company", "active_only": True, "view": "jobs"},
+        public_url=_public_reference_url,
+        prepare=lambda job: _public_radar_opportunity(job, profile),
+        input_sanitizer=_public_search_update,
+        company_aliases=_radar_company_aliases(),
+        cache_scope=_radar_scoring_scope(user["id"], profile),
+    )
+    graph = neo4j_opportunity_graph.sync_opportunities(result.get("items", []))
+    if graph.get("status") != "synced":
+        return graph
+    nodes: dict[str, dict[str, str]] = {}
+    edges = []
+    for item in graph.get("items", []):
+        employer = str(item.get("employer") or "").strip()
+        job_id = str(item.get("id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        company_id, opportunity_id = f"employer:{employer.casefold()}", f"opportunity:{job_id}"
+        if employer:
+            nodes[company_id] = {"id": company_id, "label": employer, "kind": "employer"}
+        if job_id:
+            nodes[opportunity_id] = {"id": opportunity_id, "label": title, "kind": "opportunity"}
+            if employer: edges.append({"source": company_id, "target": opportunity_id, "kind": "POSTS"})
+        for skill in item.get("skills") or []:
+            skill_id = f"skill:{str(skill).casefold()}"
+            nodes[skill_id] = {"id": skill_id, "label": str(skill), "kind": "skill"}
+            edges.append({"source": opportunity_id, "target": skill_id, "kind": "REQUIRES"})
+    graph.update({"nodes": list(nodes.values()), "relationships": edges,
+                  "postgres_opportunities_considered": len(result.get("items", [])),
+                  "privacy": "Only public employer, role, location and skill attributes are copied; personal application states are not stored."})
+    return graph
 
 
 @app.get("/api/future-radar/search-updates")

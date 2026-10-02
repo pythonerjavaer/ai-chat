@@ -123,7 +123,7 @@ def _tokens(sql: str) -> list[_Token]:
             i += len(match.group(0))
             continue
         operator = next(
-            (op for op in ("->>", "#>>", "<=", ">=", "<>", "!=", "||", "::", "->", "#>")
+            (op for op in ("<=>", "->>", "#>>", "<=", ">=", "<>", "!=", "||", "::", "->", "#>")
              if sql.startswith(op, i)),
             char,
         )

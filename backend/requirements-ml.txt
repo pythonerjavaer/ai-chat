@@ -1,0 +1,4 @@
+-r requirements.txt
+# Optional: enables the CPU-only LSTM candidate for long monthly revenue histories.
+# It is not required for the core application or for short-history forecasts.
+torch>=2.14,<3

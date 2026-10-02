@@ -82,13 +82,13 @@ class CallbackInterpretationProvider:
     ) -> InterpretationProviderResult:
         if self.runner is None:
             raise InterpretationProviderError(
-                "AI_NOT_CONFIGURED", 503, "冰焰现有OpenAI服务尚未配置。",
+                "AI_NOT_CONFIGURED", 503, f"{self.label}尚未配置。",
             )
         result = self.runner(user_id, system_prompt, prompt, max_output_tokens)
         text = str(result.get("text") or "").strip()
         if not text:
             raise InterpretationProviderError(
-                "INTERPRETATION_PARSE_ERROR", 502, "OpenAI没有返回可用的内容解读结果。",
+                "INTERPRETATION_PARSE_ERROR", 502, f"{self.label}没有返回可用的内容解读结果。",
             )
         usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
         return InterpretationProviderResult(
@@ -99,6 +99,15 @@ class CallbackInterpretationProvider:
             requested_at=_now(),
             usage={key: int(usage.get(key, 0) or 0) for key in ("input_tokens", "output_tokens", "total_tokens")},
         )
+
+
+class OllamaInterpretationProvider(CallbackInterpretationProvider):
+    """Local-only interpretation through Frostfire's configured Ollama runner."""
+
+    def __init__(self, runner: Callable[[int, str, str, int], dict[str, Any]] | None, model: str):
+        super().__init__(runner, model, provider_id="ollama")
+        self.label = "本地 Ollama"
+        self.is_free = True
 
 
 class OpenRouterInterpretationProvider:

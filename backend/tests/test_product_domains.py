@@ -28,6 +28,7 @@ from backend.product_domains.leap import (
 from backend.product_domains.public_library import PublicLibraryService, seed_catalog
 from backend.product_domains.translation import AzureTranslatorProvider, TranslationService
 from backend.product_domains.interpretation import InterpretationService, classify_provider_failure
+from backend.product_domains.knowledge import LeapKnowledgeService, build_chunks
 from backend.product_domains.interpretation_providers import (
     InterpretationProviderResult,
     InterpretationProviderError,
@@ -49,6 +50,8 @@ from backend.product_domains.pulse import (
     OrderStatusWrite,
     PulseDemoAction,
 )
+from backend.product_domains.pulse_analytics import (aggregate_order_context, deposit_coverage_scenarios,
+    compare_revenue_models, distribution, linear_revenue_forecast, pca_projection, simulated_revenue_demo)
 
 
 @pytest.fixture()
@@ -102,6 +105,96 @@ def test_leap_evidence_wormhole_clash_progress_and_isolation(product_store):
     with pytest.raises(KeyError):
         repo.get_material(2, left["id"])
     assert repo.list_excerpts(2) == []
+
+
+def test_leap_knowledge_hybrid_search_preserves_hierarchy_and_isolation(product_store):
+    repo = LeapRepository(product_store)
+    first = repo.create_material(1, MaterialCreate(
+        title="固定收益笔记",
+        text="# 债券基础\n\n债券价格与市场利率通常反向变动。\n\n## 久期\n\n久期衡量债券价格对利率变化的敏感度。",
+    ))
+    repo.create_material(2, MaterialCreate(title="私人材料", text="久期只属于第二位用户。"))
+    service = LeapKnowledgeService(product_store)
+    indexed = service.index_material(1, first["id"])
+    results = service.search(1, "久期和利率风险", limit=3)
+
+    assert indexed["chunk_count"] >= 2
+    assert results[0]["material_id"] == first["id"]
+    assert "久期" in results[0]["content"]
+    assert results[0]["heading_path"] == ["债券基础", "久期"]
+    assert all(item["material_title"] != "私人材料" for item in results)
+
+
+def test_leap_pgvector_outage_falls_back_to_sqlite_without_losing_evidence(product_store):
+    material = LeapRepository(product_store).create_material(1, MaterialCreate(
+        title="回退检索", text="# 业务连续性\n\nPostgreSQL 不可用时，SQLite 仍能提供带原文定位的检索证据。",
+    ))
+
+    def unavailable_vector_store():
+        raise RuntimeError("integration unavailable")
+
+    service = LeapKnowledgeService(product_store, vector_connect=unavailable_vector_store)
+    indexed = service.index_material(1, material["id"])
+    results = service.search(1, "SQLite PostgreSQL 原文检索")
+
+    assert indexed["vector_store"]["status"] == "unavailable"
+    assert results and results[0]["material_id"] == material["id"]
+    assert results[0]["heading_path"] == ["业务连续性"]
+
+
+def test_leap_knowledge_answers_with_citations_and_extractively_degrades(product_store):
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(
+        title="信用风险", text="信用利差补偿投资者承担发行人违约和流动性风险。",
+    ))
+    service = LeapKnowledgeService(product_store)
+    service.index_material(1, material["id"])
+    result = service.answer(1, "信用利差补偿什么风险？")
+
+    assert result["mode"] == "extractive_rag"
+    assert "信用利差" in result["answer"]
+    assert result["citations"][0]["material_id"] == material["id"]
+
+
+def test_leap_knowledge_uses_configured_embedding_and_generation_providers(product_store):
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(
+        title="生命周期与久期", text="# 利率风险\n\n久期衡量债券价格对利率变化的敏感度。",
+    ))
+    embedding_calls = []
+    generation_calls = []
+
+    def embedder(user_id, texts):
+        embedding_calls.append((user_id, tuple(texts)))
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    def generator(user_id, system, prompt, max_tokens):
+        generation_calls.append((user_id, system, prompt, max_tokens))
+        return {"text": "久期衡量债券价格对利率变化的敏感度。[1]", "usage": {"total_tokens": 9}}
+
+    service = LeapKnowledgeService(
+        product_store, generator=generator, embedder=embedder,
+        embedding_model="test-semantic-provider",
+    )
+    result = service.answer(1, "久期衡量什么？", generate=True)
+
+    assert result["mode"] == "llm_rag"
+    assert result["usage"]["total_tokens"] == 9
+    assert result["citations"][0]["material_id"] == material["id"]
+    assert len(embedding_calls) == 2  # indexed chunk plus query vector
+    assert len(generation_calls) == 1
+    assert "只能依据提供的证据" in generation_calls[0][1]
+    assert "久期衡量什么？" in generation_calls[0][2]
+
+
+def test_leap_long_paragraph_chunking_is_bounded():
+    chunks = build_chunks([{
+        "position": 0, "content": "风险管理。" * 500,
+        "chapter_title": "长段落", "stable_anchor": "chapter-1-p1",
+    }])
+    assert len(chunks) > 1
+    assert all(len(item["content"]) <= 900 for item in chunks)
+    assert all(item["heading_path"] == ["长段落"] for item in chunks)
 
 
 def _sample_epub() -> bytes:
@@ -354,7 +447,9 @@ def test_azure_provider_dictionary_context_quota_and_no_key_fallback(product_sto
     assert len(client.calls) == 2
     assert all(call[1]["headers"]["Ocp-Apim-Subscription-Key"] == "secret" for call in client.calls)
     unconfigured = TranslationService(product_store, azure=AzureTranslatorProvider())
-    assert unconfigured.providers()["providers"][1]["configured"] is False
+    azure_provider = next(item for item in unconfigured.providers()["providers"]
+                          if item["id"] == "azure_translator")
+    assert azure_provider["configured"] is False
     with pytest.raises(ValueError, match="尚未配置"):
         unconfigured.translate_azure(1, {**payload, "force": True})
 
@@ -379,7 +474,9 @@ def test_translation_api_works_without_azure_credentials(product_store, monkeypa
     client = TestClient(app)
     providers = client.get("/api/leap/translation/providers")
     assert providers.status_code == 200
-    assert providers.json()["providers"][1]["configured"] is False
+    azure_provider = next(item for item in providers.json()["providers"]
+                          if item["id"] == "azure_translator")
+    assert azure_provider["configured"] is False
     saved = client.put("/api/leap/translation/cache", json=_translation_payload(material, paragraph))
     assert saved.status_code == 200
     assert saved.json()["provider"] == "browser_local"
@@ -764,6 +861,13 @@ def test_pulse_demo_full_transaction_updates_balanced_finance(product_store):
     repo = PulseRepository(product_store)
     demo = repo.reset_demo(1)
     assert demo["trial_balance"]["balanced"] is True
+    eda = demo["analytics"]["eda"]
+    assert eda["distributions"]["order_value_cents"]["count"] >= 20
+    assert eda["distributions"]["order_value_cents"]["median"] > 0
+    assert eda["distributions"]["order_value_cents"]["mean"] > 0
+    assert len(eda["monthly_trends"]) >= 5
+    assert eda["pca"]["status"] == "ok"
+    assert len(eda["pca"]["points"]) == len(demo["analytics"]["customers"])
     assert demo["statements"]["balance_sheet"]["balanced"] is True
     assert demo["analytics"]["customer_summary"]["cohorts"]
     assert demo["analytics"]["customer_summary"]["channel_revenue"]
@@ -791,6 +895,141 @@ def test_pulse_demo_full_transaction_updates_balanced_finance(product_store):
     assert demo["trial_balance"]["balanced"] is True
     assert demo["statements"]["balance_sheet"]["balanced"] is True
     assert repo.demo_asset(1, available["id"])["lifetime_revenue"] >= 55_000
+
+
+def test_pulse_olap_accepts_empty_and_unpaid_business_history():
+    from backend.product_domains.pulse_analytics import duckdb_olap_rollup
+
+    empty = duckdb_olap_rollup([], [])
+    assert empty["monthly_rows"] == []
+    assert empty["order_values"] == []
+    unpaid = duckdb_olap_rollup([], [{"total_cents": 5000}])
+    assert unpaid["monthly_rows"] == []
+    assert unpaid["order_values"] == [5000]
+
+
+def test_pulse_eda_boxplot_and_pca_are_auditable_and_degrade_on_small_sample():
+    stats = distribution([1, 2, 3, 4, 100])
+    assert stats["mean"] == 22
+    assert stats["median"] == 3
+    assert stats["outliers"] == [100]
+    small = pca_projection([{"id": "one", "a": 1, "b": 2}], ["a", "b"])
+    assert small["status"] == "insufficient_data"
+    constant = pca_projection([{"id": str(index), "a": 1, "b": 2} for index in range(4)], ["a", "b"])
+    assert constant["status"] == "no_feature_variation"
+    assert constant["points"] == []
+    clustered = pca_projection([
+        {"id": str(index), "orders": index + 1, "spend": (index + 1) ** 2, "days": 30 - index}
+        for index in range(8)
+    ], ["orders", "spend", "days"])
+    assert clustered["status"] == "ok"
+    assert "KMeans" in clustered["segmentation_method"]
+    assert len({point["cluster"] for point in clustered["points"]}) >= 2
+    forecast = linear_revenue_forecast([
+        {"period": "2026-01", "revenue": 10000},
+        {"period": "2026-02", "revenue": 20000},
+        {"period": "2026-04", "revenue": 40000},
+    ])
+    assert forecast["status"] == "ok"
+    assert forecast["observations"] == 4  # March is an explicit zero-revenue month.
+    assert forecast["points"][0]["period"] == "2026-05"
+    assert forecast["points"][0]["lower_95"] <= forecast["points"][0]["revenue"] <= forecast["points"][0]["upper_95"]
+
+
+def test_revenue_model_demo_is_synthetic_reproducible_and_time_validated():
+    demo = simulated_revenue_demo(months=72, seed=7)
+    assert demo["synthetic"] is True
+    assert len(demo["monthly_rows"]) == 72
+    assert demo["forecast"]["ml_comparison"]["status"] == "ok"
+    assert demo["forecast"]["ml_comparison"]["minimum_months"] == 60
+    assert {item["model"] for item in demo["forecast"]["ml_comparison"]["models"]} >= {
+        "last_value_baseline", "random_forest", "adaboost", "bayesian_ridge",
+    }
+    comparison = demo["forecast"]["ml_comparison"]
+    assert comparison["selection_rule"]
+    assert comparison["selected_model"] in {
+        item["model"] for item in demo["forecast"]["ml_comparison"]["models"]
+    }
+    baseline_mae = next(item["mae"] for item in comparison["models"]
+                        if item["model"] == "last_value_baseline")
+    selected_mae = next(item["mae"] for item in comparison["models"]
+                        if item["model"] == comparison["selected_model"])
+    assert comparison["selected_model"] == "last_value_baseline" or selected_mae <= baseline_mae * 0.95
+    assert "chronological" in demo["forecast"]["ml_comparison"]["validation"]
+    assert demo == simulated_revenue_demo(months=72, seed=7)
+
+
+def test_revenue_ml_models_require_five_years_and_reserve_one_year_for_holdout():
+    short = compare_revenue_models([100_000 + index * 1000 for index in range(59)], datetime(2026, 1, 1))
+    assert short["status"] == "insufficient_history"
+    assert short["minimum_months"] == 60
+    enough = simulated_revenue_demo(months=60, seed=19)["forecast"]["ml_comparison"]
+    assert enough["status"] == "ok"
+    assert all(item["holdout_months"] >= 12 for item in enough["models"])
+
+
+def test_pytorch_lstm_is_gated_on_long_history_and_time_validated():
+    short = compare_revenue_models([100_000 + index * (60_000 / 71) for index in range(72)], datetime(2026, 1, 1))
+    assert short["status"] == "ok"
+    assert short["deep_learning"]["status"] == "insufficient_history"
+    long = simulated_revenue_demo(months=144, seed=11)
+    result = long["forecast"]["ml_comparison"]
+    assert result["deep_learning"]["status"] == "ok"
+    assert result["deep_learning"]["evaluation"]["validation"] == "chronological rolling one-step holdout"
+    assert {"random_forest", "adaboost", "bayesian_ridge", "pytorch_lstm"} <= {
+        item["model"] for item in result["models"]
+    }
+    assert len(result["points"]) == 3
+
+
+def test_deposit_scenarios_compare_coverage_not_incident_probability():
+    result = deposit_coverage_scenarios([5_000, 20_000])
+    fifty, hundred = result["scenarios"]
+    assert result["status"] == "observed_severity_sensitivity"
+    assert fifty["covered_cents"] == 10_000
+    assert hundred["covered_cents"] == 15_000
+    assert hundred["residual_loss_cents"] < fifty["residual_loss_cents"]
+    assert "不改变" in result["interpretation"]
+    synthetic = deposit_coverage_scenarios([])
+    assert synthetic["synthetic"] is True
+
+
+def test_customer_profile_and_order_risk_facts_are_aggregated_with_small_groups_suppressed(product_store):
+    repo = PulseRepository(product_store)
+    now = datetime.now(timezone.utc)
+    sku = repo.create_sku(1, SKUWrite(name="Profile dress", current_price_cents=45_000))
+    order_ids = []
+    for index in range(5):
+        customer = repo.create_customer(1, CustomerWrite(
+            name=f"Customer {index}", profession="Design", education_level="undergraduate",
+            referral_status="yes", moments_visibility="visible_to_me", gender="female", age_band="25_34",
+        ))
+        asset = repo.create_asset(1, AssetWrite(sku_id=sku["id"], asset_code=f"PROFILE-{index}",
+            accounting_class="rental_asset", purchase_cost_cents=250_000))
+        planned_end = now - timedelta(days=2)
+        order = repo.create_order(1, OrderWrite(
+            customer_id=customer["id"], start_at=now - timedelta(days=5), end_at=planned_end,
+            party_size=2, planned_sets=2, discount_pressure="strong", subjective_urgency="high",
+            items=[OrderLineWrite(sku_id=sku["id"], asset_id=asset["id"])],
+        ))
+        order_ids.append(order["id"])
+        repo.record_payment(1, PaymentWrite(order_id=order["id"], payment_type="deposit", amount_cents=5_000))
+        repo.transition_order(1, order["id"], OrderStatusWrite(status="rented"))
+        repo.transition_order(1, order["id"], OrderStatusWrite(status="returned"))
+        repo.create_inspection(1, InspectionWrite(order_id=order["id"], asset_id=asset["id"],
+            condition_status="damaged", resolution_status="confirmed"))
+    data = repo.analytics(1, (now - timedelta(days=30)).date().isoformat(), (now + timedelta(days=1)).date().isoformat())
+    assert data["customer_risk_summary"]["late_return_orders"] == 5
+    assert data["customer_risk_summary"]["damaged_orders"] == 5
+    assert data["customer_risk_summary"]["deposit_paid_orders"] == 5
+    design_group = data["customer_dimensions"]["dimensions"]["profession"]["groups"]
+    assert design_group == [{"category": "Design", "customers": 5, "new_customers": 5,
+        "repeat_customers": 0, "late_return_rate": 1.0, "current_overdue_orders": 0,
+        "damage_rate": 1.0, "missing_rate": 0.0, "return_observation_orders": 5, "inspected_orders": 5}]
+    pressure_groups = data["order_context_profiles"]["dimensions"]["discount_pressure"]["groups"]
+    assert pressure_groups[0]["category"] == "strong"
+    assert pressure_groups[0]["late_return_rate"] == 1.0
+    assert pressure_groups[0]["orders"] == 5
 
 
 def test_real_order_status_drives_assigned_asset(product_store):
@@ -865,3 +1104,59 @@ def test_product_domain_routes_work_with_postgres(persistent_app):
         assert statements.status_code == 200, statements.text
         assert statements.json()["income_statement"]["revenue_total"] == 0
         assert statements.json()["balance_sheet"]["liabilities"]["Customer Deposits"] == 3_000
+
+
+def test_finance_models_persist_across_postgres_restart_and_isolate_accounts(persistent_app):
+    app = persistent_app
+    inputs = {
+        "current_age": 35, "retirement_age": 67, "starting_balance": 50_000,
+        "annual_salary": 90_000, "contribution_rate": .12, "salary_growth": .03,
+        "balanced_return": .06, "balanced_volatility": .10,
+        "lifecycle_return": .05, "lifecycle_volatility": .08, "simulations": 20,
+    }
+    with TestClient(app.main.app) as client:
+        headers, _ = register(client, "finance-pg-owner")
+        other_headers, _ = register(client, "finance-pg-other")
+        for kind, payload in (("lifecycle", inputs), ("acquisition", {
+            "purchase_price": 100, "debt_share": .6, "debt_rate": .1,
+            "tax_rate": .3, "target_ebit": 20,
+        })):
+            response = client.post(f"/api/finance/models/{kind}", headers=headers, json=payload)
+            assert response.status_code == 200, response.text
+            assert response.json()["saved_run"]["model_type"] == kind
+        assert client.get("/api/finance/models/history", headers=other_headers).json()["items"] == []
+    with TestClient(app.main.app) as restarted:
+        history = restarted.get("/api/finance/models/history", headers=headers)
+        assert history.status_code == 200, history.text
+        runs = history.json()["items"]
+        assert {run["model_type"] for run in runs} == {"lifecycle", "acquisition"}
+        assert next(run for run in runs if run["model_type"] == "lifecycle")["inputs"] == inputs
+
+
+def test_real_pgvector_indexes_searches_and_preserves_account_boundaries(persistent_app):
+    """Exercise pgvector SQL, not a mocked successful integration status."""
+    from backend.storage import connect_postgres
+
+    app = persistent_app
+    with TestClient(app.main.app) as client:
+        _, owner = register(client, "vector-pg-owner")
+        _, other = register(client, "vector-pg-other")
+        repo = LeapRepository(app.database.connect)
+        material = repo.create_material(owner["id"], MaterialCreate(
+            title="向量验收材料", text="# 检索测试\n\n久期衡量债券价格的利率敏感度。",
+        ))
+        # Same isolated test schema, with a distinct pool to exercise the
+        # separate vector-store path used by the hosted application.
+        service = LeapKnowledgeService(app.database.connect, vector_connect=lambda: connect_postgres(
+            app.dsn, schema=app.schema, max_size=3,
+        ))
+        indexed = service.index_material(owner["id"], material["id"])
+        assert indexed["vector_store"]["status"] == "ready", indexed
+        assert indexed["vector_store"]["indexed_chunks"] == 1
+        hits = service.search(owner["id"], "久期利率敏感度")
+        assert hits and hits[0]["material_id"] == material["id"]
+        assert service.search(other["id"], "久期利率敏感度") == []
+        assert service.vector_store_status(other["id"])["indexed_chunks"] == 0
+        with app.database.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM leap_vector_chunks").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM leap_materials").fetchone()[0] == 1

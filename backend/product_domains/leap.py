@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import uuid
+from io import BytesIO
 from datetime import datetime, timezone
 from typing import Annotated, Any, Callable, Literal
 
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from .public_library import PublicLibraryService, init_public_library_schema
 from .interpretation import InterpretationService, init_interpretation_schema
 from .interpretation_providers import InterpretationProvider, InterpretationProviderError
+from .knowledge import LeapKnowledgeService, init_knowledge_schema
 from .translation import TranslationService, init_translation_schema
 
 
@@ -46,6 +48,36 @@ def _paragraphs(text: str) -> list[str]:
     if len(result) > MAX_PARAGRAPHS:
         raise ValueError(f"材料最多支持 {MAX_PARAGRAPHS} 个段落。")
     return result
+
+
+def _extract_material_text(filename: str, raw: bytes) -> str:
+    """Extract supported uploads without changing the existing material model."""
+    suffix = filename.lower().rsplit(".", 1)[-1]
+    if suffix == "pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(raw))
+        if reader.is_encrypted:
+            raise ValueError("暂不支持加密 PDF。")
+        text = "\n\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
+    elif suffix == "docx":
+        from docx import Document
+
+        document = Document(BytesIO(raw))
+        blocks = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        for table in document.tables:
+            blocks.extend("\t".join(cell.text.strip() for cell in row.cells) for row in table.rows)
+        text = "\n\n".join(item for item in blocks if item.strip())
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("文本文件必须使用 UTF-8 编码。") from exc
+    if not text.strip():
+        raise ValueError("文件中没有可读取的文本；扫描版 PDF 需要先进行 OCR。")
+    if len(text.encode("utf-8")) > MAX_MATERIAL_BYTES:
+        raise ValueError("解析后的材料不能超过 2 MB。")
+    return text
 
 
 def init_leap_schema(connect: Callable[[], Any]) -> None:
@@ -185,6 +217,7 @@ def init_leap_schema(connect: Callable[[], Any]) -> None:
     init_public_library_schema(connect)
     init_translation_schema(connect)
     init_interpretation_schema(connect)
+    init_knowledge_schema(connect)
 
 
 class MaterialCreate(BaseModel):
@@ -266,7 +299,7 @@ class TranslationWrite(BaseModel):
     segment_id: str = Field(default="", max_length=300)
     source_language: str = Field(default="en", max_length=20)
     target_language: str = Field(default="zh-Hans", max_length=20)
-    provider: Literal["browser_local", "azure_translator"]
+    provider: Literal["browser_local", "azure_translator", "ollama_local"]
     provider_model: str = Field(min_length=1, max_length=120)
     translation_mode: Literal["word", "sentence", "paragraph", "selection", "chapter_window"]
     source_text: str = Field(min_length=1, max_length=20_000)
@@ -289,7 +322,7 @@ class InterpretationWrite(BaseModel):
     # Keep these values aligned with the provider capability IDs exposed to the
     # reader UI.  In particular, Gemini used to be rendered in the selector
     # but rejected here by Pydantic before the provider was ever reached.
-    provider: Literal["auto", "openrouter", "gemini", "openai"] | None = None
+    provider: Literal["auto", "openrouter", "gemini", "openai", "ollama"] | None = None
     scope: Literal["word", "sentence", "paragraph", "chapter", "selection"]
     document_id: str
     # Optional for backward compatibility with already-open reader tabs; new
@@ -305,6 +338,15 @@ class InterpretationWrite(BaseModel):
     coverage_complete: bool = True
     coverage_label: str = Field(default="", max_length=240)
     force: bool = False
+
+
+class KnowledgeAsk(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    question: str = Field(min_length=1, max_length=1_000)
+    material_ids: list[str] = Field(default_factory=list, max_length=50)
+    limit: int = Field(default=6, ge=1, le=8)
+    target_language: str = Field(default="zh-CN", min_length=2, max_length=20)
+    generate: bool = True
 
 
 def _leap_demo_seed() -> dict[str, Any]:
@@ -852,13 +894,21 @@ def create_leap_router(
     interpretation_runner: Callable[[int, str, str, int], dict[str, Any]] | None = None,
     interpretation_model: str = "unconfigured",
     consented_user: Callable[..., dict] | None = None,
+    knowledge_runner: Callable[[int, str, str, int], dict[str, Any]] | None = None,
+    knowledge_embedder: Callable[[int, list[str]], list[list[float]]] | None = None,
+    knowledge_embedding_model: str = "local-hashing-v1",
     *,
     interpretation_providers: dict[str, InterpretationProvider] | None = None,
     default_interpretation_provider: str | None = None,
+    document_archive: Callable[[int, dict[str, Any], list[dict[str, Any]]], dict[str, Any]] | None = None,
+    vector_connect: Callable[[], Any] | None = None,
+    primary_database: str = "SQLite",
 ) -> APIRouter:
     router, repo = APIRouter(prefix="/api/leap", tags=["跃迁域"]), LeapRepository(connect)
     library = PublicLibraryService(connect)
     translations = TranslationService(connect)
+    knowledge = LeapKnowledgeService(connect, knowledge_runner, knowledge_embedder, knowledge_embedding_model,
+                                     document_archive=document_archive, vector_connect=vector_connect)
     interpretations = InterpretationService(
         connect, interpretation_runner, provider_model=interpretation_model,
         providers=interpretation_providers,
@@ -877,10 +927,10 @@ def create_leap_router(
 
     @router.get("/capabilities")
     def capabilities(_: User):
-        return {"model_calls": interpretations.capabilities()["available"], "embeddings": False,
-                "supported_imports": ["text", "txt", "md", "reviewed-public-domain-epub"],
+        return {"model_calls": interpretations.capabilities()["available"], "embeddings": True,
+                "supported_imports": ["text", "txt", "md", "pdf", "docx", "reviewed-public-domain-epub"],
                 "max_bytes": MAX_MATERIAL_BYTES,
-                "features": {"公共领域书库": "已实现", "按需英中翻译": "本地可用；Azure可选", "内容解读": "按需使用冰焰AI；未配置时明确停用", "思想虫洞": "已实现", "思想宇宙": "实验性", "思想对撞": "已实现",
+                "features": {"知识库混合检索": "本地检索可用；已配置模型并同意隐私政策后使用语义嵌入，PostgreSQL 可选 pgvector 加速", "带引用问答": "本地抽取式可用；已配置AI时可生成", "公共领域书库": "已实现", "按需英中翻译": "本地可用；Azure可选", "内容解读": "按需使用冰焰AI；未配置时明确停用", "思想虫洞": "已实现", "思想宇宙": "实验性", "思想对撞": "已实现",
                              "认知时间轴": "规划中", "时空透镜": "规划中", "反事实阅读": "规划中",
                              "跨时空思想会谈": "规划中", "记忆桥": "规划中", "跨域迁移": "规划中",
                              "个人认知光谱": "规划中", "认知暗物质": "规划中", "思想引力": "规划中"}}
@@ -915,6 +965,35 @@ def create_leap_router(
     @router.get("/search")
     def search(user: User, q: str = Query(min_length=1, max_length=120), limit: int = Query(40, ge=1, le=60)):
         return repo.search_all(user["id"], q, limit)
+
+    @router.get("/knowledge/search")
+    def knowledge_search(
+        user: InterpretationUser,
+        q: str = Query(min_length=1, max_length=1_000),
+        limit: int = Query(6, ge=1, le=20),
+        material_id: list[str] = Query(default=[]),
+    ):
+        return {"items": knowledge.search(user["id"], q, limit=limit, material_ids=material_id or None, semantic=True)}
+
+    @router.get("/knowledge/storage")
+    def knowledge_storage(user: User):
+        return {"primary": f"{primary_database} business store",
+                "vector_store": knowledge.vector_store_status(user["id"]),
+                "vector_use": "PostgreSQL/pgvector for Leap nearest-neighbor retrieval" if vector_connect else "SQLite portable retrieval fallback",
+                "document_archive": "MongoDB archive after explicit indexing" if knowledge.document_archive else "MongoDB not configured",
+                "archive_configured": bool(knowledge.document_archive)}
+
+    @router.post("/knowledge/ask")
+    def knowledge_ask(payload: KnowledgeAsk, user: InterpretationUser):
+        return safe(lambda: knowledge.answer(
+            user["id"], payload.question, limit=payload.limit,
+            material_ids=payload.material_ids or None,
+            target_language=payload.target_language, generate=payload.generate,
+        ))
+
+    @router.post("/knowledge/reindex")
+    def knowledge_reindex(user: InterpretationUser, force: bool = False):
+        return safe(lambda: knowledge.sync_user(user["id"], force=force, semantic=True))
 
     @router.get("/timeline")
     def timeline(user: User): return repo.timeline(user["id"])
@@ -974,10 +1053,14 @@ def create_leap_router(
 
     @router.post("/translation/translate")
     def translate(payload: TranslationWrite, user: User):
+        if payload.provider == "ollama_local":
+            return safe(lambda: translations.translate_ollama(user["id"], payload.model_dump()))
         return safe(lambda: translations.translate_azure(user["id"], payload.model_dump()))
 
     @router.post("/translation/lookup")
     def translate_word(payload: TranslationWrite, user: User):
+        if payload.provider == "ollama_local":
+            return safe(lambda: translations.translate_ollama(user["id"], payload.model_dump(), lookup=True))
         return safe(lambda: translations.translate_azure(user["id"], payload.model_dump(), lookup=True))
 
     @router.get("/translation/stats")
@@ -990,24 +1073,32 @@ def create_leap_router(
 
     @router.post("/materials", status_code=status.HTTP_201_CREATED)
     def create_material(payload: MaterialCreate, user: User):
-        return safe(lambda: repo.create_material(user["id"], payload))
+        def create_and_index():
+            material = repo.create_material(user["id"], payload)
+            knowledge.index_material(user["id"], material["id"])
+            return material
+        return safe(create_and_index)
 
     @router.post("/materials/import", status_code=status.HTTP_201_CREATED)
     async def import_material(user: User, file: UploadFile = File(...), title: str | None = None,
                               author: str = "", source: str = "", tags: str = ""):
         suffix = (file.filename or "").lower().rsplit(".", 1)[-1]
-        if suffix not in {"txt", "md"}:
-            raise HTTPException(415, detail="跃迁域首版只支持 TXT 和 Markdown 文件。")
+        if suffix not in {"txt", "md", "pdf", "docx"}:
+            raise HTTPException(415, detail="跃迁域支持 TXT、Markdown、PDF 和 DOCX 文件。")
         data = await file.read(MAX_MATERIAL_BYTES + 1)
         if len(data) > MAX_MATERIAL_BYTES:
             raise HTTPException(413, detail="材料不能超过 2 MB。")
         try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise HTTPException(400, detail="文件必须使用 UTF-8 编码。") from exc
+            text = _extract_material_text(file.filename or "material.txt", data)
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
         payload = MaterialCreate(title=(title or file.filename or "未命名材料"), author=author,
                                  source=source, tags=[x.strip() for x in tags.split(",") if x.strip()], text=text)
-        return safe(lambda: repo.create_material(user["id"], payload))
+        def import_and_index():
+            material = repo.create_material(user["id"], payload)
+            knowledge.index_material(user["id"], material["id"])
+            return material
+        return safe(import_and_index)
 
     @router.get("/materials/{material_id}")
     def material(material_id: str, user: User):

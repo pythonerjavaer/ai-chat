@@ -348,11 +348,10 @@ class RadarRepository:
     def _manual_scan_family(cls, source: dict[str, Any]) -> str | None:
         """Classify runnable sources without consulting scheduler due-times.
 
-        A manual Quick Scan is deliberately deterministic.  Deep Scan owns
-        discovery providers, including publicly configured WeChat articles and
-        OpenAI web discovery.  ``discovery_limited`` placeholders are registry
-        health signals rather than runnable sources and therefore belong to
-        neither family.
+        Quick Scan covers known structured feeds/APIs and retained known-source
+        checks. Deep Scan adds bounded official-page scraping and discovery.
+        ``discovery_limited`` placeholders are registry health signals rather
+        than runnable sources and therefore belong to neither family.
         """
         adapter = cls._adapter_name(source)
         if source.get("id") == "legacy-recruitment-pipeline" and adapter == "legacy_database":
@@ -387,7 +386,17 @@ class RadarRepository:
         for source in self.list_sources(enabled=True):
             if selected and source["id"] not in selected:
                 continue
-            if self._manual_scan_family(source) != normalized_type:
+            adapter = self._adapter_name(source)
+            deep_scrape_adapter = adapter in {
+                "official_html", "ats", "other_public_source", "public_recruitment_index",
+            }
+            eligible = self._manual_scan_family(source) == normalized_type
+            # Preserve the existing deterministic Quick path for registered
+            # URLs while allowing Deep Scan to explicitly re-fetch and parse
+            # those same official pages as its Web-scraping lane.
+            if normalized_type == "deep" and deep_scrape_adapter:
+                eligible = True
+            if not eligible:
                 continue
             result.append(source)
         return result

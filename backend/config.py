@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env.local")
+load_dotenv(BASE_DIR / ".env.integrations")
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,21 @@ class Settings:
     database_url: str = field(default="", repr=False)
     database_schema: str = "frostfire"
     database_pool_size: int = 8
+    leap_model_provider: str = "openai"
+    leap_ollama_base_url: str = "http://127.0.0.1:11434"
+    leap_ollama_chat_model: str = "qwen3:1.7b"
+    leap_ollama_embedding_model: str = "qwen3-embedding:0.6b"
+    leap_vector_database_url: str = field(default="", repr=False)
+    mongodb_uri: str = field(default="", repr=False)
+    mongodb_database: str = "frostfire"
+    neo4j_uri: str = field(default="", repr=False)
+    neo4j_username: str = "neo4j"
+    neo4j_password: str = field(default="", repr=False)
+    neo4j_database: str = "neo4j"
+    graphdb_url: str = field(default="", repr=False)
+    graphdb_repository: str = "frostfire-acquisitions"
+    graphdb_username: str = field(default="", repr=False)
+    graphdb_password: str = field(default="", repr=False)
 
 
 def load_settings() -> Settings:
@@ -77,6 +94,9 @@ def load_settings() -> Settings:
         ("postgresql://", "postgres://")
     ):
         raise RuntimeError("A PostgreSQL DATABASE_URL is required; SQLite fallback is disabled.")
+    leap_model_provider = os.getenv("LEAP_MODEL_PROVIDER", "openai").strip().lower() or "openai"
+    if leap_model_provider not in {"openai", "ollama"}:
+        raise RuntimeError("LEAP_MODEL_PROVIDER must be openai or ollama.")
     if os.getenv("RENDER", "").strip().lower() == "true" and database_backend != "postgres":
         raise RuntimeError(
             "Render requires PostgreSQL persistence. Configure DATABASE_BACKEND and DATABASE_URL."
@@ -106,9 +126,13 @@ def load_settings() -> Settings:
         "RECRUITMENT_WEB_SEARCH_ENABLED",
         "false",
     ).strip().lower() in {"1", "true", "yes", "on"}
-    ai_interpret_provider = os.getenv("AI_INTERPRET_PROVIDER", "auto").strip().lower() or "auto"
-    if ai_interpret_provider not in {"auto", "openrouter", "gemini", "openai"}:
-        raise RuntimeError("AI_INTERPRET_PROVIDER must be auto, openrouter, gemini or openai.")
+    default_interpret_provider = "ollama" if leap_model_provider == "ollama" else "auto"
+    ai_interpret_provider = (
+        os.getenv("AI_INTERPRET_PROVIDER", default_interpret_provider).strip().lower()
+        or default_interpret_provider
+    )
+    if ai_interpret_provider not in {"auto", "openrouter", "gemini", "openai", "ollama"}:
+        raise RuntimeError("AI_INTERPRET_PROVIDER must be auto, openrouter, gemini, openai or ollama.")
 
     return Settings(
         openai_api_key=openai_api_key,
@@ -121,6 +145,29 @@ def load_settings() -> Settings:
         database_backend=database_backend,
         database_url=database_url,
         database_schema=database_schema,
+        leap_model_provider=leap_model_provider,
+        leap_ollama_base_url=(
+            os.getenv("LEAP_OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
+            or "http://127.0.0.1:11434"
+        ),
+        leap_ollama_chat_model=(
+            os.getenv("LEAP_OLLAMA_CHAT_MODEL", "qwen3:1.7b").strip() or "qwen3:1.7b"
+        ),
+        leap_ollama_embedding_model=(
+            os.getenv("LEAP_OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b").strip()
+            or "qwen3-embedding:0.6b"
+        ),
+        leap_vector_database_url=os.getenv("LEAP_VECTOR_DATABASE_URL", "").strip(),
+        mongodb_uri=os.getenv("MONGODB_URI", "").strip(),
+        mongodb_database=os.getenv("MONGODB_DATABASE", "frostfire").strip() or "frostfire",
+        neo4j_uri=os.getenv("NEO4J_URI", "").strip(),
+        neo4j_username=os.getenv("NEO4J_USERNAME", "neo4j").strip() or "neo4j",
+        neo4j_password=os.getenv("NEO4J_PASSWORD", ""),
+        neo4j_database=os.getenv("NEO4J_DATABASE", "neo4j").strip() or "neo4j",
+        graphdb_url=os.getenv("GRAPHDB_URL", "").strip().rstrip("/"),
+        graphdb_repository=os.getenv("GRAPHDB_REPOSITORY", "frostfire-acquisitions").strip() or "frostfire-acquisitions",
+        graphdb_username=os.getenv("GRAPHDB_USERNAME", "").strip(),
+        graphdb_password=os.getenv("GRAPHDB_PASSWORD", ""),
         # A Future Radar run uses a run lease plus source leases while browser
         # reads and login requests still need a slot. Four connections can be
         # exhausted by the default worker fan-out before any user request gets

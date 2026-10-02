@@ -17,6 +17,8 @@ import {
 } from "./product-domains.js";
 
 const source = readFileSync(new URL("./product-domains.js", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+const financeSource = readFileSync(new URL("./finance-tools.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
@@ -286,6 +288,80 @@ test("Pulse supports transaction, asset, finance and analytics drill-down", () =
   for (const marker of ["/pulse/demo/action", "/pulse/orders/", "pulse-order-detail", "pulse-asset-detail", "pulse-journal-detail"]) {
     assert.match(source + html, new RegExp(marker.replaceAll("/", "\\/")));
   }
+});
+
+test("Pulse statements use a full-width responsive layout with functional disclosure details", () => {
+  assert.match(html, /class="pulse-finance-summary"/);
+  assert.match(css, /\.pulse-finance-summary\s*\{[^}]*grid-column:\s*1\/-1/);
+  assert.match(source, /className = "pulse-statement-details"/);
+  assert.match(source, /查看科目构成/);
+  assert.match(css, /\.statement-grid\s*\{[^}]*repeat\(3,minmax\(0,1fr\)\)/);
+  assert.match(css, /\.pulse-statement-row\s*\{[^}]*minmax\(0,1fr\)/);
+  assert.match(css, /\.pulse-statement-row\s*\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(source, /el\(fn \? "button" : "article", "pulse-metric"\)/);
+  assert.match(source, /\["Revenue"[^\n]*openPulsePanel\("finance"\)/);
+  assert.match(source, /\["Repeat Rate"[^\n]*openPulsePanel\("analytics"\)/);
+  assert.match(source, /article\.addEventListener\("click"[\s\S]*?details\.open/);
+});
+
+test("product pages keep small screens readable and contain dense model tables", () => {
+  assert.match(css, /\.recruitment-dialog \.radar-filter-bar label\s*\{[^}]*font-size:10px/);
+  assert.match(css, /\.domain-dialog \.domain-form input[^}]*font-size:13px/);
+  assert.match(css, /\.ember-sensitivity-table\s*\{[^}]*overflow-x:auto/);
+  assert.ok(css.includes(".pulse-statement-row { grid-template-columns:minmax(0,1fr);"));
+});
+
+test("Leap reports its real PostgreSQL/pgvector retrieval status without replacing SQLite originals", () => {
+  assert.match(html, /id="leap-knowledge-storage-status"/);
+  assert.match(source, /api\("\/leap\/knowledge\/storage"\)/);
+  assert.match(source, /PostgreSQL \+ pgvector 已连接/);
+  assert.match(source, /原文与业务数据仍保存在 SQLite/);
+  assert.match(source, /SQLite 回退检索/);
+});
+
+test("Pulse exposes server-side financial EDA statistics, charts and PCA feature analysis", () => {
+  for (const marker of ["pulse-eda-summary", "pulse-revenue-chart", "pulse-order-boxplot", "pulse-pca-chart", "StandardScaler + sklearn PCA", "median", "whisker_low"]) {
+    assert.match(source + html + readFileSync(new URL("../../backend/product_domains/pulse_analytics.py", import.meta.url), "utf8"), new RegExp(marker.replaceAll("+", "\\+")));
+  }
+});
+
+test("Ember contains separate general retirement and acquisition modeling panels", () => {
+  assert.match(html, /id="ember-finance-lab"/);
+  assert.match(html, /id="ember-lifecycle-form"[^>]*data-ember-model-panel="retirement"/);
+  assert.match(html, /id="ember-acquisition-form"[^>]*data-ember-model-panel="acquisition"/);
+  assert.match(financeSource, /\/finance\/models\/lifecycle/);
+  assert.match(financeSource, /\/finance\/models\/acquisition/);
+  assert.match(financeSource, /const isAurora = workspace === "general"/);
+  assert.match(financeSource, /const isEmber = workspace === "finance"/);
+  assert.match(financeSource, /蒙特卡洛模拟/);
+  assert.match(financeSource, /moneyMillions\(result\.annual_incremental_interest/);
+  assert.match(financeSource, /financing_mix_sensitivity/);
+});
+
+test("Ember model panels remain scrollable and AVG EBIT inputs are sourced and precise", () => {
+  assert.match(css, /body\[data-workspace="finance"\] \.chat-stage[\s\S]*?minmax\(0,1fr\)/);
+  assert.match(css, /body\[data-workspace="finance"\] \.chat-stage[\s\S]*?overflow-y:auto/);
+  assert.match(css, /\.ember-finance-lab\s*\{[^}]*height:max-content;[^}]*overflow:visible/);
+  assert.match(css, /\.panel-footer\s*\{[^}]*position: sticky/);
+  assert.match(html, /name="target_ebit"[^>]*step="0\.001"/);
+  assert.match(html, /data-case-ebit="4\.804"/);
+  assert.match(html, /data-case-ebit="10\.555"/);
+  assert.match(html, /https:\/\/announcements\.asx\.com\.au\/asxpdf\/20230825\/pdf\/05t2cmnq8phq0x\.pdf/);
+  assert.match(financeSource, /data-case-ebit/);
+  assert.match(financeSource, /不等同于合并口径利息保障倍数/);
+});
+
+test("the four other interview surfaces have constrained, reachable scroll regions", () => {
+  assert.match(css, /\.recruitment-results\s*\{[^}]*overflow-y:\s*auto/);
+  assert.match(css, /\.recruitment-profile-panel\s*\{[^}]*overflow-y:\s*auto/);
+  assert.match(css, /\.domain-body\s*\{[^}]*min-height:\s*0;\s*overflow:\s*auto/);
+  assert.match(css, /\.chat-window\s*\{[^}]*overflow-y:\s*auto/);
+});
+
+test("MongoDB and Neo4j are assigned to Leap document editions and Future Radar graph", () => {
+  assert.match(source, /MongoDB 文档归档/);
+  assert.match(html, /企业关系图谱/);
+  assert.match(appSource, /\/future-radar\/graph/);
 });
 
 test("new products do not add hidden polling loops", () => {

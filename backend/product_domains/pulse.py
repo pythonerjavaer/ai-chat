@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+from statistics import median
 import threading
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -10,6 +11,9 @@ from typing import Annotated, Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .pulse_analytics import (aggregate_order_context, build_eda, deposit_coverage_scenarios,
+                              duckdb_olap_rollup, simulated_revenue_demo)
 
 
 def _now() -> str:
@@ -73,6 +77,10 @@ def init_pulse_schema(connect: Callable[[], Any]) -> None:
             CREATE TABLE IF NOT EXISTS pulse_customers (
                 id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,name TEXT NOT NULL,
                 phone TEXT NOT NULL DEFAULT '',email TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT '',
+                profession TEXT NOT NULL DEFAULT '',education_level TEXT NOT NULL DEFAULT '',
+                referral_status TEXT NOT NULL DEFAULT 'unknown',moments_visibility TEXT NOT NULL DEFAULT 'unknown',
+                gender TEXT NOT NULL DEFAULT '',
+                age_band TEXT NOT NULL DEFAULT '',region TEXT NOT NULL DEFAULT '',
                 notes TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
@@ -95,6 +103,9 @@ def init_pulse_schema(connect: Callable[[], Any]) -> None:
                 id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,customer_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'reserved',
                 channel TEXT NOT NULL DEFAULT '',currency TEXT NOT NULL,total_cents INTEGER NOT NULL DEFAULT 0,
                 discount_cents INTEGER NOT NULL DEFAULT 0,start_at TEXT NOT NULL,end_at TEXT NOT NULL,
+                returned_at TEXT,party_size INTEGER NOT NULL DEFAULT 1,planned_sets INTEGER NOT NULL DEFAULT 1,
+                discount_pressure TEXT NOT NULL DEFAULT 'unknown',subjective_urgency TEXT NOT NULL DEFAULT 'unknown',
+                cancelled_at TEXT,cancellation_reason TEXT NOT NULL DEFAULT 'unknown',
                 delivery_method TEXT NOT NULL DEFAULT '',notes TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY(customer_id) REFERENCES pulse_customers(id)
@@ -204,6 +215,25 @@ def init_pulse_schema(connect: Callable[[], Any]) -> None:
             CREATE INDEX IF NOT EXISTS idx_pulse_asset_events ON pulse_asset_events(user_id,asset_id,occurred_at DESC);
             """
         )
+        customer_columns = {row["name"] for row in connection.execute("PRAGMA table_info(pulse_customers)").fetchall()}
+        for column, declaration in (("gender", "TEXT NOT NULL DEFAULT ''"),
+                                    ("age_band", "TEXT NOT NULL DEFAULT ''"),
+                                    ("region", "TEXT NOT NULL DEFAULT ''"),
+                                    ("profession", "TEXT NOT NULL DEFAULT ''"),
+                                    ("education_level", "TEXT NOT NULL DEFAULT ''"),
+                                    ("referral_status", "TEXT NOT NULL DEFAULT 'unknown'"),
+                                    ("moments_visibility", "TEXT NOT NULL DEFAULT 'unknown'")):
+            if column not in customer_columns:
+                connection.execute(f"ALTER TABLE pulse_customers ADD COLUMN {column} {declaration}")
+        order_columns = {row["name"] for row in connection.execute("PRAGMA table_info(pulse_orders)").fetchall()}
+        for column, declaration in (("returned_at", "TEXT"), ("party_size", "INTEGER NOT NULL DEFAULT 1"),
+                                    ("planned_sets", "INTEGER NOT NULL DEFAULT 1"),
+                                    ("discount_pressure", "TEXT NOT NULL DEFAULT 'unknown'"),
+                                    ("subjective_urgency", "TEXT NOT NULL DEFAULT 'unknown'"),
+                                    ("cancelled_at", "TEXT"),
+                                    ("cancellation_reason", "TEXT NOT NULL DEFAULT 'unknown'")):
+            if column not in order_columns:
+                connection.execute(f"ALTER TABLE pulse_orders ADD COLUMN {column} {declaration}")
 
 
 class CustomerWrite(BaseModel):
@@ -212,6 +242,13 @@ class CustomerWrite(BaseModel):
     phone: str = Field(default="", max_length=60)
     email: str = Field(default="", max_length=254)
     source: str = Field(default="", max_length=120)
+    profession: str = Field(default="", max_length=120)
+    education_level: Literal["", "secondary", "undergraduate", "postgraduate", "doctorate", "other", "not_disclosed"] | None = None
+    referral_status: Literal["yes", "no", "unknown"] = "unknown"
+    moments_visibility: Literal["visible_to_me", "hidden_from_me", "unknown"] = "unknown"
+    gender: Literal["", "female", "male", "non_binary", "not_disclosed"] | None = None
+    age_band: Literal["", "18_24", "25_34", "35_44", "45_54", "55_plus", "not_disclosed"] | None = None
+    region: str = Field(default="", max_length=120)
     notes: str = Field(default="", max_length=4_000)
 
 
@@ -249,6 +286,10 @@ class OrderWrite(BaseModel):
     customer_id: str
     start_at: datetime
     end_at: datetime
+    party_size: int = Field(default=1, ge=1, le=50)
+    planned_sets: int = Field(default=1, ge=1, le=50)
+    discount_pressure: Literal["none", "standard", "strong", "unknown"] = "unknown"
+    subjective_urgency: Literal["low", "medium", "high", "unknown"] = "unknown"
     channel: str = Field(default="", max_length=100)
     delivery_method: str = Field(default="", max_length=100)
     discount_cents: int = Field(default=0, ge=0)
@@ -328,7 +369,8 @@ class JournalWrite(BaseModel):
 
 class ExpenseWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    category: Literal["cleaning", "repair", "delivery", "payment_fee", "marketing", "rent", "utilities", "other"]
+    category: Literal["inventory_purchase", "cleaning", "laundry", "repair", "asset_loss",
+                      "delivery", "payment_fee", "marketing", "rent", "utilities", "other"]
     amount_cents: int = Field(gt=0, le=100_000_000)
     status: Literal["unpaid", "partially_paid", "paid"] = "paid"
     vendor_id: str | None = None
@@ -353,6 +395,7 @@ class SettingsWrite(BaseModel):
 class OrderStatusWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["reserved", "rented", "returned", "completed", "cancelled"]
+    cancellation_reason: Literal["customer_cancelled", "last_minute_customer_cancel", "business_cancelled", "no_show", "other", "unknown"] = "unknown"
     notes: str = Field(default="", max_length=2_000)
 
 
@@ -511,10 +554,12 @@ class PulseRepository:
         item_id, now = str(uuid.uuid4()), _now()
         with self.connect() as connection:
             connection.execute(
-                """INSERT INTO pulse_customers(id,user_id,name,phone,email,source,notes,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                """INSERT INTO pulse_customers(id,user_id,name,phone,email,source,profession,education_level,referral_status,
+                   moments_visibility,gender,age_band,region,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (item_id, user_id, payload.name.strip(), payload.phone.strip(), payload.email.strip(),
-                 payload.source.strip(), payload.notes.strip(), now, now),
+                 payload.source.strip(), payload.profession.strip(), payload.education_level or "",
+                 payload.referral_status, payload.moments_visibility, payload.gender or "", payload.age_band or "", payload.region.strip(),
+                 payload.notes.strip(), now, now),
             )
             return self._owned(connection, "pulse_customers", item_id, user_id)
 
@@ -598,9 +643,12 @@ class PulseRepository:
                 connection.execute(
                     """INSERT INTO pulse_orders
                        (id,user_id,customer_id,status,channel,currency,total_cents,discount_cents,start_at,end_at,
-                        delivery_method,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        party_size,planned_sets,discount_pressure,subjective_urgency,
+                        delivery_method,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (order_id, user_id, payload.customer_id, "reserved", payload.channel.strip(), settings["currency"],
-                     total, payload.discount_cents, start, end, payload.delivery_method.strip(), payload.notes.strip(), now, now),
+                     total, payload.discount_cents, start, end, payload.party_size, payload.planned_sets, payload.discount_pressure,
+                     payload.subjective_urgency,
+                     payload.delivery_method.strip(), payload.notes.strip(), now, now),
                 )
                 connection.executemany(
                     """INSERT INTO pulse_order_items
@@ -698,8 +746,13 @@ class PulseRepository:
             raise ValueError(f"订单不能从 {detail['status']} 直接变为 {payload.status}。")
         now = _now()
         with self.connect() as connection:
-            connection.execute("UPDATE pulse_orders SET status=?,notes=?,updated_at=? WHERE id=? AND user_id=?",
-                               (payload.status, payload.notes.strip() or detail["notes"], now, order_id, user_id))
+            returned_at = now if payload.status == "returned" else detail.get("returned_at")
+            cancelled_at = now if payload.status == "cancelled" else detail.get("cancelled_at")
+            cancellation_reason = payload.cancellation_reason if payload.status == "cancelled" else detail.get("cancellation_reason", "unknown")
+            connection.execute("""UPDATE pulse_orders SET status=?,notes=?,updated_at=?,returned_at=?,cancelled_at=?,
+                               cancellation_reason=? WHERE id=? AND user_id=?""",
+                               (payload.status, payload.notes.strip() or detail["notes"], now, returned_at,
+                                cancelled_at, cancellation_reason, order_id, user_id))
         target = {"rented": "rented", "returned": "inspection", "completed": "available", "cancelled": "available"}.get(payload.status)
         if target:
             for item in detail["items"]:
@@ -853,8 +906,9 @@ class PulseRepository:
         if occurred.tzinfo is None:
             occurred = occurred.replace(tzinfo=timezone.utc)
         with self.connect() as connection:
-            if payload.asset_id:
-                self._owned(connection, "pulse_assets", payload.asset_id, user_id)
+            asset = self._owned(connection, "pulse_assets", payload.asset_id, user_id) if payload.asset_id else None
+            if payload.category == "asset_loss" and (asset is None or asset["accounting_class"] not in {"rental_asset", "inventory"}):
+                raise ValueError("资产报损必须选择已分类的租赁资产或商品存货，并录入报损日账面净值。")
             connection.execute(
                 """INSERT INTO pulse_expenses
                    (id,user_id,vendor_id,order_id,asset_id,category,amount_cents,currency,status,description,occurred_at,created_at)
@@ -869,15 +923,34 @@ class PulseRepository:
                     (str(uuid.uuid4()), user_id, payload.asset_id, payload.category, payload.order_id,
                      payload.amount_cents, payload.description.strip(), occurred.isoformat(), now),
                 )
-        roles = {"cleaning": "cleaning_expense", "repair": "repair_expense", "delivery": "delivery_expense",
+        roles = {"inventory_purchase": "inventory", "cleaning": "cleaning_expense", "laundry": "cleaning_expense",
+                 "repair": "repair_expense", "asset_loss": "other_expense", "delivery": "delivery_expense",
                  "payment_fee": "payment_fee", "marketing": "marketing_expense", "rent": "rent_expense",
                  "utilities": "utilities_expense", "other": "other_expense"}
         credit = "cash" if payload.status == "paid" else "payable"
-        journal = self._business_journal(user_id, "expense", "expense", item_id, occurred,
-                                         f"{payload.category} expense", roles[payload.category], credit,
-                                         payload.amount_cents, "operating" if payload.status == "paid" else "",
-                                         {"order_id": payload.order_id, "asset_id": payload.asset_id,
-                                          "vendor_id": payload.vendor_id})
+        if payload.category == "asset_loss":
+            with self.connect() as connection:
+                debit_code = self._account(connection, user_id, role="other_expense")["code"]
+            asset_role = "rental_asset" if asset["accounting_class"] == "rental_asset" else "inventory"
+            with self.connect() as connection:
+                credit_code = self._account(connection, user_id, role=asset_role)["code"]
+            journal = self.post_journal(user_id, JournalWrite(
+                transaction_date=occurred.date(), posting_date=occurred.date(),
+                description="Asset loss write-off at entered carrying value",
+                source_document_type="asset_loss", source_document_id=item_id, cash_flow_category="",
+                lines=[JournalLineWrite(account_code=debit_code, debit_cents=payload.amount_cents,
+                                        description="Asset loss at carrying value", order_id=payload.order_id,
+                                        asset_id=payload.asset_id),
+                       JournalLineWrite(account_code=credit_code, credit_cents=payload.amount_cents,
+                                        description="Remove lost asset carrying value", order_id=payload.order_id,
+                                        asset_id=payload.asset_id)],
+            ))
+        else:
+            journal = self._business_journal(user_id, "expense", "expense", item_id, occurred,
+                                             f"{payload.category} expense", roles[payload.category], credit,
+                                             payload.amount_cents, "operating" if payload.status == "paid" else "",
+                                             {"order_id": payload.order_id, "asset_id": payload.asset_id,
+                                              "vendor_id": payload.vendor_id})
         with self.connect() as connection:
             saved = self._owned(connection, "pulse_expenses", item_id, user_id)
         return {"expense": saved, "journal": journal}
@@ -1081,44 +1154,203 @@ class PulseRepository:
                 "rental_history": [_row(item) for item in rental_history]}
 
     def analytics(self, user_id: int, date_from: str, date_to: str) -> dict:
+        now = datetime.now(timezone.utc)
         with self.connect() as connection:
             revenue_by_sku = connection.execute(
                 """SELECT s.id,s.name,COALESCE(SUM(p.amount_cents),0) AS revenue,COUNT(DISTINCT o.id) AS orders
                    FROM pulse_skus s LEFT JOIN pulse_order_items i ON i.sku_id=s.id
                    LEFT JOIN pulse_orders o ON o.id=i.order_id AND o.user_id=s.user_id
+                    AND substr(o.created_at,1,10)>=? AND substr(o.created_at,1,10)<=? AND o.status!='cancelled'
                    LEFT JOIN pulse_payments p ON p.order_id=o.id AND p.payment_type='rental'
                     AND substr(p.occurred_at,1,10)>=? AND substr(p.occurred_at,1,10)<=?
                    WHERE s.user_id=? GROUP BY s.id,s.name ORDER BY revenue DESC LIMIT 50""",
-                (date_from, date_to, user_id),
+                (date_from, date_to, date_from, date_to, user_id),
             ).fetchall()
             customers = connection.execute(
-                """SELECT c.id,c.name,COUNT(DISTINCT o.id) AS orders,
+                """SELECT c.id,c.name,c.gender,c.age_band,c.region,c.profession,c.education_level,c.referral_status,
+                   c.source AS acquisition_channel,COUNT(DISTINCT o.id) AS orders,
                    COALESCE(SUM(CASE WHEN p.payment_type IN ('rental','product_sale','service') THEN p.amount_cents ELSE 0 END),0) AS lifetime_revenue,
-                   MAX(o.created_at) AS last_order_at FROM pulse_customers c
-                   LEFT JOIN pulse_orders o ON o.customer_id=c.id AND o.user_id=c.user_id
-                   LEFT JOIN pulse_payments p ON p.order_id=o.id
-                   WHERE c.user_id=? GROUP BY c.id,c.name ORDER BY lifetime_revenue DESC LIMIT 100""", (user_id,),
+                   MAX(o.created_at) AS last_order_at,COALESCE(lifetime.order_count,0) AS lifetime_orders FROM pulse_customers c
+                   LEFT JOIN pulse_orders o ON o.customer_id=c.id AND o.user_id=c.user_id AND o.status!='cancelled'
+                    AND substr(o.created_at,1,10)>=? AND substr(o.created_at,1,10)<=?
+                   LEFT JOIN pulse_payments p ON p.order_id=o.id AND substr(p.occurred_at,1,10)>=? AND substr(p.occurred_at,1,10)<=?
+                   LEFT JOIN (SELECT customer_id,COUNT(*) AS order_count FROM pulse_orders
+                              WHERE user_id=? AND status!='cancelled' GROUP BY customer_id) lifetime ON lifetime.customer_id=c.id
+                   WHERE c.user_id=? GROUP BY c.id,c.name,c.gender,c.age_band,c.region,c.profession,c.education_level,
+                     c.referral_status,c.source,lifetime.order_count
+                   ORDER BY lifetime_revenue DESC LIMIT 100""",
+                (date_from, date_to, date_from, date_to, user_id, user_id),
             ).fetchall()
+            risk_rows = connection.execute(
+                """SELECT c.id AS customer_id,COUNT(DISTINCT o.id) AS period_orders,
+                   COUNT(DISTINCT CASE WHEN o.returned_at IS NOT NULL OR
+                     (o.status='rented' AND o.end_at < ?) THEN o.id END) AS return_observation_orders,
+                   COUNT(DISTINCT CASE WHEN o.returned_at IS NOT NULL AND o.returned_at > o.end_at THEN o.id END) AS late_return_orders,
+                   COUNT(DISTINCT CASE WHEN o.status='rented' AND o.end_at < ? THEN o.id END) AS current_overdue_orders,
+                   COUNT(DISTINCT CASE WHEN COALESCE(i.inspected,0)=1 THEN o.id END) AS inspected_orders,
+                   COUNT(DISTINCT CASE WHEN COALESCE(i.damaged,0)=1 THEN o.id END) AS damaged_orders,
+                   COUNT(DISTINCT CASE WHEN COALESCE(i.missing,0)=1 THEN o.id END) AS missing_orders,
+                   COUNT(DISTINCT CASE WHEN o.status='cancelled' AND o.cancellation_reason='last_minute_customer_cancel' THEN o.id END) AS last_minute_cancellations,
+                   COUNT(DISTINCT CASE WHEN o.status='cancelled' AND o.cancellation_reason='no_show' THEN o.id END) AS no_shows,
+                   COUNT(DISTINCT CASE WHEN COALESCE(dp.deposit_paid,0)=1 THEN o.id END) AS deposit_paid_orders
+                   FROM pulse_customers c
+                   LEFT JOIN pulse_orders o ON o.customer_id=c.id AND o.user_id=c.user_id AND o.status!='cancelled'
+                     AND substr(o.created_at,1,10)>=? AND substr(o.created_at,1,10)<=?
+                   LEFT JOIN (SELECT user_id,order_id,1 AS inspected,
+                     MAX(CASE WHEN condition_status IN ('damaged','repair_required') THEN 1 ELSE 0 END) AS damaged,
+                     MAX(CASE WHEN condition_status='missing' THEN 1 ELSE 0 END) AS missing
+                   FROM pulse_inspections GROUP BY user_id,order_id) i ON i.user_id=o.user_id AND i.order_id=o.id
+                   LEFT JOIN (SELECT user_id,order_id,1 AS deposit_paid FROM pulse_payments
+                              WHERE payment_type='deposit' GROUP BY user_id,order_id) dp ON dp.user_id=o.user_id AND dp.order_id=o.id
+                   WHERE c.user_id=? GROUP BY c.id""",
+                (now.isoformat(), now.isoformat(), date_from, date_to, user_id),
+            ).fetchall()
+            order_context_rows = connection.execute(
+                """SELECT o.id,o.status,o.start_at,o.end_at,o.created_at,o.returned_at,o.cancelled_at,
+                   o.cancellation_reason,o.party_size,o.planned_sets,o.discount_pressure,o.subjective_urgency,
+                   CASE WHEN o.status='rented' AND o.end_at < ? THEN 1 ELSE 0 END AS current_overdue,
+                   CASE WHEN o.returned_at IS NOT NULL AND o.returned_at > o.end_at THEN 1 ELSE 0 END AS late_return,
+                   CASE WHEN o.returned_at IS NOT NULL OR (o.status='rented' AND o.end_at < ?) THEN 1 ELSE 0 END AS return_observed,
+                   COALESCE(i.inspected,0) AS inspected,COALESCE(i.damaged,0) AS damaged,COALESCE(i.missing,0) AS missing,
+                   CASE WHEN COALESCE(dp.deposit_paid,0)=1 THEN 1 ELSE 0 END AS deposit_paid,
+                   CASE WHEN COALESCE(addon.flower_add_on,0)=1 THEN 1 ELSE 0 END AS flower_add_on
+                   FROM pulse_orders o
+                   LEFT JOIN (SELECT user_id,order_id,1 AS inspected,
+                     MAX(CASE WHEN condition_status IN ('damaged','repair_required') THEN 1 ELSE 0 END) AS damaged,
+                     MAX(CASE WHEN condition_status='missing' THEN 1 ELSE 0 END) AS missing
+                     FROM pulse_inspections GROUP BY user_id,order_id) i ON i.user_id=o.user_id AND i.order_id=o.id
+                   LEFT JOIN (SELECT user_id,order_id,1 AS deposit_paid FROM pulse_payments
+                              WHERE payment_type='deposit' GROUP BY user_id,order_id) dp ON dp.user_id=o.user_id AND dp.order_id=o.id
+                   LEFT JOIN (SELECT order_id,1 AS flower_add_on FROM pulse_order_items oi JOIN pulse_skus s ON s.id=oi.sku_id
+                              WHERE s.category='flower_add_on' OR s.name='小熊手工花' GROUP BY order_id) addon ON addon.order_id=o.id
+                   WHERE o.user_id=? AND substr(o.created_at,1,10)>=? AND substr(o.created_at,1,10)<=?
+                   ORDER BY o.created_at DESC LIMIT 10001""",
+                (now.isoformat(), now.isoformat(), user_id, date_from, date_to),
+            ).fetchall()
+            profile_customers = connection.execute(
+                """SELECT c.id,c.gender,c.age_band,c.region,c.profession,c.education_level,c.referral_status,c.moments_visibility,
+                   c.source AS acquisition_channel,COALESCE(lifetime.order_count,0) AS lifetime_orders
+                   FROM pulse_customers c LEFT JOIN
+                   (SELECT customer_id,COUNT(*) AS order_count FROM pulse_orders
+                    WHERE user_id=? AND status!='cancelled' GROUP BY customer_id) lifetime ON lifetime.customer_id=c.id
+                   WHERE c.user_id=? ORDER BY c.created_at DESC LIMIT 10001""", (user_id, user_id),
+            ).fetchall()
+            expense_totals = connection.execute(
+                """SELECT category,COALESCE(SUM(amount_cents),0) AS amount_cents,COUNT(*) AS entries
+                   FROM pulse_expenses WHERE user_id=? AND substr(occurred_at,1,10)>=? AND substr(occurred_at,1,10)<=?
+                   GROUP BY category ORDER BY amount_cents DESC""", (user_id, date_from, date_to),
+            ).fetchall()
+            loss_cost_rows = connection.execute(
+                """SELECT order_id,SUM(amount_cents) AS amount_cents FROM pulse_expenses
+                   WHERE user_id=? AND order_id IS NOT NULL AND category IN ('repair','asset_loss')
+                     AND substr(occurred_at,1,10)>=? AND substr(occurred_at,1,10)<=?
+                   GROUP BY order_id""", (user_id, date_from, date_to),
+            ).fetchall()
+            dimension_breakdowns = {}
+            for key in ("gender", "age_band", "region", "source", "profession", "education_level", "referral_status"):
+                dimension_label = "acquisition_channel" if key == "source" else key
+                grouped = connection.execute(
+                    f"""SELECT COALESCE(NULLIF({key},''),'未记录') AS category,COUNT(*) AS customers
+                        FROM pulse_customers WHERE user_id=? GROUP BY COALESCE(NULLIF({key},''),'未记录')
+                        ORDER BY customers DESC LIMIT 50""", (user_id,),
+                ).fetchall()
+                visible_groups = [{"category": str(item["category"]), "customers": int(item["customers"])}
+                                  for item in grouped if int(item["customers"]) >= 5]
+                dimension_breakdowns[dimension_label] = {
+                    "groups": visible_groups,
+                    "suppressed_small_groups": sum(1 for item in grouped if int(item["customers"]) < 5),
+                }
             top_assets = connection.execute(
                 """SELECT a.id,a.asset_code,s.name AS sku_name,COUNT(DISTINCT o.id) AS rental_count,
                    COALESCE(SUM(CASE WHEN p.payment_type='rental' THEN p.amount_cents ELSE 0 END),0) AS lifetime_revenue,
                    a.purchase_cost_cents
                    FROM pulse_assets a JOIN pulse_skus s ON s.id=a.sku_id
                    LEFT JOIN pulse_order_items i ON i.asset_id=a.id
-                   LEFT JOIN pulse_orders o ON o.id=i.order_id
+                   LEFT JOIN pulse_orders o ON o.id=i.order_id AND substr(o.created_at,1,10)>=? AND substr(o.created_at,1,10)<=?
                    LEFT JOIN pulse_payments p ON p.order_id=o.id
                     AND substr(p.occurred_at,1,10)>=? AND substr(p.occurred_at,1,10)<=?
                    WHERE a.user_id=? GROUP BY a.id,a.asset_code,s.name,a.purchase_cost_cents
-                   ORDER BY lifetime_revenue DESC LIMIT 25""", (date_from, date_to, user_id),
+                   ORDER BY lifetime_revenue DESC LIMIT 25""", (date_from, date_to, date_from, date_to, user_id),
+            ).fetchall()
+            payment_facts = connection.execute(
+                """SELECT occurred_at,payment_type,amount_cents,order_id FROM pulse_payments
+                   WHERE user_id=? AND substr(occurred_at,1,10)>=? AND substr(occurred_at,1,10)<=?
+                   ORDER BY occurred_at LIMIT 100001""", (user_id, date_from, date_to),
+            ).fetchall()
+            order_facts = connection.execute(
+                """SELECT total_cents FROM pulse_orders WHERE user_id=? AND status!='cancelled'
+                   AND substr(created_at,1,10)>=? AND substr(created_at,1,10)<=?
+                   ORDER BY created_at LIMIT 100001""", (user_id, date_from, date_to),
             ).fetchall()
         customer_rows = []
-        now = datetime.now(timezone.utc)
         for item in customers:
             row = _row(item)
-            row["segment"] = "High Value" if row["lifetime_revenue"] >= 100_000 else "Frequent" if row["orders"] >= 3 else "Returning" if row["orders"] >= 2 else "New"
+            row["segment"] = "High Value" if row["lifetime_revenue"] >= 100_000 else "Frequent" if row["lifetime_orders"] >= 3 else "Returning" if row["lifetime_orders"] >= 2 else "New"
             row["segment_rule"] = "High Value≥1000 currency units; Frequent≥3 orders; Returning=2; otherwise New"
             row["recency_days"] = max(0, (now - datetime.fromisoformat(row["last_order_at"])).days) if row["last_order_at"] else None
             customer_rows.append(row)
+        risks_by_customer = {str(item["customer_id"]): _row(item) for item in risk_rows}
+        for customer in customer_rows:
+            risk = risks_by_customer.get(str(customer["id"]), {})
+            for key in ("return_observation_orders", "late_return_orders", "current_overdue_orders",
+                        "inspected_orders", "damaged_orders", "missing_orders", "last_minute_cancellations",
+                        "no_shows", "deposit_paid_orders"):
+                customer[key] = int(risk.get(key) or 0)
+            customer["late_return_rate"] = round(customer["late_return_orders"] / max(1, customer["return_observation_orders"]), 4) if customer["return_observation_orders"] else None
+            customer["damage_rate"] = round(customer["damaged_orders"] / max(1, customer["inspected_orders"]), 4) if customer["inspected_orders"] else None
+            customer["missing_rate"] = round(customer["missing_orders"] / max(1, customer["inspected_orders"]), 4) if customer["inspected_orders"] else None
+        profile_source = [{**_row(item), **risks_by_customer.get(str(item["id"]), {})}
+                           for item in profile_customers]
+        order_context = aggregate_order_context([_row(item) for item in order_context_rows])
+        profile_dimensions = {}
+        for field in ("gender", "age_band", "region", "profession", "education_level",
+                      "acquisition_channel", "referral_status", "moments_visibility"):
+            grouped_profiles: dict[str, list[dict[str, Any]]] = {}
+            for item in profile_source:
+                category = str(item.get(field) or "").strip() or "未记录"
+                grouped_profiles.setdefault(category, []).append(item)
+            visible = []
+            suppressed = 0
+            for category, members in sorted(grouped_profiles.items(), key=lambda pair: (-len(pair[1]), pair[0])):
+                if len(members) < 5:
+                    suppressed += len(members)
+                    continue
+                def rate(numerator: str, denominator: str) -> float | None:
+                    total = sum(int(member.get(denominator) or 0) for member in members)
+                    return round(sum(int(member.get(numerator) or 0) for member in members) / total, 4) if total else None
+                visible.append({"category": category, "customers": len(members),
+                                "new_customers": sum(int(item.get("lifetime_orders") or 0) <= 1 for item in members),
+                                "repeat_customers": sum(int(item.get("lifetime_orders") or 0) >= 2 for item in members),
+                                "late_return_rate": rate("late_return_orders", "return_observation_orders"),
+                                "current_overdue_orders": sum(int(item.get("current_overdue_orders") or 0) for item in members),
+                                "damage_rate": rate("damaged_orders", "inspected_orders"),
+                                "missing_rate": rate("missing_orders", "inspected_orders"),
+                                "return_observation_orders": sum(int(item.get("return_observation_orders") or 0) for item in members),
+                                "inspected_orders": sum(int(item.get("inspected_orders") or 0) for item in members)})
+            profile_dimensions[field] = {"groups": visible, "suppressed_customers": suppressed}
+        eda_features = []
+        for row in customer_rows:
+            recency = row["recency_days"]
+            eda_features.append({"id": row["id"], "label": row["name"],
+                                 "orders": row["orders"], "lifetime_revenue": row["lifetime_revenue"],
+                                 "recency_days": recency if recency is not None else 0,
+                                 "average_order_value": row["lifetime_revenue"] / max(1, row["orders"])})
+        olap = duckdb_olap_rollup([_row(item) for item in payment_facts],
+                                  [_row(item) for item in order_facts])
+        deposit_analysis = deposit_coverage_scenarios([int(item["amount_cents"]) for item in loss_cost_rows])
+        cost_analysis = {"currency": "minor_units", "period": [date_from, date_to],
+                         "categories": [{"category": item["category"], "amount_cents": int(item["amount_cents"]),
+                                         "entries": int(item["entries"])} for item in expense_totals],
+                         "classification": {"inventory_purchase": "inventory asset; excluded from P&L until sold/consumed",
+                                             "cleaning/laundry": "operating expense",
+                                             "repair": "recorded repair operating expense",
+                                             "asset_loss": "write-off at user-entered carrying amount; non-cash credit to asset account"}}
+        eda = build_eda(monthly_rows=olap["monthly_rows"], order_values=olap["order_values"],
+                        feature_rows=eda_features,
+                        feature_names=["orders", "lifetime_revenue", "recency_days", "average_order_value"])
+        eda["olap"] = {"engine": olap["engine"], "source_payment_rows": olap["source_payment_rows"],
+                       "source_order_rows": olap["source_order_rows"],
+                       "truncated": len(payment_facts) > 100_000 or len(order_facts) > 100_000}
         asset_rows = []
         for item in top_assets:
             row = _row(item)
@@ -1133,9 +1365,24 @@ class PulseRepository:
         return {"date_from": date_from, "date_to": date_to,
                 "sales": {"revenue_by_sku": [_row(x) for x in revenue_by_sku]},
                 "customers": customer_rows,
-                "top_assets": asset_rows, "insights": insights,
+                "top_assets": asset_rows, "insights": insights, "eda": eda,
+                "customer_dimensions": {"dimensions": profile_dimensions, "minimum_group_size": 5,
+                    "total_profile_customers": len(profile_source),
+                    "policy": "Profile dimensions are optional descriptive fields. WeChat Moments visibility is visible to me / hidden from me / unknown; no Moments content is scraped or posted. Groups below five are suppressed. Gender, age, education, profession and Moments visibility are not used for individual risk scores, pricing, ranking or eligibility."},
+                "customer_risk_summary": {
+                    "late_return_orders": sum(int(item.get("late_return_orders") or 0) for item in customer_rows),
+                    "current_overdue_orders": sum(int(item.get("current_overdue_orders") or 0) for item in customer_rows),
+                    "damaged_orders": sum(int(item.get("damaged_orders") or 0) for item in customer_rows),
+                    "missing_orders": sum(int(item.get("missing_orders") or 0) for item in customer_rows),
+                    "last_minute_cancellations": sum(int(item.get("last_minute_cancellations") or 0) for item in customer_rows),
+                    "no_shows": sum(int(item.get("no_shows") or 0) for item in customer_rows),
+                    "deposit_paid_orders": sum(int(item.get("deposit_paid_orders") or 0) for item in customer_rows),
+                    "definition": "逾期归还是实际 returned_at 晚于 planned end_at；当前超期是 still rented 且已过 end_at。损坏/遗失需有验收记录；临时取消和未按约到场需明确选择原因。定金来自已记录 deposit payment。全部为描述性统计，不构成因果结论或已验证预测评分。"},
+                "order_context_profiles": order_context,
+                "cost_analysis": cost_analysis,
+                "deposit_coverage": deposit_analysis,
                 "limitations": {"cohort": "insufficient_data", "rfm": "rule_segments_only", "funnel": "insufficient_data",
-                                "forecasting": "not_enabled", "lost_demand": "unavailable_without_demand_events"}}
+                                "forecasting": "three_month_linear_baseline_plus_last_value_baseline_RF_AdaBoost_BayesianRidge_only_after_60_continuous_months; PyTorch_LSTM_after_120_months; models_selected_by_chronological_holdout", "lost_demand": "unavailable_without_demand_events"}}
 
     def _save_demo(self, user_id: int, state: dict[str, Any]) -> dict[str, Any]:
         state["updated_at"] = _now()
@@ -1149,6 +1396,7 @@ class PulseRepository:
 
     @staticmethod
     def _demo_view(state: dict[str, Any]) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
         balances = {code: 0 for code in DEMO_ACCOUNTS}
         debit_total = credit_total = 0
         for journal in state["journals"]:
@@ -1228,6 +1476,16 @@ class PulseRepository:
                             "referral_customers": sum(1 for row in customer_rows if row.get("source") == "Referral"),
                             "channel_revenue": [{"channel": key, "revenue": value} for key, value in sorted(channel_revenue.items(), key=lambda item: item[1], reverse=True)],
                             "cohorts": [{"cohort": key, **value} for key, value in sorted(cohorts.items())]}
+        eda_features = [{"id": row["id"], "label": row["name"], "orders": row["orders"],
+                         "lifetime_revenue": row["lifetime_revenue"],
+                         "recency_days": row["recency_days"] if row["recency_days"] is not None else 0,
+                         "average_order_value": row["lifetime_revenue"] / max(1, row["orders"])}
+                        for row in customer_rows]
+        eda = build_eda(monthly_rows=timeline,
+                        order_values=[int(order["total_cents"]) for order in orders
+                                      if order["created_at"][:10] >= (now - timedelta(days=185)).date().isoformat()],
+                        feature_rows=eda_features,
+                        feature_names=["orders", "lifetime_revenue", "recency_days", "average_order_value"])
         trial_accounts = [{"code": code, "name": DEMO_ACCOUNTS[code][0], "account_type": DEMO_ACCOUNTS[code][1], "closing_balance": value} for code, value in sorted(balances.items())]
         return {**state, "loaded": True,
                 "dashboard": {"metrics": {"revenue": revenue, "orders": len(orders), "cash_in": cash_in, "cash_out": cash_out,
@@ -1248,6 +1506,7 @@ class PulseRepository:
                 "analytics": {"customers": customer_rows, "customer_summary": customer_summary,
                               "revenue_by_sku": revenue_by_sku_rows, "top_assets": top_assets,
                               "unavailable_demand": state["unavailable_demand"], "trends": timeline,
+                              "eda": eda,
                               "insights": [{"id": "demo-insight-demand", "title": "Size M 存在未满足需求", "metric": len(state["unavailable_demand"]), "period": "过去30天", "calculation": "未满足的Size M需求事件数", "evidence_ids": [x["id"] for x in state["unavailable_demand"]]},
                                            {"id": "demo-insight-asset", "title": f"{top_assets[0]['asset_code']} 是收入最高资产" if top_assets else "暂无资产收入", "metric": top_assets[0]["lifetime_revenue"] if top_assets else 0, "period": "六个月", "calculation": "与该资产关联订单的租金收款合计", "evidence_ids": [top_assets[0]["id"]] if top_assets else []}]}}
 
@@ -1269,12 +1528,12 @@ class PulseRepository:
         state = {key: view[key] for key in keys}; p, now = command.payload, _now()
         customers = {x["id"]: x for x in state["customers"]}; assets = {x["id"]: x for x in state["assets"]}; orders = {x["id"]: x for x in state["orders"]}
         if command.action == "customer":
-            item_id = f"demo-pulse-c-{uuid.uuid4().hex[:10]}"; state["customers"].append({"id": item_id, "name": str(p.get("name", "Demo Customer")).strip(), "phone": str(p.get("phone", "")), "email": "", "source": str(p.get("source", "Manual")), "notes": "Created in DEMO", "created_at": now})
+            item_id = f"demo-pulse-c-{uuid.uuid4().hex[:10]}"; state["customers"].append({"id": item_id, "name": str(p.get("name", "Demo Customer")).strip(), "phone": str(p.get("phone", "")), "email": "", "source": str(p.get("source", "Manual")), "profession": str(p.get("profession", "")), "education_level": str(p.get("education_level", "")), "referral_status": str(p.get("referral_status", "unknown")), "gender": str(p.get("gender", "")), "age_band": str(p.get("age_band", "")), "region": str(p.get("region", "")), "notes": "Created in DEMO", "created_at": now})
         elif command.action == "order":
             customer_id, asset_id = p.get("customer_id"), p.get("asset_id")
             if customer_id not in customers or asset_id not in assets or assets[asset_id]["status"] != "available": raise ValueError("请选择可用演示客户和资产。")
             sku = next(x for x in state["skus"] if x["id"] == assets[asset_id]["sku_id"]); order_id = f"demo-pulse-o-{uuid.uuid4().hex[:10]}"; amount = int(p.get("amount_cents") or sku["current_price_cents"])
-            state["orders"].append({"id": order_id, "customer_id": customer_id, "status": "reserved", "channel": str(p.get("channel", "Manual")), "currency": "AUD", "total_cents": amount, "start_at": str(p.get("start_at") or now), "end_at": str(p.get("end_at") or (datetime.now(timezone.utc)+timedelta(days=3)).isoformat()), "created_at": now, "items": [{"sku_id": sku["id"], "sku_name": sku["name"], "asset_id": asset_id, "asset_code": assets[asset_id]["asset_code"], "unit_price_cents": amount}]}); assets[asset_id]["status"] = "reserved"
+            state["orders"].append({"id": order_id, "customer_id": customer_id, "status": "reserved", "channel": str(p.get("channel", "Manual")), "currency": "AUD", "total_cents": amount, "start_at": str(p.get("start_at") or now), "end_at": str(p.get("end_at") or (datetime.now(timezone.utc)+timedelta(days=3)).isoformat()), "party_size": int(p.get("party_size", 1)), "planned_sets": int(p.get("planned_sets", 1)), "discount_pressure": str(p.get("discount_pressure", "unknown")), "subjective_urgency": str(p.get("subjective_urgency", "unknown")), "social_sharing_consent": str(p.get("social_sharing_consent", "not_asked")), "created_at": now, "items": [{"sku_id": sku["id"], "sku_name": sku["name"], "asset_id": asset_id, "asset_code": assets[asset_id]["asset_code"], "unit_price_cents": amount}]}); assets[asset_id]["status"] = "reserved"
         elif command.action in {"payment", "deposit", "refund"}:
             order_id = p.get("order_id"); order = orders.get(order_id)
             if not order: raise ValueError("演示订单不存在。")
@@ -1458,6 +1717,22 @@ def create_pulse_router(connect: Callable[[], Any], current_user: Callable[..., 
 
     @router.get("/analytics")
     def analytics(user: User, date_from: str, date_to: str): return repo.analytics(user["id"], date_from, date_to)
+
+    @router.get("/analytics/synthetic-ml-demo")
+    def synthetic_ml_demo(user: User):
+        repo.ensure_user_setup(user["id"])
+        with repo.connect() as connection:
+            observed_months = connection.execute(
+                """SELECT substr(occurred_at,1,7) AS period,SUM(amount_cents) AS revenue
+                   FROM pulse_payments WHERE user_id=? AND payment_type='rental'
+                   GROUP BY substr(occurred_at,1,7) ORDER BY period DESC LIMIT 12""", (user["id"],),
+            ).fetchall()
+        measured = [int(row["revenue"]) for row in observed_months if int(row["revenue"] or 0) > 0]
+        baseline = int(median(measured)) if measured else 250_000
+        result = simulated_revenue_demo(months=144, seed=2026, baseline_cents=baseline)
+        result["calibration"] = {"source": "本账号近12个有租金记录月份的月收入中位数" if measured else "Oia演示经营量级默认值；本账号暂无可用于校准的真实租金月份",
+                                 "measured_months": len(measured), "is_real_history": bool(measured)}
+        return result
 
     @router.get("/metrics")
     def metrics(user: User): return repo.metric_dictionary(user["id"])

@@ -19,16 +19,20 @@ test("the global product navigation contains every formal product exactly once",
   );
 });
 
-test("both world maps use the Frost Ember Aurora Pulse Leap order", () => {
+test("both world maps preserve product order, use sequential coordinates, and include every slogan", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-  const expected = ["legal", "finance", "general", "pulse", "leap"];
+  const expected = ["legal", "finance", "general", "pulse", "leap", "recruitment", "forge", "resonance", "trace", "music", "photon", "oblivion"];
   for (const className of ["world-entry-grid", "world-map-grid"]) {
     const start = html.indexOf(className);
     const segment = html.slice(start, html.indexOf("</div>", start));
     let previous = -1;
-    expected.forEach((id) => {
+    expected.forEach((id, index) => {
       const position = segment.indexOf(`data-launch="${id}"`);
       assert.ok(position > previous, `${id} should appear in the requested order in ${className}`);
+      const buttonEnd = segment.indexOf("</button>", position);
+      const button = segment.slice(position, buttonEnd);
+      assert.match(button, new RegExp(`<span>${String(index + 1).padStart(2, "0")} · `), `${id} should use coordinate ${index + 1}`);
+      assert.match(button, /<p>[^<]+<\/p>/, `${id} should have a visible slogan`);
       previous = position;
     });
   }
@@ -67,6 +71,19 @@ test("switching products closes every previous product dialog but keeps the dest
 test("only known products can be launched", () => {
   assert.equal(normalizeProductId("music"), "music");
   assert.equal(normalizeProductId("unknown"), null);
+});
+
+test("Octave Space opens its first-degree studio and keeps the quick creator available", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+
+  assert.match(html, /01 · 音乐创作工作台/);
+  assert.match(html, /id="octave-studio-frame"[^>]+title="八度空间第一度：音乐创作工作台"/);
+  assert.match(html, /id="octave-enter-studio"/);
+  assert.match(html, /id="octave-enter-quick"/);
+  assert.match(html, /id="music-creation-title"/);
+  assert.match(appSource, /frame\.src = "\/octave\/"/);
+  assert.match(appSource, /setOctaveSpaceView\("quick"\)/);
 });
 
 test("the visible Chinese world-map name changes without renaming the English product", () => {

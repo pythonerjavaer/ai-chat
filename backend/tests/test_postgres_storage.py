@@ -14,6 +14,7 @@ from backend.storage import (
     Cursor, Row, _safe_error, _script_statements, close_postgres_pools,
     compile_sql, connect_postgres,
 )
+from backend.finance_analysis import init_finance_schema, list_model_runs, save_model_run
 
 
 def test_parameters_are_bound_unchanged_and_never_interpolated():
@@ -119,6 +120,15 @@ def test_like_uses_sqlite_ascii_case_and_preserves_literal_percent():
     assert plan.sql.count("translate") == 2
     assert "'%%AI网页搜索%%'" in plan.sql
     assert "ILIKE" not in plan.sql
+
+
+def test_pgvector_cosine_operator_is_preserved_as_one_postgresql_operator():
+    plan = compile_sql(
+        'SELECT embedding <=> ?::"public".vector(192)',
+        ("[0.0,1.0]",),
+    )
+    assert "embedding <=> %s" in plan.sql
+    assert "<= >" not in plan.sql
 
 
 def test_date_json_and_julianday_conversion():
@@ -340,6 +350,20 @@ def test_pg_pragma_identity_deferrable_and_large_numeric_roundtrip(pg):
             (schema,),
         ).fetchone()
         assert row == (True, False)
+
+
+def test_pg_finance_model_history_uses_hosted_relational_backend(pg):
+    connect, _, _ = pg
+    with connect() as connection:
+        connection.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        connection.execute("INSERT INTO users(id,username) VALUES(?,?)", (1, "test-only"))
+    init_finance_schema(connect)
+    saved = save_model_run(connect, 1, "lifecycle", {"age": 35}, {"median": 100.0})
+    rows = list_model_runs(connect, 1)
+    assert rows[0]["id"] == saved["id"]
+    assert rows[0]["inputs"] == {"age": 35}
+    assert rows[0]["outputs"] == {"median": 100.0}
+    assert list_model_runs(connect, 2) == []
 
 
 def test_pg_executemany_rowcount_explicit_returning_and_ignore(pg):

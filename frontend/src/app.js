@@ -11,6 +11,7 @@ import { Preferences } from "@capacitor/preferences";
 import { MUSIC_CREATION_TEMPLATES, buildMusicBlueprint, soundscapeEngine } from "./music-creator.js";
 import { initOblivionArchive, openOblivionArchive } from "./oblivion-archive.js";
 import { initProductDomains } from "./product-domains.js";
+import { initFinanceTools } from "./finance-tools.js";
 import {
   PRODUCT_NAV_ITEMS,
   globalAuthCopy,
@@ -72,10 +73,11 @@ const FUTURE_RADAR_MANUAL_DEBOUNCE_SECONDS = 20;
 const FUTURE_RADAR_SCAN_TYPES = Object.freeze(["quick", "deep"]);
 const FUTURE_RADAR_REQUEST_CONTROLLERS = new Set();
 let productDomains = null;
+let financeTools = null;
 const WORKSPACE_META = {
   legal: { symbol: "§", eyebrow: "FROST", themeName: "寒冰域", label: "寒冰域", hero: "有些东西决定世界如何运行，也决定什么不能被越过。", description: "当前从合同、合规、义务、期限与风险开始。", lens: "来源" },
-  general: { symbol: "✦", eyebrow: "AURORA", themeName: "极光域", label: "极光域", hero: "让散落的信息逐渐形成属于你的知识世界。", description: "当前从资料、文档、对话与可追溯问答开始。", lens: "来源" },
-  finance: { symbol: "↗", eyebrow: "EMBER", themeName: "烈火域", label: "烈火域", hero: "世界不只需要被理解，还需要决定向哪里前进。", description: "当前从数字、金融、风险、假设与决策分析开始。", lens: "来源" },
+  general: { symbol: "✦", eyebrow: "AURORA · 未来推演", themeName: "极光域", label: "极光域", hero: "在时间的流动中，看见尚未成形的可能。", description: "从规律与变化中辨认未来方向；未来雷达负责向外探索现实机会。", lens: "预测" },
+  finance: { symbol: "↗", eyebrow: "EMBER · 变化与判断", themeName: "烈火域", label: "烈火域", hero: "让变化显出形状，让判断点燃方向。", description: "在假设与证据之间推演影响，形成可复核的判断。", lens: "来源" },
 };
 const PHOTON_TRACKS = {
   text: { label: "文字", purpose: "文案、文章、诗歌、演讲与表达", format: ["作品标题", "核心表达", "完整文本", "一句备选方向"] },
@@ -137,6 +139,7 @@ const state = {
   futureRadar: {
     dashboard: null,
     view: "companies",
+    pipelineSummary: null,
     companies: [],
     totalCompanies: 0,
     deadlineJobs: [],
@@ -274,6 +277,7 @@ const elements = {
   futureRadarRun: $("future-radar-run"), futureRadarRunLabel: $("future-radar-run-label"),
   futureRadarDeepRun: $("future-radar-deep-run"), futureRadarDeepRunLabel: $("future-radar-deep-run-label"),
   futureRadarActionStatus: $("future-radar-action-status"), futureRadarDashboard: $("future-radar-dashboard"),
+  futureRadarPipeline: $("future-radar-pipeline"),
   futureRadarLastScan: $("future-radar-last-scan"), futureRadarLastSuccess: $("future-radar-last-success"),
   futureRadarSourceHealth: $("future-radar-source-health"), futureRadarLiveState: $("future-radar-live-state"),
   futureRadarLoading: $("future-radar-loading"), futureRadarError: $("future-radar-error"),
@@ -1021,6 +1025,7 @@ function renderWorkspaceTabs() {
 function renderWorkspaceChrome() {
   const workspace = activeWorkspace();
   const meta = WORKSPACE_META[state.workspace] || WORKSPACE_META.general;
+  financeTools?.show(state.workspace);
   document.body.dataset.workspace = state.workspace;
   document.querySelector('meta[name="theme-color"]').content = state.workspace === "legal" ? "#031521" : state.workspace === "finance" ? "#1a0b07" : "#07111f";
   elements.workspaceEyebrow.textContent = meta.eyebrow;
@@ -1037,7 +1042,9 @@ function renderWorkspaceChrome() {
     ? "询问条款、义务、期限、风险或合规证据…"
     : state.workspace === "finance"
       ? "询问指标变化、计算口径、假设或风险…"
-      : "发送消息，或询问已上传的资料…";
+      : state.workspace === "general"
+        ? "询问已上传资料，或探索预测模型中的假设与结果…"
+        : "发送消息，或询问已上传的资料…";
   elements.composerHint.textContent = `${workspace.boundary} 回答中的“来源”表示来源覆盖，不代表结论必然正确。`;
   elements.evidenceTitle.textContent = workspace.lens || "来源";
   elements.worldMapCurrent.textContent = meta.themeName;
@@ -1836,12 +1843,37 @@ function openMusicDimension() {
   closePanels();
   state.music.minimized = false;
   if (!elements.musicDialog.open) {
+    setOctaveSpaceView("overview");
     elements.musicDialog.showModal();
     playSceneEntry(elements.musicDialog);
     const shell = elements.musicDialog.querySelector(".music-dimension-shell");
     window.requestAnimationFrame(() => { if (shell) shell.scrollTop = 0; });
   }
   renderMusicUI();
+}
+
+function setOctaveSpaceView(view) {
+  const panels = {
+    overview: $("octave-overview-panel"),
+    studio: $("octave-studio-panel"),
+    quick: $("octave-quick-panel"),
+  };
+  const tabs = {
+    overview: $("octave-overview-tab"),
+    studio: $("octave-studio-tab"),
+    quick: $("octave-quick-tab"),
+  };
+  Object.entries(panels).forEach(([key, panel]) => {
+    panel.hidden = key !== view;
+  });
+  Object.entries(tabs).forEach(([key, tab]) => {
+    if (key === view) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  });
+  if (view === "studio") {
+    const frame = $("octave-studio-frame");
+    if (!frame.getAttribute("src")) frame.src = "/octave/";
+  }
 }
 
 async function minimizeMusicDimension() {
@@ -3022,6 +3054,37 @@ function renderFutureRadarDashboard(dashboard = state.futureRadar.dashboard) {
   elements.futureRadarLiveState.setAttribute("aria-label", `${liveCopy}；点击查看信源健康详情`);
 }
 
+function renderFutureRadarPipelineSummary(payload = state.futureRadar.pipelineSummary) {
+  const container = elements.futureRadarPipeline;
+  if (!container) return;
+  state.futureRadar.pipelineSummary = payload || null;
+  container.replaceChildren();
+  const heading = makeElement("strong", "radar-pipeline-heading", "数据处理链路");
+  container.appendChild(heading);
+  const stages = Array.isArray(payload?.stages) ? payload.stages : [];
+  if (!stages.length) {
+    container.appendChild(makeElement("span", "radar-pipeline-unavailable", "链路摘要暂不可用；岗位池和扫描功能仍可单独使用。"));
+    return;
+  }
+  const list = makeElement("div", "radar-pipeline-stages");
+  for (const stage of stages) {
+    const card = makeElement("article", `radar-pipeline-stage ${stage.status === "ready" ? "ready" : "pending"}`);
+    card.append(
+      makeElement("small", "", stage.status === "ready" ? "READY" : "WAITING"),
+      makeElement("strong", "", Number(stage.count || 0).toLocaleString("zh-CN")),
+      makeElement("span", "", stage.label || stage.id || "处理阶段"),
+    );
+    if (Number(stage.pending || 0) > 0) {
+      card.appendChild(makeElement("em", "", `待核验 ${Number(stage.pending).toLocaleString("zh-CN")}`));
+    }
+    list.appendChild(card);
+  }
+  container.appendChild(list);
+  const notes = makeElement("p", "radar-pipeline-note");
+  notes.textContent = `近期截止 ${Number(payload.closing_soon || 0).toLocaleString("zh-CN")} · 待查看推送 ${Number(payload.pending_notification_count || 0).toLocaleString("zh-CN")} · 截止日期与来源依据见下方岗位卡片`;
+  container.appendChild(notes);
+}
+
 function showFutureRadarBridgeDetails(filter = "overview") {
   activateFutureRadarTab("bridge");
   const loading = bridgeDetails.open(filter);
@@ -3457,7 +3520,7 @@ function renderFutureRadarRuns(runs = state.futureRadar.runs) {
 }
 
 function activateFutureRadarTab(tab) {
-  const next = ["jobs", "programs", "events", "sources", "runs", "saved", "applied", "wechat", "bridge"].includes(tab) ? tab : "jobs";
+  const next = ["jobs", "programs", "events", "sources", "runs", "saved", "applied", "wechat", "bridge", "graph", "timeseries"].includes(tab) ? tab : "jobs";
   state.futureRadar.activeTab = next;
   document.querySelectorAll("[data-radar-tab]").forEach((button) => {
     const active = button.dataset.radarTab === next;
@@ -3467,6 +3530,74 @@ function activateFutureRadarTab(tab) {
   document.querySelectorAll("[data-radar-panel]").forEach((panel) => {
     panel.classList.toggle("hidden", panel.dataset.radarPanel !== next);
   });
+}
+
+async function loadFutureRadarGraph() {
+  const host = $("future-radar-graph-view"); const status = $("future-radar-graph-status");
+  host.replaceChildren(); status.textContent = "正在将岗位池的公开关系同步到 Neo4j…";
+  try {
+    const graph = await api("/future-radar/graph");
+    if (graph.status !== "synced") { status.textContent = graph.message || `Neo4j 状态：${graph.status}`; return; }
+    const nodes = (graph.nodes || []).slice(0, 90); const ids = new Set(nodes.map((item) => item.id));
+    if (!nodes.length) { status.textContent = `Neo4j 已连接，当前没有可画关系的岗位。机会池为 ${graph.postgres_opportunities_considered || 0} 条；请先正常导入岗位，再刷新图谱。`; return; }
+    const groups = ["employer", "opportunity", "skill"];
+    const positions = new Map();
+    groups.forEach((kind, groupIndex) => {
+      const items = nodes.filter((item) => item.kind === kind);
+      items.forEach((item, index) => positions.set(item.id, { x: 115 + groupIndex * 300, y: 42 + index * Math.min(64, 500 / Math.max(1, items.length - 1)) }));
+    });
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 920 610"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Future Radar 企业岗位技能关系图");
+    (graph.relationships || []).filter((edge) => ids.has(edge.source) && ids.has(edge.target)).slice(0, 220).forEach((edge) => {
+      const from = positions.get(edge.source), to = positions.get(edge.target); if (!from || !to) return;
+      const line = document.createElementNS(svg.namespaceURI, "line"); line.setAttribute("x1", from.x); line.setAttribute("y1", from.y); line.setAttribute("x2", to.x); line.setAttribute("y2", to.y); line.setAttribute("class", `radar-graph-edge ${edge.kind.toLowerCase()}`); svg.append(line);
+    });
+    nodes.forEach((item) => {
+      const point = positions.get(item.id); if (!point) return;
+      const group = document.createElementNS(svg.namespaceURI, "g"); group.setAttribute("class", `radar-graph-node ${item.kind}`);
+      const circle = document.createElementNS(svg.namespaceURI, "circle"); circle.setAttribute("cx", point.x); circle.setAttribute("cy", point.y); circle.setAttribute("r", item.kind === "employer" ? "12" : "8");
+      const title = document.createElementNS(svg.namespaceURI, "title"); title.textContent = item.label; circle.append(title); group.append(circle);
+      const text = document.createElementNS(svg.namespaceURI, "text"); text.setAttribute("x", point.x + 16); text.setAttribute("y", point.y + 4); text.textContent = item.label.length > 24 ? `${item.label.slice(0, 23)}…` : item.label; group.append(text); svg.append(group);
+    });
+    host.append(svg);
+    status.textContent = `已同步 ${graph.opportunities} 个岗位，图中显示 ${nodes.length} 个实体和最多 220 条关系。${graph.privacy || ""}`;
+  } catch (error) { status.textContent = `图谱同步失败：${error.message}`; }
+}
+
+async function loadFutureRadarTimeseries() {
+  const host = $("future-radar-timeseries-chart"); const table = $("future-radar-timeseries-table");
+  const status = $("future-radar-timeseries-status"); host.replaceChildren(); table.replaceChildren();
+  status.textContent = "正在汇总近 90 天的扫描记录与机会变化…";
+  try {
+    const series = await api("/future-radar/timeseries?days=90");
+    const points = series.points || [];
+    if (!points.length) { status.textContent = "目前没有近 90 天扫描历史；完成一次正常扫描后这里会开始形成时间序列。"; return; }
+    const width = 900, height = 280, left = 52, right = 20, top = 20, bottom = 38;
+    const visible = points.slice(-45); const keys = ["new_events", "closed_events"];
+    const max = Math.max(1, ...visible.flatMap((item) => keys.map((key) => Number(item[key] || 0))));
+    const x = (index) => left + index * (width - left - right) / Math.max(1, visible.length - 1);
+    const y = (value) => height - bottom - Number(value || 0) * (height - top - bottom) / max;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "未来雷达新增与关闭岗位事件时间序列");
+    [0, .5, 1].forEach((ratio) => {
+      const yy = top + ratio * (height - top - bottom); const line = document.createElementNS(svg.namespaceURI, "line");
+      line.setAttribute("x1", left); line.setAttribute("x2", width - right); line.setAttribute("y1", yy); line.setAttribute("y2", yy); line.setAttribute("class", "radar-timeseries-grid"); svg.append(line);
+      const label = document.createElementNS(svg.namespaceURI, "text"); label.setAttribute("x", left - 8); label.setAttribute("y", yy + 4); label.setAttribute("text-anchor", "end"); label.setAttribute("class", "radar-timeseries-label"); label.textContent = String(Math.round(max * (1 - ratio))); svg.append(label);
+    });
+    const colors = { new_events: "#69dfc4", closed_events: "#ffac82" };
+    keys.forEach((key) => {
+      const polyline = document.createElementNS(svg.namespaceURI, "polyline");
+      polyline.setAttribute("points", visible.map((item, index) => `${x(index)},${y(item[key])}`).join(" "));
+      polyline.setAttribute("fill", "none"); polyline.setAttribute("stroke", colors[key]); polyline.setAttribute("stroke-width", "3"); svg.append(polyline);
+    });
+    [0, Math.floor((visible.length - 1) / 2), visible.length - 1].forEach((index) => {
+      const label = document.createElementNS(svg.namespaceURI, "text"); label.setAttribute("x", x(index)); label.setAttribute("y", height - 12); label.setAttribute("text-anchor", "middle"); label.setAttribute("class", "radar-timeseries-label"); label.textContent = visible[index]?.day?.slice(5) || ""; svg.append(label);
+    });
+    host.append(svg);
+    const recent = points.slice(-7).reverse();
+    recent.forEach((item) => table.append(makeElement("article", "radar-entity-card",
+      `${item.day} · 新增事件 ${item.new_events} · 更新 ${item.updated_events} · 关闭 ${item.closed_events} · 扫描 ${item.runs} 轮`)));
+    status.textContent = `${series.method} · ${points.length} 个有活动日期 · 曲线：青色=新增事件、橙色=关闭事件。${series.privacy || ""}`;
+  } catch (error) { status.textContent = `时间序列读取失败：${error.message}`; }
 }
 
 function setFutureRadarLoading(loading, errorMessage = "") {
@@ -3882,6 +4013,7 @@ async function loadFutureRadarSnapshot() {
   const sourcesRequestId = state.futureRadar.sourcesRequestId = (state.futureRadar.sourcesRequestId || 0) + 1;
   const requests = [
     ["dashboard", readFutureRadarDashboard()],
+    ["pipeline", api("/future-radar/pipeline-summary")],
     ["jobs", jobs],
     ["programs", api("/future-radar/programs")],
     ["events", api("/future-radar/events?limit=50")],
@@ -3910,6 +4042,8 @@ async function loadFutureRadarSnapshot() {
     if (key === "dashboard") {
       state.futureRadar.dashboard = payload;
       renderFutureRadarDashboard(payload);
+    } else if (key === "pipeline") {
+      renderFutureRadarPipelineSummary(payload);
     } else if (key === "jobs") {
       if (!payload) failures.push("jobs");
     } else if (key === "programs") {
@@ -5594,6 +5728,7 @@ function openRegistrationFromLink() {
 
 elements.authForm.addEventListener("submit", authenticate);
 productDomains = initProductDomains({ api, toast: showToast });
+financeTools = initFinanceTools(api);
 document.querySelectorAll("[data-product-map-open]").forEach((button) => {
   button.addEventListener("click", () => {
     button.closest("dialog")?.close();
@@ -5681,8 +5816,12 @@ document.querySelectorAll("[data-radar-tab]").forEach((button) => {
     if (button.dataset.radarTab === "bridge") bridgeDetails.open();
     if (button.dataset.radarTab === "saved") personalRadar.renderSaved();
     if (button.dataset.radarTab === "applied") personalRadar.showApplied();
+    if (button.dataset.radarTab === "graph") loadFutureRadarGraph();
+    if (button.dataset.radarTab === "timeseries") loadFutureRadarTimeseries();
   });
 });
+$("future-radar-graph-refresh")?.addEventListener("click", loadFutureRadarGraph);
+$("future-radar-timeseries-refresh")?.addEventListener("click", loadFutureRadarTimeseries);
 elements.futureRadarLiveState?.addEventListener("click", () => {
   state.futureRadar.sourceHealthFilter = elements.futureRadarLiveState.dataset.sourceFilter || "all";
   activateFutureRadarTab("sources");
@@ -5747,6 +5886,11 @@ elements.musicDialog.addEventListener("cancel", (event) => {
 elements.musicDialogMinimize.addEventListener("click", minimizeMusicDimension);
 elements.musicFooterMinimize.addEventListener("click", minimizeMusicDimension);
 $("music-mini-open").addEventListener("click", openMusicDimension);
+$("octave-overview-tab").addEventListener("click", () => setOctaveSpaceView("overview"));
+$("octave-studio-tab").addEventListener("click", () => setOctaveSpaceView("studio"));
+$("octave-quick-tab").addEventListener("click", () => setOctaveSpaceView("quick"));
+$("octave-enter-studio").addEventListener("click", () => setOctaveSpaceView("studio"));
+$("octave-enter-quick").addEventListener("click", () => setOctaveSpaceView("quick"));
 elements.musicEnable.addEventListener("click", generateLocalSoundscape);
 elements.musicDisable.addEventListener("click", disableMusicDimension);
 elements.musicRewrite.addEventListener("click", async () => {
