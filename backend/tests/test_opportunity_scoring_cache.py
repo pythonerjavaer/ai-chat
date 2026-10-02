@@ -658,7 +658,7 @@ def test_compact_http_payload_keeps_stats_and_default_legacy_aliases(harness, mo
     monkeypatch.setattr(main, "future_radar_service", SimpleNamespace(repository=harness.repository))
     monkeypatch.setattr(main.database, "get_recruitment_profile", lambda _user: {"updated_at": "v1"})
     monkeypatch.setattr(main, "_public_reference_url", public_url)
-    monkeypatch.setattr(main, "_public_radar_opportunity", lambda row, profile: harness.prepare(row))
+    monkeypatch.setattr(main, "_public_radar_opportunity", lambda row, profile, **_kwargs: harness.prepare(row))
     defaults = {name: (parameter.default.default if isinstance(parameter.default, Param) else parameter.default)
                 for name, parameter in signature(main.future_radar_opportunities).parameters.items() if name != "user"}
     response = main.future_radar_opportunities(user={"id": 99001}, **defaults)

@@ -1953,10 +1953,27 @@ class RadarRepository:
         prepare: Callable[[dict[str, Any]], dict[str, Any]],
         input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None,
         record_cache_scope: tuple[Any, ...] | None,
+        prepare_sanitized: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        if input_sanitizer is None or record_cache_scope is None:
+        """Optionally reuse public input with an equivalent ``prepare`` callback.
+
+        ``prepare_sanitized(raw_row, public_input)`` must return the same public
+        result as ``prepare(raw_row)``. It only avoids repeating the sanitizer;
+        the existing user/profile/rules scope continues to identify that result.
+        """
+        if input_sanitizer is None or (record_cache_scope is None and prepare_sanitized is None):
             return prepare(row)
         public_input = input_sanitizer(row)
+
+        def present():
+            # The raw row remains available for listing-kind decisions; only
+            # its already sanitized public projection is passed to scoring.
+            if prepare_sanitized is not None:
+                return prepare_sanitized(row, public_input)
+            return prepare(row)
+
+        if record_cache_scope is None:
+            return present()
         key = (*record_cache_scope, opaque_digest({
             "job": opportunity_scoring_input(public_input),
             # The public presenter also distinguishes complete recruitment
@@ -1964,7 +1981,7 @@ class RadarRepository:
             "program_listing": is_recruitment_program_listing(row),
         }))
         def compute():
-            prepared = prepare(row)
+            prepared = present()
             # Store only derived scoring/presentation fields. Repeating each
             # row's JD and provenance here would consume the cache budget
             # again even though the live pool already owns those fields.
@@ -1993,6 +2010,7 @@ class RadarRepository:
         company_aliases: dict[str, str],
         input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         record_cache_scope: tuple[Any, ...] | None = None,
+        prepare_sanitized: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
     ) -> _PreparedOpportunityPool:
         rows = self._opportunity_rows(
             filters=filters, public_url=public_url, company_aliases=company_aliases,
@@ -2002,6 +2020,7 @@ class RadarRepository:
         items = tuple(self._prepare_opportunity_record(
             row, prepare=prepare, input_sanitizer=input_sanitizer,
             record_cache_scope=record_cache_scope,
+            prepare_sanitized=prepare_sanitized,
         ) for row in rows)
         tier_counts = {key: 0 for key in (
             "T0", "T0.5", "T1", "T1.5", "T2", "T2.5", "T3", "UNRANKED", "BELOW_PRIORITY",
@@ -2231,6 +2250,7 @@ class RadarRepository:
         prepare: Callable[[dict[str, Any]], dict[str, Any]],
         company_aliases: dict[str, str], cache_scope: str | None,
         input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        prepare_sanitized: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
     ) -> _PreparedOpportunityPool:
         # Priority/tier/view/company/page changes project the same complete
         # scored set; switching browse scope must not rerun full-pool scoring.
@@ -2242,6 +2262,7 @@ class RadarRepository:
                 filters=base_filters, public_url=public_url,
                 prepare=prepare, company_aliases=company_aliases,
                 input_sanitizer=input_sanitizer, record_cache_scope=record_cache_scope,
+                prepare_sanitized=prepare_sanitized,
             )
 
         if cache_scope is None:
@@ -2281,12 +2302,14 @@ class RadarRepository:
         company_aliases: dict[str, str] | None = None, cache_scope: str | None = None,
         input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         application_states: dict[str, str] | None = None,
+        prepare_sanitized: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         filters = filters or {}
         pool = self._prepared_opportunities(
             filters=filters, public_url=public_url, prepare=prepare,
             company_aliases=company_aliases or {}, cache_scope=cache_scope,
             input_sanitizer=input_sanitizer,
+            prepare_sanitized=prepare_sanitized,
         )
         statuses_by_id = {pool.items[pool.aliases[job_id]]["id"]: status
                           for job_id, status in (application_states or {}).items() if job_id in pool.aliases}
@@ -2467,6 +2490,7 @@ class RadarRepository:
         input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         application_states: dict[str, str] | None = None,
         include_member_ids: bool = False,
+        prepare_sanitized: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         """Reuse a cached visible winner, including its discovery ID aliases."""
         company_aliases = company_aliases or {}
@@ -2499,6 +2523,7 @@ class RadarRepository:
         result = self._prepare_opportunity_record(
             row, prepare=prepare, input_sanitizer=input_sanitizer,
             record_cache_scope=self._record_cache_scope(prefix),
+            prepare_sanitized=prepare_sanitized,
         ) if row is not None else None
         if result is not None and include_member_ids:
             result["_member_ids"] = frozenset(row["_member_ids"])
@@ -2542,6 +2567,48 @@ class RadarRepository:
             ).fetchall()
             item["events"] = [self.decode_event(row) for row in events]
         return item
+
+    def get_notification_jobs(self, job_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Batch current public summaries for notification event entity IDs.
+
+        Job events reference the internal job ID. Keep their raw current-row
+        semantics, including closed/non-campus jobs, rather than rebuilding
+        the filtered/deduplicated opportunity pool. Notifications do not use
+        source evidence or event history, so neither belongs in this read.
+        """
+        ids = list(dict.fromkeys(job_ids))
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT {JOB_SUMMARY_SELECT}, j.requirements,
+                    p.program_name, p.recruitment_year
+                FROM radar_jobs j LEFT JOIN recruitment_programs p ON p.id=j.program_id
+                WHERE j.id IN ({placeholders})
+                """, ids,
+            ).fetchall()
+            sources = connection.execute(
+                f"""
+                SELECT js.job_id, js.source_id, ms.name, ms.source_type,
+                    ms.trust_level, js.source_url, js.verification_role,
+                    js.discovered_at, js.last_seen_at, js.active
+                FROM job_sources js JOIN monitor_sources ms ON ms.id=js.source_id
+                WHERE js.job_id IN ({placeholders})
+                ORDER BY js.verification_role DESC, js.discovered_at
+                """, ids,
+            ).fetchall()
+        jobs = {row["id"]: self._decode_job(row) for row in rows}
+        for job in jobs.values():
+            job["sources"] = []
+        for row in sources:
+            source = dict(row)
+            job = jobs.get(source.pop("job_id"))
+            if job is not None:
+                source["active"] = bool(source["active"])
+                job["sources"].append(source)
+        return jobs
 
     def list_programs(self, *, page: int = 1, page_size: int = 50,
                       status: str = "open", q: str | None = None,
@@ -2720,6 +2787,7 @@ class RadarRepository:
         cache_scope: str | None = None,
         input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         application_states: dict[str, str] | None = None,
+        prepare_sanitized: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Return changed opportunity summaries since an event cursor.
 
@@ -2817,6 +2885,7 @@ class RadarRepository:
             prepared = self._prepare_opportunity_record(
                 job, prepare=prepare, input_sanitizer=input_sanitizer,
                 record_cache_scope=record_cache_scope,
+                prepare_sanitized=prepare_sanitized,
             )
             prepared["application_status"] = statuses_by_id.get(prepared.get("id"), "not_applied")
             changes.append({

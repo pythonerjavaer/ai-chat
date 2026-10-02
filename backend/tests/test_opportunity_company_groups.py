@@ -239,7 +239,7 @@ def test_api_defaults_to_jobs_and_company_aliases_do_not_masquerade_as_job_lists
     monkeypatch.setattr(main, "future_radar_service", SimpleNamespace(repository=pool.repository))
     monkeypatch.setattr(main.database, "get_recruitment_profile", lambda _id: {})
     monkeypatch.setattr(main, "_public_reference_url", pool.public_url)
-    monkeypatch.setattr(main, "_public_radar_opportunity", lambda row, _profile: pool.prepare(row))
+    monkeypatch.setattr(main, "_public_radar_opportunity", lambda row, _profile, **_kwargs: pool.prepare(row))
     monkeypatch.setattr(main, "_radar_company_aliases", lambda: {})
     monkeypatch.setattr(main, "_radar_scoring_scope", lambda _id, _profile: "isolated-public-fixture")
     monkeypatch.setattr(main, "_radar_search_metadata", lambda: {})

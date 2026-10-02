@@ -3573,13 +3573,15 @@ async function loadFutureRadarGraph() {
   loadFutureRadarGraph.loading = true;
   const host = $("future-radar-graph-view"); const status = $("future-radar-graph-status");
   const refresh = $("future-radar-graph-refresh");
+  const hasSnapshot = Boolean(host.querySelector("svg"));
   if (refresh) refresh.disabled = true;
   try {
-    host.replaceChildren(); status.textContent = "正在将岗位池的公开关系同步到 Neo4j…首次连接可能需要最多 60 秒。";
+    radarPollingGate.resume({ allowImmediate: true });
+    status.textContent = `正在将岗位池的公开关系同步到 Neo4j…首次连接可能需要最多 60 秒。${hasSnapshot ? "等待期间展示上次成功快照。" : ""}`;
     const graph = await api("/future-radar/graph", { timeoutMs: 60000 });
-    if (graph.status !== "synced") { status.textContent = graph.message || `Neo4j 状态：${graph.status}`; return; }
+    if (graph.status !== "synced") { showGraphFailure(graph.message || `Neo4j 状态：${graph.status}`); return; }
     const nodes = (graph.nodes || []).slice(0, 90);
-    if (!nodes.length) { status.textContent = `Neo4j 已连接，当前没有可画关系的岗位。机会池为 ${graph.postgres_opportunities_considered || 0} 条；请先正常导入岗位，再刷新图谱。`; return; }
+    if (!nodes.length) { host.replaceChildren(); delete host.dataset.graphSnapshotStatus; host.dataset.graphSnapshotStale = "false"; status.textContent = `Neo4j 已连接，当前没有可画关系的岗位。机会池为 ${graph.postgres_opportunities_considered || 0} 条；请先正常导入岗位，再刷新图谱。`; return; }
     const groups = ["employer", "opportunity", "skill"];
     const rowHeight = 44;
     const svgHeight = Math.max(610, 84 + (Math.max(...groups.map((kind) => nodes.filter((item) => item.kind === kind).length)) - 1) * rowHeight);
@@ -3615,9 +3617,11 @@ async function loadFutureRadarGraph() {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(item); }
       });
     });
-    host.append(svg);
+    host.replaceChildren(svg);
     const storedRelationships = Number(graph.relationships_stored ?? graph.relationships_written ?? graph.relationships?.length ?? 0);
     const fullStatus = `已同步 ${graph.opportunities} 个岗位，图中显示 ${nodes.length} 个实体和 ${visibleEdges.length} 条关系；Neo4j 当前岗位范围内共 ${storedRelationships} 条关系。仅同步公开招聘信息，个人投递状态不会写入图谱。`;
+    host.dataset.graphSnapshotStatus = fullStatus;
+    host.dataset.graphSnapshotStale = "false";
     status.textContent = fullStatus;
     function selectNode(item) {
       selectedId = selectedId === item.id ? null : item.id;
@@ -3634,12 +3638,21 @@ async function loadFutureRadarGraph() {
         line.style.opacity = !selectedId || highlighted ? "1" : "0.08";
         line.style.strokeWidth = highlighted ? "3px" : "";
       });
-      status.textContent = selectedId ? `${fullStatus} 已选择“${item.label}”，图中关联 ${adjacent.length} 条关系；再次选择可复原。` : fullStatus;
+      const snapshotStatus = host.dataset.graphSnapshotStale === "true"
+        ? `${fullStatus} 当前保留上次成功快照，本次刷新未成功。`
+        : loadFutureRadarGraph.loading ? `${fullStatus} 正在刷新，当前为上次成功快照。` : fullStatus;
+      status.textContent = selectedId ? `${snapshotStatus} 已选择“${item.label}”，图中关联 ${adjacent.length} 条关系；再次选择可复原。` : snapshotStatus;
     }
-  } catch (error) { status.textContent = `图谱同步失败：${error.message}`; }
+  } catch (error) { showGraphFailure(error.message); }
   finally {
     loadFutureRadarGraph.loading = false;
     if (refresh) refresh.disabled = false;
+  }
+  function showGraphFailure(message) {
+    if (hasSnapshot) {
+      host.dataset.graphSnapshotStale = "true";
+      status.textContent = `${host.dataset.graphSnapshotStatus || ""} 图谱同步失败：${message}。当前保留上次成功快照，请稍后重试。`;
+    } else status.textContent = `图谱同步失败：${message}`;
   }
 }
 

@@ -428,13 +428,15 @@ def test_api_priority_bool_defaults_false_and_validates_without_real_auth_or_lif
     from fastapi.params import Query
     from fastapi.testclient import TestClient
     from backend import main
+    from backend.future_radar import personal
 
     p = priority_pool
     p.insert_many([{"key": "api-priority", "tier": "T2"}, {"key": "api-secondary", "tier": "不建议投"}])
     monkeypatch.setattr(main, "future_radar_service", SimpleNamespace(repository=p.repository))
     monkeypatch.setattr(main.database, "get_recruitment_profile", lambda _id: {})
+    monkeypatch.setattr(personal, "application_states", lambda _connect, _user: {})
     monkeypatch.setattr(main, "_public_reference_url", p.public_url)
-    monkeypatch.setattr(main, "_public_radar_opportunity", lambda row, _profile: p.prepare(row))
+    monkeypatch.setattr(main, "_public_radar_opportunity", lambda row, _profile, **_kwargs: p.prepare(row))
     monkeypatch.setattr(main, "_radar_company_aliases", lambda: {})
     monkeypatch.setattr(main, "_radar_scoring_scope", lambda _id, _profile: "isolated-priority-api")
     monkeypatch.setattr(main, "_radar_search_metadata", lambda: {})

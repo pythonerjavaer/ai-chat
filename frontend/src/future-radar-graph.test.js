@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { createRadarPollingGate } from "./radar-polling.js";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
 const start = source.indexOf("async function loadFutureRadarGraph()");
@@ -10,11 +11,12 @@ assert.ok(start >= 0 && end > start);
 
 function runtime() {
   function element(tag) {
-    return { tag, children: [], attributes: {}, style: {}, listeners: {}, namespaceURI: "http://www.w3.org/2000/svg",
+    return { tag, children: [], attributes: {}, style: {}, dataset: {}, listeners: {}, namespaceURI: "http://www.w3.org/2000/svg",
       setAttribute(name, value) { this.attributes[name] = value; },
       addEventListener(name, listener) { this.listeners[name] = listener; },
       append(...nodes) { this.children.push(...nodes); },
-      replaceChildren() { this.children = []; },
+      replaceChildren(...nodes) { this.children = nodes; },
+      querySelector(selector) { return this.children.find((child) => child.tag === selector) || null; },
     };
   }
   const elements = {
@@ -23,15 +25,22 @@ function runtime() {
     "future-radar-graph-refresh": { disabled: false },
   };
   const calls = [];
-  let resolve, reject;
-  const response = new Promise((yes, no) => { resolve = yes; reject = no; });
+  let stored = null, active;
+  const gate = createRadarPollingGate({ now: () => 1000, read: () => stored,
+    write: (value) => { stored = value; }, locks: () => null });
   const context = vm.createContext({
     $: (id) => elements[id],
-    api: (...args) => { calls.push(args); return response; },
+    radarPollingGate: gate,
+    api: (...args) => {
+      gate.assertAllowed();
+      calls.push(args);
+      return new Promise((resolve, reject) => { active = { resolve, reject }; });
+    },
     document: { createElementNS: (_namespace, tag) => element(tag) },
   });
   vm.runInContext(source.slice(start, end), context);
-  return { elements, calls, resolve, reject, load: context.loadFutureRadarGraph };
+  return { elements, calls, gate, resolve: (value) => active.resolve(value),
+    reject: (error) => active.reject(error), load: context.loadFutureRadarGraph };
 }
 
 test("graph gives a cold connection 60 seconds and allows only one pending sync", async () => {
@@ -116,4 +125,68 @@ test("dense graphs keep 44px rows, scroll vertically, and report actual drawn ed
   assert.equal(r.elements["future-radar-graph-status"].textContent, status);
   job.listeners.keydown({ key: " ", preventDefault() {} });
   assert.equal(job.attributes["aria-pressed"], "true");
+});
+
+test("manual graph refresh clears automatic backoff from a failed sibling read", async () => {
+  const r = runtime();
+  r.gate.failure({ code: "REQUEST_TIMEOUT" });
+  assert.ok(r.gate.delay() > 0);
+  const pending = r.load();
+  assert.equal(r.calls.length, 1);
+  assert.equal(r.gate.delay(), 0);
+  r.resolve({ status: "synced", nodes: [], postgres_opportunities_considered: 0 });
+  await pending;
+  assert.equal(r.elements["future-radar-graph-refresh"].disabled, false);
+});
+
+test("manual graph refresh still respects a server Retry-After", async () => {
+  const r = runtime();
+  r.gate.failure({ status: 429, retryAfter: "120" });
+  await r.load();
+  assert.equal(r.calls.length, 0);
+  assert.equal(r.gate.delay(), 120000);
+  assert.equal(r.elements["future-radar-graph-refresh"].disabled, false);
+  assert.match(r.elements["future-radar-graph-status"].textContent, /等待后重试/);
+});
+
+test("failed refresh retains the previous graph and marks its interactive snapshot as stale", async () => {
+  const r = runtime();
+  const graph = { status: "synced", opportunities: 1, relationships_stored: 2,
+    nodes: [
+      { id: "employer:1", kind: "employer", label: "企业" },
+      { id: "opportunity:1", kind: "opportunity", label: "岗位" },
+      { id: "skill:Python", kind: "skill", label: "Python" },
+    ], relationships: [
+      { source: "employer:1", target: "opportunity:1", kind: "POSTS" },
+      { source: "opportunity:1", target: "skill:Python", kind: "REQUIRES" },
+    ],
+  };
+  const first = r.load();
+  r.resolve(graph);
+  await first;
+  const host = r.elements["future-radar-graph-view"], svg = host.children[0];
+  const summary = r.elements["future-radar-graph-status"].textContent;
+  const pending = r.load();
+  assert.equal(host.children[0], svg);
+  assert.match(r.elements["future-radar-graph-status"].textContent, /等待期间展示上次成功快照/);
+  r.reject(new Error("unavailable"));
+  await pending;
+  assert.equal(host.children[0], svg);
+  assert.equal(host.dataset.graphSnapshotStale, "true");
+  assert.ok(r.elements["future-radar-graph-status"].textContent.startsWith(summary));
+  assert.match(r.elements["future-radar-graph-status"].textContent, /上次成功快照/);
+  svg.children.find((child) => child.attributes.class === "radar-graph-node skill").listeners.click();
+  assert.match(r.elements["future-radar-graph-status"].textContent, /上次成功快照.*已选择“Python”/);
+  const unsuccessful = r.load();
+  r.resolve({ status: "not_configured", message: "连接不可用" });
+  await unsuccessful;
+  assert.equal(host.children[0], svg);
+  assert.match(r.elements["future-radar-graph-status"].textContent, /连接不可用.*上次成功快照/);
+  const recovered = r.load();
+  r.resolve(graph);
+  await recovered;
+  assert.equal(host.children.length, 1);
+  assert.notEqual(host.children[0], svg);
+  assert.equal(host.dataset.graphSnapshotStale, "false");
+  assert.equal(r.elements["future-radar-graph-status"].textContent, summary);
 });

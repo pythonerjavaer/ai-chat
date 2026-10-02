@@ -1678,10 +1678,15 @@ def _radar_company_aliases() -> dict[str, str]:
     }
 
 
-def _public_radar_opportunity(job: dict, profile: dict, *, include_detail: bool = False) -> dict:
+def _public_radar_opportunity(
+    job: dict, profile: dict, *, include_detail: bool = False,
+    public_input: dict | None = None,
+) -> dict:
     # Sanitize before scoring so derived labels cannot copy private transport
     # fields. Explicit original ratings and official verification stay separate.
-    item = score_job(_public_search_update(job, include_detail=include_detail), profile)
+    if public_input is None:
+        public_input = _public_search_update(job, include_detail=include_detail)
+    item = score_job(public_input, profile)
     program_listing = is_recruitment_program_listing(job)
     item["listing_kind"] = "recruitment_program" if program_listing else "job"
     item["is_specific_job"] = not program_listing
@@ -2086,6 +2091,7 @@ def future_radar_opportunities(
         public_url=_public_reference_url,
         prepare=lambda job: _public_radar_opportunity(job, profile),
         input_sanitizer=_public_search_update,
+        prepare_sanitized=lambda job, public: _public_radar_opportunity(job, profile, public_input=public),
         company_aliases=_radar_company_aliases(),
         cache_scope=_radar_scoring_scope(user["id"], profile),
     )
@@ -2122,6 +2128,9 @@ def future_radar_opportunity(job_id: str, user: User) -> dict:
         application_states=personal.application_states(database.connect, user["id"]),
         prepare=lambda item: _public_radar_opportunity(item, profile, include_detail=True),
         input_sanitizer=_public_search_update_detail,
+        prepare_sanitized=lambda item, public: _public_radar_opportunity(
+            item, profile, include_detail=True, public_input=public,
+        ),
         cache_scope=_radar_scoring_scope(user["id"], profile) + ":detail",
     )
     if not job:
@@ -2196,6 +2205,7 @@ def radar_set_application(job_id: str, request: RadarApplicationRequest, user: U
         job_id, public_url=_public_reference_url, company_aliases=_radar_company_aliases(),
         prepare=lambda item: _public_radar_opportunity(item, profile),
         input_sanitizer=_public_search_update,
+        prepare_sanitized=lambda item, public: _public_radar_opportunity(item, profile, public_input=public),
         cache_scope=_radar_scoring_scope(user["id"], profile), include_member_ids=True,
     )
     if not job:
@@ -2284,12 +2294,15 @@ def radar_notifications(user: User) -> dict:
     events, through = personal.pending_events(database.connect, user["id"])
     application_states = personal.application_states(database.connect, user["id"])
     profile = database.get_recruitment_profile(user["id"])
+    current_jobs = future_radar_service.repository.get_notification_jobs(
+        [event["entity_id"] for event in events],
+    )
     items = []
     seen = set()
     for event in events:
         if event["entity_id"] in seen:
             continue
-        current = future_radar_service.repository.get_job(event["entity_id"])
+        current = current_jobs.get(event["entity_id"])
         if current is None:
             continue
         job = _public_radar_opportunity(current, profile)
@@ -2468,6 +2481,7 @@ def future_radar_changes(
         public_url=_public_reference_url,
         prepare=lambda job: _public_radar_opportunity(job, profile),
         input_sanitizer=_public_search_update,
+        prepare_sanitized=lambda job, public: _public_radar_opportunity(job, profile, public_input=public),
         company_aliases=_radar_company_aliases(),
         cache_scope=_radar_scoring_scope(user["id"], profile),
         application_states=personal.application_states(database.connect, user["id"]),
