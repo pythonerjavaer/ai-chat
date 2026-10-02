@@ -446,7 +446,7 @@ export function initProductDomains({ api, toast }) {
       const controls = el("div", "domain-card-actions");
       const source = el("a", "", "查看来源"); source.href = item.source_url; source.target = "_blank"; source.rel = "noopener noreferrer"; controls.append(source);
       if (item.rights_status === "auto_import") controls.append(action("加入跃迁域", () => importLibraryBook(item), "domain-primary"));
-      else { const disabled = action("需要人工确认", () => {}); disabled.disabled = true; controls.append(disabled); }
+      else controls.append(el("span", "library-import-review", "导入前请通过“查看来源”核实授权，再自行上传有权使用的文件。"));
       node.prepend(meta); node.append(controls); return node;
     }, "没有找到符合当前来源和关键词的书目。");
     list($("leap-library-imports"), leap.libraryImports, (item) => {

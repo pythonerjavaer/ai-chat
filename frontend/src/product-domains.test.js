@@ -41,6 +41,8 @@ test("Leap public-domain library exposes trusted sources, progress and reader an
     assert.match(source + html, new RegExp(marker.replaceAll("/", "\\/")));
   }
   assert.match(source, /attempt\s*<\s*120/);
+  assert.match(source, /"library-import-review"/);
+  assert.doesNotMatch(source, /action\("需要人工确认",\s*\(\)\s*=>\s*\{\}\)/);
 });
 
 test("Leap translation providers support scoped selection and bounded bilingual reading", () => {
