@@ -434,6 +434,9 @@ body[data-workspace="finance"] .app-view::after { background: radial-gradient(ci
 .radar-pipeline-stage.ready { border-color: rgba(91,224,181,.18); }
 .radar-pipeline-stage.pending { border-color: rgba(255,172,87,.24); }
 .radar-pipeline-note, .radar-pipeline-unavailable { margin: 0; color: #79919c; font-size: 8px; line-height: 1.5; }
+.radar-pipeline-retry { justify-self: start; padding: 5px 9px; border: 1px solid rgba(99,216,230,.38); border-radius: 7px; background: rgba(47,137,153,.14); color: #bcecf0; font: inherit; font-size: 9px; cursor: pointer; }
+.radar-pipeline-retry:hover, .radar-pipeline-retry:focus-visible { border-color: #63d8e6; outline: 2px solid rgba(99,216,230,.28); outline-offset: 2px; }
+.radar-pipeline-retry:disabled { opacity: .55; cursor: wait; }
 .radar-metric-note { margin: -4px 0 10px; color: #79919c; font-size: 10px; line-height: 1.5; }
 .radar-metric { position: relative; min-width: 0; display: grid; gap: 2px; padding: 9px 8px; overflow: hidden; border: 1px solid rgba(130,218,228,.11); border-radius: 10px; background: rgba(6,23,32,.34); }
 .radar-metric[type="button"] { text-align: left; cursor: pointer; }

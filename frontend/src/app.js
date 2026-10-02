@@ -3064,6 +3064,25 @@ function renderFutureRadarPipelineSummary(payload = state.futureRadar.pipelineSu
   const stages = Array.isArray(payload?.stages) ? payload.stages : [];
   if (!stages.length) {
     container.appendChild(makeElement("span", "radar-pipeline-unavailable", "链路摘要暂不可用；岗位池和扫描功能仍可单独使用。"));
+    const retry = makeElement("button", "radar-pipeline-retry", "重试读取链路");
+    retry.type = "button";
+    retry.addEventListener("click", async () => {
+      const requestToken = state.token;
+      const requestId = state.futureRadar.snapshotRequestId;
+      retry.disabled = true;
+      retry.textContent = "正在读取…";
+      try {
+        const payload = await api("/future-radar/pipeline-summary");
+        if (requestToken === state.token && requestId === state.futureRadar.snapshotRequestId) renderFutureRadarPipelineSummary(payload);
+      }
+      catch (error) {
+        if (requestToken !== state.token || requestId !== state.futureRadar.snapshotRequestId) return;
+        retry.disabled = false;
+        retry.textContent = "重试读取链路";
+        container.querySelector(".radar-pipeline-unavailable").textContent = `链路摘要读取失败：${translateError(error.message)}`;
+      }
+    });
+    container.appendChild(retry);
     return;
   }
   const list = makeElement("div", "radar-pipeline-stages");
@@ -4028,7 +4047,13 @@ async function loadFutureRadarSnapshot() {
   const sourcesRequestId = state.futureRadar.sourcesRequestId = (state.futureRadar.sourcesRequestId || 0) + 1;
   const requests = [
     ["dashboard", readFutureRadarDashboard()],
-    ["pipeline", api("/future-radar/pipeline-summary")],
+    ["pipeline", api("/future-radar/pipeline-summary").then((payload) => {
+      if (sessionToken === state.token && snapshotRequestId === state.futureRadar.snapshotRequestId) renderFutureRadarPipelineSummary(payload);
+      return payload;
+    }).catch((error) => {
+      if (sessionToken === state.token && snapshotRequestId === state.futureRadar.snapshotRequestId) renderFutureRadarPipelineSummary(null);
+      throw error;
+    })],
     ["jobs", jobs],
     ["programs", api("/future-radar/programs")],
     ["events", api("/future-radar/events?limit=50")],
@@ -4057,8 +4082,6 @@ async function loadFutureRadarSnapshot() {
     if (key === "dashboard") {
       state.futureRadar.dashboard = payload;
       renderFutureRadarDashboard(payload);
-    } else if (key === "pipeline") {
-      renderFutureRadarPipelineSummary(payload);
     } else if (key === "jobs") {
       if (!payload) failures.push("jobs");
     } else if (key === "programs") {

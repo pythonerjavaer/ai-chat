@@ -86,7 +86,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     "recruitmentJobs", "recruitmentError", "recruitmentStatus", "futureRadarLoading", "futureRadarError",
     "futureRadarLiveState", "futureRadarOpportunitySummary", "futureRadarOpportunityCount",
     "futureRadarPagination", "futureRadarPagePrev", "futureRadarPageNext", "futureRadarPageStatus",
-    "futureRadarDashboard", "futureRadarLastScan", "futureRadarLastSuccess", "futureRadarSourceHealth",
+    "futureRadarDashboard", "futureRadarPipeline", "futureRadarLastScan", "futureRadarLastSuccess", "futureRadarSourceHealth",
     "recruitmentDeadlineAlerts",
     "futureRadarFilterStatus", "futureRadarFilterEvent", "futureRadarFilterVerification", "futureRadarEvents",
     "recruitmentRoles", "recruitmentIndustries", "recruitmentLocations",
@@ -192,6 +192,7 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
     extract("function activateFutureRadarTab(", "\nfunction setFutureRadarLoading"),
     extract("function setFutureRadarLoading(", "\nfunction mergeFutureRadarEvents"),
     extract("function renderFutureRadarDashboard(", "\nfunction renderFutureRadarPrograms"),
+    extract("function renderFutureRadarPipelineSummary(", "\nfunction showFutureRadarBridgeDetails"),
     extract("function eventTimestamp(", "\nfunction renderFutureRadarSources"),
     extract("function renderFutureRadarPagination(", "\nfunction syncFutureRadarSourceFilter"),
     extract("function resetFutureRadarFilters(", "\nfunction applyIncrementalRadarMetrics"),
@@ -816,6 +817,40 @@ test("source health loads and counts errors before a slow opportunity pool finis
   assert.equal(r.elements.futureRadarLiveState.dataset.sourceFilter, "error");
   pool.resolve(tierPayload("T2"));
   await snapshot;
+});
+
+test("pipeline controls render before a slow opportunity pool", async () => {
+  const r = runtime({ fail: false });
+  const pool = deferred();
+  r.controls.opportunityHandler = () => pool.promise;
+  r.controls.apiHandler = (path) => path === "/future-radar/pipeline-summary"
+    ? { stages: [{ id: "ingest", label: "数据接入", count: 12, status: "ready" }] }
+    : undefined;
+  const snapshot = r.run("loadFutureRadarSnapshot()");
+  await new Promise(setImmediate);
+  const stage = descendants(r.elements.futureRadarPipeline).find((el) => el.className.split(" ").includes("radar-pipeline-stage"));
+  assert.equal(stage?.tag, "button");
+  assert.equal(typeof stage.listeners.click, "function");
+  assert.equal(r.state.futureRadar.jobsLoading, true);
+  pool.resolve(tierPayload("T2"));
+  await snapshot;
+});
+
+test("pipeline summary failure offers a working retry", async () => {
+  const r = runtime({ fail: false });
+  let attempts = 0;
+  r.controls.apiHandler = (path) => {
+    if (path !== "/future-radar/pipeline-summary") return undefined;
+    attempts += 1;
+    if (attempts === 1) throw new Error("暂不可用");
+    return { stages: [{ id: "ingest", label: "数据接入", count: 12, status: "ready" }] };
+  };
+  await r.run("loadFutureRadarSnapshot()");
+  const retry = descendants(r.elements.futureRadarPipeline).find((el) => el.className === "radar-pipeline-retry");
+  assert.equal(retry?.tag, "button");
+  await retry.listeners.click();
+  assert.equal(attempts, 2);
+  assert.ok(descendants(r.elements.futureRadarPipeline).some((el) => el.className.split(" ").includes("radar-pipeline-stage")));
 });
 
 test("initial opportunities render before slow metadata, whose completion cannot repaint a later selection", async () => {
