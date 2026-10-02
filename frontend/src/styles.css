@@ -2045,6 +2045,10 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 .domain-status[data-tone="ok"] { color: #92eacc; }
 .domain-status[data-tone="error"] { color: #ff9c9c; }
 .domain-body { min-height: 0; overflow: auto; padding: 24px 28px 30px; }
+/* The injected product switcher is a sixth row; only the body may shrink/scroll. */
+.domain-shell { display: flex; flex-direction: column; }
+.domain-shell > :not(.domain-body) { flex: 0 0 auto; }
+.domain-shell > .domain-body { flex: 1 1 0; min-height: 0; }
 .domain-panel { min-height: 100%; }
 .domain-panel[hidden] { display: none !important; }
 

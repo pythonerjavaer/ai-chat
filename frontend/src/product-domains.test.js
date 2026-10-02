@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   BrowserLocalTranslationProvider,
+  financeLabel,
   buildInterpretationRequest,
   buildTranslationRequest,
   classifySelectionScope,
@@ -21,6 +22,13 @@ const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
 const financeSource = readFileSync(new URL("./finance-tools.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+
+test("financial account labels provide Chinese alongside English", () => {
+  assert.equal(financeLabel("Cash"), "现金（Cash）");
+  assert.equal(financeLabel("Customer Deposits"), "客户押金（Customer Deposits）");
+  assert.equal(financeLabel("EXPENSE"), "费用（EXPENSE）");
+  assert.equal(financeLabel("自定义科目"), "自定义科目");
+});
 
 test("Leap supports an evidence-backed reading journey and isolated demo", () => {
   for (const marker of ["/leap/demo/load", "window.getSelection", "leap-selection-card", "/leap/timeline", "/leap/search"]) {
@@ -311,12 +319,27 @@ test("product pages keep small screens readable and contain dense model tables",
   assert.ok(css.includes(".pulse-statement-row { grid-template-columns:minmax(0,1fr);"));
 });
 
-test("Leap reports its real PostgreSQL/pgvector retrieval status without replacing SQLite originals", () => {
+test("Leap reports the configured primary database rather than hardcoding SQLite", () => {
   assert.match(html, /id="leap-knowledge-storage-status"/);
   assert.match(source, /api\("\/leap\/knowledge\/storage"\)/);
   assert.match(source, /PostgreSQL \+ pgvector 已连接/);
-  assert.match(source, /原文与业务数据仍保存在 SQLite/);
-  assert.match(source, /SQLite 回退检索/);
+  assert.match(source, /result.primary/);
+  assert.match(source, /原文与业务数据保存在 \$\{primary\}/);
+  assert.match(source, /\$\{primary\} 回退检索/);
+  assert.doesNotMatch(source, /原文与业务数据仍保存在 SQLite/);
+});
+
+test("mode switches discard stale workspace loads and refresh storage labels", () => {
+  assert.match(source, /request !== leapLoadGeneration \|\| mode !== leap.mode/);
+  assert.match(source, /request !== pulseLoadGeneration \|\| mode !== pulse.mode/);
+  assert.match(source, /request !== storageLoadGeneration/);
+  assert.match(source, /Promise.all\(\[loadLeap\(\), loadLeapKnowledgeStorageStatus\(\)\]\)/);
+});
+
+test("product navigation cannot steal the body scroll row or overlap status text", () => {
+  assert.match(css, /\.domain-shell \{ display: flex; flex-direction: column; \}/);
+  assert.match(css, /\.domain-shell > :not\(\.domain-body\) \{ flex: 0 0 auto; \}/);
+  assert.match(css, /\.domain-shell > \.domain-body \{ flex: 1 1 0; min-height: 0; \}/);
 });
 
 test("Pulse exposes server-side financial EDA statistics, charts and PCA feature analysis", () => {

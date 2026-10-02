@@ -291,10 +291,18 @@ function detail(label, value) {
   const node = el("div", "detail-row"); node.append(el("small", "", label), el("span", "", value == null ? "—" : String(value))); return node;
 }
 
+export function financeLabel(value) {
+  const labels = { Cash: "现金", "Accounts Receivable": "应收账款", "Rental Assets": "租赁资产", "Accumulated Depreciation": "累计折旧", "Customer Deposits": "客户押金", "Accounts Payable": "应付账款", "Owner's Equity": "所有者权益", "Rental Revenue": "租金收入", "Cleaning Expense": "洗衣清洁费用", "Repair Expense": "维修费用", "Delivery Expense": "配送费用", "Marketing Expense": "营销费用", "Rent Expense": "场地租金", "Depreciation Expense": "折旧费用", ASSET: "资产", LIABILITY: "负债", EQUITY: "权益", REVENUE: "收入", EXPENSE: "费用" };
+  return labels[value] ? `${labels[value]}（${value}）` : String(value || "未分类");
+}
+
 export function initProductDomains({ api, toast }) {
   const leapDialog = $("leap-domain-dialog");
   const pulseDialog = $("pulse-domain-dialog");
   let authGeneration = 0;
+  let leapLoadGeneration = 0;
+  let pulseLoadGeneration = 0;
+  let storageLoadGeneration = 0;
   const leap = { mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [], universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false, activeMaterial: null, selection: null, readerOffset: 0, readerParagraphs: [], translationMode: "original", translationProvider: "browser_local", translationProviders: {}, providerMetadata: [], translationCache: new Map(), translationGeneration: 0, cloudConsent: new Set(), cloudProviderFailed: false, lastTranslation: null, currentTranslationScope: null, assistantAction: "translate", currentAssistantScope: null, assistantResults: new Map(), assistantLast: {}, assistantStates: { translate: { status: "idle", error: "" }, interpret: { status: "idle", error: "" } }, assistantGeneration: 0, assistantController: null, interpretationCapability: null, interpretationProvider: "auto", interpretationConsent: new Set(), translationSession: { browser_local: 0, ollama_local: 0, azure_translator: 0, cacheSaved: 0 } };
   const pulse = { mode: "real", currency: "AUD", customers: [], skus: [], assets: [], orders: [], payments: [], inspections: [], expenses: [], selectedOrder: null };
 
@@ -319,21 +327,25 @@ export function initProductDomains({ api, toast }) {
   }
   async function loadLeap() {
     const generation = authGeneration;
+    const request = ++leapLoadGeneration;
+    const mode = leap.mode;
     status("leap-status", leapDemo() ? "正在打开隔离的跃迁域 Demo…" : "正在读取你的知识空间…");
     if (leapDemo()) {
       let data = await api("/leap/demo");
       if (!data.loaded) data = await api("/leap/demo/load", { method: "POST" });
-      if (generation !== authGeneration) return;
+      if (generation !== authGeneration || request !== leapLoadGeneration || mode !== leap.mode) return;
       applyLeapDemo(data);
     } else {
       const rows = await Promise.all([api("/leap/home"), api("/leap/materials?limit=100"), api("/leap/excerpts"), api("/leap/notes"), api("/leap/wormholes"), api("/leap/clashes"), api("/leap/timeline"), api("/leap/universe")]);
-      if (generation !== authGeneration) return;
+      if (generation !== authGeneration || request !== leapLoadGeneration || mode !== leap.mode) return;
       leap.home = rows[0]; leap.materials = rows[1].items || []; leap.excerpts = rows[2]; leap.notes = rows[3]; leap.wormholes = rows[4]; leap.clashes = rows[5]; leap.timeline = rows[6]; leap.universe = rows[7];
     }
     renderLeap();
     status("leap-status", (leapDemo() ? "DEMO · " : "") + leap.materials.length + " 份材料 · " + leap.excerpts.length + " 条证据 · " + leap.wormholes.length + " 条思想连接", "ok");
   }
   async function loadLeapKnowledgeStorageStatus() {
+    const request = ++storageLoadGeneration;
+    const generation = authGeneration;
     const node = $("leap-knowledge-storage-status");
     if (leapDemo()) {
       node.textContent = "演示空间与真实索引隔离 · PostgreSQL/pgvector 仅处理真实工作区材料";
@@ -343,17 +355,20 @@ export function initProductDomains({ api, toast }) {
     node.textContent = "正在读取 PostgreSQL/pgvector 检索状态…";
     try {
       const result = await api("/leap/knowledge/storage");
+      if (request !== storageLoadGeneration || generation !== authGeneration || leapDemo()) return;
       const store = result.vector_store || {};
+      const primary = /postgres/i.test(result.primary || "") ? "PostgreSQL" : /sqlite/i.test(result.primary || "") ? "SQLite" : "当前业务主库";
       if (store.status === "ready") {
         const chunks = Number(store.indexed_chunks || 0);
-        node.textContent = `检索索引：PostgreSQL + pgvector 已连接 · 当前账户 ${chunks} 个向量文本块；原文与业务数据仍保存在 SQLite`;
+        node.textContent = `检索索引：PostgreSQL + pgvector 已连接 · 当前账户 ${chunks} 个向量文本块；原文与业务数据保存在 ${primary}`;
         node.dataset.tone = "ok";
       } else {
-        node.textContent = `检索索引：PostgreSQL/pgvector 暂不可用（${store.status || "unknown"}），当前问答自动使用 SQLite 回退检索；原始材料不受影响`;
+        node.textContent = `检索索引：PostgreSQL/pgvector 暂不可用（${store.status || "unknown"}），当前问答使用 ${primary} 回退检索；原始材料不受影响`;
         node.dataset.tone = "warning";
       }
     } catch (error) {
-      node.textContent = `无法读取检索索引状态：${error.message || "服务暂不可用"}。原始材料仍保存在 SQLite。`;
+      if (request !== storageLoadGeneration || generation !== authGeneration || leapDemo()) return;
+      node.textContent = `无法读取检索索引状态：${error.message || "服务暂不可用"}。原始材料不受影响。`;
       node.dataset.tone = "warning";
     }
   }
@@ -1094,23 +1109,30 @@ export function initProductDomains({ api, toast }) {
     list($("leap-search-results"), results, (item) => { const node = card(item.label, item.kind, item.context || ""); return item.material_id || item.kind === "material" ? activateCard(node, () => openMaterial(item.material_id || item.id, item.position == null ? null : item.position)) : node; }, "没有找到匹配内容。");
   });
   leapDialog.querySelectorAll("[data-universe-filter]").forEach((node) => node.addEventListener("click", () => renderUniverse(node.dataset.universeFilter)));
-  $("leap-real-mode").addEventListener("click", async () => { leap.mode = "real"; leap.activeMaterial = null; await loadLeap(); tab(leapDialog, "home"); });
-  $("leap-demo-mode").addEventListener("click", async () => { leap.mode = "demo"; leap.activeMaterial = null; await loadLeap(); tab(leapDialog, "home"); });
+  async function switchLeapMode(mode) {
+    leap.mode = mode; leap.activeMaterial = null;
+    try { await Promise.all([loadLeap(), loadLeapKnowledgeStorageStatus()]); tab(leapDialog, "home"); }
+    catch (error) { if (leap.mode === mode) status("leap-status", error.message, "error"); }
+  }
+  $("leap-real-mode").addEventListener("click", () => switchLeapMode("real"));
+  $("leap-demo-mode").addEventListener("click", () => switchLeapMode("demo"));
   $("leap-demo-reset").addEventListener("click", async () => { applyLeapDemo(await api("/leap/demo/reset", { method: "POST" })); renderLeap(); toast("跃迁域 Demo 已恢复初始状态。"); });
   $("leap-library-search").addEventListener("submit", async (event) => { event.preventDefault(); try { await loadLibrary($("leap-library-query").value.trim(), $("leap-library-provider").value); } catch (error) { $("leap-library-status").textContent = error.message; } });
 
   function applyPulseDemo(data) { Object.assign(pulse, data); pulse.currency = data.currency || "AUD"; }
   async function loadPulse() {
     const generation = authGeneration;
+    const request = ++pulseLoadGeneration;
+    const mode = pulse.mode;
     status("pulse-status", pulseDemo() ? "正在打开隔离的 Oia Demo Company…" : "正在读取真实 Oia 经营账本…");
     if (pulseDemo()) {
       let data = await api("/pulse/demo"); if (!data.loaded) data = await api("/pulse/demo/load", { method: "POST" });
-      if (generation !== authGeneration) return;
+      if (generation !== authGeneration || request !== pulseLoadGeneration || mode !== pulse.mode) return;
       applyPulseDemo(data);
     } else {
       const now = new Date(); const from = String(now.getFullYear()) + "-01-01"; const to = String(now.getFullYear()) + "-12-31";
       const rows = await Promise.all([api("/pulse/settings"), api("/pulse/dashboard?date_from=" + from + "&date_to=" + to), api("/pulse/customers"), api("/pulse/skus"), api("/pulse/assets"), api("/pulse/orders"), api("/pulse/payments"), api("/pulse/inspections"), api("/pulse/expenses")]);
-      if (generation !== authGeneration) return;
+      if (generation !== authGeneration || request !== pulseLoadGeneration || mode !== pulse.mode) return;
       Object.assign(pulse, { currency: rows[0].currency, dashboard: rows[1], customers: rows[2], skus: rows[3], assets: rows[4], orders: rows[5], payments: rows[6], inspections: rows[7], expenses: rows[8], dateFrom: from, dateTo: to });
     }
     renderPulse(); status("pulse-status", (pulseDemo() ? "DEMO · " : "") + pulse.customers.length + " 位客户 · " + pulse.orders.length + " 笔订单 · " + pulse.assets.length + " 件资产", "ok");
@@ -1299,15 +1321,15 @@ export function initProductDomains({ api, toast }) {
     const liabilities = balance.liabilities_total == null ? liabilityRows.reduce((sum, [, value]) => sum + value, 0) : balance.liabilities_total;
     const equity = balance.equity_total == null ? equityRows.reduce((sum, [, value]) => sum + value, 0) : balance.equity_total;
     const cashRows = [["经营活动", cashFlow.operating || 0], ["投资活动", cashFlow.investing || 0], ["融资活动", cashFlow.financing || 0], ["未分类", cashFlow.unclassified || 0]];
-    const incomeDetails = [...revenueRows.map(([name, value]) => ["收入 · " + name, value]), ...expenseRows.map(([name, value]) => ["费用 · " + name, value])];
-    const balanceDetails = [...assetRows.map(([name, value]) => ["资产 · " + name, value]), ...liabilityRows.map(([name, value]) => ["负债 · " + name, value]), ...equityRows.map(([name, value]) => ["权益 · " + name, value])];
+    const incomeDetails = [...revenueRows.map(([name, value]) => ["收入 · " + financeLabel(name), value]), ...expenseRows.map(([name, value]) => ["费用 · " + financeLabel(name), value])];
+    const balanceDetails = [...assetRows.map(([name, value]) => ["资产 · " + financeLabel(name), value]), ...liabilityRows.map(([name, value]) => ["负债 · " + financeLabel(name), value]), ...equityRows.map(([name, value]) => ["权益 · " + financeLabel(name), value])];
     $("pulse-statements").replaceChildren(
       reportCard("利润表", "损益 · P&L", [["营业收入", income.revenue_total || 0], ["经营费用", incomeExpenses], ["经营利润", income.operating_profit || 0]], incomeDetails, income.note || undefined),
       reportCard("资产负债表", balance.balanced ? "平衡" : "需核查", [["资产", balance.assets_total || 0], ["负债", liabilities], ["所有者权益", equity]], balanceDetails, balance.note || undefined),
       reportCard("现金流量表", "直接法", [["经营活动", cashFlow.operating || 0], ["投资活动", cashFlow.investing || 0], ["融资活动", cashFlow.financing || 0]], cashRows, "现金流按已入账事件分类；未分类金额在明细中单独显示。")
     );
-    list($("pulse-ledger-list"), ledger.accounts.filter((item) => item.debit || item.credit || item.closing_balance), (item) => card(item.code + " · " + item.name, item.account_type, "Debit " + money(item.debit || 0, pulse.currency) + " · Credit " + money(item.credit || 0, pulse.currency) + " · Balance " + money(item.closing_balance || 0, pulse.currency)), "本期无总账发生额。");
-    list($("pulse-account-list"), accounts, (item) => card(item.code + " · " + item.name, item.account_type, item.role || "会计科目"), "尚无会计科目。");
+    list($("pulse-ledger-list"), ledger.accounts.filter((item) => item.debit || item.credit || item.closing_balance), (item) => card(item.code + " · " + financeLabel(item.name), financeLabel(item.account_type), "借方 " + money(item.debit || 0, pulse.currency) + " · 贷方 " + money(item.credit || 0, pulse.currency) + " · 余额 " + money(item.closing_balance || 0, pulse.currency)), "本期无总账发生额。");
+    list($("pulse-account-list"), accounts, (item) => card(item.code + " · " + financeLabel(item.name), financeLabel(item.account_type), item.role || "会计科目"), "尚无会计科目。");
   }
   function ensurePulseProfilePanels() {
     if ($("pulse-profile-dimensions")) return;

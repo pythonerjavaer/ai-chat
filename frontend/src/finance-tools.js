@@ -210,7 +210,7 @@ export function initFinanceTools(api) {
       const inputLabels = { target_ebit: "标的 EBIT", operating_cash_flow: "经营现金流", maintenance_capex: "维护资本开支" };
       const missingInputs = result.missing_inputs.map((key) => inputLabels[key] || key);
       const note = document.createElement("p"); note.className = "ember-assumption-note";
-      note.textContent = `缺少且未擅自填补的输入：${missingInputs.length ? missingInputs.join("、") : "无"}。简化覆盖指标只比较标的 EBIT 与本次新增交易债务利息；缺少合并 EBIT 和全部债务利息，不能称为公司完整利息保障倍数。${acquisitionAssumptions}`; host.append(note);
+      note.textContent = `${missingInputs.length ? `待补充输入：${missingInputs.join("、")}。` : ""}简化覆盖指标只比较标的 EBIT 与本次新增债务利息；交易前后利息保障倍数按补充财务输入单独计算，不等同于审计合并报表。${acquisitionAssumptions}`; host.append(note);
       status.textContent = "已完成。可调整交易、债务比例、资金成本及经营输入重新测算。"; status.dataset.state = "ok";
     } catch (error) { status.textContent = error.message; status.dataset.state = "error"; }
   });
