@@ -187,6 +187,46 @@ def test_leap_knowledge_uses_configured_embedding_and_generation_providers(produ
     assert "久期衡量什么？" in generation_calls[0][2]
 
 
+def test_leap_knowledge_scoped_query_does_not_index_unselected_books(product_store):
+    repo = LeapRepository(product_store)
+    selected = repo.create_material(1, MaterialCreate(title="风险", text="流动性风险需要现金缓冲。"))
+    ignored = repo.create_material(1, MaterialCreate(title="长书", text="无关文本。" * 1000))
+    calls = []
+
+    def embedder(user_id, texts):
+        calls.extend(texts)
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    service = LeapKnowledgeService(product_store, embedder=embedder, embedding_model="test-semantic")
+    result = service.answer(1, "现金缓冲是什么？", material_ids=[selected["id"]], generate=False)
+
+    assert result["citations"][0]["material_id"] == selected["id"]
+    assert len(calls) == 2  # selected material + query, not the long book
+    with product_store() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) AS n FROM leap_knowledge_chunks WHERE material_id=?", (ignored["id"],)
+        ).fetchone()["n"]
+    assert count == 0
+
+
+def test_leap_knowledge_embedding_quota_falls_back_without_claiming_llm(product_store):
+    from fastapi import HTTPException
+
+    repo = LeapRepository(product_store)
+    material = repo.create_material(1, MaterialCreate(title="押金", text="押金用于覆盖约定的损失风险。"))
+
+    def unavailable_embedder(user_id, texts):
+        raise HTTPException(status_code=502, detail={"code": "EMBEDDING_PROVIDER_ERROR"})
+
+    service = LeapKnowledgeService(product_store, embedder=unavailable_embedder, embedding_model="test-semantic")
+    result = service.answer(1, "押金覆盖什么风险？", material_ids=[material["id"]], generate=True)
+
+    assert result["mode"] == "extractive_rag"
+    assert result["retrieval_mode"] == "local_vector_fallback"
+    assert "不是模型生成" in result["generation_status"]
+    assert result["citations"][0]["material_id"] == material["id"]
+
+
 def test_leap_long_paragraph_chunking_is_bounded():
     chunks = build_chunks([{
         "position": 0, "content": "风险管理。" * 500,

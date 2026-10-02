@@ -17,6 +17,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
+from fastapi import HTTPException
+
 
 DIMENSIONS = 192
 MAX_CHUNK_CHARACTERS = 900
@@ -430,7 +432,6 @@ class LeapKnowledgeService:
         return {"material_count": len(results), "chunk_count": sum(item["chunk_count"] for item in results), "indexed_count": sum(bool(item["indexed"]) for item in results), "embedding_model": self.embedding_model if semantic and self.embedder else "local-hashing-v1", "items": results}
 
     def search(self, user_id: int, query: str, *, limit: int = 6, material_ids: list[str] | None = None, semantic: bool = False) -> list[dict[str, Any]]:
-        self.sync_user(user_id, semantic=semantic)
         with self.connect() as connection:
             current_materials = connection.execute(
                 "SELECT id,version FROM leap_materials WHERE user_id=?", (user_id,),
@@ -441,6 +442,11 @@ class LeapKnowledgeService:
             active_material_ids = [material_id for material_id in material_ids if material_id in active_versions]
         if not active_material_ids:
             return []
+        # A question scoped to one document must not index every other book in
+        # the account. Long collections can exhaust provider quota before the
+        # requested evidence is even searched.
+        for material_id in active_material_ids:
+            self.index_material(user_id, material_id, semantic=semantic)
         where = "c.user_id=? AND c.material_version=m.version"
         params: list[Any] = [user_id]
         if material_ids:
@@ -520,20 +526,39 @@ class LeapKnowledgeService:
         return sorted(results, key=lambda item: (-item["score"], item["chunk_id"]))[:limit]
 
     def answer(self, user_id: int, question: str, *, limit: int = 6, material_ids: list[str] | None = None, target_language: str = "zh-CN", generate: bool = True) -> dict[str, Any]:
-        evidence = self.search(user_id, question, limit=limit, material_ids=material_ids, semantic=True)
+        retrieval_mode = "semantic_vector" if self.embedder else "local_vector"
+        try:
+            evidence = self.search(user_id, question, limit=limit, material_ids=material_ids, semantic=True)
+        except HTTPException as exc:
+            if exc.status_code not in (429, 502, 503):
+                raise
+            # A paid embedding quota is not a reason to hide available source
+            # paragraphs. The local deterministic vector is clearly labelled
+            # as a fallback, not passed off as a semantic model.
+            evidence = self.search(user_id, question, limit=limit, material_ids=material_ids, semantic=False)
+            retrieval_mode = "local_vector_fallback"
         citations = [
             {key: item[key] for key in ("chunk_id", "material_id", "material_title", "paragraph_start", "paragraph_end", "heading_path", "stable_anchor", "score")}
             for item in evidence
         ]
         if not evidence:
-            return {"answer": "知识库中没有找到足够证据。", "mode": "no_evidence", "citations": []}
+            return {"answer": "知识库中没有找到足够证据。", "mode": "no_evidence", "retrieval_mode": retrieval_mode, "citations": []}
         if generate and self.generator is not None:
             context = "\n\n".join(f"[{index}] {item['material_title']} · 第{item['paragraph_start'] + 1}–{item['paragraph_end'] + 1}段\n{item['content']}" for index, item in enumerate(evidence, 1))
             system = "你是跃迁域知识库助手。只能依据提供的证据回答；使用[n]引用；证据不足时明确说明；不得虚构材料外事实。"
             prompt = f"目标语言：{target_language}\n问题：{question}\n\n证据：\n{context}"
-            generated = self.generator(user_id, system, prompt, 900)
-            answer = str(generated.get("text") or "").strip()
-            if answer:
-                return {"answer": answer, "mode": "llm_rag", "citations": citations, "usage": generated.get("usage", {})}
+            try:
+                generated = self.generator(user_id, system, prompt, 900)
+                answer = str(generated.get("text") or "").strip()
+                if answer:
+                    return {"answer": answer, "mode": "llm_rag", "retrieval_mode": retrieval_mode, "citations": citations, "usage": generated.get("usage", {})}
+            except HTTPException as exc:
+                if exc.status_code not in (429, 502, 503):
+                    raise
+                generation_status = "模型服务不可用，已返回可溯源原文摘录；这不是模型生成的回答。"
+            else:
+                generation_status = "模型未返回有效答案，已返回可溯源原文摘录；这不是模型生成的回答。"
+        else:
+            generation_status = "模型服务尚未配置，已返回可溯源原文摘录；这不是模型生成的回答。" if generate else None
         extracts = "\n".join(f"[{index}] {item['content'][:320]}" for index, item in enumerate(evidence[:3], 1))
-        return {"answer": "根据知识库中最相关的原文：\n" + extracts, "mode": "extractive_rag", "citations": citations}
+        return {"answer": "根据知识库中最相关的原文：\n" + extracts, "mode": "extractive_rag", "retrieval_mode": retrieval_mode, "generation_status": generation_status, "citations": citations}

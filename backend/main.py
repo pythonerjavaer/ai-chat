@@ -136,6 +136,7 @@ from .product_domains.interpretation_providers import (
     CallbackInterpretationProvider,
     FreeInterpretationProvider,
     GeminiInterpretationProvider,
+    InterpretationProviderError,
     OllamaInterpretationProvider,
     OpenRouterInterpretationProvider,
 )
@@ -1379,14 +1380,32 @@ interpretation_providers["auto"] = FreeInterpretationProvider([
     interpretation_providers["openrouter"],
     interpretation_providers["gemini"],
 ])
+
+
+def _run_leap_knowledge_generation(user_id: int, system_prompt: str, prompt: str,
+                                   max_output_tokens: int) -> dict:
+    """Prefer configured free LLMs for cited answers before a paid model."""
+    if settings.leap_model_provider == "ollama":
+        return _run_leap_ollama_generation(user_id, system_prompt, prompt, max_output_tokens)
+    free_provider = interpretation_providers["auto"]
+    if free_provider.configured:
+        try:
+            reply = free_provider.generate(user_id, system_prompt, prompt, max_output_tokens)
+            return {"text": reply.text, "usage": reply.usage, "model": reply.actual_model}
+        except InterpretationProviderError as exc:
+            logger.warning("Leap free answer provider unavailable code=%s", exc.code)
+            if not settings.openai_api_key:
+                raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.public_message}) from exc
+    if settings.openai_api_key:
+        return _run_leap_interpretation(user_id, system_prompt, prompt, max_output_tokens)
+    raise HTTPException(status_code=503, detail={"code": "AI_NOT_CONFIGURED", "message": "回答模型尚未配置。"})
+
+
 app.include_router(create_leap_router(
     database.connect,
     current_user,
     consented_user=require_privacy_consent,
-    knowledge_runner=(
-        _run_leap_ollama_generation if settings.leap_model_provider == "ollama"
-        else _run_leap_interpretation if settings.openai_api_key else None
-    ),
+    knowledge_runner=_run_leap_knowledge_generation,
     knowledge_embedder=(
         _run_leap_ollama_embeddings if settings.leap_model_provider == "ollama"
         else _run_leap_embeddings if settings.openai_api_key else None

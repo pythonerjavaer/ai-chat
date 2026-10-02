@@ -5964,6 +5964,16 @@ document.querySelectorAll("[data-cross-focus]").forEach((button) => {
 $("mobile-menu").addEventListener("click", () => openPanel(elements.conversationPanel));
 $("panel-close").addEventListener("click", closePanels);
 $("knowledge-toggle").addEventListener("click", () => openPanel(elements.knowledgePanel));
+$("hero-evidence-open").addEventListener("click", () => {
+  if (window.innerWidth <= 1180) {
+    openPanel(elements.knowledgePanel);
+    return;
+  }
+  elements.knowledgePanel.classList.remove("knowledge-panel--attention");
+  elements.knowledgePanel.classList.add("knowledge-panel--attention");
+  elements.knowledgePanel.querySelector(".upload-zone").scrollIntoView({ behavior: "smooth", block: "center" });
+  window.setTimeout(() => elements.knowledgePanel.classList.remove("knowledge-panel--attention"), 1800);
+});
 $("knowledge-close").addEventListener("click", closePanels);
 $("mobile-knowledge").addEventListener("click", () => openPanel(elements.knowledgePanel));
 $("open-evidence").addEventListener("click", () => openPanel(elements.knowledgePanel));

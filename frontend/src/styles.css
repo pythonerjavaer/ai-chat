@@ -777,7 +777,9 @@ body[data-workspace="finance"] .workspace-hero::before { width: 380px; height: 3
 .hero-copy { position: relative; }
 .hero-copy h1 { margin: 7px 0 5px; font-size: clamp(25px, 3vw, 36px); letter-spacing: -.045em; }
 .hero-copy p { margin: 0; color: var(--muted); font-size: 12px; }
-.hero-signal { position: relative; display: flex; align-items: center; gap: 13px; min-width: 156px; padding: 11px 14px 11px 11px; border: 1px solid rgba(var(--accent-rgb), .18); border-radius: 16px; background: rgba(var(--accent-rgb), .055); }
+.hero-signal { position: relative; display: flex; align-items: center; gap: 13px; min-width: 156px; padding: 11px 14px 11px 11px; border: 1px solid rgba(var(--accent-rgb), .18); border-radius: 16px; background: rgba(var(--accent-rgb), .055); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.hero-signal:hover, .hero-signal:focus-visible { border-color: rgba(var(--accent-rgb), .55); background: rgba(var(--accent-rgb), .12); outline: 2px solid rgba(var(--accent-rgb), .22); outline-offset: 2px; }
+.knowledge-panel--attention .upload-zone { outline: 2px solid rgba(var(--accent-rgb), .75); outline-offset: 3px; }
 .hero-signal > span { display: grid; place-items: center; width: 38px; height: 38px; color: var(--accent-bright); border-radius: 12px; background: rgba(var(--accent-rgb), .12); font-family: Georgia, serif; font-size: 18px; }
 .hero-signal div { display: grid; gap: 3px; }
 .hero-signal small { color: var(--muted); font-size: 9px; }

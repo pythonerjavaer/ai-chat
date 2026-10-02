@@ -923,7 +923,10 @@ export function initProductDomains({ api, toast }) {
   function renderKnowledgeAnswer(result) {
     const output = $("leap-knowledge-results");
     output.replaceChildren();
-    output.append(el("small", "leap-knowledge-mode", `检索模式 · ${result.mode || "extractive_rag"}`));
+    const retrievalLabels = { semantic_vector: "语义向量检索", local_vector: "本地向量检索", local_vector_fallback: "云端额度不足，已回退本地向量检索" };
+    const answerLabels = { llm_rag: "模型基于证据生成", extractive_rag: "原文摘录", no_evidence: "未找到证据" };
+    output.append(el("small", "leap-knowledge-mode", `${retrievalLabels[result.retrieval_mode] || "检索方式未确认"} · ${answerLabels[result.mode] || "回答方式未确认"}`));
+    if (result.generation_status) output.append(el("p", "leap-knowledge-notice", result.generation_status));
     output.append(el("p", "leap-knowledge-answer", result.answer || "未返回答案。"));
     const citations = Array.isArray(result.citations) ? result.citations : [];
     if (!citations.length) {
@@ -1054,27 +1057,35 @@ export function initProductDomains({ api, toast }) {
     const form = event.currentTarget;
     const data = Object.fromEntries(new FormData(form));
     const generate = form.elements.generate.checked;
+    const materialIds = data.scope === "current" && leap.activeMaterial ? [leap.activeMaterial.id] : [];
     if (!window.confirm(`将按需处理你的跃迁域材料块与问题以完成向量检索${generate ? "及模型回答" : ""}。将使用服务器配置的本地或云端模型；仅本地模型不产生第三方 API 调用费用。是否继续？`)) return;
     const output = $("leap-knowledge-results"); output.replaceChildren(el("p", "", "正在切块检索材料并整理证据…"));
     try {
-      const result = await api("/leap/knowledge/ask", { method: "POST", body: JSON.stringify({ question: String(data.question || "").trim(), limit: 6, target_language: data.target_language || "zh-CN", generate }) , timeoutMs: 90000 });
+      const result = await api("/leap/knowledge/ask", { method: "POST", body: JSON.stringify({ question: String(data.question || "").trim(), material_ids: materialIds, limit: 6, target_language: data.target_language || "zh-CN", generate }) , timeoutMs: 90000 });
       renderKnowledgeAnswer(result);
+      await loadLeapKnowledgeStorageStatus();
     } catch (error) {
       output.replaceChildren(el("p", "leap-knowledge-error", error.message || "知识库问答暂时不可用。"));
     }
   });
   $("leap-knowledge-reindex").addEventListener("click", async () => {
     if (leapDemo()) return status("leap-status", "演示材料无需建立真实语义索引。", "error");
-    if (!window.confirm("将使用当前配置的 Embedding 模型为你的跃迁域材料重建语义向量；云端模型可能产生 API 费用，本地模型在本机运行。继续吗？")) return;
+    const scope = $("leap-knowledge-form").elements.scope.value;
+    const materialId = scope === "current" ? leap.activeMaterial?.id : null;
+    if (!window.confirm(`将为${materialId ? "当前材料" : "全部材料"}重建语义向量；云端模型可能产生 API 费用。继续吗？`)) return;
     const button = $("leap-knowledge-reindex"); button.disabled = true;
     try {
-      const result = await api("/leap/knowledge/reindex?force=true", { method: "POST", timeoutMs: 120000 });
-      const archiveStatuses = [...new Set((result.items || []).map((item) => item.mongo_archive?.status).filter(Boolean))];
+      const result = await api(`/leap/knowledge/reindex?force=true${materialId ? `&material_id=${encodeURIComponent(materialId)}` : ""}`, { method: "POST", timeoutMs: 120000 });
+      const items = result.items || [result];
+      const archiveStatuses = [...new Set(items.map((item) => item.mongo_archive?.status).filter(Boolean))];
       const archive = archiveStatuses.length ? ` · MongoDB 文档归档：${archiveStatuses.join("/")}` : "";
-      status("leap-status", `语义索引已更新 · ${result.material_count || 0} 份材料 · ${result.chunk_count || 0} 个文本块 · ${result.embedding_model || "本地回退"}${archive}`, archiveStatuses.includes("unavailable") ? "error" : "ok");
+      status("leap-status", `语义索引已更新 · ${result.material_count || 1} 份材料 · ${result.chunk_count || 0} 个文本块${result.embedding_model ? ` · ${result.embedding_model}` : ""}${archive}`, archiveStatuses.includes("unavailable") ? "error" : "ok");
       await loadLeapKnowledgeStorageStatus();
     } catch (error) { status("leap-status", error.message, "error"); }
     finally { button.disabled = false; }
+  });
+  $("leap-knowledge-form").elements.scope.addEventListener("change", (event) => {
+    $("leap-knowledge-reindex").textContent = event.target.value === "all" ? "重建全部材料索引" : "重建当前材料索引";
   });
   $("leap-note-form").addEventListener("submit", async (event) => {
     event.preventDefault();

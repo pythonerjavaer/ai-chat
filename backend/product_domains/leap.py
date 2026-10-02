@@ -973,7 +973,14 @@ def create_leap_router(
         limit: int = Query(6, ge=1, le=20),
         material_id: list[str] = Query(default=[]),
     ):
-        return {"items": knowledge.search(user["id"], q, limit=limit, material_ids=material_id or None, semantic=True)}
+        try:
+            return {"items": knowledge.search(user["id"], q, limit=limit, material_ids=material_id or None, semantic=True),
+                    "retrieval_mode": "semantic_vector" if knowledge.embedder else "local_vector"}
+        except HTTPException as exc:
+            if exc.status_code not in (429, 502, 503):
+                raise
+            return {"items": knowledge.search(user["id"], q, limit=limit, material_ids=material_id or None, semantic=False),
+                    "retrieval_mode": "local_vector_fallback"}
 
     @router.get("/knowledge/storage")
     def knowledge_storage(user: User):
@@ -992,7 +999,9 @@ def create_leap_router(
         ))
 
     @router.post("/knowledge/reindex")
-    def knowledge_reindex(user: InterpretationUser, force: bool = False):
+    def knowledge_reindex(user: InterpretationUser, force: bool = False, material_id: str | None = None):
+        if material_id:
+            return safe(lambda: knowledge.index_material(user["id"], material_id, force=force, semantic=True))
         return safe(lambda: knowledge.sync_user(user["id"], force=force, semantic=True))
 
     @router.get("/timeline")
