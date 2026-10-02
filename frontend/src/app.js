@@ -3569,34 +3569,78 @@ function activateFutureRadarTab(tab) {
 }
 
 async function loadFutureRadarGraph() {
+  if (loadFutureRadarGraph.loading) return;
+  loadFutureRadarGraph.loading = true;
   const host = $("future-radar-graph-view"); const status = $("future-radar-graph-status");
-  host.replaceChildren(); status.textContent = "正在将岗位池的公开关系同步到 Neo4j…";
+  const refresh = $("future-radar-graph-refresh");
+  if (refresh) refresh.disabled = true;
   try {
-    const graph = await api("/future-radar/graph");
+    host.replaceChildren(); status.textContent = "正在将岗位池的公开关系同步到 Neo4j…首次连接可能需要最多 60 秒。";
+    const graph = await api("/future-radar/graph", { timeoutMs: 60000 });
     if (graph.status !== "synced") { status.textContent = graph.message || `Neo4j 状态：${graph.status}`; return; }
-    const nodes = (graph.nodes || []).slice(0, 90); const ids = new Set(nodes.map((item) => item.id));
+    const nodes = (graph.nodes || []).slice(0, 90);
     if (!nodes.length) { status.textContent = `Neo4j 已连接，当前没有可画关系的岗位。机会池为 ${graph.postgres_opportunities_considered || 0} 条；请先正常导入岗位，再刷新图谱。`; return; }
     const groups = ["employer", "opportunity", "skill"];
+    const rowHeight = 44;
+    const svgHeight = Math.max(610, 84 + (Math.max(...groups.map((kind) => nodes.filter((item) => item.kind === kind).length)) - 1) * rowHeight);
     const positions = new Map();
     groups.forEach((kind, groupIndex) => {
       const items = nodes.filter((item) => item.kind === kind);
-      items.forEach((item, index) => positions.set(item.id, { x: 115 + groupIndex * 300, y: 42 + index * Math.min(64, 500 / Math.max(1, items.length - 1)) }));
+      items.forEach((item, index) => positions.set(item.id, { x: 115 + groupIndex * 300, y: 42 + index * rowHeight }));
     });
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 920 610"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Future Radar 企业岗位技能关系图");
-    (graph.relationships || []).filter((edge) => ids.has(edge.source) && ids.has(edge.target)).slice(0, 220).forEach((edge) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", `0 0 1000 ${svgHeight}`); svg.setAttribute("height", String(svgHeight)); svg.style.minWidth = "1000px"; svg.style.minHeight = `${svgHeight}px`; svg.setAttribute("role", "group"); svg.setAttribute("aria-label", "Future Radar 企业岗位技能关系图");
+    ["企业", "岗位", "技能"].forEach((label, index) => {
+      const text = document.createElementNS(svg.namespaceURI, "text"); text.setAttribute("x", 115 + index * 300); text.setAttribute("y", "20"); text.setAttribute("fill", "#d9f5ff"); text.style.fontSize = "14px"; text.textContent = label; svg.append(text);
+    });
+    const visibleEdges = (graph.relationships || []).filter((edge) => positions.has(edge.source) && positions.has(edge.target)).slice(0, 220);
+    const edgeElements = [];
+    const nodeElements = new Map();
+    let selectedId = null;
+    visibleEdges.forEach((edge) => {
       const from = positions.get(edge.source), to = positions.get(edge.target); if (!from || !to) return;
       const line = document.createElementNS(svg.namespaceURI, "line"); line.setAttribute("x1", from.x); line.setAttribute("y1", from.y); line.setAttribute("x2", to.x); line.setAttribute("y2", to.y); line.setAttribute("class", `radar-graph-edge ${edge.kind.toLowerCase()}`); svg.append(line);
+      edgeElements.push({ edge, line });
     });
     nodes.forEach((item) => {
       const point = positions.get(item.id); if (!point) return;
       const group = document.createElementNS(svg.namespaceURI, "g"); group.setAttribute("class", `radar-graph-node ${item.kind}`);
+      group.setAttribute("role", "button"); group.setAttribute("tabindex", "0"); group.setAttribute("aria-label", `${item.label}，查看相邻关系`); group.setAttribute("aria-pressed", "false"); group.style.cursor = "pointer";
+      const title = document.createElementNS(svg.namespaceURI, "title"); title.textContent = item.label; group.append(title);
       const circle = document.createElementNS(svg.namespaceURI, "circle"); circle.setAttribute("cx", point.x); circle.setAttribute("cy", point.y); circle.setAttribute("r", item.kind === "employer" ? "12" : "8");
-      const title = document.createElementNS(svg.namespaceURI, "title"); title.textContent = item.label; circle.append(title); group.append(circle);
-      const text = document.createElementNS(svg.namespaceURI, "text"); text.setAttribute("x", point.x + 16); text.setAttribute("y", point.y + 4); text.textContent = item.label.length > 24 ? `${item.label.slice(0, 23)}…` : item.label; group.append(text); svg.append(group);
+      group.append(circle);
+      const text = document.createElementNS(svg.namespaceURI, "text"); text.setAttribute("x", point.x + 16); text.setAttribute("y", point.y + 4); text.style.fontSize = "14px"; text.textContent = item.label.length > 16 ? `${item.label.slice(0, 15)}…` : item.label; group.append(text); svg.append(group);
+      nodeElements.set(item.id, { group, circle });
+      group.addEventListener("click", () => selectNode(item));
+      group.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(item); }
+      });
     });
     host.append(svg);
-    status.textContent = `已同步 ${graph.opportunities} 个岗位，图中显示 ${nodes.length} 个实体和最多 220 条关系。${graph.privacy || ""}`;
+    const storedRelationships = Number(graph.relationships_stored ?? graph.relationships_written ?? graph.relationships?.length ?? 0);
+    const fullStatus = `已同步 ${graph.opportunities} 个岗位，图中显示 ${nodes.length} 个实体和 ${visibleEdges.length} 条关系；Neo4j 当前岗位范围内共 ${storedRelationships} 条关系。仅同步公开招聘信息，个人投递状态不会写入图谱。`;
+    status.textContent = fullStatus;
+    function selectNode(item) {
+      selectedId = selectedId === item.id ? null : item.id;
+      const adjacent = visibleEdges.filter((edge) => edge.source === selectedId || edge.target === selectedId);
+      const neighbors = new Set([selectedId, ...adjacent.flatMap((edge) => [edge.source, edge.target])]);
+      nodeElements.forEach(({ group, circle }, id) => {
+        group.style.opacity = !selectedId || neighbors.has(id) ? "1" : "0.25";
+        group.setAttribute("aria-pressed", String(id === selectedId));
+        circle.style.strokeWidth = id === selectedId ? "3px" : "";
+        circle.style.stroke = id === selectedId ? "#ffffff" : "";
+      });
+      edgeElements.forEach(({ edge, line }) => {
+        const highlighted = edge.source === selectedId || edge.target === selectedId;
+        line.style.opacity = !selectedId || highlighted ? "1" : "0.08";
+        line.style.strokeWidth = highlighted ? "3px" : "";
+      });
+      status.textContent = selectedId ? `${fullStatus} 已选择“${item.label}”，图中关联 ${adjacent.length} 条关系；再次选择可复原。` : fullStatus;
+    }
   } catch (error) { status.textContent = `图谱同步失败：${error.message}`; }
+  finally {
+    loadFutureRadarGraph.loading = false;
+    if (refresh) refresh.disabled = false;
+  }
 }
 
 async function loadFutureRadarTimeseries() {

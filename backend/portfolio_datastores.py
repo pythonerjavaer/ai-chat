@@ -75,6 +75,38 @@ class MongoDocumentArchive:
 
 
 class Neo4jOpportunityGraph:
+    # Known competencies are the only labels inferred from unstructured public
+    # text or generic tags. Explicit skill fields can name other competencies.
+    _SKILL_ALIASES = (
+        ("Python", ("python", "python语言", "python编程")),
+        ("SQL", ("sql", "sql语言")),
+        ("Excel", ("excel",)),
+        ("PostgreSQL", ("postgresql", "postgres")),
+        ("MySQL", ("mysql",)),
+        ("MongoDB", ("mongodb",)),
+        ("Neo4j", ("neo4j",)),
+        ("Java", ("java",)),
+        ("JavaScript", ("javascript",)),
+        ("TypeScript", ("typescript",)),
+        ("C++", ("c++",)),
+        ("C#", ("c#",)),
+        ("Go", ("go", "golang", "go语言")),
+        ("R", ("r", "r语言")),
+        ("Tableau", ("tableau",)),
+        ("Power BI", ("power bi", "powerbi")),
+        ("PyTorch", ("pytorch",)),
+        ("TensorFlow", ("tensorflow",)),
+        ("Docker", ("docker",)),
+        ("Kubernetes", ("kubernetes", "k8s")),
+        ("Linux", ("linux",)),
+        ("Git", ("git",)),
+        ("数据分析", ("数据分析", "data analysis", "data analytics")),
+        ("机器学习", ("机器学习", "machine learning")),
+        ("深度学习", ("深度学习", "deep learning")),
+        ("统计分析", ("统计分析", "statistical analysis")),
+        ("财务建模", ("财务建模", "financial modeling", "financial modelling")),
+    )
+
     def __init__(self, uri: str = "", username: str = "", password: str = "", database_name: str = "neo4j"):
         self.uri, self.username, self.password = uri.strip(), username.strip(), password
         self.database_name = database_name.strip() or "neo4j"
@@ -102,30 +134,51 @@ class Neo4jOpportunityGraph:
 
     @staticmethod
     def _skills(job: dict[str, Any]) -> list[str]:
-        raw: list[Any] = []
-        for key in ("skills", "required_skills", "tags", "categories", "industry"):
-            value = job.get(key)
-            if isinstance(value, list): raw.extend(value)
-            elif isinstance(value, str):
-                # The operational job table stores tags as JSON arrays. Treating
-                # their serialized brackets/quotes as labels pollutes the graph.
-                if value.strip().startswith("["):
-                    try:
-                        parsed = json.loads(value)
-                    except json.JSONDecodeError:
-                        parsed = None
-                    if isinstance(parsed, list):
-                        raw.extend(parsed)
-                        continue
-                raw.extend(re.split(r"[,;/|，；、]+", value))
+        def labels(value: Any) -> list[str]:
+            if isinstance(value, str) and value.strip().startswith("["):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    return []
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, list):
+                return []
+            return [_clean(part, 100)
+                    for item in value if isinstance(item, str)
+                    for part in re.split(r"[,;/|，；、]+", item) if _clean(part, 100)]
+
+        aliases = {alias.casefold(): name
+                   for name, names in Neo4jOpportunityGraph._SKILL_ALIASES
+                   for alias in names}
         seen = set()
         output = []
-        for value in raw:
-            for part in re.split(r"[,;/|，；、]+", str(value or "")):
-                name = _clean(part, 100)
-                key = name.casefold()
-                if name and key not in seen:
-                    seen.add(key); output.append(name)
+
+        def add(value: str) -> None:
+            name = aliases.get(value.casefold(), value)
+            key = name.casefold()
+            if key not in seen:
+                seen.add(key)
+                output.append(name)
+
+        explicit = labels(job.get("skills")) + labels(job.get("required_skills"))
+        for value in explicit:
+            add(value)
+        # Operational tags also contain industries, cities and verification
+        # states; only a complete, recognized skill label is evidence here.
+        for value in labels(job.get("tags")):
+            if value.casefold() in aliases:
+                add(value)
+        if not explicit:
+            text = " ".join(_clean(job.get(key), 8_000)
+                            for key in ("title", "description", "requirements", "responsibilities"))
+            for name, names in Neo4jOpportunityGraph._SKILL_ALIASES:
+                # Go and R are ordinary words/letters. Require their language
+                # names in prose; exact explicit fields and tags remain valid.
+                prose_names = tuple(alias for alias in names if alias not in {"go", "r"})
+                pattern = r"(?<![A-Za-z0-9_])(?:" + "|".join(map(re.escape, prose_names)) + r")(?![A-Za-z0-9_])"
+                if re.search(pattern, text, flags=re.IGNORECASE):
+                    add(name)
         return output[:30]
 
     def sync_opportunities(self, jobs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -144,8 +197,12 @@ class Neo4jOpportunityGraph:
                 company_key = hashlib.sha256(company.casefold().encode()).hexdigest()[:24]
                 rows.append({"id": job_id, "title": title, "company": company,
                              "company_key": company_key, "location": _clean(job.get("location") or job.get("city"), 180),
-                             "url": _clean(job.get("url") or job.get("source_url"), 1000),
+                             "url": _clean(job.get("application_url") or job.get("official_url")
+                                           or job.get("url") or job.get("source_url"), 1000),
                              "skills": self._skills(job)})
+            read_scope = {"ids": [row["id"] for row in rows],
+                          "company_keys": {row["id"]: row["company_key"] for row in rows},
+                          "skills_by_id": {row["id"]: row["skills"] for row in rows}}
             with driver.session(database=self.database_name) as session:
                 session.run("CREATE CONSTRAINT opportunity_id IF NOT EXISTS FOR (n:Opportunity) REQUIRE n.id IS UNIQUE").consume()
                 session.run("CREATE CONSTRAINT employer_key IF NOT EXISTS FOR (n:Employer) REQUIRE n.key IS UNIQUE").consume()
@@ -157,11 +214,24 @@ class Neo4jOpportunityGraph:
                     WITH o,row UNWIND row.skills AS skill_name
                     MERGE (s:Skill {name: skill_name}) MERGE (o)-[:REQUIRES]->(s)""", rows=rows).consume()
                 record = session.run("""MATCH (e:Employer)-[:POSTS]->(o:Opportunity)
+                    WHERE o.id IN $ids AND e.key = $company_keys[o.id]
                     OPTIONAL MATCH (o)-[:REQUIRES]->(s:Skill)
+                    WHERE s.name IN $skills_by_id[o.id]
                     RETURN e.name AS employer,o.id AS id,o.title AS title,o.location AS location,
-                           collect(DISTINCT s.name)[0..12] AS skills ORDER BY employer,title LIMIT 500""").data()
-                relationship_count = session.run("MATCH ()-[r:POSTS|REQUIRES]->() RETURN count(r) AS count").single()["count"]
-            return {"status": "synced", "opportunities": len(rows), "relationships_written": int(relationship_count), "items": record}
+                           collect(DISTINCT s.name)[0..12] AS skills ORDER BY employer,title LIMIT 500""",
+                                     **read_scope).data()
+                relationship_count = session.run("""MATCH (e:Employer)-[posts:POSTS]->(o:Opportunity)
+                    WHERE o.id IN $ids AND e.key = $company_keys[o.id]
+                    OPTIONAL MATCH (o)-[requires:REQUIRES]->(s:Skill)
+                    WHERE s.name IN $skills_by_id[o.id]
+                    RETURN count(DISTINCT posts) + count(DISTINCT requires) AS count""",
+                                                 **read_scope).single()["count"]
+            return {"status": "synced", "opportunities": len(rows),
+                    "relationships_stored": int(relationship_count),
+                    "relationships_written": int(relationship_count),
+                    "relationship_count_scope": "current_public_projection",
+                    "relationship_count_semantics": "relationships_written is a compatibility alias for stored relationships, not newly created relationships.",
+                    "items": record}
         finally:
             driver.close()
 

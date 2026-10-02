@@ -1869,18 +1869,13 @@ def future_radar_relationship_graph(user: User) -> dict:
                 "message": "请配置 Neo4j；PostgreSQL 岗位池不受影响。"}
     from .future_radar import personal
 
-    profile = database.get_recruitment_profile(user["id"])
-    result = future_radar_service.repository.list_opportunities(
+    jobs = future_radar_service.repository.list_graph_opportunities(
         application_states=personal.application_states(database.connect, user["id"]),
-        page=1, page_size=200,
-        filters={"status": "active", "sort": "company", "active_only": True, "view": "jobs"},
         public_url=_public_reference_url,
-        prepare=lambda job: _public_radar_opportunity(job, profile),
-        input_sanitizer=_public_search_update,
+        input_sanitizer=lambda job: _public_search_update(job, include_detail=True),
         company_aliases=_radar_company_aliases(),
-        cache_scope=_radar_scoring_scope(user["id"], profile),
     )
-    graph = neo4j_opportunity_graph.sync_opportunities(result.get("items", []))
+    graph = neo4j_opportunity_graph.sync_opportunities(jobs)
     if graph.get("status") != "synced":
         return graph
     nodes: dict[str, dict[str, str]] = {}
@@ -1900,7 +1895,7 @@ def future_radar_relationship_graph(user: User) -> dict:
             nodes[skill_id] = {"id": skill_id, "label": str(skill), "kind": "skill"}
             edges.append({"source": opportunity_id, "target": skill_id, "kind": "REQUIRES"})
     graph.update({"nodes": list(nodes.values()), "relationships": edges,
-                  "postgres_opportunities_considered": len(result.get("items", [])),
+                  "postgres_opportunities_considered": len(jobs),
                   "privacy": "Only public employer, role, location and skill attributes are copied; personal application states are not stored."})
     return graph
 

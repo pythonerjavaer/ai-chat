@@ -1774,7 +1774,7 @@ class RadarRepository:
 
     def _opportunity_rows(
         self, *, filters: dict[str, Any], public_url: Callable[[Any], str | None],
-        company_aliases: dict[str, str],
+        company_aliases: dict[str, str], include_event_history: bool = True,
     ) -> list[dict[str, Any]]:
         # Resolve identity/status across all provenance before filtering. A
         # source, date or verification filter must never hide an authoritative
@@ -1794,6 +1794,17 @@ class RadarRepository:
             "company": "j.company COLLATE NOCASE, j.title COLLATE NOCASE, j.id",
             "changed": "j.last_changed_at DESC, j.id",
         }.get(filters.get("sort", "changed"), "j.last_changed_at DESC, j.id")
+        event_history = (", latest_event.event_type AS latest_event_type, "
+                         "latest_event.detected_at AS latest_event_at") if include_event_history else ""
+        # Rank job events once for the whole read, rather than scanning their
+        # history twice per job. Latest means highest ID, not detected_at.
+        event_join = """
+            LEFT JOIN (
+                SELECT entity_id, event_type, detected_at,
+                       ROW_NUMBER() OVER (PARTITION BY entity_id ORDER BY id DESC) AS event_rank
+                FROM radar_events WHERE entity_type='job'
+            ) latest_event ON latest_event.entity_id=j.id AND latest_event.event_rank=1
+        """ if include_event_history else ""
         with self._connect() as connection:
             matching_ids = {
                 row["id"] for row in connection.execute(
@@ -1802,14 +1813,9 @@ class RadarRepository:
             }
             rows = connection.execute(
                 f"""
-                SELECT j.*, p.program_name, p.recruitment_year, p.recruitment_type,
-                    (SELECT e.event_type FROM radar_events e
-                     WHERE e.entity_type='job' AND e.entity_id=j.id
-                     ORDER BY e.id DESC LIMIT 1) AS latest_event_type,
-                    (SELECT e.detected_at FROM radar_events e
-                     WHERE e.entity_type='job' AND e.entity_id=j.id
-                     ORDER BY e.id DESC LIMIT 1) AS latest_event_at
+                SELECT j.*, p.program_name, p.recruitment_year, p.recruitment_type{event_history}
                 FROM radar_jobs j LEFT JOIN recruitment_programs p ON p.id=j.program_id
+                {event_join}
                 WHERE {clause} ORDER BY {order}
                 """,
             ).fetchall()
@@ -2415,6 +2421,44 @@ class RadarRepository:
             for item in (result["items"] if view == "jobs" else result.get("deadline_opportunities", [])):
                 item["application_status"] = statuses_by_id.get(item["id"], "not_applied")
         return result
+
+    def list_graph_opportunities(
+        self, *, public_url: Callable[[Any], str | None],
+        input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]],
+        company_aliases: dict[str, str] | None = None,
+        application_states: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Select public graph rows without scoring or full-pool presentation."""
+        rows = self._opportunity_rows(
+            filters={"status": "active", "sort": "company", "active_only": True},
+            public_url=public_url, company_aliases=company_aliases or {},
+            include_event_history=False,
+        )
+        aliases = {
+            str(alias): index
+            for index, row in enumerate(rows)
+            for alias in (row["_member_ids"] | row["_member_external_ids"])
+        }
+        # application_states is ordered by durable update time. As in the
+        # ordinary opportunity list, the latest choice across aliases wins.
+        statuses = {aliases[job_id]: status
+                    for job_id, status in (application_states or {}).items()
+                    if job_id in aliases}
+        fields = ("id", "company", "title", "city", "industry", "tags",
+                  "official_url", "application_url", "description",
+                  "responsibilities", "requirements")
+        items = []
+        for index, row in enumerate(rows):
+            if statuses.get(index) == "skipped":
+                continue
+            # Restrict both sides of the sanitizer boundary. Graph writes
+            # need no provenance, ratings or personal application data. Public
+            # job prose is sanitized only for selected rows to extract skills.
+            public = input_sanitizer({field: row.get(field) for field in fields})
+            items.append({field: public.get(field) for field in fields})
+            if len(items) == 200:
+                break
+        return items
 
     def get_prepared_opportunity(
         self, job_id: str, *, public_url: Callable[[Any], str | None],
