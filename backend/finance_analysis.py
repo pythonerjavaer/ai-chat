@@ -11,6 +11,32 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+def _percentile(values: list[float], probability: float) -> float | None:
+    """Linear percentile without adding a numerical dependency to finance models."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * probability
+    lower, upper = math.floor(index), math.ceil(index)
+    if lower == upper:
+        return float(ordered[lower])
+    return float(ordered[lower] + (ordered[upper] - ordered[lower]) * (index - lower))
+
+
+def _bootstrap_mean_interval(values: list[float], *, seed: int = 2026, iterations: int = 2_000) -> dict[str, Any]:
+    """Uncertainty interval for simulated/specified scenarios, never a price target."""
+    if len(values) < 5:
+        return {"status": "insufficient_data", "observations": len(values)}
+    rng = random.Random(seed)
+    estimates = [statistics.fmean(rng.choice(values) for _ in values) for _ in range(iterations)]
+    return {"status": "ok", "observations": len(values), "confidence_level": 0.95,
+            "mean": round(statistics.fmean(values), 4),
+            "lower_95": round(_percentile(estimates, .025) or 0, 4),
+            "upper_95": round(_percentile(estimates, .975) or 0, 4),
+            "iterations": iterations, "seed": seed,
+            "interpretation": "对当前模拟路径/已指定情景的均值进行 Bootstrap 区间估计；不代表未来保证收益。"}
+
+
 def init_finance_schema(connect):
     with connect() as connection:
         connection.execute("""CREATE TABLE IF NOT EXISTS finance_model_runs (
@@ -141,6 +167,11 @@ def lifecycle_scenario(payload: dict[str, Any]) -> dict[str, Any]:
             "annual_return_volatility": round(statistics.pstdev(returns), 5),
             "average_max_drawdown": round(statistics.fmean(drawdowns), 5),
             "target_success_rate": round(sum(value >= target_balance for value in terminal) / simulations, 4),
+            "terminal_balance_bootstrap": _bootstrap_mean_interval(terminal, seed=seed + (1 if key == "lifecycle" else 0)),
+            "max_drawdown_distribution": {"p10": round(_percentile(drawdowns, .1) or 0, 5),
+                                           "p50": round(_percentile(drawdowns, .5) or 0, 5),
+                                           "p90": round(_percentile(drawdowns, .9) or 0, 5),
+                                           "interpretation": "为每条模拟路径的最大回撤分布；数值越低代表回撤更深。"},
             "projection": [{"age": age + index + 1, "median_balance": round(statistics.median(values), 2)}
                            for index, values in enumerate(annual_paths)],
         }
@@ -268,6 +299,23 @@ def acquisition_scenario(payload: dict[str, Any]) -> dict[str, Any]:
             operating_stress.append({"rate_shock": rate_shock, "ebit_change": ebit_shift,
                                      "interest_coverage": round(stressed_ebit / stressed_interest, 3)
                                      if stressed_ebit is not None and stressed_interest else None})
+    scenario_coverages = [float(item["interest_coverage"]) for item in operating_stress
+                          if item.get("interest_coverage") is not None]
+    scenario_cash_buffers = [float(item["cash_buffer_after_interest"]) for item in rate_grid
+                             if item.get("cash_buffer_after_interest") is not None]
+    scenario_distribution = {
+        "status": "available" if scenario_coverages or scenario_cash_buffers else "missing_operating_inputs",
+        "method": "用户输入的融资与经营压力情景分布（非概率预测）",
+        "interest_coverage": ({"p10": round(_percentile(scenario_coverages, .1), 3),
+                               "p50": round(_percentile(scenario_coverages, .5), 3),
+                               "p90": round(_percentile(scenario_coverages, .9), 3)}
+                              if scenario_coverages else None),
+        "cash_buffer_after_interest": ({"p10": round(_percentile(scenario_cash_buffers, .1), 2),
+                                         "p50": round(_percentile(scenario_cash_buffers, .5), 2),
+                                         "p90": round(_percentile(scenario_cash_buffers, .9), 2)}
+                                        if scenario_cash_buffers else None),
+        "interpretation": "分位数来自已列出的敏感性网格，不应解读为历史概率或信用评级。",
+    }
     return {"model": "acquisition financing scenario", "currency": str(payload.get("currency", "AUD")),
             "inputs": payload, "new_debt": round(new_debt, 2), "cash_consideration": round(cash_consideration, 2),
             "annual_incremental_interest": round(incremental_interest, 2),
@@ -289,5 +337,6 @@ def acquisition_scenario(payload: dict[str, Any]) -> dict[str, Any]:
             "rate_sensitivity": rate_grid,
             "financing_mix_sensitivity": debt_mix_grid,
             "operating_stress_matrix": operating_stress,
+            "scenario_distribution": scenario_distribution,
             "missing_inputs": [name for name, value in (("target_ebit", target_ebit), ("operating_cash_flow", op_cash), ("maintenance_capex", capex)) if value is None],
             "assumptions": ["simplified pro-forma comparison, not audited consolidated statements", "cash consideration reduces combined current assets; current debt portion increases current liabilities", "synergies are included only when user supplied", "tax and WACC use user-provided assumptions"]}

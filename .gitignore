@@ -9,6 +9,7 @@ __pycache__/
 *.so
 .Python
 .venv/
+.venv-quality/
 venv/
 env/
 .pytest_cache/

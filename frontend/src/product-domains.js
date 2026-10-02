@@ -1399,6 +1399,45 @@ export function initProductDomains({ api, toast }) {
     const restore = action("恢复当前经营数据", () => loadPulseAnalytics(), "domain-secondary");
     controls.append(demoButton, restore); host.append(controls);
   }
+  function ensurePulseAdvancedMethodsPanel() {
+    if ($("pulse-advanced-methods")) return;
+    const section = document.createElement("section"); section.id = "pulse-advanced-methods"; section.className = "pulse-advanced-methods";
+    section.append(
+      el("div", "domain-section-heading compact", "统计推断与模型诊断（按样本门槛启用）"),
+      el("p", "pulse-chart-caption", "所有结果基于当前所选期间的记录；样本不足时保留为空，不以演示数据替代。"),
+    );
+    const listHost = document.createElement("div"); listHost.id = "pulse-advanced-method-list"; listHost.className = "domain-list grid-list";
+    section.append(listHost);
+    pulseDialog.querySelector(".pulse-eda-panel")?.append(section);
+  }
+  function renderPulseAdvancedMethods(eda) {
+    ensurePulseAdvancedMethodsPanel();
+    const bootstrap = eda.bootstrap_intervals || {};
+    const validation = eda.time_validation || {};
+    const regression = eda.association_model || {};
+    const selection = eda.risk_feature_selection || {};
+    const kde = (eda.distributions || {}).order_value_kde || {};
+    const intervalCopy = (item) => item?.status === "ok"
+      ? `${item.statistic || "mean"} ${money(Math.round(item.estimate), pulse.currency)} · 95% 区间 ${money(Math.round(item.lower_95), pulse.currency)}–${money(Math.round(item.upper_95), pulse.currency)} · n=${item.observations}`
+      : `样本不足（${item?.observations || 0}/${item?.minimum_observations || 5}）`;
+    const validationCopy = validation.status === "ok"
+      ? validation.models.map((model) => `${model.model}: MAE ${money(Math.round(model.mae), pulse.currency)} · RMSE ${money(Math.round(model.rmse), pulse.currency)}`).join("；")
+      : `月度时间序列样本不足（${validation.observations || 0}/${validation.minimum_months || 8}）`;
+    const regressionCopy = regression.status === "ok"
+      ? `R² ${regression.r_squared} · 调整 R² ${regression.adjusted_r_squared} · RMSE ${money(Math.round(regression.residual_diagnostics.rmse), pulse.currency)}；仅描述条件关联，非因果结论。`
+      : `订单解释模型未启用：${regression.status === "collinear_features" ? "特征缺少独立变化" : `样本不足（${regression.observations || 0}/${regression.minimum_observations || 12}）`}。`;
+    const selectionCopy = selection.status === "ok"
+      ? `入选特征：${selection.selected_features.join("、")}；时间顺序留出 ROC-AUC ${selection.holdout.roc_auc} · AP ${selection.holdout.average_precision}。`
+      : `风险特征筛选未启用：${selection.reason || `样本或事件覆盖不足（${selection.observations || 0}/${selection.minimum_observations || 30}）`}。`;
+    const cards = [
+      card("Bootstrap 置信区间", "订单金额均值", intervalCopy(bootstrap.order_value_mean)),
+      card("KDE 核密度估计", kde.status === "ok" ? `${kde.observations} 笔订单 · 带宽 ${kde.bandwidth}` : "订单样本不足", kde.status === "ok" ? "已生成订单金额分布曲线数据；用于观察形态，不代表风险概率。" : "至少需要 5 笔且金额存在差异的订单。"),
+      card("时间顺序交叉验证", validation.validation || "扩展窗口验证", validationCopy),
+      card("多元回归与残差诊断", regression.method || "OLS", regressionCopy),
+      card("L1 / RFE 特征筛选", selection.validation || "时间顺序验证", selectionCopy),
+    ];
+    $("pulse-advanced-method-list").replaceChildren(...cards);
+  }
   function renderPulseCustomerProfiles(data) {
     ensurePulseProfilePanels();
     const risk = data.customer_risk_summary || {};
@@ -1442,6 +1481,7 @@ export function initProductDomains({ api, toast }) {
     const data = pulseDemo() ? pulse.analytics : await api("/pulse/analytics?date_from=" + pulse.dateFrom + "&date_to=" + pulse.dateTo);
     ensurePulseForecastDemoButton();
     renderPulseEda(data.eda || {});
+    renderPulseAdvancedMethods(data.eda || {});
     renderPulseCustomerProfiles(data);
     const revenue = data.revenue_by_sku || (data.sales && data.sales.revenue_by_sku) || [];
     list($("pulse-analytics-output"), revenue, (item) => card(item.name, item.orders + " 单 · " + (item.size || ""), money(item.revenue, pulse.currency)), "尚无已确认租赁收入。");

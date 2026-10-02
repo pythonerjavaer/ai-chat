@@ -50,8 +50,9 @@ from backend.product_domains.pulse import (
     OrderStatusWrite,
     PulseDemoAction,
 )
-from backend.product_domains.pulse_analytics import (aggregate_order_context, deposit_coverage_scenarios,
-    compare_revenue_models, distribution, linear_revenue_forecast, pca_projection, simulated_revenue_demo)
+from backend.product_domains.pulse_analytics import (aggregate_order_context, bootstrap_interval, deposit_coverage_scenarios,
+    compare_revenue_models, distribution, kde_density, linear_revenue_forecast, multiple_regression_diagnostics,
+    pca_projection, risk_feature_selection, rolling_time_validation, simulated_revenue_demo)
 
 
 @pytest.fixture()
@@ -1034,6 +1035,31 @@ def test_deposit_scenarios_compare_coverage_not_incident_probability():
     assert "不改变" in result["interpretation"]
     synthetic = deposit_coverage_scenarios([])
     assert synthetic["synthetic"] is True
+
+
+def test_statistical_diagnostics_are_reproducible_and_time_ordered():
+    values = [float(index) for index in range(1, 13)]
+    interval = bootstrap_interval(values)
+    assert interval["status"] == "ok"
+    assert interval["lower_95"] <= interval["estimate"] <= interval["upper_95"]
+    assert kde_density(values)["status"] == "ok"
+    timeline = [{"period": f"2025-{index:02d}", "revenue": index * 10_000} for index in range(1, 10)]
+    validation = rolling_time_validation(timeline)
+    assert validation["status"] == "ok"
+    assert validation["validation"].startswith("expanding-window")
+    rows = [{"total_cents": 10_000 + 1_000 * index + (index % 3) * 20,
+             "party_size": 1 + index % 4, "planned_sets": 1 + index % 3,
+             "discount_pressure_score": index % 4, "lead_hours": 12 + index,
+             "deposit_paid": index % 2, "subjective_urgency_score": index % 4,
+             "flower_add_on": (index // 2) % 2, "risk_event": int(index % 5 == 0)}
+            for index in range(40)]
+    regression = multiple_regression_diagnostics(rows, target="total_cents",
+                                                  features=["party_size", "planned_sets", "discount_pressure_score", "lead_hours"])
+    assert regression["status"] == "ok"
+    selection = risk_feature_selection(rows, ["party_size", "planned_sets", "discount_pressure_score", "lead_hours",
+                                              "deposit_paid", "subjective_urgency_score", "flower_add_on"])
+    assert selection["status"] == "ok"
+    assert selection["validation"].startswith("chronological")
 
 
 def test_customer_profile_and_order_risk_facts_are_aggregated_with_small_groups_suppressed(product_store):

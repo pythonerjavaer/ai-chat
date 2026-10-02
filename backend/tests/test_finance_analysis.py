@@ -25,6 +25,9 @@ def test_lifecycle_scenario_is_reproducible_and_returns_projection():
     assert first["simulations"] == 100
     assert len(first["strategies"]["balanced"]["projection"]) == 32
     assert first["strategies"]["lifecycle"]["average_max_drawdown"] <= 0
+    interval = first["strategies"]["balanced"]["terminal_balance_bootstrap"]
+    assert interval["status"] == "ok"
+    assert interval["lower_95"] <= interval["mean"] <= interval["upper_95"]
 
 
 def test_lifecycle_rejects_invalid_horizon():
@@ -64,6 +67,7 @@ def test_acquisition_model_keeps_missing_inputs_explicit_and_builds_rate_sensiti
     assert len(result["rate_sensitivity"]) == 5
     assert result["wacc_before"] is None  # Capital structure was not supplied.
     assert result["pro_forma"]["current_ratio_after"] is None
+    assert result["scenario_distribution"]["status"] == "missing_operating_inputs"
 
 
 def test_acquisition_compares_pre_and_post_financial_ratios_from_manual_inputs():
@@ -84,6 +88,7 @@ def test_acquisition_compares_pre_and_post_financial_ratios_from_manual_inputs()
     assert comparison["current_ratio_after"] == 1.231
     assert comparison["debt_to_capital_after"] > comparison["debt_to_capital_before"]
     assert len({row["wacc"] for row in result["financing_mix_sensitivity"]}) > 1
+    assert result["scenario_distribution"]["status"] == "available"
 
 
 def test_acquisition_rejects_unreasonable_new_current_debt():

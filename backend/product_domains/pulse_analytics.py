@@ -14,6 +14,154 @@ from typing import Any
 import numpy as np
 
 
+def bootstrap_interval(values: list[float], *, statistic: str = "mean", iterations: int = 2_000,
+                       seed: int = 2026) -> dict[str, Any]:
+    """A reproducible non-parametric percentile bootstrap interval.
+
+    This is deliberately descriptive: it quantifies sampling uncertainty of
+    the supplied observations and is not a forecast or a causal estimate.
+    """
+    clean = np.asarray([float(value) for value in values if _finite_number(value)], dtype=float)
+    if len(clean) < 5:
+        return {"status": "insufficient_data", "observations": int(len(clean)), "minimum_observations": 5,
+                "statistic": statistic, "confidence_level": 0.95}
+    calculators = {"mean": np.mean, "median": np.median, "rate": np.mean}
+    if statistic not in calculators:
+        raise ValueError("Unsupported bootstrap statistic.")
+    rng = np.random.default_rng(seed)
+    samples = rng.choice(clean, size=(max(200, min(10_000, int(iterations))), len(clean)), replace=True)
+    estimates = calculators[statistic](samples, axis=1)
+    return {"status": "ok", "observations": int(len(clean)), "statistic": statistic,
+            "estimate": round(float(calculators[statistic](clean)), 4), "confidence_level": 0.95,
+            "lower_95": round(float(np.percentile(estimates, 2.5)), 4),
+            "upper_95": round(float(np.percentile(estimates, 97.5)), 4),
+            "iterations": int(samples.shape[0]), "seed": seed,
+            "interpretation": "基于当前筛选数据的非参数 Bootstrap 百分位区间；不代表未来预测或因果效应。"}
+
+
+def kde_density(values: list[float], *, points: int = 48) -> dict[str, Any]:
+    """Gaussian KDE for a compact, front-end-friendly distribution curve."""
+    clean = np.asarray([float(value) for value in values if _finite_number(value)], dtype=float)
+    if len(clean) < 5 or float(np.ptp(clean)) <= 0:
+        return {"status": "insufficient_data", "observations": int(len(clean)), "minimum_observations": 5,
+                "method": "Gaussian KDE (Silverman bandwidth)", "points": []}
+    scale = min(float(np.std(clean, ddof=1)), float(np.subtract(*np.percentile(clean, [75, 25])) / 1.34))
+    bandwidth = 0.9 * max(scale, 1e-9) * len(clean) ** (-0.2)
+    lower, upper = float(np.min(clean) - 2 * bandwidth), float(np.max(clean) + 2 * bandwidth)
+    grid = np.linspace(lower, upper, max(24, min(120, int(points))))
+    z = (grid[:, None] - clean[None, :]) / bandwidth
+    density = np.exp(-0.5 * z ** 2).mean(axis=1) / (bandwidth * np.sqrt(2 * np.pi))
+    return {"status": "ok", "observations": int(len(clean)), "method": "Gaussian KDE (Silverman bandwidth)",
+            "bandwidth": round(float(bandwidth), 4),
+            "points": [{"x": round(float(x), 4), "density": round(float(y), 8)} for x, y in zip(grid, density)],
+            "interpretation": "用于观察分布形态；曲线面积为 1，不能解读为订单数量或风险概率。"}
+
+
+def rolling_time_validation(monthly_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Expanding-window one-step validation for the transparent revenue trend."""
+    values = []
+    for row in monthly_rows:
+        try:
+            datetime.strptime(str(row["period"]), "%Y-%m")
+            value = float(row.get("revenue") or 0)
+            if np.isfinite(value):
+                values.append(value)
+        except (KeyError, TypeError, ValueError):
+            continue
+    if len(values) < 8:
+        return {"status": "insufficient_data", "observations": len(values), "minimum_months": 8,
+                "validation": "expanding-window chronological one-step"}
+    actual, naive, trend = [], [], []
+    for end in range(6, len(values)):
+        history = np.asarray(values[:end], dtype=float)
+        x = np.arange(len(history), dtype=float)
+        slope, intercept = np.polyfit(x, history, 1)
+        actual.append(values[end]); naive.append(history[-1]); trend.append(max(0.0, intercept + slope * len(history)))
+    def metric(prediction: list[float]) -> dict[str, float]:
+        errors = np.asarray(actual) - np.asarray(prediction)
+        return {"mae": round(float(np.mean(np.abs(errors))), 2),
+                "rmse": round(float(np.sqrt(np.mean(errors ** 2))), 2)}
+    return {"status": "ok", "observations": len(values), "folds": len(actual),
+            "validation": "expanding-window chronological one-step; no shuffled split",
+            "models": [{"model": "last_value_baseline", **metric(naive)},
+                       {"model": "linear_time_trend", **metric(trend)}]}
+
+
+def multiple_regression_diagnostics(rows: list[dict[str, Any]], *, target: str,
+                                    features: list[str]) -> dict[str, Any]:
+    """OLS association model with residual diagnostics, not a causal model."""
+    usable = [row for row in rows if _finite_number(row.get(target)) and
+              all(_finite_number(row.get(name)) for name in features)]
+    minimum = max(12, len(features) + 5)
+    if len(usable) < minimum:
+        return {"status": "insufficient_data", "observations": len(usable), "minimum_observations": minimum,
+                "target": target, "features": features, "method": "OLS multiple regression"}
+    matrix = np.asarray([[float(row[name]) for name in features] for row in usable], dtype=float)
+    if np.linalg.matrix_rank(matrix) < len(features):
+        return {"status": "collinear_features", "observations": len(usable), "target": target,
+                "features": features, "method": "OLS multiple regression"}
+    y = np.asarray([float(row[target]) for row in usable], dtype=float)
+    design = np.column_stack((np.ones(len(matrix)), matrix))
+    coefficients, *_ = np.linalg.lstsq(design, y, rcond=None)
+    fitted = design @ coefficients
+    residual = y - fitted
+    sse, sst = float(np.sum(residual ** 2)), float(np.sum((y - np.mean(y)) ** 2))
+    r_squared = 1 - sse / sst if sst else 0.0
+    adjusted = 1 - (1 - r_squared) * (len(y) - 1) / max(1, len(y) - len(features) - 1)
+    correlation = float(np.corrcoef(fitted, residual)[0, 1]) if np.std(fitted) and np.std(residual) else 0.0
+    return {"status": "ok", "observations": len(usable), "target": target, "features": features,
+            "method": "ordinary least squares multiple regression",
+            "coefficients": [{"feature": "intercept", "value": round(float(coefficients[0]), 4)}] +
+                            [{"feature": name, "value": round(float(value), 4)}
+                             for name, value in zip(features, coefficients[1:])],
+            "r_squared": round(float(r_squared), 4), "adjusted_r_squared": round(float(adjusted), 4),
+            "residual_diagnostics": {"mean": round(float(np.mean(residual)), 4),
+                                     "std": round(float(np.std(residual, ddof=1)), 4),
+                                     "rmse": round(float(np.sqrt(np.mean(residual ** 2))), 4),
+                                     "fitted_residual_correlation": round(correlation, 4)},
+            "interpretation": "系数仅描述在当前样本中的条件关联；未控制的变量、选择偏差与时间变化均可能影响结果。"}
+
+
+def risk_feature_selection(rows: list[dict[str, Any]], feature_names: list[str], *, label: str = "risk_event") -> dict[str, Any]:
+    """Time-ordered L1/RFE feature selection for an observed binary event."""
+    usable = [row for row in rows if _finite_number(row.get(label)) and
+              all(_finite_number(row.get(name)) for name in feature_names)]
+    minimum = max(30, len(feature_names) * 5)
+    if len(usable) < minimum:
+        return {"status": "insufficient_data", "observations": len(usable), "minimum_observations": minimum,
+                "features": feature_names, "label": label}
+    from sklearn.feature_selection import RFE
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import average_precision_score, roc_auc_score
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    matrix = np.asarray([[float(row[name]) for name in feature_names] for row in usable], dtype=float)
+    y = np.asarray([int(float(row[label]) > 0) for row in usable], dtype=int)
+    split = max(int(len(y) * .7), len(feature_names) + 5)
+    if len(np.unique(y[:split])) < 2 or len(np.unique(y[split:])) < 2:
+        return {"status": "insufficient_event_coverage", "observations": len(usable),
+                "training_events": int(y[:split].sum()), "holdout_events": int(y[split:].sum()),
+                "features": feature_names, "label": label,
+                "reason": "时间顺序训练集与留出集都需要同时包含事件与非事件。"}
+    estimator = make_pipeline(StandardScaler(), LogisticRegression(solver="saga", l1_ratio=1,
+                                                                     max_iter=2_000, class_weight="balanced", random_state=2026))
+    selector = RFE(estimator=LogisticRegression(solver="saga", l1_ratio=1, max_iter=2_000,
+                                                 class_weight="balanced", random_state=2026),
+                   n_features_to_select=max(1, min(4, len(feature_names))))
+    scaled_train = StandardScaler().fit_transform(matrix[:split])
+    selector.fit(scaled_train, y[:split])
+    model = estimator.fit(matrix[:split], y[:split])
+    probability = model.predict_proba(matrix[split:])[:, 1]
+    return {"status": "ok", "observations": len(usable), "label": label,
+            "validation": "chronological 70/30 holdout; no shuffled split",
+            "selected_features": [name for name, selected in zip(feature_names, selector.support_) if selected],
+            "feature_ranking": [{"feature": name, "rank": int(rank)} for name, rank in zip(feature_names, selector.ranking_)],
+            "holdout": {"observations": int(len(y[split:])), "events": int(y[split:].sum()),
+                        "roc_auc": round(float(roc_auc_score(y[split:], probability)), 4),
+                        "average_precision": round(float(average_precision_score(y[split:], probability)), 4)},
+            "interpretation": "用于评估模型区分已记录风险事件的能力；不用于自动定价、资格判断或对个人作出决定。"}
+
+
 def duckdb_olap_rollup(payment_rows: list[dict[str, Any]], order_rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Run an isolated OLAP pass over already user/date-scoped OLTP facts."""
     import duckdb
@@ -448,12 +596,26 @@ def _finite_number(value: Any) -> bool:
 
 
 def build_eda(*, monthly_rows: list[dict[str, Any]], order_values: list[float],
-              feature_rows: list[dict[str, Any]], feature_names: list[str]) -> dict[str, Any]:
+              feature_rows: list[dict[str, Any]], feature_names: list[str],
+              order_model_rows: list[dict[str, Any]] | None = None,
+              loss_amounts: list[float] | None = None) -> dict[str, Any]:
+    order_model_rows = order_model_rows or []
+    loss_amounts = loss_amounts or []
+    regression_features = ["party_size", "planned_sets", "discount_pressure_score", "lead_hours"]
+    risk_features = [*regression_features, "deposit_paid", "subjective_urgency_score", "flower_add_on"]
     return {
-        "methodology": "关系型数据库OLTP → 用户/日期范围ETL → DuckDB内存OLAP；押金不作为收入；描述统计仅针对所选期间可用记录。",
+        "methodology": "关系型数据库 OLTP → 用户/日期范围 ETL → DuckDB 内存 OLAP；押金不作为收入；描述统计、区间和模型仅针对所选期间可用记录。",
         "monthly_trends": monthly_rows,
         "revenue_forecast": linear_revenue_forecast(monthly_rows),
+        "time_validation": rolling_time_validation(monthly_rows),
         "distributions": {"order_value_cents": distribution(order_values),
-                          "monthly_revenue_cents": distribution([row["revenue"] for row in monthly_rows])},
+                          "monthly_revenue_cents": distribution([row["revenue"] for row in monthly_rows]),
+                          "order_value_kde": kde_density(order_values)},
+        "bootstrap_intervals": {"order_value_mean": bootstrap_interval(order_values),
+                                "monthly_revenue_mean": bootstrap_interval([row["revenue"] for row in monthly_rows]),
+                                "loss_severity_mean": bootstrap_interval(loss_amounts)},
         "pca": pca_projection(feature_rows, feature_names),
+        "association_model": multiple_regression_diagnostics(order_model_rows, target="total_cents",
+                                                               features=regression_features),
+        "risk_feature_selection": risk_feature_selection(order_model_rows, risk_features),
     }

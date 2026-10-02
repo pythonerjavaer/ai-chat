@@ -1206,7 +1206,7 @@ class PulseRepository:
                 (now.isoformat(), now.isoformat(), date_from, date_to, user_id),
             ).fetchall()
             order_context_rows = connection.execute(
-                """SELECT o.id,o.status,o.start_at,o.end_at,o.created_at,o.returned_at,o.cancelled_at,
+                """SELECT o.id,o.status,o.total_cents,o.start_at,o.end_at,o.created_at,o.returned_at,o.cancelled_at,
                    o.cancellation_reason,o.party_size,o.planned_sets,o.discount_pressure,o.subjective_urgency,
                    CASE WHEN o.status='rented' AND o.end_at < ? THEN 1 ELSE 0 END AS current_overdue,
                    CASE WHEN o.returned_at IS NOT NULL AND o.returned_at > o.end_at THEN 1 ELSE 0 END AS late_return,
@@ -1335,6 +1335,32 @@ class PulseRepository:
                                  "orders": row["orders"], "lifetime_revenue": row["lifetime_revenue"],
                                  "recency_days": recency if recency is not None else 0,
                                  "average_order_value": row["lifetime_revenue"] / max(1, row["orders"])})
+        # Convert operational fields to transparent numeric analysis features.
+        # These aggregate/model inputs remain scoped to the selected user and period.
+        discount_scores = {"none": 0, "low": 1, "moderate": 2, "strong": 3}
+        urgency_scores = {"low": 0, "normal": 1, "medium": 1, "high": 2, "urgent": 3}
+        order_model_rows = []
+        for raw in order_context_rows:
+            row = _row(raw)
+            try:
+                created = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+                starts = datetime.fromisoformat(str(row["start_at"]).replace("Z", "+00:00"))
+                lead_hours = max(0.0, (starts - created).total_seconds() / 3600)
+            except (KeyError, TypeError, ValueError):
+                lead_hours = 0.0
+            risk_event = int(any((row.get("late_return"), row.get("current_overdue"), row.get("damaged"),
+                                  row.get("missing"), row.get("cancellation_reason") in
+                                  {"last_minute_customer_cancel", "no_show"})))
+            order_model_rows.append({"total_cents": row.get("total_cents"),
+                                     "party_size": int(row.get("party_size") or 1),
+                                     "planned_sets": int(row.get("planned_sets") or 1),
+                                     "discount_pressure_score": discount_scores.get(str(row.get("discount_pressure") or "").lower(), 0),
+                                     "lead_hours": lead_hours,
+                                     "deposit_paid": int(row.get("deposit_paid") or 0),
+                                     "subjective_urgency_score": urgency_scores.get(str(row.get("subjective_urgency") or "").lower(), 0),
+                                     "flower_add_on": int(row.get("flower_add_on") or 0),
+                                     "risk_event": risk_event,
+                                     "created_at": row.get("created_at")})
         olap = duckdb_olap_rollup([_row(item) for item in payment_facts],
                                   [_row(item) for item in order_facts])
         deposit_analysis = deposit_coverage_scenarios([int(item["amount_cents"]) for item in loss_cost_rows])
@@ -1347,7 +1373,9 @@ class PulseRepository:
                                              "asset_loss": "write-off at user-entered carrying amount; non-cash credit to asset account"}}
         eda = build_eda(monthly_rows=olap["monthly_rows"], order_values=olap["order_values"],
                         feature_rows=eda_features,
-                        feature_names=["orders", "lifetime_revenue", "recency_days", "average_order_value"])
+                        feature_names=["orders", "lifetime_revenue", "recency_days", "average_order_value"],
+                        order_model_rows=order_model_rows,
+                        loss_amounts=[int(item["amount_cents"]) for item in loss_cost_rows])
         eda["olap"] = {"engine": olap["engine"], "source_payment_rows": olap["source_payment_rows"],
                        "source_order_rows": olap["source_order_rows"],
                        "truncated": len(payment_facts) > 100_000 or len(order_facts) > 100_000}

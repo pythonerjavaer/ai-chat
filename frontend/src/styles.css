@@ -2414,6 +2414,9 @@ dialog[data-scene].scene-entering::backdrop { animation: sceneBackdropArrive .7s
 .pulse-loadings { display:grid; gap:5px; color:#9fb2b8; font-size:10px; }
 .pulse-loadings p { margin:0; }
 .pca-chart { min-height:220px; }
+.pulse-advanced-methods { margin-top:14px; padding:14px; border:1px solid rgba(var(--domain-accent),.16); border-radius:14px; background:rgba(255,255,255,.018); }
+.pulse-advanced-methods .domain-section-heading { margin-bottom:5px; }
+.pulse-advanced-methods .domain-record-card { min-height:128px; }
 .compact-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); margin-bottom:12px; }
 .domain-record-card.clickable { cursor:pointer; }.domain-record-card.clickable:hover { border-color:rgba(var(--domain-accent),.4); transform:translateY(-1px); }
 .pulse-metric { min-width:0; text-align:left; cursor:default; font:inherit; }
