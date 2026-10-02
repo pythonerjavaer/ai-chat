@@ -106,6 +106,26 @@ class Neo4jOpportunityGraph:
         ("统计分析", ("统计分析", "statistical analysis")),
         ("财务建模", ("财务建模", "financial modeling", "financial modelling")),
     )
+    _VERSIONED_LANGUAGE_NAMES = frozenset({"Python", "Java", "C++", "C#"})
+    _SKILL_CLAUSE_BOUNDARY = re.compile(
+        r"[,，;；。!?！？]|\.(?:\s|$)|但(?:是)?|然而|不过|\b(?:but|however|whereas)\b", re.IGNORECASE)
+    _SKILL_LIST_CONNECTOR = re.compile(r"\s*(?:[/|&、]|和|及|与|或|或者|and|or)\s*", re.IGNORECASE)
+    _SKILL_NEGATION_PREFIX = re.compile(
+        r"(?:不(?:要求|需要|需|必|用|强求)|无(?:需|须)|未要求)\s*"
+        r"(?:(?:掌握|熟悉|精通|了解|具备|具有|使用|学习|有)\s*)*$"
+        r"|\b(?:no|without|optional)\s+"
+        r"(?:(?:prior|previous|any|practical|working|professional)\s+)*"
+        r"(?:(?:experience|knowledge|skills?|proficiency|requirements?)(?:\s+(?:in|of|with|for))?\s+)?$"
+        r"|\b(?:not\s+(?:required|needed|necessary|mandatory|essential)|no\s+need)"
+        r"(?:\s+to(?:\s+(?:know|use|learn|understand|have))?)?\s*$", re.IGNORECASE)
+    _SKILL_NEGATION_SUFFIX = re.compile(
+        r"^\s*[(（]?\s*(?:(?:编程|语言|技能|经验|能力|知识|基础)\s*)*"
+        r"(?:(?:并非|不是|非|不属于)\s*(?:必需|必备|必要|必须|要求|必选)"
+        r"|不(?:要求|需要|必需|必要|作要求|做要求|强求)|无需|无须|可选)"
+        r"|^\s*[(（]?\s*(?:(?:programming|language|skills?|experience|knowledge|proficiency)\s+)*"
+        r"(?:(?:is|are)\s+)?(?:not\s+(?:required|needed|necessary|mandatory|essential|a\s+requirement)"
+        r"|(?:isn['’]t|aren['’]t)\s+(?:required|needed|necessary|mandatory|essential)|optional)\b",
+        re.IGNORECASE)
 
     def __init__(self, uri: str = "", username: str = "", password: str = "", database_name: str = "neo4j"):
         self.uri, self.username, self.password = uri.strip(), username.strip(), password
@@ -151,11 +171,23 @@ class Neo4jOpportunityGraph:
         aliases = {alias.casefold(): name
                    for name, names in Neo4jOpportunityGraph._SKILL_ALIASES
                    for alias in names}
+        # Do not backtrack to a partial version in e.g. Python3.11Script.
+        version_suffix = r"\d+(?:\.\d+)*(?!\.\d)"
+
+        def recognized(value: str) -> str | None:
+            name = aliases.get(value.casefold())
+            if name:
+                return name
+            for language in Neo4jOpportunityGraph._VERSIONED_LANGUAGE_NAMES:
+                if re.fullmatch(re.escape(language) + version_suffix, value, flags=re.IGNORECASE):
+                    return language
+            return None
+
         seen = set()
         output = []
 
         def add(value: str) -> None:
-            name = aliases.get(value.casefold(), value)
+            name = recognized(value) or value
             key = name.casefold()
             if key not in seen:
                 seen.add(key)
@@ -164,21 +196,56 @@ class Neo4jOpportunityGraph:
         explicit = labels(job.get("skills")) + labels(job.get("required_skills"))
         for value in explicit:
             add(value)
-        # Operational tags also contain industries, cities and verification
-        # states; only a complete, recognized skill label is evidence here.
-        for value in labels(job.get("tags")):
-            if value.casefold() in aliases:
-                add(value)
+        positive = set()
+        negated = set()
         if not explicit:
-            text = " ".join(_clean(job.get(key), 8_000)
-                            for key in ("title", "description", "requirements", "responsibilities"))
+            # Keep fields and short clauses separate: a non-required SQL mention
+            # must not negate a Python requirement in the next clause or field.
+            clauses = [clause for key in ("title", "description", "requirements", "responsibilities")
+                       for clause in Neo4jOpportunityGraph._SKILL_CLAUSE_BOUNDARY.split(_clean(job.get(key), 8_000))]
+            patterns = []
             for name, names in Neo4jOpportunityGraph._SKILL_ALIASES:
                 # Go and R are ordinary words/letters. Require their language
                 # names in prose; exact explicit fields and tags remain valid.
                 prose_names = tuple(alias for alias in names if alias not in {"go", "r"})
-                pattern = r"(?<![A-Za-z0-9_])(?:" + "|".join(map(re.escape, prose_names)) + r")(?![A-Za-z0-9_])"
-                if re.search(pattern, text, flags=re.IGNORECASE):
-                    add(name)
+                alternatives = [re.escape(alias) + (rf"(?:{version_suffix})?"
+                                if name in Neo4jOpportunityGraph._VERSIONED_LANGUAGE_NAMES
+                                and alias.casefold() == name.casefold() else "")
+                                for alias in sorted(prose_names, key=len, reverse=True)]
+                pattern = r"(?<![A-Za-z0-9_])(?:" + "|".join(alternatives) + r")(?![A-Za-z0-9_])"
+                patterns.append((name, re.compile(pattern, flags=re.IGNORECASE)))
+            for clause in clauses:
+                mentions = sorted((match.start(), match.end(), name)
+                                  for name, pattern in patterns for match in pattern.finditer(clause))
+                groups = []
+                for start, end, name in mentions:
+                    # A simple skill list shares its qualifier, e.g. no Python
+                    # or SQL experience. Other intervening prose starts a new
+                    # group, so SQL not required and Python essential is safe.
+                    if groups and Neo4jOpportunityGraph._SKILL_LIST_CONNECTOR.fullmatch(clause[groups[-1][1]:start]):
+                        groups[-1][1] = end
+                        groups[-1][2].add(name)
+                    else:
+                        groups.append([start, end, {name}])
+                for start, end, names in groups:
+                    if (Neo4jOpportunityGraph._SKILL_NEGATION_PREFIX.search(clause[:start])
+                            or Neo4jOpportunityGraph._SKILL_NEGATION_SUFFIX.search(clause[end:])):
+                        negated.update(names)
+                    else:
+                        positive.update(names)
+        # Operational tags also contain industries, cities and verification
+        # states; only a complete, recognized skill label is evidence here.
+        for value in labels(job.get("tags")):
+            name = recognized(value)
+            # Generic tags cannot override prose that only mentions this skill
+            # to explicitly say it is not required. Explicit skill fields keep
+            # their existing authoritative behavior.
+            if name and (name not in negated or name in positive):
+                add(value)
+        # Preserve the established deterministic canonical order after tags.
+        for name, _names in Neo4jOpportunityGraph._SKILL_ALIASES:
+            if name in positive:
+                add(name)
         return output[:30]
 
     def sync_opportunities(self, jobs: list[dict[str, Any]]) -> dict[str, Any]:

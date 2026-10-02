@@ -1878,8 +1878,9 @@ def future_radar_relationship_graph(user: User) -> dict:
     jobs = future_radar_service.repository.list_graph_opportunities(
         application_states=personal.application_states(database.connect, user["id"]),
         public_url=_public_reference_url,
-        input_sanitizer=lambda job: _public_search_update(job, include_detail=True),
+        input_sanitizer=_public_search_update_detail,
         company_aliases=_radar_company_aliases(),
+        cache_scope=scoring_scope(user["id"], {}, "bounded-public-graph-v1"),
     )
     read_finished = time.perf_counter()
     graph = neo4j_opportunity_graph.sync_opportunities(jobs)

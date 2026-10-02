@@ -139,6 +139,13 @@ class RadarRepository:
             max_entries=12_000, max_bytes=64 * 1024 * 1024,
             ttl_seconds=30 * 60, refresh_on_hit=True,
         )
+        # Separate from the scored pool so a graph refresh cannot evict it.
+        # Only the final, sanitized <=200-row public projection is retained;
+        # raw candidates and personal choices never enter this small cache.
+        self._graph_opportunity_cache = BoundedScoringCache(
+            max_entries=4, max_bytes=8 * 1024 * 1024, max_inflight=2,
+            ttl_seconds=30 * 60, refresh_on_hit=True,
+        )
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -2463,38 +2470,68 @@ class RadarRepository:
         input_sanitizer: Callable[[dict[str, Any]], dict[str, Any]],
         company_aliases: dict[str, str] | None = None,
         application_states: dict[str, str] | None = None,
+        cache_scope: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Select public graph rows without scoring or full-pool presentation."""
-        rows = self._opportunity_rows(
-            filters={"status": "active", "sort": "company", "active_only": True},
-            public_url=public_url, company_aliases=company_aliases or {},
-            include_event_history=False,
-        )
-        aliases = {
-            str(alias): index
-            for index, row in enumerate(rows)
-            for alias in (row["_member_ids"] | row["_member_external_ids"])
-        }
-        # application_states is ordered by durable update time. As in the
-        # ordinary opportunity list, the latest choice across aliases wins.
-        statuses = {aliases[job_id]: status
-                    for job_id, status in (application_states or {}).items()
-                    if job_id in aliases}
-        fields = ("id", "company", "title", "city", "industry", "tags",
-                  "official_url", "application_url", "description",
-                  "responsibilities", "requirements")
-        items = []
-        for index, row in enumerate(rows):
-            if statuses.get(index) == "skipped":
+        """Select public graph rows, optionally under an opaque user scope."""
+        company_aliases = company_aliases or {}
+
+        def build() -> list[dict[str, Any]]:
+            rows = self._opportunity_rows(
+                filters={"status": "active", "sort": "company", "active_only": True},
+                public_url=public_url, company_aliases=company_aliases,
+                include_event_history=False,
+            )
+            aliases = {
+                str(alias): index
+                for index, row in enumerate(rows)
+                for alias in (row["_member_ids"] | row["_member_external_ids"])
+            }
+            # The latest durable choice across all aliases wins. Preserve
+            # dict insertion order both here and in the opaque cache digest.
+            statuses = {aliases[job_id]: status
+                        for job_id, status in (application_states or {}).items()
+                        if job_id in aliases}
+            fields = ("id", "company", "title", "city", "industry", "tags",
+                      "official_url", "application_url", "description",
+                      "responsibilities", "requirements")
+            items = []
+            for index, row in enumerate(rows):
+                if statuses.get(index) == "skipped":
+                    continue
+                # Restrict both sides of the sanitizer boundary. Graph writes
+                # need no provenance, ratings or personal application data.
+                public = input_sanitizer({field: row.get(field) for field in fields})
+                items.append({field: public.get(field) for field in fields})
+                if len(items) == 200:
+                    break
+            return items
+
+        if cache_scope is None:
+            return build()
+        state_digest = opaque_digest(tuple((application_states or {}).items()))
+        for _attempt in range(2):
+            prefix = self._opportunity_cache_prefix(
+                cache_scope=cache_scope, public_url=public_url,
+                company_aliases=company_aliases, input_sanitizer=input_sanitizer,
+            )
+            if prefix is None:
+                return build()
+
+            def stable_build() -> list[dict[str, Any]]:
+                result = build()
+                if self._opportunity_revision() != prefix[1] or date_boundary() != prefix[2]:
+                    raise RevisionChanged()
+                return result
+
+            try:
+                return deepcopy(self._graph_opportunity_cache.get_or_compute(
+                    (*prefix, "bounded-public-graph-v1", state_digest), stable_build,
+                ))
+            except RevisionChanged:
                 continue
-            # Restrict both sides of the sanitizer boundary. Graph writes
-            # need no provenance, ratings or personal application data. Public
-            # job prose is sanitized only for selected rows to extract skills.
-            public = input_sanitizer({field: row.get(field) for field in fields})
-            items.append({field: public.get(field) for field in fields})
-            if len(items) == 200:
-                break
-        return items
+        # Continuous source churn retains a live result without publishing a
+        # mixed-revision snapshot or blocking unrelated users.
+        return build()
 
     def get_prepared_opportunity(
         self, job_id: str, *, public_url: Callable[[Any], str | None],

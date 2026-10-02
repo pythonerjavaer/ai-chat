@@ -2478,6 +2478,8 @@ body[data-workspace="general"] .ember-run-button { border-color:rgba(168,155,255
 .radar-graph-node.skill circle { fill:#f6b66d; }
 .radar-graph-node text { fill:#c6d9de; font-size:10px; }
 .radar-graph-node.skill text { fill:#dfc7a4; }
+/* Blur restores the unchanged inline dimming; focus never changes selection. */
+.radar-graph-node:focus-visible { outline:3px solid #ffffff; outline-offset:4px; opacity:1 !important; }
 
 /* Readability and overflow guardrails shared by the interview products. */
 .domain-dialog .domain-tabs button { font-size:12px; }

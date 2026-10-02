@@ -100,6 +100,77 @@ def test_skills_are_bounded_even_for_explicit_large_lists():
     assert len(Neo4jOpportunityGraph._skills({"skills": [f"competency-{index}" for index in range(100)]})) == 30
 
 
+def test_language_versions_normalize_without_matching_longer_words():
+    assert Neo4jOpportunityGraph._skills({
+        "requirements": "熟悉Python3、Java8、C++17和C#8开发，了解 Python3.11 和 Java17。",
+    }) == ["Python", "Java", "C++", "C#"]
+    assert Neo4jOpportunityGraph._skills({
+        "tags": '["Python3", "Java8", "C++17", "C#8", "Python3行业", "Java8Script"]',
+    }) == ["Python", "Java", "C++", "C#"]
+    assert Neo4jOpportunityGraph._skills({
+        "skills": ["Python3.11", "C++17", "沟通能力"],
+    }) == ["Python", "C++", "沟通能力"]
+    assert Neo4jOpportunityGraph._skills({
+        "requirements": "Python3rd、Java8Script、C++17foo、C#8Project、Python3.11Script。",
+    }) == []
+
+
+@pytest.mark.parametrize("requirements", [
+    "不要求Python，不需要SQL。No Java experience required.",
+    "无需熟悉 Python；SQL 不是必需；Java 经验并非必要。",
+    "Python experience is not required; SQL is optional; Java knowledge is not necessary.",
+    "No prior Python experience required. Without SQL knowledge. Not required to know Java.",
+    "不需要 Python3，SQL 技能不作要求，Java8 可选。",
+    "不要求Python和SQL；Java8与C++17不是必需。",
+    "No Python or SQL experience required; Java and C# are optional.",
+    "Python isn't required; SQL isn’t mandatory; Java skills aren't necessary.",
+    "No requirement for Python; SQL is not a requirement; Java optional.",
+])
+def test_non_required_public_mentions_do_not_create_skill_requirements(requirements):
+    assert Neo4jOpportunityGraph._skills({"requirements": requirements}) == []
+
+
+@pytest.mark.parametrize("requirements, expected", [
+    ("SQL不是必需，但Python必须。", ["Python"]),
+    ("SQL不是必需但Python必须。", ["Python"]),
+    ("SQL is not required but Python is essential.", ["Python"]),
+    ("SQL is not required and Python is mandatory.", ["Python"]),
+    ("不要求SQL，但必须熟悉Python3和Java8。", ["Python", "Java"]),
+    ("Python is not required; Python3 proficiency is required for this role.", ["Python"]),
+    ("Python不是不需要，SQL is not only required but essential.", ["Python", "SQL"]),
+    ("不要求SQL和Java，但Python3与C++17必须掌握。", ["Python", "C++"]),
+])
+def test_negation_is_local_to_the_skill_mention(requirements, expected):
+    assert Neo4jOpportunityGraph._skills({"requirements": requirements}) == expected
+
+
+def test_only_negated_public_prose_suppresses_generic_tags_not_explicit_skill_fields():
+    job = {"tags": '["SQL", "Python3", "互联网"]',
+           "requirements": "SQL不是必需，但Python必须。"}
+    assert Neo4jOpportunityGraph._skills(job) == ["Python"]
+    assert Neo4jOpportunityGraph._skills({**job, "skills": ["SQL"]}) == ["SQL", "Python"]
+    assert Neo4jOpportunityGraph._skills({
+        "title": "SQL analyst", "requirements": "Python is not required",
+        "responsibilities": "Python3 proficiency is required",
+    }) == ["Python", "SQL"]
+
+
+def test_only_supported_public_prose_reaches_batched_write_and_scoped_reads(monkeypatch):
+    driver = RecordingDriver()
+    graph = Neo4jOpportunityGraph("neo4j://unused.test")
+    monkeypatch.setattr(graph, "_driver", lambda: driver)
+
+    graph.sync_opportunities([public_job(title="工程师", tags='["SQL", "Java8", "互联网"]',
+                                        requirements="SQL不是必需，但Python3、Java8、C++17和C#8必须掌握。")])
+
+    write = next(parameters for query, parameters in driver.calls if "UNWIND $rows AS row" in query)
+    assert write["rows"][0]["skills"] == ["Java", "Python", "C++", "C#"]
+    reads = [parameters for _query, parameters in driver.calls if "ids" in parameters]
+    assert all(parameters["skills_by_id"] == {"job-1": ["Java", "Python", "C++", "C#"]}
+               for parameters in reads)
+    assert not any("DELETE" in query for query, _parameters in driver.calls)
+
+
 def test_two_hundred_public_jobs_use_one_bounded_unwind_write_without_private_payload(monkeypatch):
     driver = RecordingDriver(relationship_count=717)
     graph = Neo4jOpportunityGraph("neo4j://unused.test", database_name="graph-tests")

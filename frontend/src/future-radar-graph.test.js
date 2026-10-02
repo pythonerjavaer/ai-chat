@@ -5,6 +5,7 @@ import vm from "node:vm";
 import { createRadarPollingGate } from "./radar-polling.js";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const start = source.indexOf("async function loadFutureRadarGraph()");
 const end = source.indexOf("async function loadFutureRadarTimeseries()", start);
 assert.ok(start >= 0 && end > start);
@@ -42,6 +43,22 @@ function runtime() {
   return { elements, calls, gate, resolve: (value) => active.resolve(value),
     reject: (error) => active.reject(error), load: context.loadFutureRadarGraph };
 }
+
+test("graph keyboard focus restores contrast only while focused without changing selection or layout", () => {
+  const rule = styles.match(/^\.radar-graph-node:focus-visible\s*\{([^}]+)\}/m);
+  assert.ok(rule, "SVG button groups need an explicit focus-visible style");
+  const declarations = Object.fromEntries(rule[1].split(";").filter((value) => value.trim())
+    .map((value) => value.split(":").map((part) => part.trim())));
+  assert.equal(declarations.outline, "3px solid #ffffff");
+  assert.equal(declarations["outline-offset"], "4px");
+  assert.equal(declarations.opacity, "1 !important", "Focused nodes must remain clear even when their inline opacity is dimmed");
+  assert.deepEqual(Object.keys(declarations).sort(), ["opacity", "outline", "outline-offset"],
+    "Focus may restore contrast only; do not override selection strokes or graph geometry");
+  for (const [, selector, body] of styles.matchAll(/(\.radar-graph-node[^{}]*)\{([^{}]*)\}/g)) {
+    if (/\bopacity\s*:/.test(body)) assert.equal(selector.trim(), ".radar-graph-node:focus-visible",
+      "Graph dimming may be overridden only for keyboard-visible focus");
+  }
+});
 
 test("graph gives a cold connection 60 seconds and allows only one pending sync", async () => {
   const r = runtime();
