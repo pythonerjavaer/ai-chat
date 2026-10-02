@@ -56,6 +56,14 @@ test("Future Radar exposes event time series and separates REST/ATS from web scr
   assert.match(indexSource, /深度扫描走官网 Web scraping/);
 });
 
+test("Future Radar exposes a reachable valid-time and transaction-time view", () => {
+  assert.match(indexSource, /data-radar-tab="temporal"/);
+  assert.match(indexSource, /data-radar-panel="temporal"/);
+  assert.match(indexSource, /id="future-radar-temporal-refresh"/);
+  assert.match(appSource, /api\("\/future-radar\/temporal-windows\?limit=30"\)/);
+  assert.match(appSource, /loadFutureRadarTemporalWindows/);
+});
+
 test("profile matching and source synchronization labels describe their real side effects", () => {
   assert.match(indexSource, /id="recruitment-save"[\s\S]*保存筛选/);
   assert.doesNotMatch(indexSource, /保存坐标并重新扫描/);

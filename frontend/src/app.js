@@ -3556,7 +3556,7 @@ function renderFutureRadarRuns(runs = state.futureRadar.runs) {
 }
 
 function activateFutureRadarTab(tab) {
-  const next = ["jobs", "programs", "events", "sources", "runs", "saved", "applied", "wechat", "bridge", "graph", "timeseries"].includes(tab) ? tab : "jobs";
+  const next = ["jobs", "programs", "events", "sources", "runs", "saved", "applied", "wechat", "bridge", "graph", "timeseries", "temporal"].includes(tab) ? tab : "jobs";
   state.futureRadar.activeTab = next;
   document.querySelectorAll("[data-radar-tab]").forEach((button) => {
     const active = button.dataset.radarTab === next;
@@ -3634,6 +3634,22 @@ async function loadFutureRadarTimeseries() {
       `${item.day} · 新增事件 ${item.new_events} · 更新 ${item.updated_events} · 关闭 ${item.closed_events} · 扫描 ${item.runs} 轮`)));
     status.textContent = `${series.method} · ${points.length} 个有活动日期 · 曲线：青色=新增事件、橙色=关闭事件。${series.privacy || ""}`;
   } catch (error) { status.textContent = `时间序列读取失败：${error.message}`; }
+}
+
+async function loadFutureRadarTemporalWindows() {
+  const host = $("future-radar-temporal-list"); const status = $("future-radar-temporal-status");
+  host.replaceChildren(); status.textContent = "正在按报名有效期查询，并读取每个版本的系统观测时间…";
+  try {
+    const result = await api("/future-radar/temporal-windows?limit=30");
+    const items = result.items || [];
+    if (!items.length) {
+      status.textContent = `${result.query_method} · 当前时间窗口暂无可匹配岗位；正常扫描后会自动写入双时间快照。`;
+      return;
+    }
+    items.forEach((item) => host.append(makeElement("article", "radar-entity-card",
+      `${item.company} · ${item.title}${item.city ? ` · ${item.city}` : ""}\n有效期：${item.valid_from || "未标注"} 至 ${item.valid_until || "未标注"}\n系统观测：${item.observed_at} · 入库：${item.recorded_at}`)));
+    status.textContent = `${result.query_method} · 查询窗口 ${result.window.start} 至 ${result.window.end} · ${items.length} 条岗位版本。${result.model}`;
+  } catch (error) { status.textContent = `双时间查询失败：${error.message}`; }
 }
 
 function setFutureRadarLoading(loading, errorMessage = "") {
@@ -5865,10 +5881,12 @@ document.querySelectorAll("[data-radar-tab]").forEach((button) => {
     if (button.dataset.radarTab === "applied") personalRadar.showApplied();
     if (button.dataset.radarTab === "graph") loadFutureRadarGraph();
     if (button.dataset.radarTab === "timeseries") loadFutureRadarTimeseries();
+    if (button.dataset.radarTab === "temporal") loadFutureRadarTemporalWindows();
   });
 });
 $("future-radar-graph-refresh")?.addEventListener("click", loadFutureRadarGraph);
 $("future-radar-timeseries-refresh")?.addEventListener("click", loadFutureRadarTimeseries);
+$("future-radar-temporal-refresh")?.addEventListener("click", loadFutureRadarTemporalWindows);
 elements.futureRadarLiveState?.addEventListener("click", () => {
   state.futureRadar.sourceHealthFilter = elements.futureRadarLiveState.dataset.sourceFilter || "all";
   activateFutureRadarTab("sources");

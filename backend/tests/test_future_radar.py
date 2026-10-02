@@ -602,7 +602,6 @@ def test_mock_five_round_lifecycle_and_repeated_round_is_idempotent(radar_servic
     round4 = radar_service.run(source_ids=[source_id], force=True)
     assert round4["closed_jobs"] == 1
     assert radar_service.repository.get_job("mock-2027-job-02")["status"] == "closed"
-
     radar_service.repository.patch_source(
         source_id, {"adapter_config": {"adapter": "mock", "round": 5}}
     )
@@ -611,6 +610,29 @@ def test_mock_five_round_lifecycle_and_repeated_round_is_idempotent(radar_servic
     assert radar_service.repository.get_job("mock-2027-job-02")["status"] == "open"
     assert "REOPENED" in event_types(radar_service)
 
+
+def test_job_changes_keep_valid_and_observed_time_snapshots(radar_service):
+    source_id = "mock-future-radar"
+    radar_service.repository.patch_source(
+        source_id, {"enabled": True, "adapter_config": {"adapter": "mock", "round": 1}},
+    )
+    radar_service.run(source_ids=[source_id], force=True)
+    with radar_service.repository._connect() as connection:
+        first_count = int(connection.execute(
+            "SELECT COUNT(*) FROM radar_job_temporal_snapshots"
+        ).fetchone()[0])
+    assert first_count == 10
+
+    radar_service.repository.patch_source(
+        source_id, {"adapter_config": {"adapter": "mock", "round": 3}},
+    )
+    radar_service.run(source_ids=[source_id], force=True)
+    with radar_service.repository._connect() as connection:
+        snapshots = connection.execute(
+            "SELECT valid_from,valid_until,observed_at,recorded_at FROM radar_job_temporal_snapshots"
+        ).fetchall()
+    assert len(snapshots) >= first_count
+    assert all(row["observed_at"] and row["recorded_at"] for row in snapshots)
 
 def test_two_successful_missing_snapshots_are_required_before_close(radar_service):
     source = create_source(

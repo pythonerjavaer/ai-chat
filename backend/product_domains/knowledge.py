@@ -81,6 +81,36 @@ def _cosine(left: list[float], right: list[float]) -> float:
     return sum(a * b for a, b in zip(left, right))
 
 
+def _tfidf_cosine_scores(query: str, documents: list[str]) -> list[float]:
+    """Score a bounded retrieval corpus with transparent TF-IDF cosine.
+
+    Semantic vectors remain the main recall path. TF-IDF gives rare, exact
+    terms (for example product codes, names and financial terminology) a
+    meaningful, explainable influence during final reranking.
+    """
+    query_terms = Counter(TOKEN_RE.findall(query.casefold()))
+    tokenized = [Counter(TOKEN_RE.findall(document.casefold())) for document in documents]
+    if not query_terms or not tokenized:
+        return [0.0] * len(documents)
+    document_frequency: Counter[str] = Counter()
+    for terms in tokenized:
+        document_frequency.update(terms.keys())
+    total = len(tokenized)
+
+    def weight(term: str) -> float:
+        return math.log((1 + total) / (1 + document_frequency[term])) + 1.0
+
+    query_norm = math.sqrt(sum((count * weight(term)) ** 2 for term, count in query_terms.items()))
+    if not query_norm:
+        return [0.0] * len(documents)
+    scores: list[float] = []
+    for terms in tokenized:
+        numerator = sum(query_terms[term] * count * weight(term) ** 2 for term, count in terms.items() if term in query_terms)
+        document_norm = math.sqrt(sum((count * weight(term)) ** 2 for term, count in terms.items()))
+        scores.append(numerator / (query_norm * document_norm) if document_norm else 0.0)
+    return scores
+
+
 def _split_long(value: str, size: int, overlap: int) -> Iterable[str]:
     start = 0
     while start < len(value):
@@ -288,7 +318,7 @@ class LeapKnowledgeService:
             if material_ids:
                 where += " AND material_id IN (" + ",".join("?" for _ in material_ids) + ")"
                 filter_params.extend(material_ids)
-            limit_value = max(1, min(limit * 5, MAX_SEARCH_CANDIDATES))
+            limit_value = max(1, min(limit, MAX_SEARCH_CANDIDATES))
             return connection.execute(
                 f"""SELECT *,1-({column} {operator} ?::{vector_type}) AS vector_similarity
                     FROM leap_vector_chunks WHERE {where}
@@ -461,7 +491,7 @@ class LeapKnowledgeService:
             try:
                 rows = self._search_vector_store(
                     user_id, query_embedding, self.embedding_model if semantic and self.embedder else "local-hashing-v1",
-                    active_material_ids, limit,
+                    active_material_ids, min(MAX_SEARCH_CANDIDATES, max(limit * 8, 40)),
                 )
             except Exception:
                 # Keep retrieval available from the portable local chunk store;
@@ -491,7 +521,7 @@ class LeapKnowledgeService:
                                    1-(c.{vector_column} {vector_distance} ?::{vector_type}) AS vector_similarity
                             FROM leap_knowledge_chunks c JOIN leap_materials m ON m.id=c.material_id
                             WHERE {where} ORDER BY c.{vector_column} {vector_distance} ?::{vector_type} LIMIT ?""",
-                        [vector_text, *params[:-1], vector_text, min(MAX_SEARCH_CANDIDATES, max(limit * 5, limit))],
+                        [vector_text, *params[:-1], vector_text, min(MAX_SEARCH_CANDIDATES, max(limit * 8, 40))],
                     ).fetchall()
                 else:
                     rows = connection.execute(
@@ -500,33 +530,45 @@ class LeapKnowledgeService:
                             WHERE {where} ORDER BY m.updated_at DESC,c.chunk_position LIMIT ?""",
                         params,
                     ).fetchall()
-        query_terms = Counter(TOKEN_RE.findall(query.casefold()))
+        # Run a separate lexical recall over the scoped corpus, rather than
+        # only reordering the top vector rows. This is what makes an exact but
+        # semantically uncommon term capable of entering the final result set.
+        with self.connect() as connection:
+            lexical_rows = connection.execute(
+                f"""SELECT c.*,m.title AS material_title,m.author AS material_author,m.source AS material_source
+                    FROM leap_knowledge_chunks c JOIN leap_materials m ON m.id=c.material_id
+                    WHERE {where} ORDER BY m.updated_at DESC,c.chunk_position LIMIT ?""",
+                params,
+            ).fetchall()
+        vector_similarities = {
+            str(dict(raw).get("id")): float(dict(raw)["vector_similarity"])
+            for raw in rows if "vector_similarity" in dict(raw)
+        }
+        lexical_scores = _tfidf_cosine_scores(query, [str(dict(raw).get("content") or "") for raw in lexical_rows])
         results = []
-        for raw in rows:
+        for raw, lexical_score in zip(lexical_rows, lexical_scores):
             row = dict(raw)
             # SQLite is the authoritative material/version ledger. This keeps
             # deleted or superseded chunks out of results if a mirror refresh
             # was interrupted.
             if active_versions.get(str(row["material_id"])) != int(row["material_version"]):
                 continue
-            vector_score = ((float(row["vector_similarity"]) + 1) / 2 if "vector_similarity" in row
+            vector_similarity = vector_similarities.get(str(row["id"]))
+            vector_score = ((vector_similarity + 1) / 2 if vector_similarity is not None
                             else (_cosine(query_embedding, json.loads(row["embedding"])) + 1) / 2)
-            content_terms = Counter(TOKEN_RE.findall(row["content"].casefold()))
-            overlap = sum(min(count, content_terms[term]) for term, count in query_terms.items())
-            lexical_score = overlap / math.sqrt(max(1, sum(query_terms.values()) * sum(content_terms.values())))
-            score = 0.75 * vector_score + 0.25 * lexical_score
+            score = 0.72 * vector_score + 0.28 * lexical_score
             results.append({
                 "chunk_id": row["id"], "material_id": row["material_id"], "material_version": row["material_version"],
                 "material_title": row["material_title"], "material_author": row["material_author"], "material_source": row["material_source"],
                 "paragraph_start": row["paragraph_start"], "paragraph_end": row["paragraph_end"],
                 "heading_path": json.loads(row["heading_path"] or "[]"), "stable_anchor": row["stable_anchor"],
                 "content": row["content"], "score": round(score, 6), "vector_score": round(vector_score, 6),
-                "lexical_score": round(lexical_score, 6),
+                "lexical_score": round(lexical_score, 6), "retrieval_strategy": "vector_tfidf_hybrid",
             })
         return sorted(results, key=lambda item: (-item["score"], item["chunk_id"]))[:limit]
 
     def answer(self, user_id: int, question: str, *, limit: int = 6, material_ids: list[str] | None = None, target_language: str = "zh-CN", generate: bool = True) -> dict[str, Any]:
-        retrieval_mode = "semantic_vector" if self.embedder else "local_vector"
+        retrieval_mode = "semantic_vector_tfidf_hybrid" if self.embedder else "local_vector_tfidf_hybrid"
         try:
             evidence = self.search(user_id, question, limit=limit, material_ids=material_ids, semantic=True)
         except HTTPException as exc:
@@ -536,7 +578,7 @@ class LeapKnowledgeService:
             # paragraphs. The local deterministic vector is clearly labelled
             # as a fallback, not passed off as a semantic model.
             evidence = self.search(user_id, question, limit=limit, material_ids=material_ids, semantic=False)
-            retrieval_mode = "local_vector_fallback"
+            retrieval_mode = "local_vector_tfidf_hybrid_fallback"
         citations = [
             {key: item[key] for key in ("chunk_id", "material_id", "material_title", "paragraph_start", "paragraph_end", "heading_path", "stable_anchor", "score")}
             for item in evidence

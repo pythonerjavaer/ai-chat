@@ -1861,6 +1861,63 @@ def future_radar_timeseries(user: User, days: int = Query(default=90, ge=7, le=3
             "privacy": "Only aggregate counts from public-source monitoring runs and events are returned; no personal application state."}
 
 
+@app.get("/api/future-radar/temporal-windows")
+def future_radar_temporal_windows(
+    user: User,
+    start: date | None = Query(default=None),
+    end: date | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+) -> dict:
+    """Query opportunity valid time separately from system observation time.
+
+    The same endpoint remains portable for a local SQLite demo. In production
+    PostgreSQL it uses the GiST-indexed ``daterange`` overlap operator.
+    """
+    del user
+    today = datetime.now(timezone.utc).date()
+    window_start = start or today
+    window_end = end or (window_start + timedelta(days=90))
+    if window_end < window_start:
+        raise HTTPException(status_code=422, detail="结束日期不能早于开始日期。")
+    end_exclusive = window_end + timedelta(days=1)
+    with database.connect() as connection:
+        # Backfill an initial bitemporal baseline for records ingested before
+        # this feature. Existing snapshots are untouched on subsequent reads.
+        legacy_rows = [dict(row) for row in connection.execute(
+            "SELECT id,opening_date,closing_date,status,content_hash,first_seen_at FROM radar_jobs"
+        ).fetchall()]
+        future_radar_service.repository.record_temporal_snapshots(
+            connection, legacy_rows, now=datetime.now(timezone.utc).isoformat(), refresh_existing=False,
+        )
+        if settings.database_backend == "postgres":
+            rows = connection.execute(
+                """SELECT s.job_id,s.valid_from,s.valid_until,s.observed_at,s.recorded_at,s.status,
+                          j.company,j.title,j.city,j.official_url
+                   FROM radar_job_temporal_snapshots s JOIN radar_jobs j ON j.id=s.job_id
+                   WHERE s.valid_period && daterange(?::date, ?::date, '[)')
+                   ORDER BY s.observed_at DESC LIMIT ?""",
+                (window_start.isoformat(), end_exclusive.isoformat(), limit),
+            ).fetchall()
+            query_method = "PostgreSQL daterange overlap + GiST temporal index"
+        else:
+            rows = connection.execute(
+                """SELECT s.job_id,s.valid_from,s.valid_until,s.observed_at,s.recorded_at,s.status,
+                          j.company,j.title,j.city,j.official_url
+                   FROM radar_job_temporal_snapshots s JOIN radar_jobs j ON j.id=s.job_id
+                   WHERE COALESCE(NULLIF(s.valid_until,''),'9999-12-31') >= ?
+                     AND COALESCE(NULLIF(s.valid_from,''),'0001-01-01') <= ?
+                   ORDER BY s.observed_at DESC LIMIT ?""",
+                (window_start.isoformat(), window_end.isoformat(), limit),
+            ).fetchall()
+            query_method = "SQLite portable date-overlap fallback"
+    return {
+        "window": {"start": window_start.isoformat(), "end": window_end.isoformat()},
+        "query_method": query_method,
+        "model": "valid_time=公开报名窗口；transaction_time=雷达观测/入库时间",
+        "items": [dict(row) for row in rows],
+    }
+
+
 @app.get("/api/future-radar/graph")
 def future_radar_relationship_graph(user: User) -> dict:
     """Sync a bounded set of visible job entities and return graph evidence."""

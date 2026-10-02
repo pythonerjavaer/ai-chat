@@ -140,6 +140,18 @@ def migrate(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (source_id) REFERENCES monitor_sources(id) ON DELETE SET NULL
         );
 
+        CREATE TABLE IF NOT EXISTS radar_job_temporal_snapshots (
+            snapshot_key TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            valid_from TEXT,
+            valid_until TEXT,
+            observed_at TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES radar_jobs(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS source_articles (
             id TEXT PRIMARY KEY,
             source_id TEXT NOT NULL,
@@ -388,6 +400,10 @@ def migrate(connection: sqlite3.Connection) -> None:
             ON recruitment_programs(company, recruitment_year);
         CREATE INDEX IF NOT EXISTS idx_radar_jobs_status_deadline
             ON radar_jobs(status, closing_date, last_changed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_radar_temporal_job_observed
+            ON radar_job_temporal_snapshots(job_id, observed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_radar_temporal_valid_dates
+            ON radar_job_temporal_snapshots(valid_from, valid_until);
         CREATE INDEX IF NOT EXISTS idx_radar_jobs_company
             ON radar_jobs(company, title, city);
         CREATE INDEX IF NOT EXISTS idx_radar_jobs_program
@@ -439,6 +455,19 @@ def migrate(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "radar_jobs", "source_ratings", "TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(connection, "radar_jobs", "description", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(connection, "radar_jobs", "responsibilities", "TEXT NOT NULL DEFAULT ''")
+    # Portable text dates support SQLite demos; the production PostgreSQL path
+    # additionally keeps a GiST-indexed range for overlap queries.
+    if not isinstance(connection, sqlite3.Connection):
+        try:
+            connection.execute(
+                "ALTER TABLE radar_job_temporal_snapshots ADD COLUMN IF NOT EXISTS valid_period daterange"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_radar_temporal_valid_period_gist "
+                "ON radar_job_temporal_snapshots USING GIST (valid_period)"
+            )
+        except sqlite3.DatabaseError:
+            logger.warning("Future Radar PostgreSQL temporal range index was not installed", exc_info=True)
     # Metadata-only connector: existing sources/articles remain untouched.
     from .wechat.migration import migrate_wechat_titles
     migrate_wechat_titles(connection, _ensure_column)

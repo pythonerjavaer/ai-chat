@@ -122,6 +122,8 @@ def test_leap_knowledge_hybrid_search_preserves_hierarchy_and_isolation(product_
     assert results[0]["material_id"] == first["id"]
     assert "久期" in results[0]["content"]
     assert results[0]["heading_path"] == ["债券基础", "久期"]
+    assert results[0]["retrieval_strategy"] == "vector_tfidf_hybrid"
+    assert results[0]["lexical_score"] > 0
     assert all(item["material_title"] != "私人材料" for item in results)
 
 

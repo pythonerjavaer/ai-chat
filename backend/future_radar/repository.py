@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -852,6 +853,9 @@ class RadarRepository:
                     before_data, after_data, changed_fields, detected_at, source_id)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", events,
             )
+        RadarRepository.record_temporal_snapshots(
+            connection, [mutation["row"] for mutation in mutations], now=now,
+        )
         connection.executemany(
             """
             INSERT INTO job_sources
@@ -870,6 +874,49 @@ class RadarRepository:
               source["source_type"], mutation["verification_role"], _json(mutation["evidence"]))
              for mutation in mutations],
         )
+
+    @staticmethod
+    def record_temporal_snapshots(
+        connection: Any, rows: list[dict[str, Any]], *, now: str, refresh_existing: bool = True,
+    ) -> None:
+        """Persist valid-time and transaction-time evidence for a job version.
+
+        A public opening/closing window is valid time. ``observed_at`` and
+        ``recorded_at`` capture when this radar instance saw that version. A
+        routine re-observation updates its timestamp; changed job content is
+        retained as a separate evidence version.
+        """
+        values = []
+        for row in rows:
+            valid_from = row.get("opening_date") or str(row.get("first_seen_at") or "")[:10] or None
+            valid_until = row.get("closing_date") or None
+            snapshot_key = hashlib.sha256(
+                f"{row.get('id')}|{row.get('content_hash')}|{valid_from}|{valid_until}|{row.get('status')}".encode()
+            ).hexdigest()
+            values.append((
+                snapshot_key, row.get("id"), valid_from, valid_until, now, now,
+                row.get("status") or "open", row.get("content_hash") or "",
+            ))
+        if not values:
+            return
+        conflict_action = "DO UPDATE SET observed_at=excluded.observed_at" if refresh_existing else "DO NOTHING"
+        connection.executemany(
+            """INSERT INTO radar_job_temporal_snapshots
+               (snapshot_key,job_id,valid_from,valid_until,observed_at,recorded_at,status,content_hash)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(snapshot_key) """ + conflict_action,
+            values,
+        )
+        if not isinstance(connection, sqlite3.Connection):
+            # Closing dates in public recruitment listings are inclusive; use
+            # a half-open PostgreSQL range so overlap queries stay unambiguous.
+            connection.execute(
+                """UPDATE radar_job_temporal_snapshots
+                   SET valid_period=daterange(valid_from::date,
+                       CASE WHEN valid_until IS NULL OR valid_until='' THEN 'infinity'::date
+                            ELSE valid_until::date + 1 END, '[)')
+                   WHERE valid_period IS NULL"""
+            )
 
     @staticmethod
     def insert_program(connection: sqlite3.Connection, item: dict[str, Any], *,
