@@ -135,6 +135,33 @@ test("ordinary city drilldown offers zero-job district reference points without 
   assert.equal(r.all().filter((value) => value.attributes["data-place-id"]).length, 0);
 });
 
+test("unverified orphan counties are not drill targets and unknown jobs do not acquire their reference points", async () => {
+  const orphan = { id: "geonames:orphan", name: "层级待核县", level: "district", parent_id: "440000",
+    province_id: "440000", city_id: "", center: [114.02, 22.56], navigation_visible: false,
+    hierarchy_status: "province_only_unverified" };
+  const legacy = { id: "geonames:legacy", name: "已关联测试区", level: "district", parent_id: "440300",
+    province_id: "440000", city_id: "440300", center: [114.03, 22.57] };
+  const catalog = { places: [orphan, legacy] }, index = createAdministrativeIndex(boundaries, catalog);
+  assert.equal(index.has(orphan.id), false);
+  assert.equal(index.has(legacy.id), true, "Missing navigation flags preserve existing behavior");
+  assert.equal(index.has("810001"), true, "Verified direct Hong Kong district polygons are unaffected");
+  const r = runtime(); const map = createFutureRadarMap({ host: r.host, boundaries, catalog }); await map.ready;
+  map.update({ status: "synced", items: [{ id: "unknown", employer: "测试企业", title: "真实地点未知岗位",
+    location: orphan.name, places: [], location_status: "unresolved" }], geography: { features: {
+    type: "FeatureCollection", features: [{ type: "Feature", properties: { ...orphan, opportunity_ids: ["unknown"] },
+      geometry: { type: "Point", coordinates: orphan.center } }],
+  } } });
+  r.withAttribute("data-region-id", "440000").fire("click");
+  assert.equal(r.withAttribute("data-region-id", orphan.id), undefined);
+  r.withAttribute("data-region-id", "440300").fire("click");
+  assert.equal(r.withAttribute("data-region-id", orphan.id), undefined);
+  assert.ok(r.withAttribute("data-region-id", legacy.id));
+  assert.equal(r.all().filter((value) => value.attributes["data-place-id"]).length, 0);
+  assert.match(r.byClass("radar-map-summary").textContent, /未定位岗位（全部）1/);
+  r.button("香港放大").fire("click"); assert.ok(r.withAttribute("data-region-id", "810001"));
+  map.destroy();
+});
+
 test("upstream province and city Location parents filter descendant jobs, not just exact leaf places", async () => {
   const r = runtime(), emitted = [], data = graph();
   data.items.push({ id: "district-job", employer: "第三企业", title: "区县公开岗位", places: [place("440305", { name: "南山区", level: "district" })] });

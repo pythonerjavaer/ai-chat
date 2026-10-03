@@ -50,8 +50,16 @@ BOUNDARY_NOTE = (
 POINT_NOTE = (
     "GeoNames 导出文档明确经纬度为 WGS84；坐标为行政地区/城市参考点，"
     "不是岗位地址地理编码、企业总部或行政机关门址。未匹配的边界中心标为 unknown-display；"
-    "只有逐记录 crs=WGS84 的点可用于 SRID 4326。数据非行政区划现势性认证。"
+    "只有逐记录 crs=WGS84 的点可用于 SRID 4326。缺少市级上级的 ADM3 仍是区县参考记录，"
+    "不是城市导航条目；已确认历史名称单独标记。数据非行政区划现势性认证。"
 )
+HISTORICAL_REFERENCES = {
+    "geonames:1809079": {
+        "administrative_status": "historical_reference",
+        "administrative_status_source": "https://www.zhanjiang.gov.cn/fileserver/news/634265c8-aa19-4de5-8235-9047dc15bea4.pdf",
+        "administrative_status_note": "湛江市地方志记载1994年4月海康县撤县建雷州市；保留原GeoNames记录，不据此猜测或改写其市级上级。",
+    },
+}
 
 
 def source_credits():
@@ -258,6 +266,35 @@ def preferred_chinese(row):
     return next((v for v in names if v.endswith(("市", "县", "区", "縣", "區", "自治州"))), names[0] if names else row["name"])
 
 
+def admin2_boundary_target(places, row, province_id):
+    """Join a published mainland ADM2 code only to an existing same-province city.
+
+    The reviewed CN snapshot uses four-digit administrative codes for ordinary
+    prefectures. Names can contain historic aliases (Xiangfan / Xiangyang), so
+    the exact code is safer than selecting the first Chinese convenience alias.
+    Municipalities/direct-admin units and other countries retain their existing
+    explicit name matching; arbitrary GeoNames IDs are never treated as adcodes.
+    """
+    code = row["admin2"]
+    if row["country"] != "CN" or row["code"] != "ADM2" or not re.fullmatch(r"[0-9]{4}", code):
+        return None
+    place = places.get(code + "00")
+    if place and place["level"] == "city" and place["province_id"] == province_id:
+        return place
+    return None
+
+
+def adm3_boundary_compatible(place):
+    # ADM3 can describe a source district or a province-direct county-level
+    # unit that the polygon source puts at its city navigation level. It must
+    # never supply a prefecture city's point/aliases merely because 市/区/县
+    # suffix stripping made two names equal (e.g. 襄阳市 versus old 襄阳区).
+    identity = place["id"]
+    direct_county = (place["level"] == "city" and re.fullmatch(r"[0-9]{6}", identity)
+                     and not identity.endswith("00") and place["parent_id"] == place["province_id"])
+    return place["level"] == "district" or bool(direct_county)
+
+
 def build_places(properties, rows, manifest):
     places = {}
     for key, props in properties.items():
@@ -302,7 +339,10 @@ def build_places(properties, rows, manifest):
             parent_id = province_id if code == "ADM2" else admin2.get((row["country"], row["admin1"], row["admin2"]), province_id)
             candidates = [p for p in places.values() if p["province_id"] == province_id
                           and p["crs"] != "WGS84" and names_match(p, row)
-                          and (code == "ADM3" or p["level"] in {"city", "province"})]
+                          and (adm3_boundary_compatible(p) if code == "ADM3" else p["level"] in {"city", "province"})]
+            code_target = admin2_boundary_target(places, row, province_id)
+            if code_target:
+                candidates = [code_target]
             # Municipality ADM2 describes the same named place already represented
             # by its province code; avoid a second Beijing/Shanghai alias entity.
             if code == "ADM2" and places[province_id].get("city_id") == province_id and names_match(places[province_id], row):
@@ -333,6 +373,13 @@ def build_places(properties, rows, manifest):
         places[key]["coordinate_precision"] = "city_reference_point"
     for place in places.values():
         place["aliases"] = list(dict.fromkeys([place["name"], *place["aliases"], *COMMON_NAMES.get(place["id"], [])]))
+        if place["level"] == "district" and not place["city_id"]:
+            # A known province does not establish a missing intermediate city.
+            # Keep the source row for audit/resolution, but do not advertise it
+            # as a current city/district navigation entry at the province tier.
+            place.update(hierarchy_status="province_only_unverified", navigation_visible=False)
+        if place["id"] in HISTORICAL_REFERENCES:
+            place.update(HISTORICAL_REFERENCES[place["id"]])
     values = sorted(places.values(), key=lambda p: (p["province_id"], {"province": 0, "city": 1, "district": 2}[p["level"]], p["id"]))
     return {"schema_version": 1, "source": "Offline boundary names plus separately verified GeoNames reference points",
             "sources": source_credits(),
@@ -341,6 +388,8 @@ def build_places(properties, rows, manifest):
                 "coordinate_crs_counts": dict(Counter(p["crs"] for p in values)),
                 "mainland_geonames_admin2_rows": 360, "mainland_geonames_admin3_rows": 2938,
                 "hong_kong_districts": 18, "district_boundaries": "partial; reference points do not imply polygons",
+                "province_only_district_references": sum(p.get("navigation_visible") is False for p in values),
+                "reviewed_historical_references": len(HISTORICAL_REFERENCES),
                 "freshness": "Source snapshots, not a complete/current authoritative administrative-register certification"},
             "places": values}
 
@@ -352,6 +401,9 @@ def build_public_centers(catalog):
     for place in catalog["places"]:
         row = {field: place[field] for field in fields}
         row["source"] = "GeoNames" if place["crs"] == "WGS84" else BOUNDARY_SOURCE
+        for field in ("hierarchy_status", "navigation_visible", "administrative_status"):
+            if field in place:
+                row[field] = place[field]
         places.append(row)
     return {key: catalog[key] for key in ("schema_version", "source", "sources", "crs", "coordinate_note",
                                          "source_snapshot", "source_files", "coverage")} | {"places": places}
@@ -385,6 +437,11 @@ def validate(boundaries, catalog, originals):
         assert place["longitude"] is not None and place["latitude"] is not None
         assert -180 <= place["longitude"] <= 180 and -90 <= place["latitude"] <= 90
         assert place["source"] and place["aliases"]
+    assert places["420600"]["geonames_id"] == "1790585" and places["420600"]["geonames_feature_code"] == "ADM2"
+    assert "geonames:1790585" not in places
+    assert places["geonames:1790456"]["level"] == "district" and places["geonames:1790456"]["parent_id"] == "420600"
+    assert places["geonames:1809079"]["level"] == "district" and places["geonames:1809079"]["city_id"] is None
+    assert places["geonames:1809079"]["navigation_visible"] is False
 
 
 def main():

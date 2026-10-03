@@ -90,8 +90,11 @@ class GeographyAssetsTest(unittest.TestCase):
         self.assertEqual(self.centers, builder.build_public_centers(self.catalog))
         expected_fields = {"id", "name", "level", "parent_id", "province_id", "city_id", "center", "crs", "source"}
         for row in self.centers["places"]:
-            self.assertEqual(set(row), expected_fields)
+            optional_fields = {"hierarchy_status", "navigation_visible", "administrative_status"}
+            self.assertTrue(expected_fields <= set(row) <= expected_fields | optional_fields)
             self.assertEqual(row["center"], self.places[row["id"]]["center"])
+            for field in optional_fields:
+                self.assertEqual(row.get(field), self.places[row["id"]].get(field))
         self.assertLess(self.center_path.stat().st_size, 1_000_000)
         self.assertLess(self.boundary_path.stat().st_size + self.center_path.stat().st_size, 2_000_000)
 
@@ -109,6 +112,69 @@ class GeographyAssetsTest(unittest.TestCase):
                 self.assertEqual(asset["source_files"][name], {"url": url, "sha256": digest})
         self.assertEqual(self.boundaries["coverage"]["district_boundary_coverage"], "partial")
         self.assertIn("not a complete/current authoritative", self.catalog["coverage"]["freshness"])
+
+    def test_xiangyang_city_and_xiangzhou_district_are_not_suffix_conflated(self):
+        city = self.places["420600"]
+        self.assertEqual(city["name"], "襄阳市")
+        self.assertEqual(city["level"], "city")
+        self.assertEqual(city["geonames_id"], "1790585")
+        self.assertEqual(city["geonames_feature_code"], "ADM2")
+        self.assertIn("Xiangyang", city["aliases"])
+        self.assertNotIn("襄州区", city["aliases"])
+        self.assertNotIn("襄阳区", city["aliases"])
+        self.assertNotIn("geonames:1790585", self.places)
+        self.assertFalse(any(place["name"] == "襄樊市" and place["level"] == "city" for place in self.places.values()))
+        district = self.places["geonames:1790456"]
+        self.assertEqual(district["name"], "襄州区")
+        self.assertEqual(district["level"], "district")
+        self.assertEqual(district["geonames_feature_code"], "ADM3")
+        self.assertEqual(district["parent_id"], "420600")
+        self.assertEqual(district["city_id"], "420600")
+        self.assertNotEqual(city["center"], district["center"])
+
+    def test_orphan_haikang_remains_a_sourced_district_but_not_navigation_city(self):
+        place = self.places["geonames:1809079"]
+        self.assertEqual(place["name"], "海康县")
+        self.assertEqual(place["level"], "district")
+        self.assertEqual(place["geonames_feature_code"], "ADM3")
+        self.assertEqual(place["parent_id"], "440000")
+        self.assertIsNone(place["city_id"])
+        self.assertEqual(place["coordinate_source"], "https://www.geonames.org/1809079/")
+        self.assertEqual(place["source_modified"], "2010-08-09")
+        self.assertEqual(place["hierarchy_status"], "province_only_unverified")
+        self.assertIs(place["navigation_visible"], False)
+        self.assertEqual(place["administrative_status"], "historical_reference")
+        self.assertTrue(place["administrative_status_source"].startswith("https://www.zhanjiang.gov.cn/"))
+        for district in self.places.values():
+            if district["level"] == "district" and not district["city_id"]:
+                self.assertIs(district["navigation_visible"], False)
+                self.assertEqual(district["hierarchy_status"], "province_only_unverified")
+        self.assertEqual(self.catalog["coverage"]["province_only_district_references"], 73)
+
+    def test_adm_matching_checks_code_province_and_administrative_level(self):
+        city = {"id": "420600", "name": "襄阳市", "level": "city", "parent_id": "420000", "province_id": "420000"}
+        row = {"country": "CN", "code": "ADM2", "admin2": "4206"}
+        self.assertIs(builder.admin2_boundary_target({city["id"]: city}, row, "420000"), city)
+        self.assertIsNone(builder.admin2_boundary_target({city["id"]: city}, row, "440000"))
+        self.assertIsNone(builder.admin2_boundary_target({city["id"]: city}, dict(row, admin2="1790585"), "420000"))
+        self.assertIsNone(builder.admin2_boundary_target({city["id"]: city}, dict(row, code="ADM3"), "420000"))
+        self.assertFalse(builder.adm3_boundary_compatible(city))
+        self.assertTrue(builder.adm3_boundary_compatible(dict(city, id="420607", level="district")))
+        self.assertTrue(builder.adm3_boundary_compatible({"id": "659002", "name": "阿拉尔市", "level": "city", "parent_id": "650000", "province_id": "650000"}))
+
+    def test_real_parser_uses_separate_xiangyang_and_xiangzhou_references(self):
+        from backend.future_radar.geography import ChinaPlaceCatalog
+
+        catalog = ChinaPlaceCatalog(self.catalog)
+        for text, identity, level in (
+            ("襄阳市", "420600", "city"), ("Xiangyang", "420600", "city"),
+            ("襄樊市", "420600", "city"),
+            ("襄州区", "geonames:1790456", "district"),
+            ("襄阳市襄州区", "geonames:1790456", "district"),
+        ):
+            places, status = catalog.resolve(text)
+            self.assertEqual(status, "mapped", text)
+            self.assertEqual([(place["id"], place["level"]) for place in places], [(identity, level)], text)
 
 
 if __name__ == "__main__":

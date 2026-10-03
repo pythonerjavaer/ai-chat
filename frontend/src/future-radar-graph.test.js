@@ -279,6 +279,45 @@ test("session reset clears map and graph and refuses a late previous-session res
   assert.equal(r.mapUpdates.filter((update) => update.status === "synced").length, 0);
 });
 
+test("map entities outside the bounded preview keep the graph clear and report full-input adjacency honestly", async () => {
+  const r = runtime(), selections = [];
+  r.context.futureRadarMapController = { selectNode: (node) => selections.push(node), update() {} };
+  const outside = { id: "employer:qrt", kind: "employer", label: "Qube Research & Technologies (QRT)" };
+  const graph = { status: "synced", opportunities: 3, relationships_stored: 492,
+    nodes: [
+      { id: "employer:visible", kind: "employer", label: "预览企业" },
+      { id: "opportunity:visible", kind: "opportunity", label: "预览岗位" },
+      ...Array.from({ length: 88 }, (_, i) => ({ id: `skill:${i}`, kind: "skill", label: `技能 ${i}` })),
+      outside,
+      { id: "opportunity:qrt-one", kind: "opportunity", label: "QRT 岗位一" },
+      { id: "opportunity:qrt-two", kind: "opportunity", label: "QRT 岗位二" },
+    ], relationships: [
+      { source: "employer:visible", target: "opportunity:visible", kind: "POSTS" },
+      { source: outside.id, target: "opportunity:qrt-one", kind: "POSTS" },
+      { source: outside.id, target: "opportunity:qrt-two", kind: "POSTS" },
+    ],
+  };
+  const pending = r.load(); r.resolve(graph); await pending;
+  const host = r.elements["future-radar-graph-view"], svg = host.children[0];
+  const nodes = svg.children.filter((node) => node.attributes.class?.startsWith("radar-graph-node"));
+  const edges = svg.children.filter((node) => node.tag === "line");
+  host.selectGraphNode(graph.nodes[0]);
+  assert.ok(nodes.some((node) => node.style.opacity === "0.25"));
+  host.selectGraphNode(outside);
+  assert.ok(nodes.every((node) => node.style.opacity === "1" && node.attributes["aria-pressed"] === "false"));
+  assert.ok(edges.every((edge) => edge.style.opacity === "1" && edge.style.strokeWidth === ""));
+  assert.match(r.elements["future-radar-graph-status"].textContent, /当前缩略预览未包含该实体/);
+  assert.match(r.elements["future-radar-graph-status"].textContent, /完整输入图中关联 2 条关系/);
+  assert.match(r.elements["future-radar-graph-status"].textContent, /当前岗位范围内共 492 条关系/);
+  assert.doesNotMatch(r.elements["future-radar-graph-status"].textContent, /图中关联 0|无关系/);
+  host.selectGraphNode({ id: "location:outside", kind: "location", label: "未进入输入图的地区" });
+  assert.match(r.elements["future-radar-graph-status"].textContent, /当前缩略预览未包含该实体/);
+  assert.doesNotMatch(r.elements["future-radar-graph-status"].textContent, /关联 0|无关系/);
+  assert.equal(selections.length, 0, "Map-originated selection must not feed back into map filters");
+  host.selectGraphNode(null);
+  assert.equal(r.elements["future-radar-graph-status"].textContent, host.dataset.graphSnapshotStatus);
+});
+
 test("adding geography preserves the original ninety business preview nodes", async () => {
   const r = runtime();
   const nodes = [...Array.from({length:100},(_,index)=>({id:`opportunity:${index}`,kind:"opportunity",label:`岗位 ${index}`})),

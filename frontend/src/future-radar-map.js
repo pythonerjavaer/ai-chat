@@ -99,6 +99,9 @@ export function createBoundaryIndex(collection) {
 export function createAdministrativeIndex(collection, catalog) {
   const index = createBoundaryIndex(collection);
   for (const place of Array.isArray(catalog?.places) ? catalog.places : []) {
+    // Do not turn a province-only, unverified county hierarchy into a city or
+    // district drill target. Legacy records without this explicit flag remain.
+    if (place.navigation_visible === false) continue;
     const id = text(place.id), center = validPoint(place.center);
     if (id && center && !index.has(id) && ["province", "city", "district"].includes(place.level)) {
       index.set(id, { type: "Feature", properties: { id, name: text(place.name), level: place.level,

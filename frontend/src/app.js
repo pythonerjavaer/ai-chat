@@ -3707,23 +3707,27 @@ async function loadFutureRadarGraph() {
     function selectNode(item, toggle = true, syncMap = true) {
       selectedId = item ? (toggle && selectedId === item.id ? null : item.id) : null;
       if (syncMap) futureRadarMapController?.selectNode(selectedId ? item : null);
+      const selectedInPreview = Boolean(selectedId && nodeElements.has(selectedId));
       const adjacent = visibleEdges.filter((edge) => edge.source === selectedId || edge.target === selectedId);
       const neighbors = new Set([selectedId, ...adjacent.flatMap((edge) => [edge.source, edge.target])]);
       nodeElements.forEach(({ group, circle }, id) => {
-        group.style.opacity = !selectedId || neighbors.has(id) ? "1" : "0.25";
+        group.style.opacity = !selectedInPreview || neighbors.has(id) ? "1" : "0.25";
         group.setAttribute("aria-pressed", String(id === selectedId));
         circle.style.strokeWidth = id === selectedId ? "3px" : "";
         circle.style.stroke = id === selectedId ? "#ffffff" : "";
       });
       edgeElements.forEach(({ edge, line }) => {
-        const highlighted = edge.source === selectedId || edge.target === selectedId;
-        line.style.opacity = !selectedId || highlighted ? "1" : "0.08";
+        const highlighted = selectedInPreview && (edge.source === selectedId || edge.target === selectedId);
+        line.style.opacity = !selectedInPreview || highlighted ? "1" : "0.08";
         line.style.strokeWidth = highlighted ? "3px" : "";
       });
       const snapshotStatus = host.dataset.graphSnapshotStale === "true"
         ? `${fullStatus} 当前保留上次成功快照，本次刷新未成功。`
         : loadFutureRadarGraph.loading ? `${fullStatus} 正在刷新，当前为上次成功快照。` : fullStatus;
-      status.textContent = selectedId ? `${snapshotStatus} 已选择“${item.label}”，图中关联 ${adjacent.length} 条关系；再次选择可复原。` : snapshotStatus;
+      if (selectedId && !selectedInPreview) {
+        const fullAdjacent = (graph.relationships || []).filter((edge) => edge.source === selectedId || edge.target === selectedId);
+        status.textContent = `${snapshotStatus} 已选择“${item.label}”，当前缩略预览未包含该实体。${fullAdjacent.length ? `完整输入图中关联 ${fullAdjacent.length} 条关系。` : ""}`;
+      } else status.textContent = selectedId ? `${snapshotStatus} 已选择“${item.label}”，图中关联 ${adjacent.length} 条关系；再次选择可复原。` : snapshotStatus;
     }
   } catch (error) {
     // A fast API failure may precede the lazy module. Paint failure only after
