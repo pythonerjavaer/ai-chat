@@ -1873,6 +1873,7 @@ def future_radar_relationship_graph(user: User) -> dict:
         return {"status": "not_configured", "nodes": [], "relationships": [],
                 "message": "请配置 Neo4j；PostgreSQL 岗位池不受影响。"}
     from .future_radar import personal
+    from .future_radar.geography import china_place_catalog, geography_projection
 
     started = time.perf_counter()
     jobs = future_radar_service.repository.list_graph_opportunities(
@@ -1892,8 +1893,10 @@ def future_radar_relationship_graph(user: User) -> dict:
     )
     if graph.get("status") != "synced":
         return graph
-    nodes: dict[str, dict[str, str]] = {}
+    nodes: dict[str, dict] = {}
     edges = []
+    catalog = china_place_catalog()
+    within_edges = set()
     for item in graph.get("items", []):
         employer = str(item.get("employer") or "").strip()
         job_id = str(item.get("id") or "").strip()
@@ -1908,7 +1911,22 @@ def future_radar_relationship_graph(user: User) -> dict:
             skill_id = f"skill:{str(skill).casefold()}"
             nodes[skill_id] = {"id": skill_id, "label": str(skill), "kind": "skill"}
             edges.append({"source": opportunity_id, "target": skill_id, "kind": "REQUIRES"})
+        places = item.get("places") or []
+        locations, within = catalog.hierarchy(places)
+        for place in locations:
+            location_id = f"location:{place['id']}"
+            nodes[location_id] = {"id": location_id, "label": place["name"], "kind": "location",
+                                  "level": place["level"], "place": place}
+        for place in places:
+            if f"location:{place.get('id')}" in nodes:
+                edges.append({"source": opportunity_id, "target": f"location:{place['id']}", "kind": "LOCATED_IN"})
+        for link in within:
+            pair = (link["child"], link["parent"])
+            if pair not in within_edges:
+                edges.append({"source": f"location:{link['child']}", "target": f"location:{link['parent']}", "kind": "WITHIN"})
+                within_edges.add(pair)
     graph.update({"nodes": list(nodes.values()), "relationships": edges,
+                  "geography": geography_projection(graph.get("items", []), catalog=catalog),
                   "postgres_opportunities_considered": len(jobs),
                   "privacy": "Only public employer, role, location and skill attributes are copied; personal application states are not stored."})
     return graph

@@ -2476,6 +2476,11 @@ body[data-workspace="general"] .ember-run-button { border-color:rgba(168,155,255
 .radar-graph-node circle { fill:#74c8e0; stroke:#d6f8ff; stroke-width:1.5; }
 .radar-graph-node.opportunity circle { fill:#8ce4ba; }
 .radar-graph-node.skill circle { fill:#f6b66d; }
+.radar-graph-node.location circle { fill:#c4a2ff; }
+.radar-graph-edge.located_in,.radar-graph-edge.within { stroke:rgba(196,162,255,.4); }
+.radar-graph-detail { margin-top:20px; min-width:0; }
+.radar-graph-detail > summary { cursor:pointer; padding:14px 0; color:#cfe9f2; font-size:13px; }
+.radar-graph-detail > summary:focus-visible { outline:2px solid #b5f1ff; outline-offset:3px; }
 .radar-graph-node text { fill:#c6d9de; font-size:10px; }
 .radar-graph-node.skill text { fill:#dfc7a4; }
 /* Blur restores the unchanged inline dimming; focus never changes selection. */

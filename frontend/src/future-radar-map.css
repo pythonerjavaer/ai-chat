@@ -1,0 +1,55 @@
+.radar-map { --radar-map-cyan: #60e5f5; --radar-map-violet: #a6a0ff; min-width: 0; max-width: 100%; color: #e9f9ff; }
+.radar-map-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: .55rem 1rem; }
+.radar-map-heading h3 { margin: 0; font-size: 1.2rem; letter-spacing: .08em; }
+.radar-map-heading p, .radar-map-precision { color: #a6becf; font-size: .83rem; line-height: 1.6; }
+.radar-map-controls { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; margin: .9rem 0; min-width: 0; }
+.radar-map-control { display: grid; gap: .35rem; flex: 1 1 14rem; min-width: 0; color: #b9d8e5; font-size: .82rem; }
+.radar-map-control select { width: 100%; min-width: 0; max-width: 100%; padding: .7rem; border: 1px solid #315569; border-radius: .65rem; background: #0a1a2b; color: #edfaff; text-overflow: ellipsis; }
+.radar-map-button { min-height: 42px; border: 1px solid #315569; border-radius: .6rem; padding: .55rem .8rem; background: #0c2034; color: #c8eaf8; cursor: pointer; }
+.radar-map-button:hover, .radar-map-button[aria-pressed="true"] { border-color: var(--radar-map-cyan); background: #143548; }
+.radar-map-button:disabled { cursor: default; opacity: .7; }
+.radar-map-breadcrumb { display: flex; flex-wrap: wrap; gap: .4rem; }
+.radar-map-breadcrumb .radar-map-button { min-height: 36px; font-size: .8rem; }
+.radar-map-hong-kong { border-color: #7d79bb; }
+.radar-map-current-place { align-self: center; padding: .4rem; color: #b6b0ff; font-size: .85rem; }
+.radar-map-summary { font-size: .85rem; color: #b8dfef; line-height: 1.6; }
+.radar-map[data-snapshot-stale="true"] .radar-map-summary { color: #ffe3a3; }
+.radar-map-viewport { position: relative; min-width: 0; max-width: 100%; overflow: hidden; border: 1px solid #285366; border-radius: 1rem; perspective: 1000px; background: radial-gradient(ellipse at 52% 45%, #123447 0, #081a2c 48%, #050e1c 100%); box-shadow: inset 0 0 44px #0b334a66, 0 14px 38px #0005; }
+.radar-map-viewport svg { display: block; width: 100%; height: auto; max-width: 100%; transform-origin: 50% 50%; }
+.radar-map-raised .radar-map-viewport svg { transform: rotateX(20deg) rotateZ(-3deg) scale(.95); }
+.radar-map-grid { color: #44819b; opacity: .25; pointer-events: none; }
+.radar-map-region { fill: #12384b; stroke: #4590a5; stroke-width: 1.1; vector-effect: non-scaling-stroke; cursor: pointer; }
+.radar-map-region:hover, .radar-map-region:focus-visible, .radar-map-region.is-selected { fill: #1b5066; stroke: #fff; stroke-width: 2; outline: none; }
+.radar-map-raised .radar-map-region:hover, .radar-map-raised .radar-map-region:focus-visible { transform: translateY(-3px); filter: drop-shadow(0 5px 3px #0007); }
+.radar-map-region-label { fill: #9ac1d0; font-size: 13px; paint-order: stroke; stroke: #071a29; stroke-width: 2px; pointer-events: none; }
+.radar-map-admin-point { cursor: pointer; }
+.radar-map-admin-dot { fill: #0b2639; stroke: #9aa5c8; stroke-width: 1.5px; }
+.radar-map-admin-point:focus-visible, .radar-map-admin-point:hover { outline: 2px solid #fff; outline-offset: 3px; }
+.radar-map-admin-point.is-selected .radar-map-admin-dot { fill: #aaa0ff; stroke: white; }
+.radar-map-admin-label { fill: #c1ccdf; font-size: 13px; paint-order: stroke; stroke: #08182a; stroke-width: 2px; }
+.radar-map-marker { cursor: pointer; }
+.radar-map-dot { fill: #b4fcff; stroke: #47cbe8; stroke-width: 2px; filter: drop-shadow(0 0 5px #67ddf5); }
+.radar-map-pulse { fill: #63ddf515; stroke: #63ddf56b; stroke-width: 1px; transform-box: fill-box; transform-origin: center; pointer-events: none; }
+.radar-map-motion .radar-map-pulse { animation: radar-map-slow-pulse 8s ease-in-out infinite; }
+.radar-map-marker-count { fill: #e9fbff; font-size: 14px; font-weight: 650; paint-order: stroke; stroke: #061929; stroke-width: 3px; }
+.radar-map-marker:hover .radar-map-dot, .radar-map-marker:focus-visible .radar-map-dot, .radar-map-marker.is-selected .radar-map-dot { fill: #fff; stroke: #aaa0ff; stroke-width: 4px; }
+.radar-map-marker:focus-visible { outline: 2px solid #fff; outline-offset: 4px; }
+.radar-map-message { position: absolute; inset: 35% 1rem auto; text-align: center; color: #b8d9e6; font-size: .9rem; }
+.radar-map-location-list { display: flex; flex-wrap: wrap; gap: .4rem; max-height: 10rem; overflow-y: auto; margin-top: .65rem; min-width: 0; }
+.radar-map-location-list .radar-map-button { min-height: 44px; font-size: .8rem; }
+.radar-map-precision { margin: .65rem 0 1rem; }
+.radar-map-attribution { display: flex; flex-wrap: wrap; gap: .3rem .8rem; font-size: .72rem; overflow-wrap: anywhere; }
+.radar-map-attribution a { color: #91aebe; }
+.radar-map-details h4 { margin: .8rem 0; font-size: 1rem; }
+.radar-map-job-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr)); gap: .6rem; max-height: 28rem; overflow-y: auto; overscroll-behavior: contain; min-width: 0; }
+.radar-map-job { min-width: 0; padding: .8rem; border: 1px solid #284858; border-radius: .7rem; background: #0b1d2de8; overflow-wrap: anywhere; }
+.radar-map-job.is-selected { border-color: var(--radar-map-violet); }
+.radar-map-job-title { border: 0; padding: 0; min-height: 36px; background: transparent; color: #edfaff; text-align: left; font-weight: 650; cursor: pointer; overflow-wrap: anywhere; }
+.radar-map-job-meta { margin: .3rem 0; color: #a9c8d8; font-size: .8rem; line-height: 1.55; }
+.radar-map-location-warning { margin: .3rem 0; color: #ffe1a0; font-size: .8rem; line-height: 1.55; }
+.radar-map-job-link { display: inline-block; padding: .4rem 0; color: #78dfef; font-size: .8rem; }
+.radar-map-job-no-link, .radar-map-empty { color: #a9c0cf; font-size: .8rem; line-height: 1.65; }
+.radar-map-button:focus-visible, .radar-map-control select:focus-visible, .radar-map-job-title:focus-visible, .radar-map-job-link:focus-visible { outline: 2px solid white; outline-offset: 3px; }
+@keyframes radar-map-slow-pulse { 0%, 100% { opacity: .48; transform: scale(.88); } 50% { opacity: .85; transform: scale(1.18); } }
+@media (prefers-reduced-motion: reduce) { .radar-map *, .radar-map *::before, .radar-map *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 600px) { .radar-map-heading { display: block; } .radar-map-control { flex-basis: 100%; } .radar-map-marker-count { font-size: 18px; } .radar-map-region-label { font-size: 15px; } .radar-map-job-list { max-height: 24rem; } }

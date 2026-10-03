@@ -26,10 +26,14 @@ function runtime() {
     "future-radar-graph-refresh": { disabled: false },
   };
   const calls = [];
+  const mapUpdates = [];
   let stored = null, active;
   const gate = createRadarPollingGate({ now: () => 1000, read: () => stored,
     write: (value) => { stored = value; }, locks: () => null });
   const context = vm.createContext({
+    state: { token: "test-session" },
+    futureRadarMapController: null,
+    updateFutureRadarMap: async (graph) => { mapUpdates.push(graph); },
     $: (id) => elements[id],
     radarPollingGate: gate,
     api: (...args) => {
@@ -40,8 +44,11 @@ function runtime() {
     document: { createElementNS: (_namespace, tag) => element(tag) },
   });
   vm.runInContext(source.slice(start, end), context);
-  return { elements, calls, gate, resolve: (value) => active.resolve(value),
-    reject: (error) => active.reject(error), load: context.loadFutureRadarGraph };
+  const resetStart = source.indexOf("function resetFutureRadarGraph()");
+  const resetEnd = source.indexOf("async function updateFutureRadarMap(", resetStart);
+  vm.runInContext(source.slice(resetStart, resetEnd), context);
+  return { elements, calls, gate, mapUpdates, context, resolve: (value) => active.resolve(value),
+    reject: (error) => active.reject(error), load: context.loadFutureRadarGraph, reset: context.resetFutureRadarGraph };
 }
 
 test("graph keyboard focus restores contrast only while focused without changing selection or layout", () => {
@@ -87,6 +94,26 @@ test("graph restores refresh after a failure or an unconfigured response", async
     assert.match(r.elements["future-radar-graph-status"].textContent,
       failed ? /图谱同步失败/ : /请配置 Neo4j/);
   }
+});
+
+test("a fast graph failure waits for lazy map preparation before painting unavailable", async () => {
+  const r = runtime();
+  let completePreparation;
+  const updates = [];
+  r.context.updateFutureRadarMap = () => new Promise((resolve) => {
+    completePreparation = () => {
+      r.context.futureRadarMapController = { update(value) { updates.push(value.status); } };
+      resolve();
+    };
+  });
+  const pending = r.load();
+  r.reject(new Error("fast failure"));
+  await Promise.resolve();
+  assert.equal(r.elements["future-radar-graph-refresh"].disabled, true);
+  completePreparation();
+  await pending;
+  assert.deepEqual(updates, ["unavailable"]);
+  assert.equal(r.elements["future-radar-graph-refresh"].disabled, false);
 });
 
 test("dense graphs keep 44px rows, scroll vertically, and report actual drawn edges", async () => {
@@ -206,4 +233,76 @@ test("failed refresh retains the previous graph and marks its interactive snapsh
   assert.notEqual(host.children[0], svg);
   assert.equal(host.dataset.graphSnapshotStale, "false");
   assert.equal(r.elements["future-radar-graph-status"].textContent, summary);
+});
+
+test("locations form a fourth graph column and graph/map selection shares one snapshot", async () => {
+  const r = runtime(), selections = [];
+  r.context.futureRadarMapController = { selectNode: (node) => selections.push(node), update() {} };
+  const graph = { status: "synced", opportunities: 1, items: [{id:"one", employer:"示例企业", places:[]}],
+    nodes: [
+      { id: "employer:示例企业", kind: "employer", label: "示例企业" },
+      { id: "opportunity:one", kind: "opportunity", label: "分析师" },
+      { id: "skill:Python", kind: "skill", label: "Python" },
+      { id: "location:810000", kind: "location", label: "香港特别行政区" },
+    ], relationships: [
+      {source:"employer:示例企业",target:"opportunity:one",kind:"POSTS"},
+      {source:"opportunity:one",target:"location:810000",kind:"LOCATED_IN"},
+    ] };
+  const pending = r.load(); r.resolve(graph); await pending;
+  assert.equal(r.mapUpdates[0].status, "loading");
+  assert.equal(r.mapUpdates[1], graph, "Map must get the full response, not the 90-node preview");
+  const host = r.elements["future-radar-graph-view"], svg = host.children[0];
+  assert.equal(svg.attributes.viewBox, "0 0 1320 610");
+  assert.deepEqual(svg.children.filter((node) => node.tag === "text").map((node) => node.textContent), ["企业","岗位","技能","地区"]);
+  svg.children.find((node) => node.attributes.class === "radar-graph-node opportunity").listeners.click();
+  assert.equal(selections.at(-1).id, "opportunity:one");
+  host.selectGraphNode(graph.nodes[0]);
+  host.selectGraphNode(graph.nodes[0]);
+  assert.equal(selections.length, 1, "Map choices must not feed back and erase map filters");
+  const employer = svg.children.find((node) => node.attributes.class === "radar-graph-node employer");
+  assert.equal(employer.attributes["aria-pressed"], "true", "Dropdown selection must not toggle itself off");
+  host.selectGraphNode(null);
+  assert.equal(employer.attributes["aria-pressed"], "false");
+  assert.equal(selections.length, 1);
+});
+
+test("session reset clears map and graph and refuses a late previous-session response", async () => {
+  const r = runtime(); let destroyed = false;
+  r.context.futureRadarMapController = { destroy() { destroyed = true; } };
+  const pending = r.load(); r.reset(); r.context.state.token = "new-session";
+  r.resolve({status:"synced",opportunities:1,nodes:[{id:"old",kind:"employer",label:"OLD_SESSION"}]});
+  await pending;
+  assert.equal(destroyed, true);
+  assert.equal(r.elements["future-radar-graph-view"].children.length, 0);
+  assert.equal(r.elements["future-radar-graph-refresh"].disabled, false);
+  assert.match(r.elements["future-radar-graph-status"].textContent, /请登录/);
+  assert.equal(r.mapUpdates.filter((update) => update.status === "synced").length, 0);
+});
+
+test("adding geography preserves the original ninety business preview nodes", async () => {
+  const r = runtime();
+  const nodes = [...Array.from({length:100},(_,index)=>({id:`opportunity:${index}`,kind:"opportunity",label:`岗位 ${index}`})),
+    ...Array.from({length:20},(_,index)=>({id:`location:${index}`,kind:"location",label:`地区 ${index}`}))];
+  const pending = r.load(); r.resolve({status:"synced",opportunities:100,nodes,items:[],relationships:[]}); await pending;
+  const svg = r.elements["future-radar-graph-view"].children[0];
+  assert.equal(svg.children.filter((node)=>node.attributes.class === "radar-graph-node opportunity").length,90);
+  assert.equal(svg.children.filter((node)=>node.attributes.class === "radar-graph-node location").length,18);
+  assert.match(r.elements["future-radar-graph-status"].textContent,/108 个实体/);
+});
+
+test("a successful empty graph cannot revive the old graph selection and counts", async () => {
+  const r = runtime();
+  let pending = r.load();
+  r.resolve({status:"synced",opportunities:1,nodes:[{id:"opportunity:one",kind:"opportunity",label:"旧岗位"}],items:[],relationships:[]});
+  await pending;
+  assert.equal(typeof r.elements["future-radar-graph-view"].selectGraphNode,"function");
+  pending = r.load(); r.resolve({status:"synced",opportunities:0,postgres_opportunities_considered:0,nodes:[],items:[],relationships:[]}); await pending;
+  assert.equal(r.elements["future-radar-graph-view"].selectGraphNode,undefined);
+  assert.match(r.elements["future-radar-graph-status"].textContent,/机会池为 0 条/);
+});
+
+test("geography code is lazy and the map is cleared at session end", () => {
+  assert.match(source, /futureRadarMapLoading \|\|= import\("\.\/future-radar-map\.js"\)/);
+  assert.doesNotMatch(source, /^import .+ from ["']\.\/future-radar-map/m);
+  assert.match(source, /function endFutureRadarSession\([^)]*\) \{\s*resetFutureRadarGraph\(\)/);
 });

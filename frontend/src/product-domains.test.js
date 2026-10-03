@@ -398,7 +398,8 @@ test("the four other interview surfaces have constrained, reachable scroll regio
 
 test("MongoDB and Neo4j are assigned to Leap document editions and Future Radar graph", () => {
   assert.match(source, /MongoDB 文档归档/);
-  assert.match(html, /企业关系图谱/);
+  assert.match(html, /地图与关系图谱/);
+  assert.match(html, /future-radar-map-view/);
   assert.match(appSource, /\/future-radar\/graph/);
 });
 

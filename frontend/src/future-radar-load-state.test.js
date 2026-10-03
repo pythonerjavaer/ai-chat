@@ -99,6 +99,9 @@ function runtime({ existing = false, fail = true, legacyFail = false } = {}) {
   elements.futureRadarFilterForm = { reset() {} };
   const noop = () => {};
   const context = {
+    $: () => null,
+    futureRadarMapController: null,
+    futureRadarMapLoading: null,
     wechatTitleRadar: { reset() {} }, bridgeDetails: { reset() {} },
     productDomains: { reset() {} },
     personalRadar: { reset() {}, start() {}, saveButton: () => new Element("button"), applicationControl: () => new Element("div") },

@@ -502,7 +502,7 @@
               <button type="button" data-radar-tab="applied" aria-selected="false">✓ 已报名</button>
               <button type="button" data-radar-tab="programs" aria-selected="false">招聘项目</button>
               <button type="button" data-radar-tab="timeseries" aria-selected="false">时间序列</button>
-              <button type="button" data-radar-tab="graph" aria-selected="false">企业关系图谱</button>
+              <button type="button" data-radar-tab="graph" aria-selected="false">地图与关系图谱</button>
               <button type="button" data-radar-tab="events" aria-selected="false">情报流</button>
               <button type="button" data-radar-tab="wechat" aria-selected="false">公众号标题</button>
               <button type="button" data-radar-tab="bridge" aria-selected="false">同步明细</button>
@@ -545,7 +545,12 @@
             </section>
             <section class="radar-tab-panel hidden" data-radar-panel="programs"><div id="future-radar-programs" class="radar-entity-list"></div></section>
             <section class="radar-tab-panel hidden" data-radar-panel="timeseries"><header class="radar-candidate-heading"><div><span class="overline">TIME SERIES / 90 DAYS</span><h3>岗位信号时间序列</h3><p>基于每轮扫描与机会变化事件统计新增、更新、关闭趋势；这不是未来岗位数量承诺。</p></div><button id="future-radar-timeseries-refresh" type="button">刷新趋势</button></header><p id="future-radar-timeseries-status" class="radar-metric-note" role="status">仅返回公开信源扫描与事件的聚合计数。</p><div id="future-radar-timeseries-chart" class="future-radar-timeseries-chart"></div><div id="future-radar-timeseries-table" class="radar-entity-list"></div></section>
-            <section class="radar-tab-panel hidden" data-radar-panel="graph"><header class="radar-candidate-heading"><div><span class="overline">NEO4J GRAPH</span><h3>企业—岗位—技能关系</h3><p>从现有岗位池同步公开企业与岗位属性；不会复制个人投递状态。</p></div><button id="future-radar-graph-refresh" type="button">同步并刷新</button></header><p id="future-radar-graph-status" class="radar-metric-note" role="status">关系图仅使用当前机会池内可见记录。</p><div id="future-radar-graph-view" class="future-radar-graph-view"></div></section>
+            <section class="radar-tab-panel hidden" data-radar-panel="graph">
+              <header class="radar-candidate-heading"><div><span class="overline">NEO4J · SPATIAL RADAR</span><h3>招聘地理图谱</h3><p>企业、岗位、技能与地区联动；地图展示企业招聘分布，不推断总部地址，也不复制个人投递状态。</p></div><button id="future-radar-graph-refresh" type="button">同步并刷新</button></header>
+              <p id="future-radar-graph-status" class="radar-metric-note" role="status">地图与关系图仅使用当前可见岗位的公开招聘地点；未确定位置的岗位不会被猜测定位。</p>
+              <div id="future-radar-map-view" aria-label="中国招聘地理地图"></div>
+              <details class="radar-graph-detail"><summary>展开企业—岗位—技能—地区关系图</summary><div id="future-radar-graph-view" class="future-radar-graph-view"></div></details>
+            </section>
             <section class="radar-tab-panel hidden" data-radar-panel="events"><div id="future-radar-events" class="radar-event-feed" aria-live="polite"></div></section>
             <section class="radar-tab-panel hidden" data-radar-panel="wechat"><div id="future-radar-wechat-titles" class="radar-wechat-titles"></div></section>
             <section class="radar-tab-panel hidden" data-radar-panel="bridge"><div id="future-radar-bridge-details" class="radar-entity-list"></div></section>

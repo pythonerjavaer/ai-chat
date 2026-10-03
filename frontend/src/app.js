@@ -74,6 +74,8 @@ const FUTURE_RADAR_SCAN_TYPES = Object.freeze(["quick", "deep"]);
 const FUTURE_RADAR_REQUEST_CONTROLLERS = new Set();
 let productDomains = null;
 let financeTools = null;
+let futureRadarMapController = null;
+let futureRadarMapLoading = null;
 const WORKSPACE_META = {
   legal: { symbol: "§", eyebrow: "FROST", themeName: "寒冰域", label: "寒冰域", hero: "有些东西决定世界如何运行，也决定什么不能被越过。", description: "当前从合同、合规、义务、期限与风险开始。", lens: "来源" },
   general: { symbol: "✦", eyebrow: "AURORA · 未来推演", themeName: "极光域", label: "极光域", hero: "在时间的流动中，看见尚未成形的可能。", description: "从规律与变化中辨认未来方向；未来雷达负责向外探索现实机会。", lens: "预测" },
@@ -926,6 +928,7 @@ function applyUser() {
 }
 
 function endFutureRadarSession(expired = false) {
+  resetFutureRadarGraph();
   personalRadar.reset();
   wechatTitleRadar.reset();
   bridgeDetails.reset();
@@ -3587,21 +3590,77 @@ function activateFutureRadarTab(tab) {
   });
 }
 
+function resetFutureRadarGraph() {
+  loadFutureRadarGraph.requestId = (loadFutureRadarGraph.requestId || 0) + 1;
+  loadFutureRadarGraph.loading = false;
+  futureRadarMapController?.destroy();
+  futureRadarMapController = null;
+  const graphHost = $("future-radar-graph-view");
+  if (graphHost) {
+    graphHost.replaceChildren();
+    delete graphHost.selectGraphNode;
+    delete graphHost.dataset.graphSnapshotStatus;
+    graphHost.dataset.graphSnapshotStale = "false";
+  }
+  const status = $("future-radar-graph-status");
+  if (status) status.textContent = "请登录后同步公开招聘地理图谱。";
+  const refresh = $("future-radar-graph-refresh");
+  if (refresh) refresh.disabled = false;
+}
+
+async function updateFutureRadarMap(graph, sessionToken = state.token) {
+  const host = $("future-radar-map-view");
+  if (!host) return;
+  // Neither map code nor administrative geometry is loaded on the login/main-pool path.
+  futureRadarMapLoading ||= import("./future-radar-map.js").then(async (module) => {
+    await import("./future-radar-map.css");
+    return module;
+  }).catch((error) => {
+    futureRadarMapLoading = null;
+    throw error;
+  });
+  const { createFutureRadarMap } = await futureRadarMapLoading;
+  if (sessionToken !== state.token) return;
+  if (!futureRadarMapController) {
+    futureRadarMapController = createFutureRadarMap({ host, onSelect: (node) => {
+      $("future-radar-graph-view")?.selectGraphNode?.(node);
+    } });
+  }
+  futureRadarMapController.update(graph);
+}
+
 async function loadFutureRadarGraph() {
   if (loadFutureRadarGraph.loading) return;
   loadFutureRadarGraph.loading = true;
+  const requestId = loadFutureRadarGraph.requestId = (loadFutureRadarGraph.requestId || 0) + 1;
+  const sessionToken = state.token;
   const host = $("future-radar-graph-view"); const status = $("future-radar-graph-status");
   const refresh = $("future-radar-graph-refresh");
   const hasSnapshot = Boolean(host.querySelector("svg"));
   if (refresh) refresh.disabled = true;
+  // Map controls and the offline base map can appear while the bounded graph read runs.
+  const mapPreparation = updateFutureRadarMap({ status: "loading" }, sessionToken).catch(() => {});
   try {
     radarPollingGate.resume({ allowImmediate: true });
     status.textContent = `正在将岗位池的公开关系同步到 Neo4j…首次连接可能需要最多 60 秒。${hasSnapshot ? "等待期间展示上次成功快照。" : ""}`;
     const graph = await api("/future-radar/graph", { timeoutMs: 60000 });
+    await mapPreparation;
+    if (requestId !== loadFutureRadarGraph.requestId || sessionToken !== state.token) return;
     if (graph.status !== "synced") { showGraphFailure(graph.message || `Neo4j 状态：${graph.status}`); return; }
-    const nodes = (graph.nodes || []).slice(0, 90);
-    if (!nodes.length) { host.replaceChildren(); delete host.dataset.graphSnapshotStatus; host.dataset.graphSnapshotStale = "false"; status.textContent = `Neo4j 已连接，当前没有可画关系的岗位。机会池为 ${graph.postgres_opportunities_considered || 0} 条；请先正常导入岗位，再刷新图谱。`; return; }
-    const groups = ["employer", "opportunity", "skill"];
+    try { await updateFutureRadarMap(graph, sessionToken); }
+    catch (_) {
+      const mapHost = $("future-radar-map-view");
+      if (mapHost && !futureRadarMapController) mapHost.textContent = "地图资源暂时无法加载；请再次同步重试。下方关系图仍可使用。";
+    }
+    if (requestId !== loadFutureRadarGraph.requestId || sessionToken !== state.token) return;
+    const allNodes = graph.nodes || [];
+    const locationNodes = allNodes.filter((item) => item.kind === "location");
+    const nodes = locationNodes.length
+      ? [...allNodes.filter((item) => item.kind !== "location").slice(0, 90), ...locationNodes.slice(0, 18)]
+      : allNodes.slice(0, 90);
+    if (!nodes.length) { host.replaceChildren(); delete host.selectGraphNode; delete host.dataset.graphSnapshotStatus; host.dataset.graphSnapshotStale = "false"; status.textContent = `Neo4j 已连接，当前没有可画关系的岗位。机会池为 ${graph.postgres_opportunities_considered || 0} 条；请先正常导入岗位，再刷新图谱。`; return; }
+    const groups = locationNodes.length ? ["employer", "opportunity", "skill", "location"] : ["employer", "opportunity", "skill"];
+    const svgWidth = locationNodes.length ? 1320 : 1000;
     const rowHeight = 44;
     const svgHeight = Math.max(610, 84 + (Math.max(...groups.map((kind) => nodes.filter((item) => item.kind === kind).length)) - 1) * rowHeight);
     const positions = new Map();
@@ -3609,8 +3668,8 @@ async function loadFutureRadarGraph() {
       const items = nodes.filter((item) => item.kind === kind);
       items.forEach((item, index) => positions.set(item.id, { x: 115 + groupIndex * 300, y: 42 + index * rowHeight }));
     });
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", `0 0 1000 ${svgHeight}`); svg.setAttribute("height", String(svgHeight)); svg.style.minWidth = "1000px"; svg.style.minHeight = `${svgHeight}px`; svg.setAttribute("role", "group"); svg.setAttribute("aria-label", "Future Radar 企业岗位技能关系图");
-    ["企业", "岗位", "技能"].forEach((label, index) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", `0 0 ${svgWidth} ${svgHeight}`); svg.setAttribute("height", String(svgHeight)); svg.style.minWidth = `${svgWidth}px`; svg.style.minHeight = `${svgHeight}px`; svg.setAttribute("role", "group"); svg.setAttribute("aria-label", "Future Radar 企业岗位技能地区关系图");
+    (locationNodes.length ? ["企业", "岗位", "技能", "地区"] : ["企业", "岗位", "技能"]).forEach((label, index) => {
       const text = document.createElementNS(svg.namespaceURI, "text"); text.setAttribute("x", 115 + index * 300); text.setAttribute("y", "20"); text.setAttribute("fill", "#d9f5ff"); text.style.fontSize = "14px"; text.textContent = label; svg.append(text);
     });
     const visibleEdges = (graph.relationships || []).filter((edge) => positions.has(edge.source) && positions.has(edge.target)).slice(0, 220);
@@ -3637,13 +3696,17 @@ async function loadFutureRadarGraph() {
       });
     });
     host.replaceChildren(svg);
+    // Map-originated choices already changed map filters. Only mirror the
+    // graph highlight; feeding them back would erase employer/drill filters.
+    host.selectGraphNode = (item) => selectNode(item, false, false);
     const storedRelationships = Number(graph.relationships_stored ?? graph.relationships_written ?? graph.relationships?.length ?? 0);
     const fullStatus = `已同步 ${graph.opportunities} 个岗位，图中显示 ${nodes.length} 个实体和 ${visibleEdges.length} 条关系；Neo4j 当前岗位范围内共 ${storedRelationships} 条关系。仅同步公开招聘信息，个人投递状态不会写入图谱。`;
     host.dataset.graphSnapshotStatus = fullStatus;
     host.dataset.graphSnapshotStale = "false";
     status.textContent = fullStatus;
-    function selectNode(item) {
-      selectedId = selectedId === item.id ? null : item.id;
+    function selectNode(item, toggle = true, syncMap = true) {
+      selectedId = item ? (toggle && selectedId === item.id ? null : item.id) : null;
+      if (syncMap) futureRadarMapController?.selectNode(selectedId ? item : null);
       const adjacent = visibleEdges.filter((edge) => edge.source === selectedId || edge.target === selectedId);
       const neighbors = new Set([selectedId, ...adjacent.flatMap((edge) => [edge.source, edge.target])]);
       nodeElements.forEach(({ group, circle }, id) => {
@@ -3662,12 +3725,20 @@ async function loadFutureRadarGraph() {
         : loadFutureRadarGraph.loading ? `${fullStatus} 正在刷新，当前为上次成功快照。` : fullStatus;
       status.textContent = selectedId ? `${snapshotStatus} 已选择“${item.label}”，图中关联 ${adjacent.length} 条关系；再次选择可复原。` : snapshotStatus;
     }
-  } catch (error) { showGraphFailure(error.message); }
+  } catch (error) {
+    // A fast API failure may precede the lazy module. Paint failure only after
+    // preparation, so a late map mount cannot leave a false loading state.
+    await mapPreparation;
+    if (requestId === loadFutureRadarGraph.requestId && sessionToken === state.token) showGraphFailure(error.message);
+  }
   finally {
-    loadFutureRadarGraph.loading = false;
-    if (refresh) refresh.disabled = false;
+    if (requestId === loadFutureRadarGraph.requestId) {
+      loadFutureRadarGraph.loading = false;
+      if (refresh) refresh.disabled = false;
+    }
   }
   function showGraphFailure(message) {
+    futureRadarMapController?.update({ status: "unavailable", message });
     if (hasSnapshot) {
       host.dataset.graphSnapshotStale = "true";
       status.textContent = `${host.dataset.graphSnapshotStatus || ""} 图谱同步失败：${message}。当前保留上次成功快照，请稍后重试。`;

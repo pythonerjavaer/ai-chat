@@ -2,7 +2,7 @@
 
 The configured application database remains authoritative for business records.
 MongoDB archives explicitly indexed Leap document editions; Neo4j holds the
-public employer-opportunity-skill relationship graph for Future Radar.
+public employer-opportunity-skill-location relationship graph for Future Radar.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ import json
 import re
 from urllib.parse import quote
 from typing import Any
+
+from .future_radar.geography import china_place_catalog, resolve_opportunity_places
 
 
 def _clean(value: Any, limit: int = 500) -> str:
@@ -255,6 +257,7 @@ class Neo4jOpportunityGraph:
         relationship_count = 0
         try:
             rows = []
+            catalog = china_place_catalog()
             for job in jobs[:500]:
                 job_id = _clean(job.get("id") or job.get("job_id"), 180)
                 title = _clean(job.get("title") or job.get("role") or job.get("position"), 240)
@@ -262,43 +265,88 @@ class Neo4jOpportunityGraph:
                 if not job_id or not title or not company:
                     continue
                 company_key = hashlib.sha256(company.casefold().encode()).hexdigest()[:24]
+                places, location_status = resolve_opportunity_places(job, catalog=catalog)
+                locations, within = catalog.hierarchy(places)
                 rows.append({"id": job_id, "title": title, "company": company,
                              "company_key": company_key, "location": _clean(job.get("location") or job.get("city"), 180),
                              "url": _clean(job.get("application_url") or job.get("official_url")
                                            or job.get("url") or job.get("source_url"), 1000),
-                             "skills": self._skills(job)})
+                             "skills": self._skills(job), "places": places,
+                             "locations": locations, "within": within,
+                             "location_status": location_status})
+            rows_by_id = {row["id"]: row for row in rows}
             read_scope = {"ids": [row["id"] for row in rows],
                           "company_keys": {row["id"]: row["company_key"] for row in rows},
-                          "skills_by_id": {row["id"]: row["skills"] for row in rows}}
+                          "skills_by_id": {row["id"]: row["skills"] for row in rows},
+                          "place_ids_by_id": {row["id"]: [place["id"] for place in row["places"]] for row in rows},
+                          "location_keys": list(dict.fromkeys(place["id"] for row in rows for place in row["locations"])),
+                          "within_pairs": [{"child": child, "parent": parent} for child, parent in dict.fromkeys(
+                              (link["child"], link["parent"]) for row in rows for link in row["within"])],
+                          }
             with driver.session(database=self.database_name) as session:
                 session.run("CREATE CONSTRAINT opportunity_id IF NOT EXISTS FOR (n:Opportunity) REQUIRE n.id IS UNIQUE").consume()
                 session.run("CREATE CONSTRAINT employer_key IF NOT EXISTS FOR (n:Employer) REQUIRE n.key IS UNIQUE").consume()
                 session.run("CREATE CONSTRAINT skill_name IF NOT EXISTS FOR (n:Skill) REQUIRE n.name IS UNIQUE").consume()
+                session.run("CREATE CONSTRAINT location_key IF NOT EXISTS FOR (n:Location) REQUIRE n.key IS UNIQUE").consume()
                 session.run("""UNWIND $rows AS row
                     MERGE (e:Employer {key: row.company_key}) SET e.name=row.company
                     MERGE (o:Opportunity {id: row.id}) SET o.title=row.title,o.location=row.location,o.url=row.url
                     MERGE (e)-[:POSTS]->(o)
+                    FOREACH (place IN row.locations |
+                        MERGE (l:Location {key: place.id})
+                        SET l.name=place.name,l.level=place.level,l.province_id=place.province_id,
+                            l.province_name=place.province_name,l.city_id=place.city_id,l.city_name=place.city_name,
+                            l.longitude=place.longitude,l.latitude=place.latitude,l.accuracy=place.accuracy,
+                            l.source_crs=place.crs,l.coordinate_source=place.coordinate_source,l.catalog_source=place.catalog_source,
+                            l.position=CASE WHEN place.crs='WGS84' AND place.longitude IS NOT NULL
+                                AND place.latitude IS NOT NULL THEN point({longitude:place.longitude,
+                                latitude:place.latitude,srid:4326}) ELSE null END)
+                    FOREACH (place IN row.places |
+                        MERGE (l:Location {key: place.id}) MERGE (o)-[:LOCATED_IN]->(l))
+                    FOREACH (link IN row.within |
+                        MERGE (child:Location {key: link.child})
+                        MERGE (parent:Location {key: link.parent}) MERGE (child)-[:WITHIN]->(parent))
                     WITH o,row UNWIND row.skills AS skill_name
                     MERGE (s:Skill {name: skill_name}) MERGE (o)-[:REQUIRES]->(s)""", rows=rows).consume()
                 record = session.run("""MATCH (e:Employer)-[:POSTS]->(o:Opportunity)
                     WHERE o.id IN $ids AND e.key = $company_keys[o.id]
                     OPTIONAL MATCH (o)-[:REQUIRES]->(s:Skill)
                     WHERE s.name IN $skills_by_id[o.id]
-                    RETURN e.name AS employer,o.id AS id,o.title AS title,o.location AS location,
-                           collect(DISTINCT s.name)[0..12] AS skills ORDER BY employer,title LIMIT 500""",
+                    WITH e,o,collect(DISTINCT s.name)[0..12] AS skills
+                    OPTIONAL MATCH (o)-[:LOCATED_IN]->(l:Location)
+                    WHERE l.key IN $place_ids_by_id[o.id]
+                    RETURN e.name AS employer,o.id AS id,o.title AS title,o.location AS location,o.url AS url,
+                           skills,collect(DISTINCT l.key) AS place_keys ORDER BY employer,title LIMIT 500""",
                                      **read_scope).data()
                 relationship_count = session.run("""MATCH (e:Employer)-[posts:POSTS]->(o:Opportunity)
                     WHERE o.id IN $ids AND e.key = $company_keys[o.id]
                     OPTIONAL MATCH (o)-[requires:REQUIRES]->(s:Skill)
                     WHERE s.name IN $skills_by_id[o.id]
-                    RETURN count(DISTINCT posts) + count(DISTINCT requires) AS count""",
+                    OPTIONAL MATCH (o)-[located:LOCATED_IN]->(l:Location)
+                    WHERE l.key IN $place_ids_by_id[o.id]
+                    WITH count(DISTINCT posts) + count(DISTINCT requires) + count(DISTINCT located) AS job_edges
+                    OPTIONAL MATCH (child:Location)-[within:WITHIN]->(parent:Location)
+                    WHERE child.key IN $location_keys AND parent.key IN $location_keys
+                      AND {child:child.key,parent:parent.key} IN $within_pairs
+                    RETURN job_edges + count(DISTINCT within) AS count""",
                                                  **read_scope).single()["count"]
+            items = []
+            for item in record:
+                row = rows_by_id.get(str(item.get("id") or ""))
+                if row is not None:
+                    # Current public catalog resolution, never historical or
+                    # caller-supplied coordinates/places from an old graph.
+                    items.append({"employer": row["company"], "id": row["id"], "title": row["title"],
+                                  "location": row["location"], "url": row["url"],
+                                  "skills": [skill for skill in item.get("skills") or [] if skill in row["skills"]][:12],
+                                  "places": row["places"],
+                                  "location_status": row["location_status"]})
             return {"status": "synced", "opportunities": len(rows),
                     "relationships_stored": int(relationship_count),
                     "relationships_written": int(relationship_count),
                     "relationship_count_scope": "current_public_projection",
                     "relationship_count_semantics": "relationships_written is a compatibility alias for stored relationships, not newly created relationships.",
-                    "items": record}
+                    "items": items}
         finally:
             driver.close()
 

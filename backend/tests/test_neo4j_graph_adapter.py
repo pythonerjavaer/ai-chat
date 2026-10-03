@@ -188,12 +188,13 @@ def test_two_hundred_public_jobs_use_one_bounded_unwind_write_without_private_pa
     assert "MERGE (e)-[:POSTS]->(o)" in query
     assert "MERGE (o)-[:REQUIRES]->(s)" in query
     assert len(parameters["rows"]) == 200
-    assert all(set(row) == {"id", "title", "company", "company_key", "location", "url", "skills"}
+    assert all(set(row) == {"id", "title", "company", "company_key", "location", "url", "skills",
+                            "places", "locations", "within", "location_status"}
                for row in parameters["rows"])
     assert parameters["rows"][0]["skills"] == ["Python", "SQL", "数据分析"]
     assert "private" not in repr(driver.calls)
     assert "secret" not in repr(driver.calls)
-    assert sum("CREATE CONSTRAINT" in query for query, _parameters in driver.calls) == 3
+    assert sum("CREATE CONSTRAINT" in query for query, _parameters in driver.calls) == 4
     assert not any("DELETE" in query for query, _parameters in driver.calls)
     assert result["opportunities"] == 200
     # This is the driver's stored-edge read, not an estimate or created count.
@@ -224,7 +225,9 @@ def test_graph_reads_only_current_validated_ids_employer_keys_and_skills(monkeyp
         assert parameters["ids"] == ["visible"]
         assert set(parameters["company_keys"]) == {"visible"}
         assert parameters["skills_by_id"] == {"visible": ["Python", "数据分析"]}
-    assert result["items"] == records
+    assert {key: result["items"][0][key] for key in records[0]} == records[0]
+    assert result["items"][0]["url"] == public_job("visible")["application_url"]
+    assert result["items"][0]["location_status"] in {"mapped", "unmapped", "ambiguous"}
     assert result["opportunities"] == 1
 
 

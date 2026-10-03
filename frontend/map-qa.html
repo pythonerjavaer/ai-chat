@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>招聘地理图谱 · 本地测试夹具</title>
+  <style>
+    body { margin:0; background:#06101e; color:#e8f8ff; font:16px/1.6 system-ui,sans-serif; }
+    main { max-width:1160px; margin:0 auto; padding:24px; }
+    .qa-notice { border:1px solid #7c682f; background:#302610; padding:10px 16px; border-radius:10px; color:#ffe8af; font-size:13px; }
+    #selection { overflow-wrap:anywhere; color:#a6c9da; }
+    .qa-tools { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+    .qa-tools button { color:#e8f8ff; background:#123046; border:1px solid #44647d; border-radius:8px; padding:9px 12px; cursor:pointer; }
+    @media(max-width:600px){main{padding:12px}}
+  </style>
+</head>
+<body>
+  <main>
+    <p class="qa-notice">本地交互验收夹具：下列企业与岗位均为测试数据；使用真实离线行政边界，不连接或写入正式数据库</p>
+    <div class="qa-tools"><button id="qa-failure">模拟图谱服务不可用</button><button id="qa-restore">恢复测试快照</button></div>
+    <p id="selection">请选择企业、岗位或行政区</p>
+    <div id="map"></div>
+  </main>
+  <script type="module">
+    import { createFutureRadarMap } from './src/future-radar-map.js';
+    import './src/future-radar-map.css';
+    import catalog from '../backend/future_radar/data/china_places.json';
+    const pick = (name, city) => catalog.places.find(place => place.name === name && (!city || place.city_name === city));
+    const place = (name, city) => ({...pick(name, city), accuracy:'administrative_center', source:'city'});
+    const items = [
+      {id:'qa-sh', employer:'测试企业甲', title:'测试岗位 · 上海数据分析', location:'上海', skills:['SQL','Python'], places:[place('上海市')], url:'https://example.com/qa/sh'},
+      {id:'qa-sz', employer:'测试企业甲', title:'测试岗位 · 深圳数据工程', location:'深圳', skills:['SQL'], places:[place('深圳市')], url:'https://example.com/qa/sz'},
+      {id:'qa-hk', employer:'测试企业乙', title:'测试岗位 · 香港', location:'香港', skills:['Python'], places:[place('香港特别行政区')], url:'https://example.com/qa/hk'},
+      {id:'qa-multi', employer:'测试企业乙', title:'测试岗位 · 北京 / 香港', location:'北京 / 香港', skills:['Python'], places:[place('北京市'),place('香港特别行政区')], url:'https://example.com/qa/multi'},
+      {id:'qa-district', employer:'测试企业丙', title:'测试岗位 · 南山区', location:'广东省深圳市南山区', skills:['Neo4j'], places:[place('南山区','深圳市')], url:'https://example.com/qa/district'},
+      {id:'qa-unknown', employer:'测试企业丙', title:'测试岗位 · 工作地点待定', location:'全国 / 待定', skills:['SQL'], places:[], location_status:'unmapped'},
+    ];
+    const nodes = [], relationships = [];
+    for (const job of items) {
+      const employerId = `employer:${job.employer.toLowerCase()}`;
+      nodes.push({id:employerId,kind:'employer',label:job.employer},{id:`opportunity:${job.id}`,kind:'opportunity',label:job.title});
+      relationships.push({source:employerId,target:`opportunity:${job.id}`,kind:'POSTS'});
+      for (const value of job.places) {
+        nodes.push({id:`location:${value.id}`,kind:'location',label:value.name});
+        relationships.push({source:`opportunity:${job.id}`,target:`location:${value.id}`,kind:'LOCATED_IN'});
+      }
+    }
+    const graph = {status:'synced',items,nodes,relationships,geography:{features:{type:'FeatureCollection',features:[]},scope:'qa_only'}};
+    const controller = createFutureRadarMap({host:document.getElementById('map'),onSelect:node=>{document.getElementById('selection').textContent=node ? `联动选择：${node.label}` : '已清除联动选择'}});
+    controller.update(graph);
+    document.getElementById('qa-failure').addEventListener('click',()=>controller.update({status:'unavailable',message:'测试：Neo4j 服务不可用'}));
+    document.getElementById('qa-restore').addEventListener('click',()=>controller.update(graph));
+  </script>
+</body>
+</html>
