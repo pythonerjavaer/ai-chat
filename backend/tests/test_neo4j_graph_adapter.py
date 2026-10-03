@@ -201,6 +201,12 @@ def test_two_hundred_public_jobs_use_one_bounded_unwind_write_without_private_pa
     assert result["relationships_stored"] == result["relationships_written"] == 717
     assert result["relationship_count_scope"] == "current_public_projection"
     assert "not newly created" in result["relationship_count_semantics"]
+    count_query = " ".join(next(query for query, _parameters in driver.calls if "AS count" in query).split())
+    # Aura/Cypher 5 rejects job_edges + count(...) as an implicit grouping
+    # expression (42I18). Project the grouping key and aggregate separately.
+    assert "WITH job_edges, count(DISTINCT within) AS place_edges" in count_query
+    assert "RETURN job_edges + place_edges AS count" in count_query
+    assert "RETURN job_edges + count(" not in count_query
     assert driver.database == "graph-tests"
     assert driver.closed
 

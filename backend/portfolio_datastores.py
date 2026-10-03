@@ -328,7 +328,8 @@ class Neo4jOpportunityGraph:
                     OPTIONAL MATCH (child:Location)-[within:WITHIN]->(parent:Location)
                     WHERE child.key IN $location_keys AND parent.key IN $location_keys
                       AND {child:child.key,parent:parent.key} IN $within_pairs
-                    RETURN job_edges + count(DISTINCT within) AS count""",
+                    WITH job_edges, count(DISTINCT within) AS place_edges
+                    RETURN job_edges + place_edges AS count""",
                                                  **read_scope).single()["count"]
             items = []
             for item in record:
