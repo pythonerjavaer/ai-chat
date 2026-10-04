@@ -14,6 +14,7 @@ import json
 import re
 import sys
 import urllib.request
+import unicodedata
 import zipfile
 from collections import Counter
 from pathlib import Path
@@ -111,7 +112,7 @@ CITY_REFERENCE_IDS = {
 }
 CN_SUFFIX = re.compile(r"(?:特别行政区|特別行政區|壮族自治区|維吾爾自治區|维吾尔自治区|回族自治区|自治区|自治區|省|市|区|區|县|縣|旗)$")
 CHINESE = re.compile(r"^[\u3400-\u9fff·]+$")
-ADMIN_END = re.compile(r"(?:自治区|自治區|自治州|地区|地區|省|市|区|區|县|縣|旗)$")
+ADMIN_END = re.compile(r"(?:自治区|自治區|自治州|地区|地區|省|市|区|區|县|縣|旗|乡|鄉|鄕|郷|镇|鎮|鎭|行委)$")
 
 
 def compact(value):
@@ -262,8 +263,39 @@ def names_match(place, row):
 
 
 def preferred_chinese(row):
-    names = [v for v in row["aliases"] if CHINESE.fullmatch(v) and ADMIN_END.search(v)]
-    return next((v for v in names if v.endswith(("市", "县", "区", "縣", "區", "自治州"))), names[0] if names else row["name"])
+    # The source also contains actual town/township references and traditional
+    # Chinese. Preserve their published names, not fabricated county suffixes.
+    names = [unicodedata.normalize("NFKC", v) for v in [row["name"], *row["aliases"]] if CHINESE.fullmatch(v)]
+    qualified = [v for v in names if ADMIN_END.search(v)]
+    return next((v for v in qualified if v.endswith(("市", "县", "区", "縣", "區", "自治州"))),
+                qualified[0] if qualified else names[0] if names else row["name"])
+
+
+def apply_name_reviews(places, source_rows):
+    review_path = Path(__file__).parent / "data/china-name-reviews.json"
+    review_data = json.loads(review_path.read_text(encoding="utf-8"))
+    seen = set()
+    for review in review_data["places"]:
+        identity = "geonames:" + review["geonames_id"]
+        if identity in seen:
+            raise ValueError(f"Duplicate name review: {identity}")
+        seen.add(identity)
+        place, row = places[identity], source_rows[review["geonames_id"]]
+        # Refuse to silently reuse a name decision after upstream identity or
+        # hierarchy changes. The overlay never changes IDs, parents or points.
+        if (row["name"], place["province_id"], place["parent_id"]) != (
+                review["source_name"], review["province_id"], review["parent_id"]):
+            raise ValueError(f"Name review no longer matches source identity: {identity}")
+        if not CHINESE.fullmatch(review["name"]) or not review["source"].startswith("https://"):
+            raise ValueError(f"Invalid published name review: {identity}")
+        place["aliases"] = list(dict.fromkeys([place["name"], row["name"], *place["aliases"], review["name"]]))
+        place.update(name=review["name"], name_source=review["source"], name_reviewed_at=review_data["reviewed_at"])
+        if review.get("status"):
+            place.update(administrative_status=review["status"], administrative_status_source=review["source"],
+                         administrative_status_note=review["note"], navigation_visible=False, matching_enabled=False)
+            if review["status"] == "hierarchy_conflict":
+                place["hierarchy_status"] = "published_parent_conflict"
+    return review_data
 
 
 def admin2_boundary_target(places, row, province_id):
@@ -371,6 +403,7 @@ def build_places(properties, rows, manifest):
     for key, geonames_id in CITY_REFERENCE_IDS.items():
         apply_point(places[key], by_id[geonames_id])
         places[key]["coordinate_precision"] = "city_reference_point"
+    name_reviews = apply_name_reviews(places, by_id)
     for place in places.values():
         place["aliases"] = list(dict.fromkeys([place["name"], *place["aliases"], *COMMON_NAMES.get(place["id"], [])]))
         if place["level"] == "district" and not place["city_id"]:
@@ -388,8 +421,10 @@ def build_places(properties, rows, manifest):
                 "coordinate_crs_counts": dict(Counter(p["crs"] for p in values)),
                 "mainland_geonames_admin2_rows": 360, "mainland_geonames_admin3_rows": 2938,
                 "hong_kong_districts": 18, "district_boundaries": "partial; reference points do not imply polygons",
-                "province_only_district_references": sum(p.get("navigation_visible") is False for p in values),
-                "reviewed_historical_references": len(HISTORICAL_REFERENCES),
+                "province_only_district_references": sum(p.get("hierarchy_status") == "province_only_unverified" for p in values),
+                "reviewed_historical_references": sum(p.get("administrative_status") == "historical_reference" for p in values),
+                "reviewed_display_names": len(name_reviews["places"]),
+                "reviewed_excluded_name_references": sum(p.get("matching_enabled") is False for p in values),
                 "freshness": "Source snapshots, not a complete/current authoritative administrative-register certification"},
             "places": values}
 

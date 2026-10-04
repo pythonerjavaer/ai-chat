@@ -44,7 +44,9 @@ def test_graphdb_stores_user_scoped_acquisition_and_sensitivity_relationships(mo
 def test_future_radar_graph_only_keeps_unique_normalized_public_skill_labels():
     skills = Neo4jOpportunityGraph._skills({"skills": ["Python", " python ", "SQL/Excel"]})
     assert skills == ["Python", "SQL", "Excel"]
-    assert Neo4jOpportunityGraph._skills({"tags": '["Python","SQL"]'}) == ["Python", "SQL"]
+    assert Neo4jOpportunityGraph._skills({"tags": '["Python","SQL"]'}) == []
+    assert Neo4jOpportunityGraph._skills({"tags": '["Python","SQL"]',
+                                         "requirements": "Python and SQL required"}) == ["Python", "SQL"]
 
 
 def test_mongo_archive_splits_large_materials_into_edition_and_chunk_documents(monkeypatch):

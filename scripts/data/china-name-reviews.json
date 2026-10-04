@@ -1,0 +1,31 @@
+{
+  "reviewed_at": "2026-10-04",
+  "note": "Individual published administrative-name facts; original GeoNames IDs, coordinate provenance and hierarchy are preserved. This is not an authoritative current administrative register.",
+  "places": [
+    {"geonames_id":"12746895","source_name":"Shouwangfen Town","province_id":"130000","parent_id":"130800","name":"寿王坟镇","source":"https://www.ysyz.gov.cn/art/2016/12/29/art_3718_549058.html"},
+    {"geonames_id":"1803249","source_name":"Lishi District","province_id":"140000","parent_id":"141100","name":"离石区","source":"https://www.lvliang.gov.cn/zjll/llgl/xzqh/"},
+    {"geonames_id":"8617184","source_name":"Alxa Left Banner","province_id":"150000","parent_id":"152900","name":"阿拉善左旗","source":"https://tjj.als.gov.cn/attach/0/f2ef1f3d2144424a97248990159ac4f9.pdf"},
+    {"geonames_id":"8617187","source_name":"Ejina Banner","province_id":"150000","parent_id":"152900","name":"额济纳旗","source":"https://tjj.als.gov.cn/attach/0/f2ef1f3d2144424a97248990159ac4f9.pdf"},
+    {"geonames_id":"8617227","source_name":"Alxa Right Banner","province_id":"150000","parent_id":"152900","name":"阿拉善右旗","source":"https://tjj.als.gov.cn/attach/0/f2ef1f3d2144424a97248990159ac4f9.pdf"},
+    {"geonames_id":"12746897","source_name":"Jiansanjiang","province_id":"230000","parent_id":"230800","name":"建三江","source":"https://www.jms.gov.cn/jms/c100193/202506/c04_18165.shtml"},
+    {"geonames_id":"12908661","source_name":"Fularji District","province_id":"230000","parent_id":"230200","name":"富拉尔基区","source":"https://nynct.hlj.gov.cn/nynct/c115425/202604/c00_31934346.shtml"},
+    {"geonames_id":"12746904","source_name":"Zhangjiagang","province_id":"320000","parent_id":"320500","name":"张家港市","source":"https://www.zjg.gov.cn/"},
+    {"geonames_id":"1806069","source_name":"Jiaojiang Shi","province_id":"330000","parent_id":"331000","name":"椒江市","source":"https://tzsz.zjtz.gov.cn/art/2021/2/26/art_1229142720_54040692.html","status":"historical_reference","note":"1994年撤销的县级椒江市；不冒充现行椒江区"},
+    {"geonames_id":"12746883","source_name":"Pengze County","province_id":"360000","parent_id":"360400","name":"彭泽县","source":"https://jje.jiujiang.gov.cn/zwzx_194/gzdt/xqdt/202501/t20250102_6817924.html"},
+    {"geonames_id":"12746797","source_name":"Zhongmu County","province_id":"410000","parent_id":"410100","name":"中牟县","source":"https://www.zhongmu.gov.cn/quhua.jhtml"},
+    {"geonames_id":"1788532","source_name":"Xinyang Diqu","province_id":"410000","parent_id":"411500","name":"信阳地区","source":"https://file.henan.gov.cn/4500000001/2020-04-29/1588163968207uEgV459u.pdf","status":"historical_reference","note":"1998年撤销的信阳地区；不冒充现行县区"},
+    {"geonames_id":"1796133","source_name":"Shangqiu Diqu","province_id":"410000","parent_id":"411400","name":"商丘地区","source":"https://file.henan.gov.cn/4500000001/2020-04-29/1588164620857UxJb7RE5.pdf","status":"historical_reference","note":"1997年撤销的商丘地区；不冒充现行县区"},
+    {"geonames_id":"12746458","source_name":"Xiling District","province_id":"420000","parent_id":"420500","name":"西陵区","source":"https://www.yichang.gov.cn/content-56330-999516-1.html"},
+    {"geonames_id":"11154474","source_name":"Xinshao County","province_id":"430000","parent_id":"430500","name":"新邵县","source":"https://tjj.hunan.gov.cn/hntj/tjsj/hnsq/xzqh/index.html"},
+    {"geonames_id":"7576176","source_name":"Yufeng District","province_id":"450000","parent_id":"450200","name":"鱼峰区","source":"https://www.liuzhou.gov.cn/zjlz/tzlz/lzgkyys/202509/t20250929_3673888.shtml"},
+    {"geonames_id":"7576180","source_name":"Liubei District","province_id":"450000","parent_id":"450200","name":"柳北区","source":"https://www.liuzhou.gov.cn/zjlz/tzlz/lzgkyys/202509/t20250929_3673888.shtml"},
+    {"geonames_id":"12746798","source_name":"Yangpu Economic Development Zone","province_id":"460000","parent_id":"460400","name":"洋浦经济开发区","source":"https://www.danzhou.gov.cn/danzhou/zfxxgkzl/bm/swj/gknb/202401/t20240123_3576908.html"},
+    {"geonames_id":"11205514","source_name":"Anzhou","province_id":"510000","parent_id":"510700","name":"安州区","source":"https://tjj.wuhu.gov.cn/xwzx/ztzl/tjcd/tjbz/7765477.html"},
+    {"geonames_id":"10301949","source_name":"Dongchuan District","province_id":"530000","parent_id":"530100","name":"东川区","source":"https://www.ndrc.gov.cn/fggz/dqzx/zyxdqzxfz/202301/t20230129_1347410.html"},
+    {"geonames_id":"11288134","source_name":"Jingdong Yi Autonomous County","province_id":"530000","parent_id":"530900","name":"景东彝族自治县","source":"https://mzzj.yn.gov.cn/html/2026/difangdongtai_0511/4063724.html","status":"hierarchy_conflict","note":"官方属于普洱市；原GeoNames参考行挂临沧，禁止用于现行地区导航或岗位定位，不猜改原父级/坐标"},
+    {"geonames_id":"1279969","source_name":"Sogxian","province_id":"540000","parent_id":"540600","name":"索县","source":"https://mzt.xizang.gov.cn/zxzx/tzgg/202607/t20260729_551733.html"},
+    {"geonames_id":"1529450","source_name":"Hoxud Xian","province_id":"650000","parent_id":"652800","name":"和硕县","source":"https://www.xjbz.gov.cn/xjbz/zzqh/Anarticle.shtml"},
+    {"geonames_id":"1529474","source_name":"Hejing Xian","province_id":"650000","parent_id":"652800","name":"和静县","source":"https://www.xjbz.gov.cn/xjbz/zzqh/Anarticle.shtml"},
+    {"geonames_id":"7870611","source_name":"Shayibake","province_id":"650000","parent_id":"650100","name":"沙依巴克区","source":"https://www.wlmq.gov.cn/wlmqs/c119201/202504/78adb089649b49638055b78f9b3c891b.shtml"}
+  ]
+}

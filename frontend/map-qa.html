@@ -23,6 +23,7 @@
   </main>
   <script type="module">
     import { createFutureRadarMap } from './src/future-radar-map.js';
+    import './src/styles.css';
     import './src/future-radar-map.css';
     import catalog from '../backend/future_radar/data/china_places.json';
     const pick = (name, city) => catalog.places.find(place => place.name === name && (!city || place.city_name === city));

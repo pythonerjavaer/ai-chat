@@ -230,3 +230,51 @@ def test_graph_endpoint_skips_profile_scoring_and_passes_only_public_rows(harnes
     assert "PRIVATE_" not in json.dumps(captured)
     assert {node["kind"] for node in result["nodes"]} == {"employer", "opportunity", "skill"}
     assert {edge["kind"] for edge in result["relationships"]} == {"POSTS", "REQUIRES"}
+
+
+def test_graph_endpoint_exposes_more_than_twelve_evidenced_skills_without_private_or_negated_labels(harness, monkeypatch):
+    from backend import database, main
+    from backend.future_radar import personal
+    from backend.portfolio_datastores import Neo4jOpportunityGraph
+    from backend.tests.test_neo4j_graph_adapter import RecordingDriver
+
+    requirements = ("面向2027届毕业生，掌握Python、NumPy、pandas、SciPy、scikit-learn、XGBoost、"
+                    "LightGBM、Keras、OpenCV、NLP、计算机视觉、LLM、风险管理、财务分析、企业估值、"
+                    "用户研究和需求分析；不要求SQL Server、React Native和信用分析。")
+    saved = harness.insert("expanded-skills", title="2027 校园招聘工程师", requirements=requirements,
+                           description="公开岗位说明", responsibilities="公开岗位职责",
+                           company="AWS 项目管理公司", tags=["校园招聘", "SQL", "AWS", "项目管理"])
+    expected = Neo4jOpportunityGraph._skills({"requirements": requirements})
+    assert len(expected) > 12
+    driver = RecordingDriver(records=[{"id": saved["id"], "skills": [*reversed(expected), "PRIVATE_SKILL"]}],
+                             relationship_count=73)
+    graph = Neo4jOpportunityGraph("neo4j://unused.test")
+    monkeypatch.setattr(graph, "_driver", lambda: driver)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Skill enrichment must not load profiles or invoke scoring")
+
+    monkeypatch.setattr(database, "get_recruitment_profile", forbidden)
+    monkeypatch.setattr(main, "score_job", forbidden)
+    monkeypatch.setattr(main, "_public_radar_opportunity", forbidden)
+    monkeypatch.setattr(main, "settings", SimpleNamespace(neo4j_uri="neo4j+s://example.invalid"))
+    monkeypatch.setattr(main, "future_radar_service", SimpleNamespace(repository=harness.repository))
+    monkeypatch.setattr(main, "_public_reference_url", public_url)
+    monkeypatch.setattr(main, "_radar_company_aliases", lambda: {})
+    monkeypatch.setattr(personal, "application_states", lambda _connect, _user_id: {})
+    monkeypatch.setattr(main, "neo4j_opportunity_graph", graph)
+
+    result = main.future_radar_relationship_graph({"id": 19})
+
+    assert result["items"][0]["skills"] == expected
+    assert {node["label"] for node in result["nodes"] if node["kind"] == "skill"} == set(expected)
+    requires = [edge for edge in result["relationships"] if edge["kind"] == "REQUIRES"]
+    assert len(requires) == len(expected)
+    assert {edge["target"] for edge in requires} == {f"skill:{skill.casefold()}" for skill in expected}
+    assert not {"SQL", "SQL Server", "React", "React Native", "信用分析", "AWS", "项目管理"} & set(expected)
+    assert result["relationships_stored"] == result["relationships_written"] == 73
+    assert result["postgres_opportunities_considered"] == 1
+    assert "PRIVATE_" not in json.dumps(result)
+    write = next(parameters for query, parameters in driver.calls if "UNWIND $rows AS row" in query)
+    assert write["rows"][0]["skills"] == expected
+    assert "PRIVATE_" not in repr(driver.calls)

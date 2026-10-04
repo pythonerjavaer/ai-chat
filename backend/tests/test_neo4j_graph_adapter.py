@@ -66,8 +66,8 @@ def test_explicit_skills_keep_clean_named_competencies_and_normalize_bilingual_a
     assert skills == ["Python", "SQL", "Excel", "沟通 能力", "机器学习", "财务建模"]
 
 
-def test_json_tags_only_contribute_complete_recognized_competencies():
-    skills = Neo4jOpportunityGraph._skills({
+def test_json_tags_need_complete_recognized_labels_and_positive_public_evidence():
+    job = {
         "tags": '["Python", "SQL", "Machine Learning", "机器学习", "北京", "互联网", "open", '
                 '"示例科技", "校园招聘", "金融Python", "Python行业", "待官方核验"]',
         "categories": ["Java", "科技"],
@@ -75,8 +75,11 @@ def test_json_tags_only_contribute_complete_recognized_competencies():
         "city": "Tableau",
         "status": "R",
         "company": "PostgreSQL",
-    })
-    assert skills == ["Python", "SQL", "机器学习"]
+    }
+    assert Neo4jOpportunityGraph._skills(job) == []
+    assert Neo4jOpportunityGraph._skills({
+        **job, "requirements": "Python 和 SQL 为必备技能，掌握机器学习。",
+    }) == ["Python", "SQL", "机器学习"]
     assert Neo4jOpportunityGraph._skills({"tags": '["Python",'}) == []
 
 
@@ -97,7 +100,7 @@ def test_public_title_and_prose_supply_only_bounded_named_competency_matches():
 
 
 def test_skills_are_bounded_even_for_explicit_large_lists():
-    assert len(Neo4jOpportunityGraph._skills({"skills": [f"competency-{index}" for index in range(100)]})) == 30
+    assert len(Neo4jOpportunityGraph._skills({"skills": [f"competency-{index}" for index in range(100)]})) == 40
 
 
 def test_language_versions_normalize_without_matching_longer_words():
@@ -106,6 +109,7 @@ def test_language_versions_normalize_without_matching_longer_words():
     }) == ["Python", "Java", "C++", "C#"]
     assert Neo4jOpportunityGraph._skills({
         "tags": '["Python3", "Java8", "C++17", "C#8", "Python3行业", "Java8Script"]',
+        "requirements": "掌握 Python3、Java8、C++17和C#8。",
     }) == ["Python", "Java", "C++", "C#"]
     assert Neo4jOpportunityGraph._skills({
         "skills": ["Python3.11", "C++17", "沟通能力"],
@@ -113,6 +117,98 @@ def test_language_versions_normalize_without_matching_longer_words():
     assert Neo4jOpportunityGraph._skills({
         "requirements": "Python3rd、Java8Script、C++17foo、C#8Project、Python3.11Script。",
     }) == []
+
+
+def test_more_technical_competencies_have_bilingual_public_requirement_evidence():
+    skills = Neo4jOpportunityGraph._skills({
+        "requirements": "熟悉 NumPy、pandas、SciPy、scikit-learn、XGBoost、LightGBM、Keras、OpenCV；"
+                        "掌握 NLP、计算机视觉与 LLM；具备 Node.js、React.js、Vue.js、FastAPI、Spring Boot、"
+                        "RESTful API 和 GraphQL 开发经验；使用 Redis、ClickHouse、Apache Spark、"
+                        "Apache Kafka、Apache Airflow、Terraform、AWS、Microsoft Azure 与 GCP。",
+    })
+    assert set(skills) == {
+        "NumPy", "pandas", "SciPy", "scikit-learn", "XGBoost", "LightGBM", "Keras", "OpenCV",
+        "自然语言处理", "计算机视觉", "大语言模型", "Node.js", "React", "Vue.js", "FastAPI",
+        "Spring Boot", "REST API", "GraphQL", "Redis", "ClickHouse", "Apache Spark",
+        "Apache Kafka", "Apache Airflow", "Terraform", "AWS", "Azure", "Google Cloud",
+    }
+    assert len(skills) == len(set(skills)) > 12
+
+
+def test_business_competencies_need_specific_positive_public_phrases_not_generic_domains():
+    skills = Neo4jOpportunityGraph._skills({
+        "title": "金融产品校园招聘",
+        "requirements": "掌握统计分析、线性回归、时间序列分析、概率论、假设检验、实验设计与数学优化；"
+                        "熟悉风险管理、credit risk analysis、财务分析、财务报表分析、企业估值、"
+                        "投资研究、投融资分析、portfolio management、due diligence 与预算管理。",
+        "responsibilities": "开展产品需求分析、用户调研、市场研究、数字营销、竞品分析、"
+                            "项目管理和供应链管理。",
+        "tags": ["金融", "产品", "上海", "市场", "校园招聘"],
+    })
+    assert set(skills) == {
+        "统计分析", "回归分析", "时间序列分析", "概率论", "假设检验", "实验设计", "优化建模",
+        "风险管理", "信用分析", "财务分析", "财务报表分析", "估值分析", "投资分析", "融资分析",
+        "投资组合管理", "尽职调查", "预算管理", "需求分析", "用户研究", "市场研究", "市场营销",
+        "竞品分析", "项目管理", "供应链管理",
+    }
+    assert Neo4jOpportunityGraph._skills({"title": "金融产品市场校园招聘", "tags": ["金融", "产品"]}) == []
+
+
+@pytest.mark.parametrize("job", [
+    {"requirements": "C-level communication, R&D collaboration, Go to the office."},
+    {"description": "Spark innovation with a swift response; react to changes; a flask in the lab."},
+    {"description": "Spark公司、Swift集团、Oracle公司、React公司。"},
+    {"requirements": "We value a swift response and the ability to react to customer needs."},
+    {"requirements": "Spark公司、Swift集团、React公司。"},
+    {"requirements": "SQL Server公司、React Native company、Oracle Database公司。"},
+    {"company": "Python AWS 风险管理", "employer_name": "NumPy", "industry": "估值分析",
+     "city": "用户研究", "candidate": "React.js", "private_profile": "财务分析",
+     "source_payload": {"requirements": "Terraform"}, "tags": ["Python", "AWS", "风险管理"]},
+])
+def test_letters_company_names_and_private_or_categorical_fields_are_not_skill_evidence(job):
+    assert Neo4jOpportunityGraph._skills(job) == []
+
+
+def test_short_languages_require_language_phrases_and_explicit_slash_aliases_stay_whole():
+    assert Neo4jOpportunityGraph._skills({
+        "requirements": "熟悉 C语言、R语言与Go语言，掌握 programming in C。",
+    }) == ["Go", "R", "C"]
+    assert Neo4jOpportunityGraph._skills({
+        "skills": ["C", "C17", "R", "R4.3", "Go", "Go1.21", "CI/CD", "A/B testing"],
+    }) == ["C", "R", "Go", "持续集成", "实验设计"]
+    assert Neo4jOpportunityGraph._skills({
+        "description": "Apache Spark、Swift语言、Oracle数据库、React.js 和 Rust programming。",
+    }) == ["Rust", "Swift", "React", "Oracle Database", "Apache Spark"]
+
+
+def test_ambiguous_bare_names_need_technical_qualifiers_or_an_evidenced_skill_list():
+    assert Neo4jOpportunityGraph._skills({
+        "requirements": "熟悉React、Vue和Rust；Spark experience required；Swift programming required。",
+    }) == ["Rust", "Swift", "React", "Vue.js", "Apache Spark"]
+    assert Neo4jOpportunityGraph._skills({
+        "requirements": "熟悉React公司，但必须掌握React.js。",
+    }) == ["React"]
+
+
+@pytest.mark.parametrize("requirements", [
+    "Spark SQL is optional; SQL Server is not required; React Native不是必需。",
+    "不要求Spark SQL；无需SQL Server；React Native is not mandatory。",
+    "No AWS or Azure experience required; financial analysis is not a requirement; 用户研究不作要求。",
+    "风险管理不是必需；无需财务分析；需求分析可选；No prior marketing strategy experience required.",
+])
+def test_expanded_and_overlapping_skill_names_keep_local_negation(requirements):
+    assert Neo4jOpportunityGraph._skills({"requirements": requirements}) == []
+
+
+def test_expanded_negation_does_not_suppress_separate_positive_mentions_or_explicit_fields():
+    assert Neo4jOpportunityGraph._skills({
+        "requirements": "不要求Spark SQL，但SQL必须。React Native is optional but FastAPI is essential。"
+                        "财务分析不是必需，但风险管理必须掌握。",
+    }) == ["SQL", "FastAPI", "风险管理"]
+    assert Neo4jOpportunityGraph._skills({
+        "skills": ["财务分析", "React Native"],
+        "requirements": "财务分析与React Native不是必需。",
+    }) == ["财务分析", "React Native"]
 
 
 @pytest.mark.parametrize("requirements", [
@@ -169,6 +265,40 @@ def test_only_supported_public_prose_reaches_batched_write_and_scoped_reads(monk
     assert all(parameters["skills_by_id"] == {"job-1": ["Java", "Python", "C++", "C#"]}
                for parameters in reads)
     assert not any("DELETE" in query for query, _parameters in driver.calls)
+
+
+@pytest.mark.parametrize("evidence", ["explicit", "public-requirements"])
+def test_skill_cap_is_consistent_for_write_scoped_count_and_ordered_response(monkeypatch, evidence):
+    if evidence == "explicit":
+        candidates = [f"competency-{index}" for index in range(100)]
+        fields = {"skills": candidates}
+    else:
+        candidates = [name for name, _aliases in Neo4jOpportunityGraph._SKILL_ALIASES]
+        labels = [next(alias for alias in aliases if alias not in {"c", "r", "go"})
+                  for _name, aliases in Neo4jOpportunityGraph._SKILL_ALIASES]
+        fields = {"requirements": "必须掌握 " + "、".join(labels)}
+    expected = candidates[:40]
+    driver = RecordingDriver(
+        records=[{"id": "job-1", "skills": ["OLD_UNREQUESTED_SKILL", *reversed(candidates), candidates[0]]}],
+        relationship_count=41,
+    )
+    graph = Neo4jOpportunityGraph("neo4j://unused.test")
+    monkeypatch.setattr(graph, "_driver", lambda: driver)
+
+    result = graph.sync_opportunities([public_job(title="工程师", city="", **fields)])
+
+    write = next(parameters for query, parameters in driver.calls if "UNWIND $rows AS row" in query)
+    assert write["rows"][0]["skills"] == expected
+    reads = [(query, parameters) for query, parameters in driver.calls if "ids" in parameters]
+    assert len(reads) == 2
+    assert all(parameters["skill_limit"] == 40 for _query, parameters in reads)
+    assert all(parameters["skills_by_id"] == {"job-1": expected} for _query, parameters in reads)
+    assert "collect(DISTINCT s.name)[0..$skill_limit] AS skills" in reads[0][0]
+    assert result["items"][0]["skills"] == expected
+    assert len(result["items"][0]["skills"]) == len(set(result["items"][0]["skills"])) == 40
+    assert result["relationships_stored"] == result["relationships_written"] == 41
+    assert result["relationship_count_scope"] == "current_public_projection"
+    assert "OLD_UNREQUESTED_SKILL" not in repr(result)
 
 
 def test_two_hundred_public_jobs_use_one_bounded_unwind_write_without_private_payload(monkeypatch):

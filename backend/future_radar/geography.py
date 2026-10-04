@@ -64,6 +64,10 @@ class ChinaPlaceCatalog:
             place["crs"] = "WGS84" if str(place.get("crs") or "").casefold() in _WGS84 else "unknown-display"
             place["catalog_source"] = str(row.get("source") or data.get("source") or "offline_catalog")
             self._places[identity] = place
+            # Individually reviewed historical/conflicting source rows remain
+            # auditable by ID, but must not locate current public jobs.
+            if row.get("matching_enabled") is False:
+                continue
             row_aliases = row.get("aliases") or []
             names = [name, *(row_aliases if isinstance(row_aliases, list) else [])]
             for alias in names:

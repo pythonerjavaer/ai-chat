@@ -67,6 +67,57 @@ test("graph keyboard focus restores contrast only while focused without changing
   }
 });
 
+test("expanded graphs leave vertical scrolling to the bounded recruitment panel, including narrow screens", () => {
+  const viewport = styles.match(/^\.future-radar-graph-view\s*\{([^}]+)\}/m)?.[1];
+  assert.ok(viewport);
+  assert.match(viewport, /min-width:\s*0\s*;/);
+  assert.match(viewport, /max-width:\s*100%\s*;/);
+  assert.match(viewport, /max-height:\s*none\s*;/, "Tall graph rows must remain in the outer panel flow");
+  assert.match(viewport, /overflow-x:\s*auto\s*;/, "Readable columns need a native horizontal scroller");
+  assert.match(viewport, /overflow-y:\s*hidden\s*;/);
+  assert.match(viewport, /overscroll-behavior:\s*auto\s*;/);
+  assert.match(viewport, /touch-action:\s*pan-x pan-y\s*;/);
+  assert.doesNotMatch(viewport, /(?:^|;)\s*(?:height|overflow)\s*:/, "Do not restore a fixed-height nested vertical scroller");
+  assert.match(styles, /^\.recruitment-body\s*\{[^}]*min-width:\s*0[^}]*min-height:\s*0/m);
+  assert.match(styles, /^\.recruitment-results\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto[^}]*overscroll-behavior-y:\s*auto/m);
+  assert.match(styles, /\.recruitment-body\s*\{\s*display:\s*block;\s*overflow-x:\s*hidden;\s*overflow-y:\s*auto;\s*overscroll-behavior-y:\s*auto;/);
+  assert.match(styles, /\.recruitment-results\s*\{\s*min-height:\s*520px;\s*overflow:\s*visible;/,
+    "On narrow screens the body, not another nested results panel, owns vertical scrolling");
+});
+
+test("graph scrolling is keyboard reachable and does not intercept wheel or touch navigation", async () => {
+  const r = runtime();
+  const pending = r.load();
+  r.resolve({ status: "synced", opportunities: 1, nodes: [
+    { id: "opportunity:1", kind: "opportunity", label: "真实岗位" },
+  ], relationships: [] });
+  await pending;
+  const host = r.elements["future-radar-graph-view"];
+  assert.equal(host.attributes.role, "region");
+  assert.equal(host.attributes.tabindex, "0");
+  assert.match(host.attributes["aria-label"], /左右滚动.*上下滚动浏览面板/);
+  assert.equal(host.listeners.wheel, undefined);
+  assert.equal(host.listeners.touchmove, undefined);
+  assert.equal(host.children[0].listeners.wheel, undefined);
+  assert.equal(host.children[0].listeners.touchmove, undefined);
+  assert.match(styles, /^\.future-radar-graph-view:focus-visible\s*\{[^}]*outline:\s*2px solid #b5f1ff/m);
+});
+
+test("additional skill nodes beyond the original preview require a visible job edge and stay bounded", async () => {
+  const r = runtime(); const pending = r.load();
+  const base = [{ id: "opportunity:1", kind: "opportunity", label: "公开岗位" },
+    ...Array.from({ length: 89 }, (_, i) => ({ id: `employer:${i}`, kind: "employer", label: `企业${i}` }))];
+  const skills = Array.from({ length: 60 }, (_, i) => ({ id: `skill:${i}`, kind: "skill", label: `有证据技能${i}` }));
+  r.resolve({ status: "synced", opportunities: 1, nodes: [...base, ...skills,
+    { id: "skill:unconnected", kind: "skill", label: "不相关技能" }],
+    relationships: skills.map((skill) => ({ source: "opportunity:1", target: skill.id, kind: "REQUIRES" })) });
+  await pending;
+  const svg = r.elements["future-radar-graph-view"].children[0];
+  assert.equal(svg.children.filter((node) => node.attributes.class === "radar-graph-node skill").length, 48);
+  assert.equal(svg.children.filter((node) => node.attributes.class === "radar-graph-edge requires").length, 48);
+  assert.equal(svg.children.some((node) => node.attributes["aria-label"]?.includes("不相关技能")), false);
+});
+
 test("graph gives a cold connection 60 seconds and allows only one pending sync", async () => {
   const r = runtime();
   const pending = r.load();

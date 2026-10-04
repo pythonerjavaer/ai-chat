@@ -275,12 +275,51 @@ test("initial loading is not claimed as zero data, and refresh loading keeps the
   assert.equal(r.withAttribute("aria-label", "单独选择公开岗位").value, "one");
 });
 
-test("reduced motion blocks automatic animation and follows later system preference changes", async () => {
+test("reduced motion blocks automatic animation but explicit page controls remain interactive", async () => {
   const r = runtime({ reduced: true }); const map = createFutureRadarMap({ host: r.host, boundaries }); await map.ready; map.update(graph());
   assert.doesNotMatch(r.byClass("radar-map").className, /radar-map-motion/);
-  assert.equal(r.button("已遵循减少动态效果").disabled, true);
+  assert.notEqual(r.button("开启动效").disabled, true);
+  assert.match(r.byClass("radar-map-view-status").textContent, /遵循系统偏好.*手动开启/);
+  r.button("开启动效").fire("click");
+  assert.match(r.byClass("radar-map").className, /radar-map-motion-manual/);
+  assert.match(r.byClass("radar-map-view-status").textContent, /动效已开启/);
+  r.button("关闭动效").fire("click");
+  assert.doesNotMatch(r.byClass("radar-map").className, /radar-map-motion/);
+  r.media.matches = false; r.media.listeners[0]();
+  assert.doesNotMatch(r.byClass("radar-map").className, /radar-map-motion/, "Explicit off stays off when system preference changes");
+});
+
+test("default animation follows system changes until the user explicitly overrides it", async () => {
+  const r = runtime({ reduced: true }); const map = createFutureRadarMap({ host: r.host, boundaries }); await map.ready;
   r.media.matches = false; r.media.listeners[0](); assert.match(r.byClass("radar-map").className, /radar-map-motion/);
   r.button("关闭动效").fire("click"); assert.doesNotMatch(r.byClass("radar-map").className, /radar-map-motion/);
+});
+
+test("view and clear controls visibly confirm their action without requiring job data", async () => {
+  const r = runtime(), emitted = []; const map = createFutureRadarMap({ host: r.host, boundaries, onSelect: (node) => emitted.push(node) }); await map.ready;
+  r.button("2.5D 浮起").fire("click");
+  assert.equal(r.button("返回平面").attributes["aria-pressed"], "true");
+  assert.match(r.byClass("radar-map-view-status").textContent, /浮起视图.*视图已切换.*等待图谱载入/);
+  r.button("返回平面").fire("click");
+  assert.doesNotMatch(r.byClass("radar-map").className, /radar-map-raised/);
+  r.button("香港放大").fire("click");
+  r.button("清除选择").fire("click");
+  assert.match(r.byClass("radar-map-view-status").textContent, /清除全部筛选并返回全国/);
+  assert.ok(r.withAttribute("data-region-id", "440000")); assert.equal(emitted.at(-1), null);
+});
+
+test("skill selector exposes all actual job skills and links filtering to graph highlights", async () => {
+  const r = runtime(), emitted = []; const map = createFutureRadarMap({ host: r.host, boundaries, onSelect: (node) => emitted.push(node) }); await map.ready; map.update(graph());
+  const selector = r.withAttribute("aria-label", "按公开岗位技能筛选");
+  assert.deepEqual(selector.children.map((option) => option.value), ["", "Python", "SQL"]);
+  selector.value = "SQL"; selector.fire("change");
+  assert.match(r.byClass("radar-map-summary").textContent, /当前筛选 1.*技能 SQL/);
+  assert.equal(emitted.at(-1).id, "skill:sql");
+  assert.equal(r.byClass("radar-map-job-list").children.length, 1);
+  map.selectNode({ id: "skill:python", kind: "skill", label: "Python" });
+  assert.equal(selector.value, "Python");
+  map.update({ status: "synced", items: [] }); assert.equal(selector.value, "");
+  assert.equal(selector.children.length, 1, "No invented skill choices when no job evidence exists");
 });
 
 test("offline asset failure leaves public details usable and late loading does not resurrect a destroyed map", async () => {
@@ -292,13 +331,17 @@ test("offline asset failure leaves public details usable and late loading does n
   await Promise.resolve(); late.destroy(); resolve(boundaries); assert.equal(await late.ready, false); assert.equal(second.host.children.length, 0);
 });
 
-test("map styles remain responsive, slow-pulsed, and include a reduced-motion hard stop", () => {
+test("map styles are responsive and stop reduced motion unless explicitly enabled in this map", () => {
   const css = readFileSync(new URL("./future-radar-map.css", import.meta.url), "utf8");
   assert.doesNotMatch(css, /min-width:\s*[1-9]\d*px/);
   assert.match(css, /radar-map-slow-pulse 8s/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(css, /animation:\s*none !important/);
+  assert.match(css, /:not\(\.radar-map-motion-manual\)/);
+  assert.match(css, /radar-map-motion-manual[^}]*animation-duration:\s*8s !important;\s*animation-iteration-count:\s*infinite !important/);
   assert.match(css, /focus-visible/);
+  assert.match(css, /\.radar-map-job-list\s*\{[^}]*overscroll-behavior:\s*auto/,
+    "At the end of the job list, wheel/touch scrolling must reach the outer graph panel");
 });
 
 test("real offline assets retain province/Hong Kong polygons and ordinary city point-only districts", async () => {

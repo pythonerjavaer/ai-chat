@@ -215,7 +215,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
   const prefix = `radar-map-${++instanceNumber}`;
   const media = document.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)");
   const state = { employer: "", job: "", place: "", skill: "", province: "", city: "", unlocated: false,
-    mode: "2d", motion: true, stale: false, loading: false, snapshot: false };
+    mode: "2d", motionOverride: null, feedback: "", stale: false, loading: false, snapshot: false };
   let model = normalizeRadarMapGraph(), collection = null, adminCatalog = null, index = new Map(), destroyed = false, boundaryError = false;
   const element = (tag, className, content) => {
     const node = document.createElement(tag);
@@ -235,13 +235,18 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
   const controls = element("div", "radar-map-controls");
   const employerLabel = element("label", "radar-map-control", "企业"), employerSelect = element("select");
   const jobLabel = element("label", "radar-map-control", "岗位"), jobSelect = element("select");
+  const skillLabel = element("label", "radar-map-control", "技能"), skillSelect = element("select");
   employerSelect.setAttribute("aria-label", "选择企业招聘分布");
   jobSelect.setAttribute("aria-label", "单独选择公开岗位");
+  skillSelect.setAttribute("aria-label", "按公开岗位技能筛选");
   employerLabel.append(employerSelect); jobLabel.append(jobSelect);
+  skillLabel.append(skillSelect);
   const mode = element("button", "radar-map-button", "2.5D 浮起"), motion = element("button", "radar-map-button", "关闭动效");
   const clear = element("button", "radar-map-button", "清除选择");
   for (const button of [mode, motion, clear]) button.type = "button";
-  controls.append(employerLabel, jobLabel, mode, motion, clear);
+  controls.append(employerLabel, jobLabel, skillLabel, mode, motion, clear);
+  const viewStatus = element("p", "radar-map-view-status");
+  viewStatus.setAttribute("role", "status"); viewStatus.setAttribute("aria-live", "polite");
   const breadcrumb = element("nav", "radar-map-breadcrumb"); breadcrumb.setAttribute("aria-label", "行政区地图层级");
   const summary = element("p", "radar-map-summary"); summary.setAttribute("role", "status"); summary.setAttribute("aria-live", "polite");
   const viewport = element("div", "radar-map-viewport"), map = svgElement("svg", { viewBox: "0 0 1000 660", role: "group", tabindex: "-1", "aria-label": "中国公开招聘行政区示意地图" });
@@ -252,7 +257,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
   const attribution = element("p", "radar-map-attribution");
   const details = element("div", "radar-map-details"), detailsTitle = element("h4"), list = element("div", "radar-map-job-list");
   details.append(detailsTitle, list);
-  root.append(heading, controls, breadcrumb, summary, viewport, locations, precision, attribution, details);
+  root.append(heading, controls, viewStatus, breadcrumb, summary, viewport, locations, precision, attribution, details);
   host.replaceChildren(root);
 
   const emit = (id, kind, label) => onSelect(id ? model.nodes.get(id) || { id, kind, label } : null);
@@ -422,7 +427,8 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     if (destroyed) return;
     const jobs = radarMapJobs(model, state, index), missing = model.jobs.filter((job) => !job.places.length).length;
     const ambiguous = model.jobs.filter((job) => job.location_status === "ambiguous").length;
-    root.className = `radar-map${state.mode === "2.5d" ? " radar-map-raised" : ""}${state.motion && !media?.matches ? " radar-map-motion" : ""}`;
+    const motionEnabled = state.motionOverride ?? !media?.matches;
+    root.className = `radar-map${state.mode === "2.5d" ? " radar-map-raised" : ""}${motionEnabled ? " radar-map-motion" : ""}${state.motionOverride === true ? " radar-map-motion-manual" : ""}`;
     root.dataset.snapshotStale = String(state.stale);
     employerSelect.replaceChildren(); option(employerSelect, "", "全部企业招聘分布");
     for (const company of [...model.companies.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"))) option(employerSelect, company.id, company.name);
@@ -430,9 +436,16 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     jobSelect.replaceChildren(); option(jobSelect, "", "全部公开岗位");
     for (const job of model.jobs.filter((job) => !state.employer || job.employerId === state.employer)) option(jobSelect, job.id, `${job.title} · ${job.employer}`);
     jobSelect.value = state.job;
+    skillSelect.replaceChildren(); option(skillSelect, "", "全部公开技能");
+    const skills = [...new Set(model.jobs.flatMap((job) => job.skills))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+    for (const skill of skills) option(skillSelect, skill, skill);
+    skillSelect.value = state.skill;
     mode.setAttribute("aria-pressed", String(state.mode === "2.5d"));
-    motion.disabled = Boolean(media?.matches); motion.setAttribute("aria-pressed", String(state.motion && !media?.matches));
-    motion.textContent = media?.matches ? "已遵循减少动态效果" : state.motion ? "关闭动效" : "开启动效";
+    mode.textContent = state.mode === "2.5d" ? "返回平面" : "2.5D 浮起";
+    motion.setAttribute("aria-pressed", String(motionEnabled));
+    motion.textContent = motionEnabled ? "关闭动效" : "开启动效";
+    motion.title = media?.matches && state.motionOverride === null ? "系统偏好减少动态效果，默认关闭；点击可仅为本地图手动开启" : "切换本地图的缓慢微光与招聘点脉冲，不改变系统设置";
+    viewStatus.textContent = `${state.mode === "2.5d" ? "浮起视图（2.5D 倾斜示意）" : "平面视图"} · 动效${motionEnabled ? "已开启" : "已关闭"}${media?.matches && state.motionOverride === null ? "（遵循系统偏好，可手动开启）" : ""}${state.feedback ? ` · ${state.feedback}` : ""}${!model.jobs.length ? state.snapshot ? " · 暂无公开岗位，企业与岗位筛选暂无选项；行政区仍可点击" : " · 企业与岗位选项等待图谱载入；视图与行政区可先操作" : ""}`;
     const phase = state.loading ? "正在读取公开招聘数据 · " : state.stale ? "读取未成功 · " : "";
     summary.textContent = state.snapshot
       ? `${phase}${state.stale || state.loading ? "上次成功快照 · " : ""}本次图谱公开岗位 ${model.jobs.length} · 当前筛选 ${jobs.length} · 未定位岗位（全部）${missing} · 地点待确认（全部）${ambiguous}${state.skill ? ` · 技能 ${state.skill}` : ""}`
@@ -453,9 +466,15 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     emit(state.employer, "employer", model.companies.get(state.employer)?.name);
   });
   jobSelect.addEventListener("change", () => { resetGeography(); selectJob(jobSelect.value); });
-  mode.addEventListener("click", () => { state.mode = state.mode === "2d" ? "2.5d" : "2d"; render(); });
-  motion.addEventListener("click", () => { if (!media?.matches) { state.motion = !state.motion; render(); } });
-  clear.addEventListener("click", () => { state.employer = ""; state.job = ""; state.skill = ""; resetGeography(); render(); emit(null); });
+  skillSelect.addEventListener("change", () => {
+    state.skill = skillSelect.value; state.employer = ""; state.job = ""; resetGeography();
+    state.feedback = state.skill ? `已筛选技能：${state.skill}` : "已恢复全部公开技能"; render();
+    const node = [...model.nodes.values()].find((value) => value.kind === "skill" && fold(value.label) === fold(state.skill));
+    if (state.skill) emit(node?.id || `skill:${fold(state.skill)}`, "skill", state.skill); else emit(null);
+  });
+  mode.addEventListener("click", () => { state.mode = state.mode === "2d" ? "2.5d" : "2d"; state.feedback = "视图已切换"; render(); });
+  motion.addEventListener("click", () => { state.motionOverride = !(state.motionOverride ?? !media?.matches); state.feedback = "动效设置已切换"; render(); });
+  clear.addEventListener("click", () => { state.employer = ""; state.job = ""; state.skill = ""; resetGeography(); state.feedback = "已清除全部筛选并返回全国"; render(); emit(null); });
   const mediaChanged = () => render(); media?.addEventListener?.("change", mediaChanged);
   const ResizeObserverClass = document.defaultView?.ResizeObserver;
   let observedWidth = 0;
@@ -485,6 +504,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
       model = normalizeRadarMapGraph(graph); state.stale = false; state.snapshot = true;
       if (!model.companies.has(state.employer)) state.employer = "";
       if (!model.jobs.some((job) => job.id === state.job)) state.job = "";
+      if (!model.jobs.some((job) => job.skills.some((skill) => fold(skill) === fold(state.skill)))) state.skill = "";
       if (state.place && !model.places.has(state.place) && !index.has(state.place)) state.place = "";
       render();
     },

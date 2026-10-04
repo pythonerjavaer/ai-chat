@@ -13,10 +13,11 @@
 .radar-map-hong-kong { border-color: #7d79bb; }
 .radar-map-current-place { align-self: center; padding: .4rem; color: #b6b0ff; font-size: .85rem; }
 .radar-map-summary { font-size: .85rem; color: #b8dfef; line-height: 1.6; }
+.radar-map-view-status { margin: -.25rem 0 .8rem; color: #b4eee8; font-size: .82rem; line-height: 1.6; overflow-wrap: anywhere; }
 .radar-map[data-snapshot-stale="true"] .radar-map-summary { color: #ffe3a3; }
 .radar-map-viewport { position: relative; min-width: 0; max-width: 100%; overflow: hidden; border: 1px solid #285366; border-radius: 1rem; perspective: 1000px; background: radial-gradient(ellipse at 52% 45%, #123447 0, #081a2c 48%, #050e1c 100%); box-shadow: inset 0 0 44px #0b334a66, 0 14px 38px #0005; }
 .radar-map-viewport svg { display: block; width: 100%; height: auto; max-width: 100%; transform-origin: 50% 50%; }
-.radar-map-raised .radar-map-viewport svg { transform: rotateX(20deg) rotateZ(-3deg) scale(.95); }
+.radar-map-raised .radar-map-viewport svg { transform: rotateX(34deg) rotateZ(-6deg) scale(.93); filter: drop-shadow(0 16px 5px #0009); }
 .radar-map-grid { color: #44819b; opacity: .25; pointer-events: none; }
 .radar-map-region { fill: #12384b; stroke: #4590a5; stroke-width: 1.1; vector-effect: non-scaling-stroke; cursor: pointer; }
 .radar-map-region:hover, .radar-map-region:focus-visible, .radar-map-region.is-selected { fill: #1b5066; stroke: #fff; stroke-width: 2; outline: none; }
@@ -31,6 +32,10 @@
 .radar-map-dot { fill: #b4fcff; stroke: #47cbe8; stroke-width: 2px; filter: drop-shadow(0 0 5px #67ddf5); }
 .radar-map-pulse { fill: #63ddf515; stroke: #63ddf56b; stroke-width: 1px; transform-box: fill-box; transform-origin: center; pointer-events: none; }
 .radar-map-motion .radar-map-pulse { animation: radar-map-slow-pulse 8s ease-in-out infinite; }
+.radar-map-motion .radar-map-grid { animation: radar-map-grid-glow 8s ease-in-out infinite; }
+/* Explicit page opt-in only: the app-wide reduced-motion rule shortens all
+   animations. Restore these two slow effects, without changing other motion. */
+.radar-map-motion-manual .radar-map-pulse, .radar-map-motion-manual .radar-map-grid { animation-duration: 8s !important; animation-iteration-count: infinite !important; }
 .radar-map-marker-count { fill: #e9fbff; font-size: 14px; font-weight: 650; paint-order: stroke; stroke: #061929; stroke-width: 3px; }
 .radar-map-marker:hover .radar-map-dot, .radar-map-marker:focus-visible .radar-map-dot, .radar-map-marker.is-selected .radar-map-dot { fill: #fff; stroke: #aaa0ff; stroke-width: 4px; }
 .radar-map-marker:focus-visible { outline: 2px solid #fff; outline-offset: 4px; }
@@ -41,7 +46,7 @@
 .radar-map-attribution { display: flex; flex-wrap: wrap; gap: .3rem .8rem; font-size: .72rem; overflow-wrap: anywhere; }
 .radar-map-attribution a { color: #91aebe; }
 .radar-map-details h4 { margin: .8rem 0; font-size: 1rem; }
-.radar-map-job-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr)); gap: .6rem; max-height: 28rem; overflow-y: auto; overscroll-behavior: contain; min-width: 0; }
+.radar-map-job-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr)); gap: .6rem; max-height: 28rem; overflow-y: auto; overscroll-behavior: auto; min-width: 0; }
 .radar-map-job { min-width: 0; padding: .8rem; border: 1px solid #284858; border-radius: .7rem; background: #0b1d2de8; overflow-wrap: anywhere; }
 .radar-map-job.is-selected { border-color: var(--radar-map-violet); }
 .radar-map-job-title { border: 0; padding: 0; min-height: 36px; background: transparent; color: #edfaff; text-align: left; font-weight: 650; cursor: pointer; overflow-wrap: anywhere; }
@@ -51,5 +56,6 @@
 .radar-map-job-no-link, .radar-map-empty { color: #a9c0cf; font-size: .8rem; line-height: 1.65; }
 .radar-map-button:focus-visible, .radar-map-control select:focus-visible, .radar-map-job-title:focus-visible, .radar-map-job-link:focus-visible { outline: 2px solid white; outline-offset: 3px; }
 @keyframes radar-map-slow-pulse { 0%, 100% { opacity: .48; transform: scale(.88); } 50% { opacity: .85; transform: scale(1.18); } }
-@media (prefers-reduced-motion: reduce) { .radar-map *, .radar-map *::before, .radar-map *::after { animation: none !important; transition: none !important; } }
+@keyframes radar-map-grid-glow { 0%, 100% { opacity: .16; } 50% { opacity: .42; } }
+@media (prefers-reduced-motion: reduce) { .radar-map:not(.radar-map-motion-manual) *, .radar-map:not(.radar-map-motion-manual) *::before, .radar-map:not(.radar-map-motion-manual) *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 600px) { .radar-map-heading { display: block; } .radar-map-control { flex-basis: 100%; } .radar-map-marker-count { font-size: 18px; } .radar-map-region-label { font-size: 15px; } .radar-map-job-list { max-height: 24rem; } }

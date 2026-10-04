@@ -3655,9 +3655,15 @@ async function loadFutureRadarGraph() {
     if (requestId !== loadFutureRadarGraph.requestId || sessionToken !== state.token) return;
     const allNodes = graph.nodes || [];
     const locationNodes = allNodes.filter((item) => item.kind === "location");
-    const nodes = locationNodes.length
-      ? [...allNodes.filter((item) => item.kind !== "location").slice(0, 90), ...locationNodes.slice(0, 18)]
-      : allNodes.slice(0, 90);
+    const businessPreview = allNodes.filter((item) => item.kind !== "location").slice(0, 90);
+    const previewIds = new Set(businessPreview.map((item) => item.id));
+    const connectedSkills = new Set((graph.relationships || [])
+      .filter((edge) => edge.kind === "REQUIRES" && previewIds.has(edge.source)).map((edge) => edge.target));
+    // Keep the original business preview, then show additional evidenced skills
+    // for its actual jobs. Never fill the skill column with unconnected labels.
+    const extraSkills = allNodes.filter((item) => item.kind === "skill"
+      && !previewIds.has(item.id) && connectedSkills.has(item.id)).slice(0, 48);
+    const nodes = [...businessPreview, ...extraSkills, ...locationNodes.slice(0, 18)];
     if (!nodes.length) { host.replaceChildren(); delete host.selectGraphNode; delete host.dataset.graphSnapshotStatus; host.dataset.graphSnapshotStale = "false"; status.textContent = `Neo4j 已连接，当前没有可画关系的岗位。机会池为 ${graph.postgres_opportunities_considered || 0} 条；请先正常导入岗位，再刷新图谱。`; return; }
     const groups = locationNodes.length ? ["employer", "opportunity", "skill", "location"] : ["employer", "opportunity", "skill"];
     const svgWidth = locationNodes.length ? 1320 : 1000;
@@ -3695,6 +3701,11 @@ async function loadFutureRadarGraph() {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(item); }
       });
     });
+    // Keep vertical navigation in the recruitment panel, with native horizontal
+    // scrolling for the readable, full-width graph (including keyboard access).
+    host.setAttribute("role", "region");
+    host.setAttribute("tabindex", "0");
+    host.setAttribute("aria-label", "企业岗位技能地区关系图，可左右滚动；上下滚动浏览面板");
     host.replaceChildren(svg);
     // Map-originated choices already changed map filters. Only mirror the
     // graph highlight; feeding them back would erase employer/drill filters.
@@ -6036,6 +6047,9 @@ document.querySelectorAll("[data-radar-tab]").forEach((button) => {
   });
 });
 $("future-radar-graph-refresh")?.addEventListener("click", loadFutureRadarGraph);
+document.querySelector(".radar-graph-detail")?.addEventListener("toggle", (event) => {
+  if (event.currentTarget.open) event.currentTarget.querySelector("summary")?.scrollIntoView({ behavior: "auto", block: "start" });
+});
 $("future-radar-timeseries-refresh")?.addEventListener("click", loadFutureRadarTimeseries);
 elements.futureRadarLiveState?.addEventListener("click", () => {
   state.futureRadar.sourceHealthFilter = elements.futureRadarLiveState.dataset.sourceFilter || "all";

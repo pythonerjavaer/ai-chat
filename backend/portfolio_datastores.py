@@ -77,8 +77,9 @@ class MongoDocumentArchive:
 
 
 class Neo4jOpportunityGraph:
-    # Known competencies are the only labels inferred from unstructured public
-    # text or generic tags. Explicit skill fields can name other competencies.
+    # Known competencies require positive public job text; generic operational
+    # tags alone are not evidence. Explicit skill fields remain authoritative.
+    _MAX_SKILLS_PER_OPPORTUNITY = 40
     _SKILL_ALIASES = (
         ("Python", ("python", "python语言", "python编程")),
         ("SQL", ("sql", "sql语言")),
@@ -92,8 +93,8 @@ class Neo4jOpportunityGraph:
         ("TypeScript", ("typescript",)),
         ("C++", ("c++",)),
         ("C#", ("c#",)),
-        ("Go", ("go", "golang", "go语言")),
-        ("R", ("r", "r语言")),
+        ("Go", ("go", "golang", "go语言", "go programming", "go language", "programming in go")),
+        ("R", ("r", "r语言", "r programming", "r language", "programming in r")),
         ("Tableau", ("tableau",)),
         ("Power BI", ("power bi", "powerbi")),
         ("PyTorch", ("pytorch",)),
@@ -107,8 +108,104 @@ class Neo4jOpportunityGraph:
         ("深度学习", ("深度学习", "deep learning")),
         ("统计分析", ("统计分析", "statistical analysis")),
         ("财务建模", ("财务建模", "financial modeling", "financial modelling")),
+        ("C", ("c", "c语言", "c编程", "c programming", "c language", "programming in c")),
+        ("Rust", ("rust", "rust语言", "rust编程", "rust programming")),
+        ("Scala", ("scala",)),
+        ("Kotlin", ("kotlin",)),
+        ("Swift", ("swift", "swift语言", "swift编程", "swift programming")),
+        ("PHP", ("php",)),
+        ("MATLAB", ("matlab",)),
+        ("Julia", ("julia", "julia语言", "julia programming")),
+        ("Bash", ("bash", "bash scripting", "bash脚本")),
+        ("Shell scripting", ("shell scripting", "shell scripts", "shell脚本")),
+        ("NumPy", ("numpy",)),
+        ("pandas", ("pandas",)),
+        ("SciPy", ("scipy",)),
+        ("scikit-learn", ("scikit-learn", "sklearn")),
+        ("XGBoost", ("xgboost",)),
+        ("LightGBM", ("lightgbm",)),
+        ("Keras", ("keras",)),
+        ("OpenCV", ("opencv",)),
+        ("自然语言处理", ("自然语言处理", "natural language processing", "nlp")),
+        ("计算机视觉", ("计算机视觉", "computer vision")),
+        ("大语言模型", ("大语言模型", "large language models", "large language model", "llm", "llms")),
+        ("Node.js", ("node.js", "nodejs")),
+        ("React", ("react", "react.js", "reactjs", "react框架")),
+        ("React Native", ("react native",)),
+        ("Vue.js", ("vue.js", "vuejs", "vue", "vue框架")),
+        ("Angular", ("angular", "angularjs", "angular框架")),
+        ("Django", ("django",)),
+        ("Flask", ("flask",)),
+        ("FastAPI", ("fastapi",)),
+        ("Spring Boot", ("spring boot", "springboot")),
+        (".NET", (".net", "dotnet")),
+        ("HTML", ("html", "html5")),
+        ("CSS", ("css", "css3")),
+        ("REST API", ("rest api", "restful api", "restful接口", "rest接口")),
+        ("GraphQL", ("graphql",)),
+        ("SQLite", ("sqlite",)),
+        ("Redis", ("redis",)),
+        ("Elasticsearch", ("elasticsearch", "elastic search")),
+        ("ClickHouse", ("clickhouse",)),
+        ("Oracle Database", ("oracle database", "oracle数据库")),
+        ("SQL Server", ("sql server", "microsoft sql server")),
+        ("Snowflake", ("snowflake", "snowflake数据库")),
+        ("BigQuery", ("bigquery",)),
+        ("Apache Spark", ("apache spark", "spark", "pyspark", "spark sql")),
+        ("Apache Hadoop", ("apache hadoop", "hadoop")),
+        ("Apache Flink", ("apache flink", "flink")),
+        ("Apache Kafka", ("apache kafka", "kafka")),
+        ("dbt", ("dbt",)),
+        ("Apache Airflow", ("apache airflow", "airflow")),
+        ("ETL", ("etl", "数据抽取转换加载", "extract transform load")),
+        ("Terraform", ("terraform",)),
+        ("Ansible", ("ansible",)),
+        ("AWS", ("aws", "amazon web services")),
+        ("Azure", ("azure", "microsoft azure")),
+        ("Google Cloud", ("google cloud", "google cloud platform", "gcp")),
+        ("持续集成", ("持续集成", "continuous integration", "ci/cd")),
+        ("单元测试", ("单元测试", "unit testing", "unit tests")),
+        ("回归分析", ("回归分析", "线性回归", "逻辑回归", "regression analysis", "linear regression", "logistic regression")),
+        ("时间序列分析", ("时间序列分析", "time series analysis", "time-series analysis")),
+        ("概率论", ("概率论", "probability theory")),
+        ("假设检验", ("假设检验", "hypothesis testing", "hypothesis tests")),
+        ("实验设计", ("实验设计", "design of experiments", "experimental design", "a/b testing", "ab testing")),
+        ("优化建模", ("优化建模", "数学优化", "mathematical optimization", "mathematical optimisation", "optimization modeling")),
+        ("风险管理", ("风险管理", "risk management")),
+        ("信用分析", ("信用分析", "信用风险分析", "credit analysis", "credit risk analysis")),
+        ("财务分析", ("财务分析", "financial analysis")),
+        ("财务报表分析", ("财务报表分析", "financial statement analysis")),
+        ("估值分析", ("估值分析", "企业估值", "股权估值", "valuation analysis", "business valuation", "equity valuation")),
+        ("投资分析", ("投资分析", "investment analysis", "投资研究", "investment research")),
+        ("融资分析", ("融资分析", "投融资分析", "financing analysis", "capital raising analysis")),
+        ("投资组合管理", ("投资组合管理", "portfolio management")),
+        ("尽职调查", ("尽职调查", "due diligence")),
+        ("预算管理", ("预算管理", "budget management", "budgeting")),
+        ("需求分析", ("需求分析", "产品需求分析", "requirements analysis", "product requirements analysis")),
+        ("用户研究", ("用户研究", "user research", "用户调研", "customer research")),
+        ("市场研究", ("市场研究", "市场调研", "market research")),
+        ("市场营销", ("市场营销", "marketing strategy", "数字营销", "digital marketing")),
+        ("竞品分析", ("竞品分析", "竞争分析", "competitive analysis", "competitor analysis")),
+        ("项目管理", ("项目管理", "project management")),
+        ("供应链管理", ("供应链管理", "supply chain management")),
     )
-    _VERSIONED_LANGUAGE_NAMES = frozenset({"Python", "Java", "C++", "C#"})
+    # Ambiguous bare names need requirements plus a technical qualifier/list.
+    # Unambiguous technical phrases work in all public fields.
+    _REQUIREMENTS_ONLY_ALIASES = frozenset({
+        "rust", "swift", "julia", "react", "vue", "angular", "flask", "snowflake",
+        "spark", "airflow", "azure",
+    })
+    _SKILL_TECHNICAL_PREFIX = re.compile(
+        r"(?:掌握|熟悉|精通|了解|使用|具备|学习|擅长|基于|技能|技术|要求)\s*[:：]?\s*$"
+        r"|\b(?:(?:experience|knowledge|skills?|expertise|proficiency|proficient)\s+(?:in|of|with)"
+        r"|programming\s+in|use|using|required|requirements?|technologies)\s*[:：]?\s*$", re.IGNORECASE)
+    _SKILL_TECHNICAL_SUFFIX = re.compile(
+        r"^\s*(?:开发|编程|语言|框架|数据库|平台|经验|技能|知识|能力)"
+        r"|^\s+(?:programming|language|development|framework|database|platform|experience|knowledge|skills?|proficiency)\b"
+        r"|^\s+(?:(?:is|are)\s+)?(?:required|mandatory|essential|necessary)\b", re.IGNORECASE)
+    _SKILL_COMPANY_SUFFIX = re.compile(
+        r"^\s*(?:公司|集团|企业|机构|有限|股份)|^\s+(?:company|corporation|corp|inc|ltd)\b", re.IGNORECASE)
+    _VERSIONED_LANGUAGE_NAMES = frozenset({"Python", "Java", "C++", "C#", "C", "R", "Go"})
     _SKILL_CLAUSE_BOUNDARY = re.compile(
         r"[,，;；。!?！？]|\.(?:\s|$)|但(?:是)?|然而|不过|\b(?:but|however|whereas)\b", re.IGNORECASE)
     _SKILL_LIST_CONNECTOR = re.compile(r"\s*(?:[/|&、]|和|及|与|或|或者|and|or)\s*", re.IGNORECASE)
@@ -168,7 +265,8 @@ class Neo4jOpportunityGraph:
                 return []
             return [_clean(part, 100)
                     for item in value if isinstance(item, str)
-                    for part in re.split(r"[,;/|，；、]+", item) if _clean(part, 100)]
+                    for part in ([item] if recognized(_clean(item, 100))
+                                 else re.split(r"[,;/|，；、]+", item)) if _clean(part, 100)]
 
         aliases = {alias.casefold(): name
                    for name, names in Neo4jOpportunityGraph._SKILL_ALIASES
@@ -200,55 +298,76 @@ class Neo4jOpportunityGraph:
             add(value)
         positive = set()
         negated = set()
-        if not explicit:
-            # Keep fields and short clauses separate: a non-required SQL mention
-            # must not negate a Python requirement in the next clause or field.
-            clauses = [clause for key in ("title", "description", "requirements", "responsibilities")
-                       for clause in Neo4jOpportunityGraph._SKILL_CLAUSE_BOUNDARY.split(_clean(job.get(key), 8_000))]
-            patterns = []
-            for name, names in Neo4jOpportunityGraph._SKILL_ALIASES:
-                # Go and R are ordinary words/letters. Require their language
-                # names in prose; exact explicit fields and tags remain valid.
-                prose_names = tuple(alias for alias in names if alias not in {"go", "r"})
+        # Parse public prose even with explicit skills, so a generic tag can be
+        # corroborated without changing the explicit-field fallback behavior.
+        # Keep fields/clauses separate to prevent adjacent positive requirements
+        # from inheriting another skill's negation.
+        clauses = [(key, clause) for key in ("title", "description", "requirements", "responsibilities")
+                   for clause in Neo4jOpportunityGraph._SKILL_CLAUSE_BOUNDARY.split(_clean(job.get(key), 8_000))]
+        patterns = []
+        for name, names in Neo4jOpportunityGraph._SKILL_ALIASES:
+            # Bare C/R/Go are letters or ordinary words, not prose evidence.
+            # Explicit language phrases and exact explicit skill labels work.
+            prose_names = tuple(alias for alias in names if alias not in {"go", "r", "c"})
+
+            def pattern_for(aliases: tuple[str, ...]) -> re.Pattern:
+                if not aliases:
+                    return re.compile(r"(?!)")
                 alternatives = [re.escape(alias) + (rf"(?:{version_suffix})?"
                                 if name in Neo4jOpportunityGraph._VERSIONED_LANGUAGE_NAMES
                                 and alias.casefold() == name.casefold() else "")
-                                for alias in sorted(prose_names, key=len, reverse=True)]
-                pattern = r"(?<![A-Za-z0-9_])(?:" + "|".join(alternatives) + r")(?![A-Za-z0-9_])"
-                patterns.append((name, re.compile(pattern, flags=re.IGNORECASE)))
-            for clause in clauses:
-                mentions = sorted((match.start(), match.end(), name)
-                                  for name, pattern in patterns for match in pattern.finditer(clause))
-                groups = []
-                for start, end, name in mentions:
-                    # A simple skill list shares its qualifier, e.g. no Python
-                    # or SQL experience. Other intervening prose starts a new
-                    # group, so SQL not required and Python essential is safe.
-                    if groups and Neo4jOpportunityGraph._SKILL_LIST_CONNECTOR.fullmatch(clause[groups[-1][1]:start]):
-                        groups[-1][1] = end
-                        groups[-1][2].add(name)
-                    else:
-                        groups.append([start, end, {name}])
-                for start, end, names in groups:
-                    if (Neo4jOpportunityGraph._SKILL_NEGATION_PREFIX.search(clause[:start])
-                            or Neo4jOpportunityGraph._SKILL_NEGATION_SUFFIX.search(clause[end:])):
-                        negated.update(names)
-                    else:
-                        positive.update(names)
+                                for alias in sorted(aliases, key=len, reverse=True)]
+                return re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(alternatives)
+                                  + r")(?![A-Za-z0-9_])", flags=re.IGNORECASE)
+
+            public_names = tuple(alias for alias in prose_names
+                                 if alias not in Neo4jOpportunityGraph._REQUIREMENTS_ONLY_ALIASES)
+            patterns.append((name, pattern_for(prose_names), pattern_for(public_names)))
+        for field, clause in clauses:
+            mentions = sorted((match.start(), match.end(), name,
+                               match.group().casefold() not in Neo4jOpportunityGraph._REQUIREMENTS_ONLY_ALIASES)
+                              for name, requirement_pattern, public_pattern in patterns
+                              for match in (requirement_pattern if field == "requirements"
+                                            else public_pattern).finditer(clause))
+            groups = []
+            for start, end, name, unambiguous in mentions:
+                # Nested aliases (SQL inside SQL Server, React inside React
+                # Native) share the longest span and its negation. Connector
+                # lists also share qualifiers, but intervening prose does not.
+                if groups and (start < groups[-1][1]
+                               or Neo4jOpportunityGraph._SKILL_LIST_CONNECTOR.fullmatch(clause[groups[-1][1]:start])):
+                    groups[-1][1] = max(groups[-1][1], end)
+                    groups[-1][2].add(name)
+                    groups[-1][3] = groups[-1][3] or unambiguous
+                else:
+                    groups.append([start, end, {name}, unambiguous])
+            for start, end, names, unambiguous in groups:
+                # Check the complete span so SQL inside SQL Server公司 cannot
+                # survive after the longer organization mention is rejected.
+                if Neo4jOpportunityGraph._SKILL_COMPANY_SUFFIX.search(clause[end:]):
+                    continue
+                if not (unambiguous
+                        or Neo4jOpportunityGraph._SKILL_TECHNICAL_PREFIX.search(clause[:start])
+                        or Neo4jOpportunityGraph._SKILL_TECHNICAL_SUFFIX.search(clause[end:])):
+                    continue
+                if (Neo4jOpportunityGraph._SKILL_NEGATION_PREFIX.search(clause[:start])
+                        or Neo4jOpportunityGraph._SKILL_NEGATION_SUFFIX.search(clause[end:])):
+                    negated.update(names)
+                else:
+                    positive.update(names)
         # Operational tags also contain industries, cities and verification
         # states; only a complete, recognized skill label is evidence here.
         for value in labels(job.get("tags")):
             name = recognized(value)
-            # Generic tags cannot override prose that only mentions this skill
-            # to explicitly say it is not required. Explicit skill fields keep
-            # their existing authoritative behavior.
-            if name and (name not in negated or name in positive):
+            # A tag must have positive public-text evidence. It cannot override
+            # a negated-only mention or manufacture a requirement on its own.
+            if name and name in positive:
                 add(value)
         # Preserve the established deterministic canonical order after tags.
         for name, _names in Neo4jOpportunityGraph._SKILL_ALIASES:
-            if name in positive:
+            if not explicit and name in positive:
                 add(name)
-        return output[:30]
+        return output[:Neo4jOpportunityGraph._MAX_SKILLS_PER_OPPORTUNITY]
 
     def sync_opportunities(self, jobs: list[dict[str, Any]]) -> dict[str, Any]:
         if not self.uri:
@@ -278,6 +397,7 @@ class Neo4jOpportunityGraph:
             read_scope = {"ids": [row["id"] for row in rows],
                           "company_keys": {row["id"]: row["company_key"] for row in rows},
                           "skills_by_id": {row["id"]: row["skills"] for row in rows},
+                          "skill_limit": self._MAX_SKILLS_PER_OPPORTUNITY,
                           "place_ids_by_id": {row["id"]: [place["id"] for place in row["places"]] for row in rows},
                           "location_keys": list(dict.fromkeys(place["id"] for row in rows for place in row["locations"])),
                           "within_pairs": [{"child": child, "parent": parent} for child, parent in dict.fromkeys(
@@ -312,7 +432,7 @@ class Neo4jOpportunityGraph:
                     WHERE o.id IN $ids AND e.key = $company_keys[o.id]
                     OPTIONAL MATCH (o)-[:REQUIRES]->(s:Skill)
                     WHERE s.name IN $skills_by_id[o.id]
-                    WITH e,o,collect(DISTINCT s.name)[0..12] AS skills
+                    WITH e,o,collect(DISTINCT s.name)[0..$skill_limit] AS skills
                     OPTIONAL MATCH (o)-[:LOCATED_IN]->(l:Location)
                     WHERE l.key IN $place_ids_by_id[o.id]
                     RETURN e.name AS employer,o.id AS id,o.title AS title,o.location AS location,o.url AS url,
@@ -339,7 +459,11 @@ class Neo4jOpportunityGraph:
                     # caller-supplied coordinates/places from an old graph.
                     items.append({"employer": row["company"], "id": row["id"], "title": row["title"],
                                   "location": row["location"], "url": row["url"],
-                                  "skills": [skill for skill in item.get("skills") or [] if skill in row["skills"]][:12],
+                                  # Use current deterministic public order;
+                                  # Neo4j collect order/historical labels must
+                                  # not decide which competencies are exposed.
+                                  "skills": [skill for skill in row["skills"]
+                                             if skill in (item.get("skills") or [])][:self._MAX_SKILLS_PER_OPPORTUNITY],
                                   "places": row["places"],
                                   "location_status": row["location_status"]})
             return {"status": "synced", "opportunities": len(rows),

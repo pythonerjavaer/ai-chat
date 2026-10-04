@@ -176,6 +176,53 @@ class GeographyAssetsTest(unittest.TestCase):
             self.assertEqual(status, "mapped", text)
             self.assertEqual([(place["id"], place["level"]) for place in places], [(identity, level)], text)
 
+    def test_published_chinese_names_keep_english_aliases_and_coordinate_provenance(self):
+        reviews = json.loads((ROOT / "scripts/data/china-name-reviews.json").read_text(encoding="utf-8"))
+        for review in reviews["places"]:
+            place = self.places["geonames:" + review["geonames_id"]]
+            self.assertEqual(place["name"], review["name"])
+            self.assertIn(review["source_name"], place["aliases"])
+            self.assertEqual(place["name_source"], review["source"])
+            self.assertEqual(place["province_id"], review["province_id"])
+            self.assertEqual(place["parent_id"], review["parent_id"])
+            self.assertEqual(place["coordinate_source"], f"https://www.geonames.org/{review['geonames_id']}/")
+        self.assertEqual(self.places["geonames:12746883"]["center"], [116.5433, 29.89635])
+        visible = [p for p in self.places.values() if p.get("navigation_visible") is not False]
+        self.assertFalse([p["name"] for p in visible if not builder.CHINESE.fullmatch(p["name"])])
+
+    def test_chinese_township_aliases_are_not_discarded_or_invented_counties(self):
+        for name in ("北竿鄉", "金城鎮", "昭平镇", "冷湖行委", "江口镇"):
+            self.assertEqual(builder.preferred_chinese({"name": "English reference", "aliases": [name]}), name)
+        self.assertEqual(builder.preferred_chinese({"name": "Lishi District", "aliases": ["离石"]}), "离石")
+        self.assertEqual(builder.preferred_chinese({"name": "Unverified County", "aliases": []}), "Unverified County")
+
+    def test_reviewed_historical_and_conflicting_rows_do_not_locate_current_jobs(self):
+        from backend.future_radar.geography import ChinaPlaceCatalog
+
+        catalog = ChinaPlaceCatalog(self.catalog)
+        for identity in ("1806069", "1788532", "1796133", "11288134"):
+            place = self.places["geonames:" + identity]
+            self.assertIs(place["navigation_visible"], False)
+            self.assertIs(place["matching_enabled"], False)
+            self.assertIsNotNone(catalog.place(place["id"]), "Source row remains auditable, not deleted")
+            self.assertNotIn(place["id"], {p["id"] for p in catalog.resolve(place["name"])[0]})
+        conflict = self.places["geonames:11288134"]
+        self.assertEqual(conflict["parent_id"], "530900")
+        self.assertEqual(conflict["hierarchy_status"], "published_parent_conflict")
+
+    def test_pengze_chinese_english_and_parent_city_resolve_same_id(self):
+        from backend.future_radar.geography import ChinaPlaceCatalog
+
+        catalog = ChinaPlaceCatalog(self.catalog)
+        for name in ("彭泽县", "江西省九江市彭泽县", "Pengze County"):
+            places, status = catalog.resolve(name)
+            self.assertEqual(status, "mapped", name)
+            self.assertEqual([p["id"] for p in places], ["geonames:12746883"], name)
+            self.assertEqual(places[0]["name"], "彭泽县")
+        places, status = catalog.resolve("湖北省彭泽县")
+        self.assertEqual(status, "ambiguous")
+        self.assertFalse(places)
+
 
 if __name__ == "__main__":
     unittest.main()
