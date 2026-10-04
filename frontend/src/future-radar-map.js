@@ -256,6 +256,26 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
   const breadcrumb = element("nav", "radar-map-breadcrumb"); breadcrumb.setAttribute("aria-label", "行政区地图层级");
   const summary = element("p", "radar-map-summary"); summary.setAttribute("role", "status"); summary.setAttribute("aria-live", "polite");
   const viewport = element("div", "radar-map-viewport"), stage = element("div", "radar-map-stage");
+  const returnControls = element("nav", "radar-map-return-controls");
+  returnControls.setAttribute("aria-label", "地图返回导航");
+  const backLevel = element("button", "radar-map-button", "返回上一级");
+  const backTop = element("button", "radar-map-button", "返回页面上方");
+  backLevel.type = backTop.type = "button";
+  returnControls.append(backLevel, backTop); viewport.append(returnControls);
+  backTop.addEventListener("click", () => heading.scrollIntoView?.({ block: "start", behavior: "auto" }));
+  backLevel.addEventListener("click", () => {
+    if (state.place) state.place = "";
+    else if (state.city) state.city = "";
+    else state.province = "";
+    state.unlocated = false;
+    render();
+    const id = state.city || state.province;
+    const feature = index.get(id);
+    const center = validPoint(feature?.properties.center);
+    if (center) globe?.focus({ longitude: center[0], latitude: center[1], level: feature.properties.level });
+    else globe?.reset?.();
+    emitLocation(id, feature?.properties.name || "中国 · 含香港");
+  });
   viewport.setAttribute("tabindex", "0");
   viewport.setAttribute("aria-label", "中国公开招聘 3D 地图视图，可拖拽旋转");
   const map = svgElement("svg", { viewBox: "0 0 1000 660", role: "group", tabindex: "-1", "aria-label": "中国公开招聘行政区示意地图" });
@@ -372,6 +392,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     return [...index.values()].filter((feature) => ["province", "auxiliary"].includes(feature.properties.level));
   }
   function renderBreadcrumb() {
+    backLevel.disabled = !state.place && !state.city && !state.province;
     adminNavigation.replaceChildren();
     for (const feature of visibleFeatures().filter(feature => !feature.mapContext && feature.properties.level !== "auxiliary")) {
       const button = element("button", "radar-map-button", feature.properties.name); button.type = "button";

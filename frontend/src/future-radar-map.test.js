@@ -226,6 +226,25 @@ test("breadcrumbs and zero-job administrative drill synchronize or clear actual 
   assert.equal(r.byClass("radar-map-job-list").children[0].className, "radar-map-empty");
 });
 
+test("explicit return navigation climbs city province and national and scrolls to the heading", async () => {
+  const r = runtime(), emitted = [];
+  const map = createFutureRadarMap({ host: r.host, boundaries, onSelect: node => emitted.push(node) });
+  const data = graph(); data.nodes.push({ id: "location:440000", kind: "location", label: "广东省" });
+  await map.ready; map.update(data);
+  assert.equal(r.button("返回上一级").disabled, true);
+  r.withAttribute("data-region-id", "440000").fire("click");
+  r.withAttribute("data-region-id", "440300").fire("click");
+  r.button("返回上一级").fire("click");
+  assert.equal(emitted.at(-1)?.id, "location:440000");
+  r.button("返回上一级").fire("click");
+  assert.equal(emitted.at(-1), null);
+  assert.equal(r.button("返回上一级").disabled, true);
+  let scrolled = false;
+  r.byClass("radar-map-heading").scrollIntoView = () => { scrolled = true; };
+  r.button("返回页面上方").fire("click");
+  assert.equal(scrolled, true);
+});
+
 test("ambiguity remains disclosed even when the parent province has a valid administrative point", async () => {
   const r = runtime(), data = graph();
   data.items.push({ id: "partial", employer: "待确认企业", title: "公开省内岗位", location_status: "ambiguous",

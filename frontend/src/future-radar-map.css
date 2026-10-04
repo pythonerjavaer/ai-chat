@@ -9,6 +9,8 @@
 .radar-map-button:hover, .radar-map-button[aria-pressed="true"] { border-color: var(--radar-map-cyan); background: #143548; }
 .radar-map-button:disabled { cursor: default; opacity: .7; }
 .radar-map-breadcrumb { display: flex; flex-wrap: wrap; gap: .4rem; }
+.radar-map-return-controls { position: absolute; top: 10px; left: 10px; z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; }
+.radar-map-return-controls .radar-map-button { background: #081a2cef; min-height: 38px; }
 .radar-map-breadcrumb .radar-map-button { min-height: 36px; font-size: .8rem; }
 .radar-map-hong-kong { border-color: #7d79bb; }
 .radar-map-current-place { align-self: center; padding: .4rem; color: #b6b0ff; font-size: .85rem; }
