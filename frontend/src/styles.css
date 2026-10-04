@@ -2471,7 +2471,7 @@ body[data-workspace="general"] .ember-run-button { border-color:rgba(168,155,255
 .ember-sensitivity-table th:first-child,.ember-sensitivity-table td:first-child { text-align:left; }
 /* One vertical scroll owner: results on desktop, the recruitment body on mobile.
    The tall graph stays in their flow; only its wide columns scroll independently. */
-.future-radar-graph-view { min-width:0; max-width:100%; max-height:none; overflow-x:auto; overflow-y:hidden; overscroll-behavior:auto; touch-action:pan-x pan-y; border:1px solid rgba(255,255,255,.08); border-radius:14px; background:radial-gradient(circle at 50% 42%,rgba(61,129,159,.08),transparent 65%); }
+.future-radar-graph-view { min-width:0; max-width:100%; max-height:70vh; overflow:auto; overscroll-behavior:auto; touch-action:pan-x pan-y; border:1px solid rgba(255,255,255,.08); border-radius:14px; background:radial-gradient(circle at 50% 42%,rgba(61,129,159,.08),transparent 65%); }
 .future-radar-graph-view:focus-visible { outline:2px solid #b5f1ff; outline-offset:3px; }
 .future-radar-graph-view svg { display:block; width:100%; min-width:760px; min-height:560px; }
 .radar-graph-edge { stroke:rgba(137,195,213,.26); stroke-width:1.3; }

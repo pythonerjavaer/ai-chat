@@ -263,7 +263,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     stage.hidden = state.mode === "3d";
     if (state.mode !== "3d") { globeHost.hidden = true; globe?.update([], [], false, false); return; }
     globeHost.hidden = false;
-    if (globe) { globe.update(collection?.features || [], radarMapPlaces(jobs), true, state.motionOverride ?? !media?.matches, jobs); return; }
+    if (globe) { globe.update(visibleFeatures(), radarMapPlaces(jobs), true, state.motionOverride ?? !media?.matches, jobs); return; }
     if (globeLoading) return;
     globeLoading = true; globeHost.textContent = "正在加载三维地球…";
     import("./radar-globe.js").then(({ createRadarGlobe }) => {
@@ -278,8 +278,10 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
   const attribution = element("p", "radar-map-attribution");
   const details = element("div", "radar-map-details"), detailsTitle = element("h4"), list = element("div", "radar-map-job-list");
   const relationPanel = element("div", "radar-map-relations");
+  const adminNavigation = element("div", "radar-map-admin-navigation");
+  adminNavigation.setAttribute("aria-label", "当前层级全部行政区，可点击下钻");
   details.append(detailsTitle, list);
-  root.append(heading, controls, viewStatus, breadcrumb, summary, viewport, locations, relationPanel, precision, attribution, details);
+  root.append(heading, controls, viewStatus, breadcrumb, summary, viewport, adminNavigation, locations, relationPanel, precision, attribution, details);
   host.replaceChildren(root);
 
   const emit = (id, kind, label) => onSelect(id ? model.nodes.get(id) || { id, kind, label } : null);
@@ -310,6 +312,8 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     else if (properties.level === "city") { state.province = text(properties.province_id) || state.province; state.city = id; }
     else { state.place = id; }
     render();
+    const center = validPoint(properties.center) || validPoint(feature.geometry.coordinates);
+    if (center) globe?.focus({longitude: center[0], latitude: center[1], level: properties.level});
     emitLocation(id, properties.name);
   }
   function choosePlace(place, notify = true) {
@@ -318,6 +322,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     if (notify) emit(`location:${place.id}`, "location", place.name);
   }
   function selectRelation(node) {
+    if (node.kind === "administrative") { drill(node.feature); return; }
     if (node.kind === "location") { choosePlace(node.place); globe?.focus(node.place); return; }
     resetGeography();
     if (node.kind === "opportunity") { selectJob(node.id.replace(/^opportunity:/, "")); return; }
@@ -362,6 +367,11 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     return [...index.values()].filter((feature) => ["province", "auxiliary"].includes(feature.properties.level));
   }
   function renderBreadcrumb() {
+    adminNavigation.replaceChildren();
+    for (const feature of visibleFeatures().filter(feature => !feature.mapContext && feature.properties.level !== "auxiliary")) {
+      const button = element("button", "radar-map-button", feature.properties.name); button.type = "button";
+      button.addEventListener("click", () => drill(feature)); adminNavigation.append(button);
+    }
     breadcrumb.replaceChildren();
     const crumbs = [{ id: "", label: "中国 · 含香港", level: "national" },
       ...[state.province, state.city].filter(Boolean).map((id) => ({ id, label: index.get(id)?.properties.name || id,

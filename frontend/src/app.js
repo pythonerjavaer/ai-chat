@@ -6048,7 +6048,10 @@ document.querySelectorAll("[data-radar-tab]").forEach((button) => {
 });
 $("future-radar-graph-refresh")?.addEventListener("click", loadFutureRadarGraph);
 document.querySelector(".radar-graph-detail")?.addEventListener("toggle", (event) => {
-  if (event.currentTarget.open) event.currentTarget.querySelector("summary")?.scrollIntoView({ behavior: "auto", block: "start" });
+  if (event.currentTarget.open) {
+    if (state.token && !$("future-radar-graph-view")?.querySelector("svg")) loadFutureRadarGraph();
+    event.currentTarget.querySelector("summary")?.scrollIntoView({ behavior: "auto", block: "nearest" });
+  }
 });
 $("future-radar-timeseries-refresh")?.addEventListener("click", loadFutureRadarTimeseries);
 elements.futureRadarLiveState?.addEventListener("click", () => {

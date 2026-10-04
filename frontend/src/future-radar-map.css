@@ -77,3 +77,8 @@
 .relation-employer { border-color: #65e6fa !important; }
 .relation-opportunity { border-color: #b9a3ff !important; }
 .relation-skill { border-color: #67f4ab !important; }
+.radar-globe-admin-labels { position: absolute; inset: 0; pointer-events: none; }
+.radar-globe-admin-labels button { position: absolute; transform: translate(-50%, -50%); pointer-events: auto; background: #061b2ddd; border: 1px solid #47899b; border-radius: 5px; padding: 3px 6px; color: #e5faff; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.radar-globe-admin-labels button[hidden] { display: none; }
+.radar-globe-admin-labels button:hover { background: #164c64; border-color: #fff; }
+.radar-map-admin-navigation { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; max-height: 180px; overflow-y: auto; }

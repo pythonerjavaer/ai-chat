@@ -67,17 +67,16 @@ test("graph keyboard focus restores contrast only while focused without changing
   }
 });
 
-test("expanded graphs leave vertical scrolling to the bounded recruitment panel, including narrow screens", () => {
+test("expanded graphs have a bounded two-axis scroller while the recruitment panel remains scrollable", () => {
   const viewport = styles.match(/^\.future-radar-graph-view\s*\{([^}]+)\}/m)?.[1];
   assert.ok(viewport);
   assert.match(viewport, /min-width:\s*0\s*;/);
   assert.match(viewport, /max-width:\s*100%\s*;/);
-  assert.match(viewport, /max-height:\s*none\s*;/, "Tall graph rows must remain in the outer panel flow");
-  assert.match(viewport, /overflow-x:\s*auto\s*;/, "Readable columns need a native horizontal scroller");
-  assert.match(viewport, /overflow-y:\s*hidden\s*;/);
+  assert.match(viewport, /max-height:\s*70vh\s*;/);
+  assert.match(viewport, /overflow:\s*auto\s*;/, "All graph rows and columns must be reachable");
   assert.match(viewport, /overscroll-behavior:\s*auto\s*;/);
   assert.match(viewport, /touch-action:\s*pan-x pan-y\s*;/);
-  assert.doesNotMatch(viewport, /(?:^|;)\s*(?:height|overflow)\s*:/, "Do not restore a fixed-height nested vertical scroller");
+  assert.doesNotMatch(viewport, /(?:^|;)\s*height\s*:/, "Empty graphs should not reserve a fixed height");
   assert.match(styles, /^\.recruitment-body\s*\{[^}]*min-width:\s*0[^}]*min-height:\s*0/m);
   assert.match(styles, /^\.recruitment-results\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto[^}]*overscroll-behavior-y:\s*auto/m);
   assert.match(styles, /\.recruitment-body\s*\{\s*display:\s*block;\s*overflow-x:\s*hidden;\s*overflow-y:\s*auto;\s*overscroll-behavior-y:\s*auto;/);

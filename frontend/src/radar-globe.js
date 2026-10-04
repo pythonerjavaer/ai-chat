@@ -27,6 +27,8 @@ export function createRadarGlobe(host, onSelect) {
   for (let lon = 0; lon < 360; lon += 20) lines.add(line(Array.from({ length: 91 }, (_, i) => globePoint(lon, i * 2 - 90, 1.002)), 0x237795, .25));
   const boundaries = new THREE.Group(), relations = new THREE.Group(), labels = new THREE.Group(); scene.add(boundaries, relations, labels);
   const tooltip = document.createElement('div'); tooltip.className = 'radar-globe-tooltip'; tooltip.hidden = true; host.append(tooltip);
+  const adminLabels = document.createElement('div'); adminLabels.className = 'radar-globe-admin-labels'; host.append(adminLabels);
+  let administrative = [];
   function labeledNode(node, position, color, radius = .018) {
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 8), new THREE.MeshBasicMaterial({color}));
     mesh.position.copy(position); mesh.userData.node = node; mesh.userData.radius = radius; markers.add(mesh);
@@ -74,15 +76,35 @@ export function createRadarGlobe(host, onSelect) {
       marker.scale.setScalar(pixels * worldPerPixel / marker.userData.radius * pulse);
     });
     renderer.render(scene, camera);
+    const occupied = [];
+    for (const {position, button} of administrative) {
+      const normal = position.clone().normalize(), towardCamera = camera.position.clone().sub(position).normalize();
+      const projected = position.clone().project(camera);
+      const x = (projected.x + 1) * .5 * renderer.domElement.clientWidth, y = (1 - projected.y) * .5 * height;
+      const width = Math.max(50, button.textContent.length * 13), box = {x, y, width};
+      const visible = normal.dot(towardCamera) > .08 && Math.abs(projected.x) < .96 && Math.abs(projected.y) < .96
+        && !occupied.some(other => Math.abs(other.x - x) < (other.width + width) / 2 + 4 && Math.abs(other.y - y) < 25);
+      button.hidden = !visible;
+      if (visible) { occupied.push(box); button.style.left = `${x}px`; button.style.top = `${y}px`; }
+    }
   });
   return {
     update(features, places, enabled, animate, jobs = []) {
       active = enabled; motion = animate; host.hidden = !enabled;
       if (!enabled) return;
       disposeGroup(boundaries); disposeGroup(markers); disposeGroup(relations); disposeGroup(labels);
+      adminLabels.replaceChildren(); administrative = [];
       for (const feature of features) {
         const polygons = feature.geometry.type === 'Polygon' ? [feature.geometry.coordinates] : feature.geometry.type === 'MultiPolygon' ? feature.geometry.coordinates : [];
         for (const polygon of polygons) for (const ring of polygon) boundaries.add(line(ring.map(([lon, lat]) => globePoint(lon, lat, 1.005)), 0x39d9eb, .85));
+        if (feature.mapContext || feature.properties.level === 'auxiliary') continue;
+        const center = feature.properties.center || (feature.geometry.type === 'Point' ? feature.geometry.coordinates : null);
+        if (center) {
+          const button = document.createElement('button'); button.type = 'button'; button.textContent = feature.properties.name;
+          button.setAttribute('aria-label', `${feature.properties.name}，查看下级行政区`);
+          button.addEventListener('click', () => onSelect({kind: 'administrative', feature}));
+          adminLabels.append(button); administrative.push({position: globePoint(center[0], center[1], 1.01), button});
+        }
       }
       for (const place of places) {
         const anchor = globePoint(place.longitude, place.latitude, 1.018);
@@ -109,7 +131,7 @@ export function createRadarGlobe(host, onSelect) {
       resize();
     },
     reset() { controls.reset(); },
-    focus(place) { camera.position.copy(globePoint(place.longitude, place.latitude, 1.9)); controls.update(); },
+    focus(place) { camera.position.copy(globePoint(place.longitude, place.latitude, place.level === 'district' ? 1.3 : place.level === 'city' ? 1.4 : 1.7)); controls.update(); },
     destroy() { observer.disconnect(); renderer.setAnimationLoop(null); controls.dispose(); scene.traverse(object => { object.geometry?.dispose(); object.material?.dispose(); }); renderer.dispose(); host.replaceChildren(); }
   };
 }
