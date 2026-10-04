@@ -253,11 +253,11 @@ test("separate employer/job controls and markers link to graph selection without
 
 test("failed refresh retains the snapshot and map controls; successful zero clears real data", async () => {
   const r = runtime(); const map = createFutureRadarMap({ host: r.host, boundaries }); await map.ready; map.update(graph());
-  map.selectNode({ id: "employer:示例科技", kind: "employer" }); r.button("2.5D 浮起").fire("click"); r.button("关闭动效").fire("click");
+  map.selectNode({ id: "employer:示例科技", kind: "employer" }); r.button("3D 地图").fire("click"); r.button("关闭动效").fire("click");
   map.update({ status: "unavailable" });
   assert.equal(r.byClass("radar-map").dataset.snapshotStale, "true");
   assert.match(r.byClass("radar-map-summary").textContent, /上次成功快照.*当前筛选 2/);
-  assert.match(r.byClass("radar-map").className, /radar-map-raised/);
+  assert.match(r.byClass("radar-map").className, /radar-map-3d/);
   assert.doesNotMatch(r.byClass("radar-map").className, /radar-map-motion/);
   map.update(graph()); assert.equal(r.byClass("radar-map").dataset.snapshotStale, "false");
   assert.equal(r.withAttribute("aria-label", "选择企业招聘分布").value, "employer:示例科技");
@@ -297,11 +297,13 @@ test("default animation follows system changes until the user explicitly overrid
 
 test("view and clear controls visibly confirm their action without requiring job data", async () => {
   const r = runtime(), emitted = []; const map = createFutureRadarMap({ host: r.host, boundaries, onSelect: (node) => emitted.push(node) }); await map.ready;
-  r.button("2.5D 浮起").fire("click");
-  assert.equal(r.button("返回平面").attributes["aria-pressed"], "true");
-  assert.match(r.byClass("radar-map-view-status").textContent, /浮起视图.*视图已切换.*等待图谱载入/);
-  r.button("返回平面").fire("click");
-  assert.doesNotMatch(r.byClass("radar-map").className, /radar-map-raised/);
+  r.button("3D 地图").fire("click");
+  assert.equal(r.button("平面地图").attributes["aria-pressed"], "true");
+  assert.match(r.byClass("radar-map-view-status").textContent, /3D 视图.*可旋转 3D 地图.*等待图谱载入/);
+  r.button("重置视角").fire("click");
+  assert.match(r.byClass("radar-map-view-status").textContent, /3D 视角已重置/);
+  r.button("平面地图").fire("click");
+  assert.doesNotMatch(r.byClass("radar-map").className, /radar-map-3d/);
   r.button("香港放大").fire("click");
   r.button("清除选择").fire("click");
   assert.match(r.byClass("radar-map-view-status").textContent, /清除全部筛选并返回全国/);
