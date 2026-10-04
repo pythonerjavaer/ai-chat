@@ -1868,7 +1868,7 @@ def future_radar_timeseries(user: User, days: int = Query(default=90, ge=7, le=3
 
 @app.get("/api/future-radar/graph")
 def future_radar_relationship_graph(user: User) -> dict:
-    """Sync a bounded set of visible job entities and return graph evidence."""
+    """Sync all eligible visible job entities and return graph evidence."""
     if not settings.neo4j_uri:
         return {"status": "not_configured", "nodes": [], "relationships": [],
                 "message": "请配置 Neo4j；PostgreSQL 岗位池不受影响。"}
@@ -1881,7 +1881,7 @@ def future_radar_relationship_graph(user: User) -> dict:
         public_url=_public_reference_url,
         input_sanitizer=_public_search_update_detail,
         company_aliases=_radar_company_aliases(),
-        cache_scope=scoring_scope(user["id"], {}, "bounded-public-graph-v1"),
+        cache_scope=scoring_scope(user["id"], {}, "complete-public-graph-v2"),
     )
     read_finished = time.perf_counter()
     graph = neo4j_opportunity_graph.sync_opportunities(jobs)

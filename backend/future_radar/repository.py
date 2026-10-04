@@ -140,7 +140,7 @@ class RadarRepository:
             ttl_seconds=30 * 60, refresh_on_hit=True,
         )
         # Separate from the scored pool so a graph refresh cannot evict it.
-        # Only the final, sanitized <=200-row public projection is retained;
+        # Only the final, sanitized public projection is retained;
         # raw candidates and personal choices never enter this small cache.
         self._graph_opportunity_cache = BoundedScoringCache(
             max_entries=4, max_bytes=8 * 1024 * 1024, max_inflight=2,
@@ -2502,8 +2502,6 @@ class RadarRepository:
                 # need no provenance, ratings or personal application data.
                 public = input_sanitizer({field: row.get(field) for field in fields})
                 items.append({field: public.get(field) for field in fields})
-                if len(items) == 200:
-                    break
             return items
 
         if cache_scope is None:

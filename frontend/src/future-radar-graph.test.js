@@ -12,7 +12,7 @@ assert.ok(start >= 0 && end > start);
 
 function runtime() {
   function element(tag) {
-    return { tag, children: [], attributes: {}, style: {}, dataset: {}, listeners: {}, namespaceURI: "http://www.w3.org/2000/svg",
+    return { tag, value: "", children: [], attributes: {}, style: {}, dataset: {}, listeners: {}, namespaceURI: "http://www.w3.org/2000/svg",
       setAttribute(name, value) { this.attributes[name] = value; },
       addEventListener(name, listener) { this.listeners[name] = listener; },
       append(...nodes) { this.children.push(...nodes); },
@@ -41,7 +41,7 @@ function runtime() {
       calls.push(args);
       return new Promise((resolve, reject) => { active = { resolve, reject }; });
     },
-    document: { createElementNS: (_namespace, tag) => element(tag) },
+    document: { createElement: tag => element(tag), createElementNS: (_namespace, tag) => element(tag) },
   });
   vm.runInContext(source.slice(start, end), context);
   const resetStart = source.indexOf("function resetFutureRadarGraph()");
@@ -97,12 +97,12 @@ test("graph scrolling is keyboard reachable and does not intercept wheel or touc
   assert.match(host.attributes["aria-label"], /左右滚动.*上下滚动浏览面板/);
   assert.equal(host.listeners.wheel, undefined);
   assert.equal(host.listeners.touchmove, undefined);
-  assert.equal(host.children[0].listeners.wheel, undefined);
-  assert.equal(host.children[0].listeners.touchmove, undefined);
+  assert.equal(host.querySelector("svg").listeners.wheel, undefined);
+  assert.equal(host.querySelector("svg").listeners.touchmove, undefined);
   assert.match(styles, /^\.future-radar-graph-view:focus-visible\s*\{[^}]*outline:\s*2px solid #b5f1ff/m);
 });
 
-test("additional skill nodes beyond the original preview require a visible job edge and stay bounded", async () => {
+test("all evidenced skills survive the old preview limit and unconnected skills stay excluded", async () => {
   const r = runtime(); const pending = r.load();
   const base = [{ id: "opportunity:1", kind: "opportunity", label: "公开岗位" },
     ...Array.from({ length: 89 }, (_, i) => ({ id: `employer:${i}`, kind: "employer", label: `企业${i}` }))];
@@ -111,9 +111,9 @@ test("additional skill nodes beyond the original preview require a visible job e
     { id: "skill:unconnected", kind: "skill", label: "不相关技能" }],
     relationships: skills.map((skill) => ({ source: "opportunity:1", target: skill.id, kind: "REQUIRES" })) });
   await pending;
-  const svg = r.elements["future-radar-graph-view"].children[0];
-  assert.equal(svg.children.filter((node) => node.attributes.class === "radar-graph-node skill").length, 48);
-  assert.equal(svg.children.filter((node) => node.attributes.class === "radar-graph-edge requires").length, 48);
+  const svg = r.elements["future-radar-graph-view"].querySelector("svg");
+  assert.equal(svg.children.filter((node) => node.attributes.class === "radar-graph-node skill").length, 60);
+  assert.equal(svg.children.filter((node) => node.attributes.class === "radar-graph-edge requires").length, 60);
   assert.equal(svg.children.some((node) => node.attributes["aria-label"]?.includes("不相关技能")), false);
 });
 
@@ -183,7 +183,7 @@ test("dense graphs keep 44px rows, scroll vertically, and report actual drawn ed
     ],
   });
   await pending;
-  const svg = r.elements["future-radar-graph-view"].children[0];
+  const svg = r.elements["future-radar-graph-view"].querySelector("svg");
   assert.equal(svg.attributes.viewBox, "0 0 1000 2680");
   assert.equal(svg.attributes.height, "2680");
   assert.equal(svg.style.minWidth, "1000px");
@@ -194,7 +194,7 @@ test("dense graphs keep 44px rows, scroll vertically, and report actual drawn ed
   assert.ok(rows.slice(1).every((value, index) => value - rows[index] === 44));
   assert.equal(svg.children.filter((child) => child.tag === "line").length, 2);
   const status = r.elements["future-radar-graph-status"].textContent;
-  assert.match(status, /90 个实体和 2 条关系/);
+  assert.match(status, /81 个实体和 2 条关系/);
   assert.match(status, /当前岗位范围内共 28 条关系/);
   assert.doesNotMatch(status, /Only public|personal state/);
   assert.deepEqual(svg.children.filter((child) => child.tag === "text").map((child) => child.textContent), ["企业", "岗位", "技能"]);
@@ -209,7 +209,7 @@ test("dense graphs keep 44px rows, scroll vertically, and report actual drawn ed
   job.listeners.click();
   assert.equal(job.attributes["aria-pressed"], "true");
   assert.equal(employers[1].style.opacity, "0.25");
-  assert.match(r.elements["future-radar-graph-status"].textContent, /90 个实体和 2 条关系/);
+  assert.match(r.elements["future-radar-graph-status"].textContent, /81 个实体和 2 条关系/);
   assert.match(r.elements["future-radar-graph-status"].textContent, /已选择.*图中关联 2 条关系/);
   let prevented = false;
   job.listeners.keydown({ key: "Enter", preventDefault() { prevented = true; } });
@@ -258,14 +258,14 @@ test("failed refresh retains the previous graph and marks its interactive snapsh
   const first = r.load();
   r.resolve(graph);
   await first;
-  const host = r.elements["future-radar-graph-view"], svg = host.children[0];
+  const host = r.elements["future-radar-graph-view"], svg = host.querySelector("svg");
   const summary = r.elements["future-radar-graph-status"].textContent;
   const pending = r.load();
-  assert.equal(host.children[0], svg);
+  assert.equal(host.querySelector("svg"), svg);
   assert.match(r.elements["future-radar-graph-status"].textContent, /等待期间展示上次成功快照/);
   r.reject(new Error("unavailable"));
   await pending;
-  assert.equal(host.children[0], svg);
+  assert.equal(host.querySelector("svg"), svg);
   assert.equal(host.dataset.graphSnapshotStale, "true");
   assert.ok(r.elements["future-radar-graph-status"].textContent.startsWith(summary));
   assert.match(r.elements["future-radar-graph-status"].textContent, /上次成功快照/);
@@ -274,13 +274,13 @@ test("failed refresh retains the previous graph and marks its interactive snapsh
   const unsuccessful = r.load();
   r.resolve({ status: "not_configured", message: "连接不可用" });
   await unsuccessful;
-  assert.equal(host.children[0], svg);
+  assert.equal(host.querySelector("svg"), svg);
   assert.match(r.elements["future-radar-graph-status"].textContent, /连接不可用.*上次成功快照/);
   const recovered = r.load();
   r.resolve(graph);
   await recovered;
-  assert.equal(host.children.length, 1);
-  assert.notEqual(host.children[0], svg);
+  assert.equal(host.children.length, 2);
+  assert.notEqual(host.querySelector("svg"), svg);
   assert.equal(host.dataset.graphSnapshotStale, "false");
   assert.equal(r.elements["future-radar-graph-status"].textContent, summary);
 });
@@ -301,7 +301,7 @@ test("locations form a fourth graph column and graph/map selection shares one sn
   const pending = r.load(); r.resolve(graph); await pending;
   assert.equal(r.mapUpdates[0].status, "loading");
   assert.equal(r.mapUpdates[1], graph, "Map must get the full response, not the 90-node preview");
-  const host = r.elements["future-radar-graph-view"], svg = host.children[0];
+  const host = r.elements["future-radar-graph-view"], svg = host.querySelector("svg");
   assert.equal(svg.attributes.viewBox, "0 0 1320 610");
   assert.deepEqual(svg.children.filter((node) => node.tag === "text").map((node) => node.textContent), ["企业","岗位","技能","地区"]);
   svg.children.find((node) => node.attributes.class === "radar-graph-node opportunity").listeners.click();
@@ -348,16 +348,15 @@ test("map entities outside the bounded preview keep the graph clear and report f
     ],
   };
   const pending = r.load(); r.resolve(graph); await pending;
-  const host = r.elements["future-radar-graph-view"], svg = host.children[0];
+  const host = r.elements["future-radar-graph-view"], svg = host.querySelector("svg");
   const nodes = svg.children.filter((node) => node.attributes.class?.startsWith("radar-graph-node"));
   const edges = svg.children.filter((node) => node.tag === "line");
   host.selectGraphNode(graph.nodes[0]);
   assert.ok(nodes.some((node) => node.style.opacity === "0.25"));
   host.selectGraphNode(outside);
-  assert.ok(nodes.every((node) => node.style.opacity === "1" && node.attributes["aria-pressed"] === "false"));
-  assert.ok(edges.every((edge) => edge.style.opacity === "1" && edge.style.strokeWidth === ""));
-  assert.match(r.elements["future-radar-graph-status"].textContent, /当前缩略预览未包含该实体/);
-  assert.match(r.elements["future-radar-graph-status"].textContent, /完整输入图中关联 2 条关系/);
+  assert.ok(nodes.some((node) => node.attributes["aria-label"]?.startsWith(outside.label) && node.attributes["aria-pressed"] === "true"));
+  assert.equal(edges.filter(edge => edge.style.strokeWidth === "3px").length, 2);
+  assert.match(r.elements["future-radar-graph-status"].textContent, /图中关联 2 条关系/);
   assert.match(r.elements["future-radar-graph-status"].textContent, /当前岗位范围内共 492 条关系/);
   assert.doesNotMatch(r.elements["future-radar-graph-status"].textContent, /图中关联 0|无关系/);
   host.selectGraphNode({ id: "location:outside", kind: "location", label: "未进入输入图的地区" });
@@ -368,15 +367,32 @@ test("map entities outside the bounded preview keep the graph clear and report f
   assert.equal(r.elements["future-radar-graph-status"].textContent, host.dataset.graphSnapshotStatus);
 });
 
-test("adding geography preserves the original ninety business preview nodes", async () => {
+test("complete graph retains all business and geography nodes beyond old preview limits", async () => {
   const r = runtime();
   const nodes = [...Array.from({length:100},(_,index)=>({id:`opportunity:${index}`,kind:"opportunity",label:`岗位 ${index}`})),
     ...Array.from({length:20},(_,index)=>({id:`location:${index}`,kind:"location",label:`地区 ${index}`}))];
   const pending = r.load(); r.resolve({status:"synced",opportunities:100,nodes,items:[],relationships:[]}); await pending;
-  const svg = r.elements["future-radar-graph-view"].children[0];
-  assert.equal(svg.children.filter((node)=>node.attributes.class === "radar-graph-node opportunity").length,90);
-  assert.equal(svg.children.filter((node)=>node.attributes.class === "radar-graph-node location").length,18);
-  assert.match(r.elements["future-radar-graph-status"].textContent,/108 个实体/);
+  const svg = r.elements["future-radar-graph-view"].querySelector("svg");
+  assert.equal(svg.children.filter((node)=>node.attributes.class === "radar-graph-node opportunity").length,100);
+  assert.equal(svg.children.filter((node)=>node.attributes.class === "radar-graph-node location").length,20);
+  assert.match(r.elements["future-radar-graph-status"].textContent,/120 个实体/);
+});
+
+test("complete graph retains edges beyond 220 and searches the last entity", async () => {
+  const r = runtime();
+  const employer = {id:"employer:all",kind:"employer",label:"全部企业"};
+  const jobs = Array.from({length:230},(_,i)=>({id:`opportunity:${i}`,kind:"opportunity",label:`岗位 ${i}`}));
+  const pending = r.load(); r.resolve({status:"synced",opportunities:230,nodes:[employer,...jobs],
+    relationships:jobs.map(job=>({source:employer.id,target:job.id,kind:"POSTS"}))}); await pending;
+  const host = r.elements["future-radar-graph-view"];
+  assert.equal(host.querySelector("svg").children.filter(node=>node.tag === "line").length,230);
+  const navigation = host.children.find(node=>node.className === "radar-graph-navigation");
+  const [search,picker] = navigation.children;
+  search.value = "岗位 229"; search.listeners.input();
+  assert.equal(picker.children.length,2);
+  assert.equal(picker.children[1].value,"opportunity:229");
+  picker.value = "opportunity:229"; picker.listeners.change();
+  assert.match(r.elements["future-radar-graph-status"].textContent,/已选择“岗位 229”.*关联 1 条关系/);
 });
 
 test("a successful empty graph cannot revive the old graph selection and counts", async () => {

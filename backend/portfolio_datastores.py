@@ -377,7 +377,7 @@ class Neo4jOpportunityGraph:
         try:
             rows = []
             catalog = china_place_catalog()
-            for job in jobs[:500]:
+            for job in jobs:
                 job_id = _clean(job.get("id") or job.get("job_id"), 180)
                 title = _clean(job.get("title") or job.get("role") or job.get("position"), 240)
                 company = _clean(job.get("company_name") or job.get("employer_name") or job.get("company"), 200)

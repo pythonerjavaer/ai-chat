@@ -3655,15 +3655,8 @@ async function loadFutureRadarGraph() {
     if (requestId !== loadFutureRadarGraph.requestId || sessionToken !== state.token) return;
     const allNodes = graph.nodes || [];
     const locationNodes = allNodes.filter((item) => item.kind === "location");
-    const businessPreview = allNodes.filter((item) => item.kind !== "location").slice(0, 90);
-    const previewIds = new Set(businessPreview.map((item) => item.id));
-    const connectedSkills = new Set((graph.relationships || [])
-      .filter((edge) => edge.kind === "REQUIRES" && previewIds.has(edge.source)).map((edge) => edge.target));
-    // Keep the original business preview, then show additional evidenced skills
-    // for its actual jobs. Never fill the skill column with unconnected labels.
-    const extraSkills = allNodes.filter((item) => item.kind === "skill"
-      && !previewIds.has(item.id) && connectedSkills.has(item.id)).slice(0, 48);
-    const nodes = [...businessPreview, ...extraSkills, ...locationNodes.slice(0, 18)];
+    const linkedSkills = new Set((graph.relationships || []).filter(edge => edge.kind === "REQUIRES").map(edge => edge.target));
+    const nodes = allNodes.filter(item => item.kind !== "skill" || linkedSkills.has(item.id));
     if (!nodes.length) { host.replaceChildren(); delete host.selectGraphNode; delete host.dataset.graphSnapshotStatus; host.dataset.graphSnapshotStale = "false"; status.textContent = `Neo4j 已连接，当前没有可画关系的岗位。机会池为 ${graph.postgres_opportunities_considered || 0} 条；请先正常导入岗位，再刷新图谱。`; return; }
     const groups = locationNodes.length ? ["employer", "opportunity", "skill", "location"] : ["employer", "opportunity", "skill"];
     const svgWidth = locationNodes.length ? 1320 : 1000;
@@ -3678,7 +3671,7 @@ async function loadFutureRadarGraph() {
     (locationNodes.length ? ["企业", "岗位", "技能", "地区"] : ["企业", "岗位", "技能"]).forEach((label, index) => {
       const text = document.createElementNS(svg.namespaceURI, "text"); text.setAttribute("x", 115 + index * 300); text.setAttribute("y", "20"); text.setAttribute("fill", "#d9f5ff"); text.style.fontSize = "14px"; text.textContent = label; svg.append(text);
     });
-    const visibleEdges = (graph.relationships || []).filter((edge) => positions.has(edge.source) && positions.has(edge.target)).slice(0, 220);
+    const visibleEdges = (graph.relationships || []).filter((edge) => positions.has(edge.source) && positions.has(edge.target));
     const edgeElements = [];
     const nodeElements = new Map();
     let selectedId = null;
@@ -3706,7 +3699,26 @@ async function loadFutureRadarGraph() {
     host.setAttribute("role", "region");
     host.setAttribute("tabindex", "0");
     host.setAttribute("aria-label", "企业岗位技能地区关系图，可左右滚动；上下滚动浏览面板");
-    host.replaceChildren(svg);
+    const navigation = document.createElement("div"); navigation.className = "radar-graph-navigation";
+    const search = document.createElement("input"); search.type = "search"; search.placeholder = "搜索全部企业、岗位、技能或地区"; search.setAttribute("aria-label", "搜索完整关系图实体");
+    const picker = document.createElement("select"); picker.setAttribute("aria-label", "定位完整关系图实体");
+    function populateEntities() {
+      picker.replaceChildren();
+      const empty = document.createElement("option"); empty.value = ""; empty.textContent = "选择实体并定位相邻关系"; picker.append(empty);
+      const query = search.value.trim().toLocaleLowerCase();
+      const kinds = {employer: "企业", opportunity: "岗位", skill: "技能", location: "地区"};
+      for (const item of nodes.filter(item => item.label.toLocaleLowerCase().includes(query))) {
+        const option = document.createElement("option"); option.value = item.id; option.textContent = `${kinds[item.kind] || item.kind} · ${item.label}`; picker.append(option);
+      }
+    }
+    search.addEventListener("input", populateEntities);
+    picker.addEventListener("change", () => {
+      const item = nodes.find(item => item.id === picker.value);
+      selectNode(item || null, false);
+      if (item) nodeElements.get(item.id)?.group.scrollIntoView?.({block: "center", inline: "nearest", behavior: "auto"});
+    });
+    populateEntities(); navigation.append(search, picker);
+    host.replaceChildren(navigation, svg);
     // Map-originated choices already changed map filters. Only mirror the
     // graph highlight; feeding them back would erase employer/drill filters.
     host.selectGraphNode = (item) => selectNode(item, false, false);

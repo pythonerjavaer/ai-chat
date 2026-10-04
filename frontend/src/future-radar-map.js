@@ -367,12 +367,11 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     ];
     for (const [name, nodes] of groups) {
       const row = element("div", "radar-map-relation-row"); row.append(element("strong", "", `${name} · ${nodes.length}`));
-      for (const node of nodes.slice(0, 80)) {
+      for (const node of nodes) {
         const button = element("button", `radar-map-button relation-${node.kind}`, node.label); button.type = "button";
         button.addEventListener("click", () => selectRelation(node)); row.append(button);
       }
       if (!nodes.length) row.append(element("span", "", "当前范围暂无关联数据"));
-      if (nodes.length > 80) row.append(element("span", "", "显示前 80 项，请通过筛选缩小范围"));
       relationPanel.append(row);
     }
   }

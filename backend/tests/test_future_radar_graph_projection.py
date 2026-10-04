@@ -59,8 +59,8 @@ def test_graph_bounds_sanitization_and_excludes_private_fields_without_scoring(h
         public_url=public_url, input_sanitizer=sanitize,
         application_states={"job-000": "skipped"},
     )
-    assert len(result) == len(sanitized) == 200
-    assert sanitized == [f"job-{index:03}" for index in range(1, 201)]
+    assert len(result) == len(sanitized) == 204
+    assert sanitized == [f"job-{index:03}" for index in range(1, 205)]
     assert all(set(row) == GRAPH_FIELDS for row in result)
     assert "PRIVATE_" not in json.dumps(result)
     assert result[0]["requirements"] == "掌握 SQL"
