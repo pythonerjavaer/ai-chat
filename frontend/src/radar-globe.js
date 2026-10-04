@@ -29,7 +29,7 @@ export function createRadarGlobe(host, onSelect) {
   const tooltip = document.createElement('div'); tooltip.className = 'radar-globe-tooltip'; tooltip.hidden = true; host.append(tooltip);
   function labeledNode(node, position, color, radius = .018) {
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 8), new THREE.MeshBasicMaterial({color}));
-    mesh.position.copy(position); mesh.userData.node = node; markers.add(mesh);
+    mesh.position.copy(position); mesh.userData.node = node; mesh.userData.radius = radius; markers.add(mesh);
     if (node.kind !== 'location') return mesh;
     const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 64;
     const context = canvas.getContext('2d'); context.fillStyle = '#071e36'; context.fillRect(0, 0, 512, 64);
@@ -62,7 +62,19 @@ export function createRadarGlobe(host, onSelect) {
     if (hit) tooltip.textContent = hit.object.userData.node.label;
   });
   let active = false, motion = true;
-  renderer.setAnimationLoop(time => { if (!active) return; controls.update(); markers.children.forEach(marker => marker.scale.setScalar(motion ? 1 + .15 * Math.sin(time * .003) : 1)); renderer.render(scene, camera); });
+  renderer.setAnimationLoop(time => {
+    if (!active) return;
+    controls.update();
+    // Keep markers readable without covering cities when the camera zooms in.
+    const height = renderer.domElement.clientHeight || 620;
+    markers.children.forEach(marker => {
+      const pixels = marker.userData.node.kind === 'location' ? 3.5 : 3;
+      const worldPerPixel = 2 * camera.position.distanceTo(marker.position) * Math.tan(camera.fov * Math.PI / 360) / height;
+      const pulse = motion ? 1 + .06 * Math.sin(time * .003) : 1;
+      marker.scale.setScalar(pixels * worldPerPixel / marker.userData.radius * pulse);
+    });
+    renderer.render(scene, camera);
+  });
   return {
     update(features, places, enabled, animate, jobs = []) {
       active = enabled; motion = animate; host.hidden = !enabled;
