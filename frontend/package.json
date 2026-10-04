@@ -23,7 +23,8 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "spessasynth_core": "^4.3.22",
-    "spessasynth_lib": "^4.3.14"
+    "spessasynth_lib": "^4.3.14",
+    "three": "^0.186.1"
   },
   "devDependencies": {
     "@capacitor/android": "^8.0.0",

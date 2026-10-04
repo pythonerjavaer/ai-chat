@@ -256,6 +256,23 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
   const map = svgElement("svg", { viewBox: "0 0 1000 660", role: "group", tabindex: "-1", "aria-label": "中国公开招聘行政区示意地图" });
   const mapMessage = element("p", "radar-map-message");
   stage.append(map); viewport.append(stage, mapMessage);
+  const globeHost = element("div", "radar-globe");
+  globeHost.hidden = true; viewport.append(globeHost);
+  let globe = null, globeLoading = false;
+  function syncGlobe(jobs) {
+    stage.hidden = state.mode === "3d";
+    if (state.mode !== "3d") { globeHost.hidden = true; globe?.update([], [], false, false); return; }
+    globeHost.hidden = false;
+    if (globe) { globe.update(collection?.features || [], radarMapPlaces(jobs), true, state.motionOverride ?? !media?.matches); return; }
+    if (globeLoading) return;
+    globeLoading = true; globeHost.textContent = "正在加载三维地球…";
+    import("./radar-globe.js").then(({ createRadarGlobe }) => {
+      if (destroyed) return;
+      globeHost.textContent = "";
+      globe = createRadarGlobe(globeHost, (place) => { state.place = place.id; state.feedback = `已选择 ${place.name}`; render(); emitLocation(place.id, place.name); });
+      syncGlobe(radarMapJobs(model, state, index));
+    }).catch(() => { globeHost.textContent = "三维渲染暂不可用，请使用支持 WebGL 的浏览器或切换平面地图"; }).finally(() => { globeLoading = false; });
+  }
   const locations = element("div", "radar-map-location-list"); locations.setAttribute("aria-label", "本范围已定位地区与实际公开岗位数量");
   const precision = element("p", "radar-map-precision", "行政中心示意，非办公地址或导航坐标；城市与区县仅按公开招聘地点关联，不推断企业总部。");
   const attribution = element("p", "radar-map-attribution");
@@ -434,7 +451,8 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     const motionEnabled = state.motionOverride ?? !media?.matches;
     root.className = `radar-map${state.mode === "3d" ? " radar-map-3d" : ""}${motionEnabled ? " radar-map-motion" : ""}${state.motionOverride === true ? " radar-map-motion-manual" : ""}`;
     root.dataset.snapshotStale = String(state.stale);
-    stage.style.transform = state.mode === "3d" ? `rotateX(${state.pitch}deg) rotateZ(${state.yaw}deg) translateZ(0)` : "";
+    stage.style.transform = "";
+    syncGlobe(jobs);
     employerSelect.replaceChildren(); option(employerSelect, "", "全部企业招聘分布");
     for (const company of [...model.companies.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"))) option(employerSelect, company.id, company.name);
     employerSelect.value = state.employer;
@@ -452,7 +470,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     motion.setAttribute("aria-pressed", String(motionEnabled));
     motion.textContent = motionEnabled ? "关闭动效" : "开启动效";
     motion.title = media?.matches && state.motionOverride === null ? "系统偏好减少动态效果，默认关闭；点击可仅为本地图手动开启" : "切换本地图的缓慢微光与招聘点脉冲，不改变系统设置";
-    viewStatus.textContent = `${state.mode === "3d" ? `3D 视图（可拖拽旋转，俯仰 ${Math.round(state.pitch)}°，方位 ${Math.round(state.yaw)}°）` : "平面视图"} · 动效${motionEnabled ? "已开启" : "已关闭"}${media?.matches && state.motionOverride === null ? "（遵循系统偏好，可手动开启）" : ""}${state.feedback ? ` · ${state.feedback}` : ""}${!model.jobs.length ? state.snapshot ? " · 暂无公开岗位，企业与岗位筛选暂无选项；行政区仍可点击" : " · 企业与岗位选项等待图谱载入；视图与行政区可先操作" : ""}`;
+    viewStatus.textContent = `${state.mode === "3d" ? "三维地球（拖拽自由旋转 · 滚轮缩放 · 点击发光地点筛选）" : "平面视图"} · 动效${motionEnabled ? "已开启" : "已关闭"}${media?.matches && state.motionOverride === null ? "（遵循系统偏好，可手动开启）" : ""}${state.feedback ? ` · ${state.feedback}` : ""}${!model.jobs.length ? state.snapshot ? " · 暂无公开岗位，企业与岗位筛选暂无选项；行政区仍可点击" : " · 企业与岗位选项等待图谱载入；视图与行政区可先操作" : ""}`;
     const phase = state.loading ? "正在读取公开招聘数据 · " : state.stale ? "读取未成功 · " : "";
     summary.textContent = state.snapshot
       ? `${phase}${state.stale || state.loading ? "上次成功快照 · " : ""}本次图谱公开岗位 ${model.jobs.length} · 当前筛选 ${jobs.length} · 未定位岗位（全部）${missing} · 地点待确认（全部）${ambiguous}${state.skill ? ` · 技能 ${state.skill}` : ""}`
@@ -480,7 +498,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     if (state.skill) emit(node?.id || `skill:${fold(state.skill)}`, "skill", state.skill); else emit(null);
   });
   mode.addEventListener("click", () => { state.mode = state.mode === "2d" ? "3d" : "2d"; state.feedback = state.mode === "3d" ? "已切换为可旋转 3D 地图" : "已返回平面地图"; render(); });
-  resetView.addEventListener("click", () => { state.yaw = -18; state.pitch = 56; state.feedback = "3D 视角已重置"; render(); });
+  resetView.addEventListener("click", () => { globe?.reset(); state.yaw = -18; state.pitch = 56; state.feedback = "3D 视角已重置"; render(); });
   motion.addEventListener("click", () => { state.motionOverride = !(state.motionOverride ?? !media?.matches); state.feedback = "动效设置已切换"; render(); });
   clear.addEventListener("click", () => { state.employer = ""; state.job = ""; state.skill = ""; resetGeography(); state.feedback = "已清除全部筛选并返回全国"; render(); emit(null); });
   let drag = null;
@@ -491,7 +509,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     render();
   };
   viewport.addEventListener("pointerdown", (event) => {
-    if (state.mode !== "3d" || event.button && event.button !== 0) return;
+    if (globe || state.mode !== "3d" || event.button && event.button !== 0) return;
     drag = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
     viewport.setPointerCapture?.(event.pointerId);
   });
@@ -567,6 +585,6 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
         state.skill = text(node.label) || id.replace(/^skill:/, ""); state.employer = ""; state.job = ""; resetGeography(); render();
       }
     },
-    destroy() { destroyed = true; media?.removeEventListener?.("change", mediaChanged); resizeObserver?.disconnect(); host.replaceChildren(); },
+    destroy() { destroyed = true; globe?.destroy(); media?.removeEventListener?.("change", mediaChanged); resizeObserver?.disconnect(); host.replaceChildren(); },
   };
 }

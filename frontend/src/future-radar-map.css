@@ -64,3 +64,6 @@
 @keyframes radar-map-grid-glow { 0%, 100% { opacity: .16; } 50% { opacity: .42; } }
 @media (prefers-reduced-motion: reduce) { .radar-map:not(.radar-map-motion-manual) *, .radar-map:not(.radar-map-motion-manual) *::before, .radar-map:not(.radar-map-motion-manual) *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 600px) { .radar-map-heading { display: block; } .radar-map-control { flex-basis: 100%; } .radar-map-marker-count { font-size: 18px; } .radar-map-region-label { font-size: 15px; } .radar-map-job-list { max-height: 24rem; } }
+.radar-globe { width: 100%; min-height: 420px; background: radial-gradient(ellipse at center, #10354c, #030b17 72%); border-radius: 16px; }
+.radar-globe[hidden], .radar-map-stage[hidden] { display: none; }
+.radar-globe canvas { display: block; width: 100%; touch-action: none; }
