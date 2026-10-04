@@ -23,8 +23,8 @@ export function createRadarGlobe(host, onSelect) {
   const light = new THREE.DirectionalLight(0x62dfff, 3); light.position.set(3, 4, 2); scene.add(light);
   const lines = new THREE.Group(), markers = new THREE.Group(); scene.add(lines, markers);
   const line = (points, color, opacity = .6) => new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color, transparent: true, opacity }));
-  for (let lat = -60; lat <= 60; lat += 20) lines.add(line(Array.from({ length: 181 }, (_, i) => globePoint(i * 2, lat, 1.002)), 0x237795, .25));
-  for (let lon = 0; lon < 360; lon += 20) lines.add(line(Array.from({ length: 91 }, (_, i) => globePoint(lon, i * 2 - 90, 1.002)), 0x237795, .25));
+  for (let lat = -60; lat <= 60; lat += 30) lines.add(line(Array.from({ length: 181 }, (_, i) => globePoint(i * 2, lat, 1.002)), 0x237795, .12));
+  for (let lon = 0; lon < 360; lon += 30) lines.add(line(Array.from({ length: 91 }, (_, i) => globePoint(lon, i * 2 - 90, 1.002)), 0x237795, .12));
   const boundaries = new THREE.Group(), relations = new THREE.Group(), labels = new THREE.Group(); scene.add(boundaries, relations, labels);
   const tooltip = document.createElement('div'); tooltip.className = 'radar-globe-tooltip'; tooltip.hidden = true; host.append(tooltip);
   const adminLabels = document.createElement('div'); adminLabels.className = 'radar-globe-admin-labels'; host.append(adminLabels);
@@ -32,12 +32,12 @@ export function createRadarGlobe(host, onSelect) {
   function labeledNode(node, position, color, radius = .018) {
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 8), new THREE.MeshBasicMaterial({color}));
     mesh.position.copy(position); mesh.userData.node = node; mesh.userData.radius = radius; markers.add(mesh);
-    if (node.kind !== 'location') return mesh;
-    const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 64;
-    const context = canvas.getContext('2d'); context.fillStyle = '#071e36'; context.fillRect(0, 0, 512, 64);
-    context.font = '36px sans-serif'; context.fillStyle = '#e5faff'; context.fillText(node.label.slice(0, 16), 10, 44);
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map: new THREE.CanvasTexture(canvas), depthTest: true}));
-    sprite.position.copy(position).add(new THREE.Vector3(0, .045, 0)); sprite.scale.set(.24, .03, 1); labels.add(sprite);
+    if (node.kind !== 'location' && markers.children.length <= 30) {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = node.label.length > 12 ? `${node.label.slice(0,12)}…` : node.label;
+      button.title = node.label; button.className = `globe-label-${node.kind}`;
+      button.addEventListener('click', () => onSelect(node)); adminLabels.append(button);
+      administrative.push({position, button});
+    }
     return mesh;
   }
   function connect(a, b, color) {
@@ -89,18 +89,20 @@ export function createRadarGlobe(host, onSelect) {
     }
   });
   return {
-    update(features, places, enabled, animate, jobs = []) {
+    update(features, places, enabled, animate, jobs = [], layer = 'overview') {
       active = enabled; motion = animate; host.hidden = !enabled;
       if (!enabled) return;
       disposeGroup(boundaries); disposeGroup(markers); disposeGroup(relations); disposeGroup(labels);
       adminLabels.replaceChildren(); administrative = [];
       for (const feature of features) {
         const polygons = feature.geometry.type === 'Polygon' ? [feature.geometry.coordinates] : feature.geometry.type === 'MultiPolygon' ? feature.geometry.coordinates : [];
-        for (const polygon of polygons) for (const ring of polygon) boundaries.add(line(ring.map(([lon, lat]) => globePoint(lon, lat, 1.005)), 0x39d9eb, .85));
+        for (const polygon of polygons) for (const ring of polygon) boundaries.add(line(ring.map(([lon, lat]) => globePoint(lon, lat, 1.005)), 0x39d9eb, .4));
         if (feature.mapContext || feature.properties.level === 'auxiliary') continue;
         const center = feature.properties.center || (feature.geometry.type === 'Point' ? feature.geometry.coordinates : null);
         if (center) {
           const button = document.createElement('button'); button.type = 'button'; button.textContent = feature.properties.name;
+          const count = jobs.filter(job => job.places.some(place => [place.id, place.city_id, place.province_id].includes(feature.properties.id))).length;
+          if (count) button.textContent += ` · ${count}`;
           button.setAttribute('aria-label', `${feature.properties.name}，查看下级行政区`);
           button.addEventListener('click', () => onSelect({kind: 'administrative', feature}));
           adminLabels.append(button); administrative.push({position: globePoint(center[0], center[1], 1.01), button});
@@ -109,22 +111,27 @@ export function createRadarGlobe(host, onSelect) {
       for (const place of places) {
         const anchor = globePoint(place.longitude, place.latitude, 1.018);
         labeledNode({id: `location:${place.id}`, kind: 'location', label: `${place.name} · ${place.count} 岗位`, place}, anchor, 0xffd466);
+        if (layer === 'overview') continue;
         const localJobs = jobs.filter(job => job.places.some(p => p.id === place.id));
+        if (layer === 'skill') {
+          const skills = [...new Set(localJobs.flatMap(job => job.skills))].slice(0, 8);
+          for (const [k, skill] of skills.entries()) {
+            if (markers.children.length >= 48) break;
+            const position = globePoint(place.longitude + (k - (skills.length - 1) / 2) * 2.5, place.latitude + 5, 1.16);
+            labeledNode({id: `skill:${skill.toLowerCase()}`, kind: 'skill', label: skill}, position, 0x67f4ab, .01); connect(anchor, position, 0x67f4ab);
+          }
+          continue;
+        }
         const companies = [...new Map(localJobs.map(job => [job.employerId, job])).values()];
         // The satellites express recruitment relationships, not office coordinates.
-        for (const [i, company] of companies.slice(0, 12).entries()) {
-          if (markers.children.length >= 240) break;
+        for (const [i, company] of companies.slice(0, 6).entries()) {
+          if (markers.children.length >= 48) break;
           const position = globePoint(place.longitude + (i - (Math.min(companies.length, 12) - 1) / 2) * 2, place.latitude, 1.10);
-          labeledNode({id: company.employerId, kind: 'employer', label: company.employer}, position, 0x65e6fa);
-          connect(anchor, position, 0x65e6fa);
-          for (const [j, job] of localJobs.filter(job => job.employerId === company.employerId).slice(0, 8).entries()) {
-            if (markers.children.length >= 240) break;
+          if (layer === 'employer') { labeledNode({id: company.employerId, kind: 'employer', label: company.employer}, position, 0x65e6fa); connect(anchor, position, 0x65e6fa); continue; }
+          for (const [j, job] of localJobs.filter(job => job.employerId === company.employerId).slice(0, 4).entries()) {
+            if (markers.children.length >= 48) break;
             const jobPosition = globePoint(place.longitude + (i - (Math.min(companies.length, 12) - 1) / 2) * 2 + (j - 3) * .6, place.latitude + 2, 1.18);
-            labeledNode({id: `opportunity:${job.id}`, kind: 'opportunity', label: job.title}, jobPosition, 0xb9a3ff, .014); connect(position, jobPosition, 0xb9a3ff);
-            if (jobs.length <= 8) for (const [k, skill] of job.skills.slice(0, 6).entries()) {
-              const skillPosition = globePoint(place.longitude + (k - 2.5) * 1.2, place.latitude + 4, 1.26);
-              labeledNode({id: `skill:${skill.toLowerCase()}`, kind: 'skill', label: skill}, skillPosition, 0x67f4ab, .01); connect(jobPosition, skillPosition, 0x67f4ab);
-            }
+            if (layer === 'opportunity') { labeledNode({id: `opportunity:${job.id}`, kind: 'opportunity', label: job.title}, jobPosition, 0xb9a3ff, .014); connect(anchor, jobPosition, 0xb9a3ff); continue; }
           }
         }
       }

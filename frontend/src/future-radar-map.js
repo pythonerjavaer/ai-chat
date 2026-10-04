@@ -215,7 +215,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
   const prefix = `radar-map-${++instanceNumber}`;
   const media = document.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)");
   const state = { employer: "", job: "", place: "", skill: "", province: "", city: "", unlocated: false,
-    mode: "2d", yaw: -18, pitch: 56, motionOverride: null, feedback: "", stale: false, loading: false, snapshot: false };
+    mode: "2d", globeLayer: "overview", yaw: -18, pitch: 56, motionOverride: null, feedback: "", stale: false, loading: false, snapshot: false };
   let model = normalizeRadarMapGraph(), collection = null, adminCatalog = null, index = new Map(), destroyed = false, boundaryError = false;
   const element = (tag, className, content) => {
     const node = document.createElement(tag);
@@ -246,6 +246,11 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
   const clear = element("button", "radar-map-button", "清除选择");
   for (const button of [mode, resetView, motion, clear]) button.type = "button";
   controls.append(employerLabel, jobLabel, skillLabel, mode, resetView, motion, clear);
+  const layerLabel = element("label", "radar-map-control", "三维显示层"), layerSelect = element("select");
+  layerSelect.setAttribute("aria-label", "三维关系显示层");
+  for (const [value, label] of [["overview", "地区总览"], ["employer", "企业关系"], ["opportunity", "岗位关系"], ["skill", "技能关系"]]) option(layerSelect, value, label);
+  layerLabel.append(layerSelect); controls.append(layerLabel);
+  layerSelect.addEventListener("change", () => { state.globeLayer = layerSelect.value; render(); });
   const viewStatus = element("p", "radar-map-view-status");
   viewStatus.setAttribute("role", "status"); viewStatus.setAttribute("aria-live", "polite");
   const breadcrumb = element("nav", "radar-map-breadcrumb"); breadcrumb.setAttribute("aria-label", "行政区地图层级");
@@ -263,7 +268,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     stage.hidden = state.mode === "3d";
     if (state.mode !== "3d") { globeHost.hidden = true; globe?.update([], [], false, false); return; }
     globeHost.hidden = false;
-    if (globe) { globe.update(visibleFeatures(), radarMapPlaces(jobs), true, state.motionOverride ?? !media?.matches, jobs); return; }
+    if (globe) { globe.update(visibleFeatures(), radarMapPlaces(jobs), true, state.motionOverride ?? !media?.matches, jobs, state.globeLayer); return; }
     if (globeLoading) return;
     globeLoading = true; globeHost.textContent = "正在加载三维地球…";
     import("./radar-globe.js").then(({ createRadarGlobe }) => {
@@ -323,12 +328,12 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
   }
   function selectRelation(node) {
     if (node.kind === "administrative") { drill(node.feature); return; }
-    if (node.kind === "location") { choosePlace(node.place); globe?.focus(node.place); return; }
+    if (node.kind === "location") { state.globeLayer = "employer"; choosePlace(node.place); globe?.focus(node.place); return; }
     resetGeography();
-    if (node.kind === "opportunity") { selectJob(node.id.replace(/^opportunity:/, "")); return; }
+    if (node.kind === "opportunity") { state.globeLayer = "skill"; selectJob(node.id.replace(/^opportunity:/, "")); return; }
     state.job = "";
-    if (node.kind === "employer") { state.employer = node.id; state.skill = ""; }
-    if (node.kind === "skill") { state.employer = ""; state.skill = node.label; }
+    if (node.kind === "employer") { state.employer = node.id; state.skill = ""; state.globeLayer = "opportunity"; }
+    if (node.kind === "skill") { state.employer = ""; state.skill = node.label; state.globeLayer = "opportunity"; }
     state.feedback = `已探索 ${node.label}`; render(); emit(node.id, node.kind, node.label);
   }
   function renderRelations(jobs) {
@@ -492,6 +497,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     root.className = `radar-map${state.mode === "3d" ? " radar-map-3d" : ""}${motionEnabled ? " radar-map-motion" : ""}${state.motionOverride === true ? " radar-map-motion-manual" : ""}`;
     root.dataset.snapshotStale = String(state.stale);
     stage.style.transform = "";
+    layerLabel.hidden = state.mode !== "3d"; layerSelect.value = state.globeLayer;
     syncGlobe(jobs);
     employerSelect.replaceChildren(); option(employerSelect, "", "全部企业招聘分布");
     for (const company of [...model.companies.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"))) option(employerSelect, company.id, company.name);

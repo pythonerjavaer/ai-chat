@@ -82,3 +82,7 @@
 .radar-globe-admin-labels button[hidden] { display: none; }
 .radar-globe-admin-labels button:hover { background: #164c64; border-color: #fff; }
 .radar-map-admin-navigation { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; max-height: 180px; overflow-y: auto; }
+.radar-map-control[hidden] { display: none; }
+.radar-globe-admin-labels .globe-label-employer { border-color: #65e6fa; }
+.radar-globe-admin-labels .globe-label-opportunity { border-color: #b9a3ff; }
+.radar-globe-admin-labels .globe-label-skill { border-color: #67f4ab; }
