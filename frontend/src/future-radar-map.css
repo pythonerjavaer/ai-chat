@@ -67,3 +67,13 @@
 .radar-globe { width: 100%; min-height: 420px; background: radial-gradient(ellipse at center, #10354c, #030b17 72%); border-radius: 16px; }
 .radar-globe[hidden], .radar-map-stage[hidden] { display: none; }
 .radar-globe canvas { display: block; width: 100%; touch-action: none; }
+.radar-globe { position: relative; }
+.radar-globe-tooltip { position: absolute; top: 12px; left: 12px; padding: 10px; border: 1px solid #65e6fa; background: #071e36; color: #e5faff; pointer-events: none; }
+.radar-map-relations { padding: 14px; border: 1px solid #237795; border-radius: 12px; margin: 12px 0; }
+.radar-map-relation-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; max-height: 180px; overflow-y: auto; }
+.radar-map-relation-row strong { flex-basis: 100%; }
+.radar-map-relation-row button { max-width: 100%; white-space: normal; }
+.relation-location { border-color: #ffd466 !important; }
+.relation-employer { border-color: #65e6fa !important; }
+.relation-opportunity { border-color: #b9a3ff !important; }
+.relation-skill { border-color: #67f4ab !important; }

@@ -51,6 +51,24 @@ function runtime({ reduced = false } = {}) {
   return { host, document, media, all, byClass, withAttribute, button };
 }
 
+test("relationship exploration links actual regions, employers, jobs and skills to filters and graph selection", async () => {
+  const r = runtime(), emitted = [];
+  const map = createFutureRadarMap({host: r.host, boundaries, onSelect: node => emitted.push(node)}); await map.ready; map.update(graph());
+  r.button("深圳市（1）").fire("click");
+  assert.equal(r.byClass("radar-map-job-list").children.length, 1);
+  assert.equal(emitted.at(-1).id, "location:440300");
+  r.button("示例科技").fire("click");
+  assert.equal(r.byClass("radar-map-job-list").children.length, 2);
+  assert.equal(emitted.at(-1).kind, "employer");
+  r.button("Python").fire("click");
+  assert.equal(r.byClass("radar-map-job-list").children.length, 1);
+  assert.equal(emitted.at(-1).kind, "skill");
+  r.button("Python 技术岗").fire("click");
+  assert.equal(emitted.at(-1).id, "opportunity:one");
+  r.button("清除选择").fire("click");
+  assert.equal(r.byClass("radar-map-job-list").children.length, 3);
+});
+
 test("only real public item ids and valid administrative points contribute to job counts", () => {
   const input = graph(); input.items.push({ ...input.items[0], private_profile: "secret" });
   input.items.push({ id: "bad", employer: "未知企业", title: "地点未知", places: [place("bad", { longitude: null })] });

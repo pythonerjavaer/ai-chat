@@ -263,13 +263,13 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     stage.hidden = state.mode === "3d";
     if (state.mode !== "3d") { globeHost.hidden = true; globe?.update([], [], false, false); return; }
     globeHost.hidden = false;
-    if (globe) { globe.update(collection?.features || [], radarMapPlaces(jobs), true, state.motionOverride ?? !media?.matches); return; }
+    if (globe) { globe.update(collection?.features || [], radarMapPlaces(jobs), true, state.motionOverride ?? !media?.matches, jobs); return; }
     if (globeLoading) return;
     globeLoading = true; globeHost.textContent = "正在加载三维地球…";
     import("./radar-globe.js").then(({ createRadarGlobe }) => {
       if (destroyed) return;
       globeHost.textContent = "";
-      globe = createRadarGlobe(globeHost, (place) => { state.place = place.id; state.feedback = `已选择 ${place.name}`; render(); emitLocation(place.id, place.name); });
+      globe = createRadarGlobe(globeHost, selectRelation);
       syncGlobe(radarMapJobs(model, state, index));
     }).catch(() => { globeHost.textContent = "三维渲染暂不可用，请使用支持 WebGL 的浏览器或切换平面地图"; }).finally(() => { globeLoading = false; });
   }
@@ -277,8 +277,9 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
   const precision = element("p", "radar-map-precision", "行政中心示意，非办公地址或导航坐标；城市与区县仅按公开招聘地点关联，不推断企业总部。");
   const attribution = element("p", "radar-map-attribution");
   const details = element("div", "radar-map-details"), detailsTitle = element("h4"), list = element("div", "radar-map-job-list");
+  const relationPanel = element("div", "radar-map-relations");
   details.append(detailsTitle, list);
-  root.append(heading, controls, viewStatus, breadcrumb, summary, viewport, locations, precision, attribution, details);
+  root.append(heading, controls, viewStatus, breadcrumb, summary, viewport, locations, relationPanel, precision, attribution, details);
   host.replaceChildren(root);
 
   const emit = (id, kind, label) => onSelect(id ? model.nodes.get(id) || { id, kind, label } : null);
@@ -315,6 +316,35 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
     state.place = place.id; state.unlocated = false;
     render();
     if (notify) emit(`location:${place.id}`, "location", place.name);
+  }
+  function selectRelation(node) {
+    if (node.kind === "location") { choosePlace(node.place); globe?.focus(node.place); return; }
+    resetGeography();
+    if (node.kind === "opportunity") { selectJob(node.id.replace(/^opportunity:/, "")); return; }
+    state.job = "";
+    if (node.kind === "employer") { state.employer = node.id; state.skill = ""; }
+    if (node.kind === "skill") { state.employer = ""; state.skill = node.label; }
+    state.feedback = `已探索 ${node.label}`; render(); emit(node.id, node.kind, node.label);
+  }
+  function renderRelations(jobs) {
+    relationPanel.replaceChildren(element("h4", "", "地区—企业—岗位—技能 · 点击探索"));
+    relationPanel.append(element("p", "", "金色：招聘地区 · 青色：企业 · 紫色：岗位 · 绿色：技能；连线表示招聘关联，悬浮节点不代表办公地址；缩小筛选范围可查看完整技能关系"));
+    const groups = [
+      ["地区", radarMapPlaces(jobs).map(place => ({id: `location:${place.id}`, kind: "location", label: `${place.name}（${place.count}）`, place}))],
+      ["企业", [...new Map(jobs.map(job => [job.employerId, {id: job.employerId, kind: "employer", label: job.employer}])).values()]],
+      ["岗位", jobs.map(job => ({id: `opportunity:${job.id}`, kind: "opportunity", label: job.title}))],
+      ["技能", [...new Set(jobs.flatMap(job => job.skills))].map(skill => ({id: `skill:${fold(skill)}`, kind: "skill", label: skill}))]
+    ];
+    for (const [name, nodes] of groups) {
+      const row = element("div", "radar-map-relation-row"); row.append(element("strong", "", `${name} · ${nodes.length}`));
+      for (const node of nodes.slice(0, 80)) {
+        const button = element("button", `radar-map-button relation-${node.kind}`, node.label); button.type = "button";
+        button.addEventListener("click", () => selectRelation(node)); row.append(button);
+      }
+      if (!nodes.length) row.append(element("span", "", "当前范围暂无关联数据"));
+      if (nodes.length > 80) row.append(element("span", "", "显示前 80 项，请通过筛选缩小范围"));
+      relationPanel.append(row);
+    }
   }
   function option(select, value, label) {
     const node = element("option", "", label); node.value = value; select.append(node);
@@ -484,7 +514,7 @@ export function createFutureRadarMap({ host, onSelect = () => {}, boundaries, ca
       const url = safeRadarMapUrl({ url: source.url });
       if (url) { const link = element("a", "", `${source.name} · ${source.license || "数据来源"}`); link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer"; attribution.append(link); }
     }
-    renderBreadcrumb(); renderMap(jobs); renderLocations(jobs); renderList(jobs);
+    renderBreadcrumb(); renderMap(jobs); renderLocations(jobs); renderRelations(jobs); renderList(jobs);
   }
   employerSelect.addEventListener("change", () => {
     state.employer = employerSelect.value; state.job = ""; state.skill = ""; resetGeography(); render();
