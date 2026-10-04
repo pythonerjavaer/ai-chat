@@ -299,7 +299,7 @@ test("view and clear controls visibly confirm their action without requiring job
   const r = runtime(), emitted = []; const map = createFutureRadarMap({ host: r.host, boundaries, onSelect: (node) => emitted.push(node) }); await map.ready;
   r.button("3D 地图").fire("click");
   assert.equal(r.button("平面地图").attributes["aria-pressed"], "true");
-  assert.match(r.byClass("radar-map-view-status").textContent, /3D 视图.*可旋转 3D 地图.*等待图谱载入/);
+  assert.match(r.byClass("radar-map-view-status").textContent, /三维地球.*自由旋转.*滚轮缩放.*等待图谱载入/);
   r.button("重置视角").fire("click");
   assert.match(r.byClass("radar-map-view-status").textContent, /3D 视角已重置/);
   r.button("平面地图").fire("click");
