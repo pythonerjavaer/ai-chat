@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .pulse_analytics import (aggregate_order_context, build_eda, deposit_coverage_scenarios,
                               duckdb_olap_rollup, simulated_revenue_demo)
+from .pulse_uncertainty import deposit_uncertainty
 
 
 def _now() -> str:
@@ -234,6 +235,8 @@ def init_pulse_schema(connect: Callable[[], Any]) -> None:
                                     ("cancellation_reason", "TEXT NOT NULL DEFAULT 'unknown'")):
             if column not in order_columns:
                 connection.execute(f"ALTER TABLE pulse_orders ADD COLUMN {column} {declaration}")
+    from .pulse_settlement import init_settlement_schema
+    init_settlement_schema(connect)
 
 
 class CustomerWrite(BaseModel):
@@ -307,10 +310,12 @@ class PaymentWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     order_id: str | None = None
     payment_type: Literal["rental", "deposit", "deposit_refund", "damage_deduction", "product_sale", "service"]
-    amount_cents: int = Field(gt=0, le=100_000_000)
+    amount_cents: int = Field(strict=True, gt=0, le=100_000_000)
     method: str = Field(default="", max_length=80)
     reference: str = Field(default="", max_length=180)
     occurred_at: datetime | None = None
+    cash_account_code: str = Field(default="1000", min_length=1, max_length=30)
+    request_id: str | None = Field(default=None, min_length=16, max_length=120)
 
 
 class AssetStatusWrite(BaseModel):
@@ -371,13 +376,15 @@ class ExpenseWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     category: Literal["inventory_purchase", "cleaning", "laundry", "repair", "asset_loss",
                       "delivery", "payment_fee", "marketing", "rent", "utilities", "other"]
-    amount_cents: int = Field(gt=0, le=100_000_000)
+    amount_cents: int = Field(strict=True, gt=0, le=100_000_000)
     status: Literal["unpaid", "partially_paid", "paid"] = "paid"
     vendor_id: str | None = None
     order_id: str | None = None
     asset_id: str | None = None
     description: str = Field(default="", max_length=1_000)
     occurred_at: datetime | None = None
+    cash_account_code: str = Field(default="1000", min_length=1, max_length=30)
+    request_id: str | None = Field(default=None, min_length=16, max_length=120)
 
 
 class SettingsWrite(BaseModel):
@@ -537,6 +544,13 @@ class PulseRepository:
     def update_settings(self, user_id: int, payload: SettingsWrite) -> dict:
         self.ensure_user_setup(user_id)
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            currency = connection.execute("SELECT currency FROM pulse_settings WHERE user_id=?", (user_id,)).fetchone()["currency"]
+            if currency != payload.currency:
+                has_facts = any(connection.execute(f"SELECT id FROM {table} WHERE user_id=? LIMIT 1", (user_id,)).fetchone()
+                                for table in ("pulse_orders", "pulse_payments", "pulse_expenses", "pulse_journals"))
+                if has_facts:
+                    raise ValueError("账本已有业务或会计记录，不能直接切换币种；本模块不提供跨币种重估。")
             connection.execute(
                 """UPDATE pulse_settings SET currency=?,cleaning_buffer_hours=?,depreciation_enabled=?,updated_at=?
                    WHERE user_id=?""",
@@ -600,6 +614,8 @@ class PulseRepository:
         allowed = {"pulse_customers", "pulse_skus", "pulse_assets", "pulse_orders", "pulse_payments", "pulse_inspections", "pulse_expenses"}
         if table not in allowed:
             raise ValueError("不支持的列表。")
+        if order_by == "updated_at DESC" and table in {"pulse_payments", "pulse_expenses"}:
+            order_by = "occurred_at DESC"
         with self.connect() as connection:
             rows = connection.execute(
                 f"SELECT * FROM {table} WHERE user_id=? ORDER BY {order_by} LIMIT ?", (user_id, limit),
@@ -865,95 +881,16 @@ class PulseRepository:
         return self.post_journal(user_id, payload, accounting_event_id=event_id)
 
     def record_payment(self, user_id: int, payload: PaymentWrite) -> dict:
-        settings = self.ensure_user_setup(user_id)
-        occurred = payload.occurred_at or datetime.now(timezone.utc)
-        if occurred.tzinfo is None:
-            occurred = occurred.replace(tzinfo=timezone.utc)
-        payment_id, now = str(uuid.uuid4()), _now()
-        with self.connect() as connection:
-            if payload.order_id:
-                self._owned(connection, "pulse_orders", payload.order_id, user_id)
-            connection.execute(
-                """INSERT INTO pulse_payments
-                   (id,user_id,order_id,payment_type,amount_cents,currency,method,reference,status,occurred_at,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (payment_id, user_id, payload.order_id, payload.payment_type, payload.amount_cents,
-                 settings["currency"], payload.method.strip(), payload.reference.strip(), "recorded", occurred.isoformat(), now),
-            )
-        mapping = {
-            "rental": ("cash", "rental_revenue", "Rental payment", "operating"),
-            "deposit": ("cash", "customer_deposit", "Customer deposit received", "operating"),
-            "deposit_refund": ("customer_deposit", "cash", "Customer deposit refunded", "operating"),
-            "damage_deduction": ("customer_deposit", "other_revenue", "Confirmed damage deduction", "operating"),
-            "product_sale": ("cash", "product_revenue", "Product sale receipt", "operating"),
-            "service": ("cash", "service_revenue", "Service receipt", "operating"),
-        }
-        debit, credit, description, cashflow = mapping[payload.payment_type]
-        journal = self._business_journal(
-            user_id, payload.payment_type, "payment", payment_id, occurred, description,
-            debit, credit, payload.amount_cents, cashflow,
-            {"order_id": payload.order_id},
-        )
-        return {"payment": self.get_payment(user_id, payment_id), "journal": journal}
+        from .pulse_settlement import SettlementRepository
+        return SettlementRepository(self).record_payment(user_id, payload)
 
     def get_payment(self, user_id: int, payment_id: str) -> dict:
         with self.connect() as connection:
             return self._owned(connection, "pulse_payments", payment_id, user_id)
 
     def record_expense(self, user_id: int, payload: ExpenseWrite) -> dict:
-        settings, item_id, now = self.ensure_user_setup(user_id), str(uuid.uuid4()), _now()
-        occurred = payload.occurred_at or datetime.now(timezone.utc)
-        if occurred.tzinfo is None:
-            occurred = occurred.replace(tzinfo=timezone.utc)
-        with self.connect() as connection:
-            asset = self._owned(connection, "pulse_assets", payload.asset_id, user_id) if payload.asset_id else None
-            if payload.category == "asset_loss" and (asset is None or asset["accounting_class"] not in {"rental_asset", "inventory"}):
-                raise ValueError("资产报损必须选择已分类的租赁资产或商品存货，并录入报损日账面净值。")
-            connection.execute(
-                """INSERT INTO pulse_expenses
-                   (id,user_id,vendor_id,order_id,asset_id,category,amount_cents,currency,status,description,occurred_at,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (item_id, user_id, payload.vendor_id, payload.order_id, payload.asset_id, payload.category,
-                 payload.amount_cents, settings["currency"], payload.status, payload.description.strip(), occurred.isoformat(), now),
-            )
-            if payload.asset_id:
-                connection.execute(
-                    """INSERT INTO pulse_asset_events(id,user_id,asset_id,event_type,order_id,amount_cents,notes,occurred_at,created_at)
-                       VALUES(?,?,?,?,?,?,?,?,?)""",
-                    (str(uuid.uuid4()), user_id, payload.asset_id, payload.category, payload.order_id,
-                     payload.amount_cents, payload.description.strip(), occurred.isoformat(), now),
-                )
-        roles = {"inventory_purchase": "inventory", "cleaning": "cleaning_expense", "laundry": "cleaning_expense",
-                 "repair": "repair_expense", "asset_loss": "other_expense", "delivery": "delivery_expense",
-                 "payment_fee": "payment_fee", "marketing": "marketing_expense", "rent": "rent_expense",
-                 "utilities": "utilities_expense", "other": "other_expense"}
-        credit = "cash" if payload.status == "paid" else "payable"
-        if payload.category == "asset_loss":
-            with self.connect() as connection:
-                debit_code = self._account(connection, user_id, role="other_expense")["code"]
-            asset_role = "rental_asset" if asset["accounting_class"] == "rental_asset" else "inventory"
-            with self.connect() as connection:
-                credit_code = self._account(connection, user_id, role=asset_role)["code"]
-            journal = self.post_journal(user_id, JournalWrite(
-                transaction_date=occurred.date(), posting_date=occurred.date(),
-                description="Asset loss write-off at entered carrying value",
-                source_document_type="asset_loss", source_document_id=item_id, cash_flow_category="",
-                lines=[JournalLineWrite(account_code=debit_code, debit_cents=payload.amount_cents,
-                                        description="Asset loss at carrying value", order_id=payload.order_id,
-                                        asset_id=payload.asset_id),
-                       JournalLineWrite(account_code=credit_code, credit_cents=payload.amount_cents,
-                                        description="Remove lost asset carrying value", order_id=payload.order_id,
-                                        asset_id=payload.asset_id)],
-            ))
-        else:
-            journal = self._business_journal(user_id, "expense", "expense", item_id, occurred,
-                                             f"{payload.category} expense", roles[payload.category], credit,
-                                             payload.amount_cents, "operating" if payload.status == "paid" else "",
-                                             {"order_id": payload.order_id, "asset_id": payload.asset_id,
-                                              "vendor_id": payload.vendor_id})
-        with self.connect() as connection:
-            saved = self._owned(connection, "pulse_expenses", item_id, user_id)
-        return {"expense": saved, "journal": journal}
+        from .pulse_settlement import SettlementRepository
+        return SettlementRepository(self).record_expense(user_id, payload)
 
     def journal_detail(self, user_id: int, journal_id: str) -> dict:
         with self.connect() as connection:
@@ -1067,11 +1004,21 @@ class PulseRepository:
                 (user_id, date_from, date_to),
             ).fetchone()
             payment = connection.execute(
-                """SELECT COALESCE(SUM(CASE WHEN payment_type IN ('rental','product_sale','service','deposit') THEN amount_cents ELSE 0 END),0) AS cash_in,
-                   COALESCE(SUM(CASE WHEN payment_type='deposit_refund' THEN amount_cents ELSE 0 END),0) AS cash_out,
-                   COALESCE(SUM(CASE WHEN payment_type='deposit' THEN amount_cents WHEN payment_type IN ('deposit_refund','damage_deduction') THEN -amount_cents ELSE 0 END),0) AS deposits_held
-                   FROM pulse_payments WHERE user_id=? AND substr(occurred_at,1,10)>=? AND substr(occurred_at,1,10)<=?""",
+                """SELECT COALESCE(SUM(CASE WHEN amount>0 THEN amount ELSE 0 END),0) AS cash_in,
+                   COALESCE(SUM(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) AS cash_out FROM
+                   (SELECT COALESCE(j.reversal_of,j.id) AS movement_id,SUM(l.debit_cents-l.credit_cents) AS amount FROM pulse_journals j
+                    JOIN pulse_journal_lines l ON l.journal_id=j.id AND l.user_id=j.user_id
+                    JOIN pulse_accounts a ON a.id=l.account_id AND a.user_id=j.user_id
+                    WHERE j.user_id=? AND j.status='posted' AND a.role IN ('cash','bank')
+                    AND j.posting_date>=? AND j.posting_date<=? GROUP BY COALESCE(j.reversal_of,j.id)) cash_movements""",
                 (user_id, date_from, date_to),
+            ).fetchone()
+            deposit_balance = connection.execute(
+                """SELECT COALESCE(SUM(l.credit_cents-l.debit_cents),0) AS amount
+                   FROM pulse_journal_lines l JOIN pulse_journals j ON j.id=l.journal_id AND j.user_id=l.user_id
+                   JOIN pulse_accounts a ON a.id=l.account_id AND a.user_id=l.user_id
+                   WHERE j.user_id=? AND j.status='posted' AND j.posting_date<=? AND a.role='customer_deposit'""",
+                (user_id, date_to),
             ).fetchone()
             assets = connection.execute(
                 """SELECT COUNT(*) AS assets,COALESCE(SUM(CASE WHEN status='available' THEN 1 ELSE 0 END),0) AS available,
@@ -1090,23 +1037,18 @@ class PulseRepository:
                    THEN o.total_cents-COALESCE(p.paid,0) ELSE 0 END),0) AS amount
                    FROM pulse_orders o LEFT JOIN
                    (SELECT order_id,SUM(amount_cents) AS paid FROM pulse_payments
-                    WHERE user_id=? AND payment_type IN ('rental','product_sale','service') GROUP BY order_id) p
+                    WHERE user_id=? AND status='recorded' AND payment_type IN ('rental','deposit_offset','product_sale','service') GROUP BY order_id) p
                    ON p.order_id=o.id WHERE o.user_id=? AND o.status!='cancelled'""", (user_id, user_id),
-            ).fetchone()
-            paid_expenses = connection.execute(
-                """SELECT COALESCE(SUM(amount_cents),0) AS amount FROM pulse_expenses
-                   WHERE user_id=? AND status='paid' AND substr(occurred_at,1,10)>=? AND substr(occurred_at,1,10)<=?""",
-                (user_id, date_from, date_to),
             ).fetchone()
         order_count = int(metrics["orders"])
         asset_count = int(assets["assets"])
         return {"date_from": date_from, "date_to": date_to, "currency": self.settings(user_id)["currency"],
                 "metrics": {"revenue": statements["income_statement"]["revenue_total"], "orders": order_count,
                             "cash_in": payment["cash_in"],
-                            "cash_out": int(payment["cash_out"]) + int(paid_expenses["amount"]),
+                            "cash_out": int(payment["cash_out"]),
                             "operating_expenses": sum(statements["income_statement"]["expenses"].values()),
                             "operating_profit": statements["income_statement"]["operating_profit"],
-                            "deposits_held": payment["deposits_held"], "outstanding_receivables": receivables["amount"],
+                            "deposits_held": deposit_balance["amount"], "outstanding_receivables": receivables["amount"],
                             "available_assets": assets["available"], "rental_asset_value": assets["recorded_asset_cost"],
                             "inventory_availability": round(int(assets["available"]) * 100 / max(1, asset_count), 1),
                             "asset_utilization_proxy": round(int(assets["occupied"]) * 100 / max(1, asset_count), 1),
@@ -1123,7 +1065,7 @@ class PulseRepository:
                 """SELECT COALESCE(SUM(CASE WHEN p.payment_type='rental' THEN p.amount_cents ELSE 0 END),0) AS revenue,
                    COUNT(DISTINCT CASE WHEN p.payment_type='rental' THEN p.order_id END) AS rental_count
                    FROM pulse_payments p JOIN pulse_order_items i ON i.order_id=p.order_id
-                   WHERE p.user_id=? AND i.asset_id=?""", (user_id, asset_id),
+                   WHERE p.user_id=? AND p.status='recorded' AND i.asset_id=?""", (user_id, asset_id),
             ).fetchone()
             costs = connection.execute(
                 """SELECT COALESCE(SUM(CASE WHEN event_type='cleaning' THEN amount_cents ELSE 0 END),0) AS cleaning_cost,
@@ -1161,7 +1103,7 @@ class PulseRepository:
                    FROM pulse_skus s LEFT JOIN pulse_order_items i ON i.sku_id=s.id
                    LEFT JOIN pulse_orders o ON o.id=i.order_id AND o.user_id=s.user_id
                     AND substr(o.created_at,1,10)>=? AND substr(o.created_at,1,10)<=? AND o.status!='cancelled'
-                   LEFT JOIN pulse_payments p ON p.order_id=o.id AND p.payment_type='rental'
+                   LEFT JOIN pulse_payments p ON p.order_id=o.id AND p.status='recorded' AND p.payment_type='rental'
                     AND substr(p.occurred_at,1,10)>=? AND substr(p.occurred_at,1,10)<=?
                    WHERE s.user_id=? GROUP BY s.id,s.name ORDER BY revenue DESC LIMIT 50""",
                 (date_from, date_to, date_from, date_to, user_id),
@@ -1173,7 +1115,7 @@ class PulseRepository:
                    MAX(o.created_at) AS last_order_at,COALESCE(lifetime.order_count,0) AS lifetime_orders FROM pulse_customers c
                    LEFT JOIN pulse_orders o ON o.customer_id=c.id AND o.user_id=c.user_id AND o.status!='cancelled'
                     AND substr(o.created_at,1,10)>=? AND substr(o.created_at,1,10)<=?
-                   LEFT JOIN pulse_payments p ON p.order_id=o.id AND substr(p.occurred_at,1,10)>=? AND substr(p.occurred_at,1,10)<=?
+                   LEFT JOIN pulse_payments p ON p.order_id=o.id AND p.status='recorded' AND substr(p.occurred_at,1,10)>=? AND substr(p.occurred_at,1,10)<=?
                    LEFT JOIN (SELECT customer_id,COUNT(*) AS order_count FROM pulse_orders
                               WHERE user_id=? AND status!='cancelled' GROUP BY customer_id) lifetime ON lifetime.customer_id=c.id
                    WHERE c.user_id=? GROUP BY c.id,c.name,c.gender,c.age_band,c.region,c.profession,c.education_level,
@@ -1201,7 +1143,7 @@ class PulseRepository:
                      MAX(CASE WHEN condition_status='missing' THEN 1 ELSE 0 END) AS missing
                    FROM pulse_inspections GROUP BY user_id,order_id) i ON i.user_id=o.user_id AND i.order_id=o.id
                    LEFT JOIN (SELECT user_id,order_id,1 AS deposit_paid FROM pulse_payments
-                              WHERE payment_type='deposit' GROUP BY user_id,order_id) dp ON dp.user_id=o.user_id AND dp.order_id=o.id
+                              WHERE payment_type='deposit' AND status='recorded' GROUP BY user_id,order_id) dp ON dp.user_id=o.user_id AND dp.order_id=o.id
                    WHERE c.user_id=? GROUP BY c.id""",
                 (now.isoformat(), now.isoformat(), date_from, date_to, user_id),
             ).fetchall()
@@ -1220,7 +1162,7 @@ class PulseRepository:
                      MAX(CASE WHEN condition_status='missing' THEN 1 ELSE 0 END) AS missing
                      FROM pulse_inspections GROUP BY user_id,order_id) i ON i.user_id=o.user_id AND i.order_id=o.id
                    LEFT JOIN (SELECT user_id,order_id,1 AS deposit_paid FROM pulse_payments
-                              WHERE payment_type='deposit' GROUP BY user_id,order_id) dp ON dp.user_id=o.user_id AND dp.order_id=o.id
+                              WHERE payment_type='deposit' AND status='recorded' GROUP BY user_id,order_id) dp ON dp.user_id=o.user_id AND dp.order_id=o.id
                    LEFT JOIN (SELECT order_id,1 AS flower_add_on FROM pulse_order_items oi JOIN pulse_skus s ON s.id=oi.sku_id
                               WHERE s.category='flower_add_on' OR s.name='小熊手工花' GROUP BY order_id) addon ON addon.order_id=o.id
                    WHERE o.user_id=? AND substr(o.created_at,1,10)>=? AND substr(o.created_at,1,10)<=?
@@ -1241,10 +1183,11 @@ class PulseRepository:
                    GROUP BY category ORDER BY amount_cents DESC""", (user_id, date_from, date_to),
             ).fetchall()
             loss_cost_rows = connection.execute(
-                """SELECT order_id,SUM(amount_cents) AS amount_cents FROM pulse_expenses
-                   WHERE user_id=? AND order_id IS NOT NULL AND category IN ('repair','asset_loss')
-                     AND substr(occurred_at,1,10)>=? AND substr(occurred_at,1,10)<=?
-                   GROUP BY order_id""", (user_id, date_from, date_to),
+                """SELECT e.order_id,o.customer_id,SUM(e.amount_cents) AS amount_cents
+                   FROM pulse_expenses e JOIN pulse_orders o ON o.id=e.order_id AND o.user_id=e.user_id
+                   WHERE e.user_id=? AND e.category IN ('repair','asset_loss')
+                     AND substr(e.occurred_at,1,10)>=? AND substr(e.occurred_at,1,10)<=?
+                   GROUP BY e.order_id,o.customer_id ORDER BY e.order_id LIMIT 10001""", (user_id, date_from, date_to),
             ).fetchall()
             dimension_breakdowns = {}
             for key in ("gender", "age_band", "region", "source", "profession", "education_level", "referral_status"):
@@ -1267,14 +1210,14 @@ class PulseRepository:
                    FROM pulse_assets a JOIN pulse_skus s ON s.id=a.sku_id
                    LEFT JOIN pulse_order_items i ON i.asset_id=a.id
                    LEFT JOIN pulse_orders o ON o.id=i.order_id AND substr(o.created_at,1,10)>=? AND substr(o.created_at,1,10)<=?
-                   LEFT JOIN pulse_payments p ON p.order_id=o.id
+                   LEFT JOIN pulse_payments p ON p.order_id=o.id AND p.status='recorded'
                     AND substr(p.occurred_at,1,10)>=? AND substr(p.occurred_at,1,10)<=?
                    WHERE a.user_id=? GROUP BY a.id,a.asset_code,s.name,a.purchase_cost_cents
                    ORDER BY lifetime_revenue DESC LIMIT 25""", (date_from, date_to, date_from, date_to, user_id),
             ).fetchall()
             payment_facts = connection.execute(
                 """SELECT occurred_at,payment_type,amount_cents,order_id FROM pulse_payments
-                   WHERE user_id=? AND substr(occurred_at,1,10)>=? AND substr(occurred_at,1,10)<=?
+                   WHERE user_id=? AND status='recorded' AND substr(occurred_at,1,10)>=? AND substr(occurred_at,1,10)<=?
                    ORDER BY occurred_at LIMIT 100001""", (user_id, date_from, date_to),
             ).fetchall()
             order_facts = connection.execute(
@@ -1338,6 +1281,9 @@ class PulseRepository:
         olap = duckdb_olap_rollup([_row(item) for item in payment_facts],
                                   [_row(item) for item in order_facts])
         deposit_analysis = deposit_coverage_scenarios([int(item["amount_cents"]) for item in loss_cost_rows])
+        deposit_analysis["uncertainty"] = deposit_uncertainty(
+            [_row(item) for item in loss_cost_rows], truncated=len(loss_cost_rows) > 10_000)
+        deposit_analysis["truncated"] = len(loss_cost_rows) > 10_000
         cost_analysis = {"currency": "minor_units", "period": [date_from, date_to],
                          "categories": [{"category": item["category"], "amount_cents": int(item["amount_cents"]),
                                          "entries": int(item["entries"])} for item in expense_totals],
@@ -1596,7 +1542,7 @@ def create_pulse_router(connect: Callable[[], Any], current_user: Callable[..., 
         except KeyError as exc:
             raise HTTPException(404, detail=str(exc).strip("'")) from exc
         except ValueError as exc:
-            raise HTTPException(400, detail=str(exc)) from exc
+            raise HTTPException(getattr(exc, "status_code", 400), detail=str(exc)) from exc
 
     @router.get("/capabilities")
     def capabilities(_: User):
@@ -1604,9 +1550,10 @@ def create_pulse_router(connect: Callable[[], Any], current_user: Callable[..., 
                 "implemented": ["customers", "orders", "reservations", "assets", "payments", "deposits",
                                 "returns", "inspections", "double_entry", "general_ledger", "trial_balance",
                                 "financial_statements", "executive_dashboard", "customer_analytics",
-                                "asset_economics", "metric_dictionary"],
+                                "asset_economics", "metric_dictionary", "rental_settlement", "receivable_payable_clearing",
+                                "deposit_offset", "revenue_forecasting"],
                 "experimental": ["rule_customer_segments"],
-                "planned": ["cohort", "full_rfm", "funnel", "demand_events", "scenario_analysis", "forecasting"]}
+                "planned": ["cohort", "full_rfm", "funnel", "demand_events", "scenario_analysis", "bank_reconciliation"]}
 
     @router.get("/demo")
     def demo(user: User): return repo.demo(user["id"])
@@ -1724,7 +1671,7 @@ def create_pulse_router(connect: Callable[[], Any], current_user: Callable[..., 
         with repo.connect() as connection:
             observed_months = connection.execute(
                 """SELECT substr(occurred_at,1,7) AS period,SUM(amount_cents) AS revenue
-                   FROM pulse_payments WHERE user_id=? AND payment_type='rental'
+                   FROM pulse_payments WHERE user_id=? AND status='recorded' AND payment_type='rental'
                    GROUP BY substr(occurred_at,1,7) ORDER BY period DESC LIMIT 12""", (user["id"],),
             ).fetchall()
         measured = [int(row["revenue"]) for row in observed_months if int(row["revenue"] or 0) > 0]
@@ -1749,4 +1696,6 @@ def create_pulse_router(connect: Callable[[], Any], current_user: Callable[..., 
         return Response(output.getvalue(), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="pulse-{entity}.csv"'})
 
+    from .pulse_settlement import create_settlement_router
+    router.include_router(create_settlement_router(repo, current_user))
     return router

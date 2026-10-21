@@ -1,4 +1,5 @@
 import { REVENUE_MODEL_NAMES, revenueForecastCopy } from "./pulse-forecast.js";
+import { initPulseSettlements, minorUnits } from "./pulse-settlement.js";
 
 const $ = (id) => document.getElementById(id);
 const money = (cents, currency = "AUD") => new Intl.NumberFormat("zh-CN", { style: "currency", currency, maximumFractionDigits: 2 }).format((Number(cents) || 0) / 100);
@@ -311,6 +312,20 @@ export function initProductDomains({ api, toast }) {
   function status(id, text, tone = "") { const node = $(id); node.textContent = text; node.dataset.tone = tone; }
   function leapDemo() { return leap.mode === "demo"; }
   function pulseDemo() { return pulse.mode === "demo"; }
+  const settlementDesk = initPulseSettlements({ host: $("pulse-settlement-desk"), api, isDemo: pulseDemo,
+    currency: () => pulse.currency, refresh: loadPulse, onJournal: async ({ id }) => {
+      const epoch = authGeneration;
+      try {
+        const [journal] = await Promise.all([api(`/pulse/journals/${encodeURIComponent(id)}`), loadFinance()]);
+        if (epoch !== authGeneration || pulseDemo()) return;
+        showJournal(journal);
+      } catch (error) {
+        if (epoch === authGeneration && !pulseDemo()) status("pulse-status", `无法读取凭证：${error.message}`, "error");
+      }
+    },
+    onOrder: (id) => { tab(pulseDialog, "transaction"); openOrder(id); } });
+  const pendingFinancialCommands = new Map();
+  let orderActionBusy = false;
   function materialTitle(id) { const found = leap.materials.find((item) => item.id === id); return found ? found.title : "未知材料"; }
 
   function applyLeapDemo(data) {
@@ -1178,7 +1193,7 @@ export function initProductDomains({ api, toast }) {
   function renderJourney(order) {
     const steps = [
       ["客户", Boolean(order)], ["预约并分配资产", Boolean(order)],
-      ["租金收款", order && pulse.payments.some((item) => item.order_id === order.id && item.payment_type === "rental")],
+      ["租金收款", order && pulse.payments.some((item) => item.status !== "reversed" && item.order_id === order.id && ["rental", "deposit_offset"].includes(item.payment_type))],
       ["押金收款", order && pulse.payments.some((item) => item.order_id === order.id && item.payment_type === "deposit")],
       ["交付", order && ["rented", "returned", "completed"].includes(order.status)],
       ["归还与检查", order && (["returned", "completed"].includes(order.status) || pulse.inspections.some((item) => item.order_id === order.id))],
@@ -1245,8 +1260,9 @@ export function initProductDomains({ api, toast }) {
     const controls = el("div", "detail-actions");
     [["记录租金", "payment"], ["收取押金", "deposit"], ["交付", "deliver"], ["归还", "return"], ["归还检查", "inspect"], ["记录清洗", "cleaning"], ["退还押金", "refund"]].forEach((row) => controls.append(action(row[0], () => orderAction(row[1], order))));
     host.append(controls);
+    if (!pulseDemo()) host.append(action("结算与往来核销", () => openPulsePanel("settlement")));
     const evidence = el("section", "evidence-chain");
-    evidence.append(detail("Payments", (order.payments || []).map((item) => item.payment_type + " " + money(item.amount_cents, item.currency || pulse.currency)).join("\n") || "尚无"));
+    evidence.append(detail("Payments", (order.payments || []).map((item) => item.payment_type + " " + money(item.amount_cents, item.currency || pulse.currency) + (item.status === "reversed" ? "（已冲销）" : "")).join("\n") || "尚无"));
     evidence.append(detail("Inspection", (order.inspections || []).map((item) => item.condition_status + " · " + item.resolution_status).join("\n") || "尚无"));
     evidence.append(detail("Expenses", (order.expenses || []).map((item) => item.category + " " + money(item.amount_cents, pulse.currency)).join("\n") || "尚无"));
     const journals = el("div", "domain-list compact-list");
@@ -1254,17 +1270,27 @@ export function initProductDomains({ api, toast }) {
     evidence.append(journals); host.append(evidence);
   }
   async function orderAction(kind, order) {
+    if (orderActionBusy) return;
+    orderActionBusy = true;
+    let pendingKey = null;
     try {
       const item = order.items[0]; let cents = null;
       if (["payment", "deposit", "cleaning", "refund"].includes(kind)) {
-        const fallback = kind === "payment" ? order.total_cents / 100 : kind === "cleaning" ? 50 : 150;
+        const quote = !pulseDemo() ? await api("/pulse/settlements/orders/" + order.id) : null;
+        const fallback = kind === "payment" ? (quote ? quote.rental_due_cents : order.total_cents) / 100
+          : kind === "refund" && quote ? quote.deposit_available_cents / 100 : kind === "cleaning" ? 50 : 150;
         const answer = window.prompt(kind + " 金额（" + pulse.currency + "）", String(fallback)); if (answer === null) return;
-        cents = Math.round(Number(answer) * 100); if (!cents) throw new Error("请输入有效金额。");
+        cents = minorUnits(answer);
       }
       if (pulseDemo()) await pulseAction(kind, { order_id: order.id, asset_id: item.asset_id, amount_cents: cents, condition_status: "cleaning_required" });
       else if (["payment", "deposit", "refund"].includes(kind)) {
         const type = kind === "payment" ? "rental" : kind === "deposit" ? "deposit" : "deposit_refund";
-        await api("/pulse/payments", { method: "POST", body: JSON.stringify({ order_id: order.id, payment_type: type, amount_cents: cents, method: "Manual", reference: "" }) });
+        pendingKey = order.id + ":" + kind;
+        const previous = pendingFinancialCommands.get(pendingKey);
+        if (previous && previous.amount_cents !== cents) throw new Error("上次结果尚未确认，请保持原金额重试并先核对账本。");
+        const body = previous || { request_id: crypto.randomUUID(), order_id: order.id, payment_type: type, amount_cents: cents, method: "Manual", reference: "" };
+        pendingFinancialCommands.set(pendingKey, body);
+        await api("/pulse/payments", { method: "POST", body: JSON.stringify(body) });
       } else if (kind === "deliver" || kind === "return") {
         await api("/pulse/orders/" + order.id + "/status", { method: "POST", body: JSON.stringify({ status: kind === "deliver" ? "rented" : "returned", notes: "脉冲域 " + kind }) });
       } else if (kind === "inspect") {
@@ -1273,9 +1299,14 @@ export function initProductDomains({ api, toast }) {
         await api("/pulse/expenses", { method: "POST", body: JSON.stringify({ category: "cleaning", amount_cents: cents, status: "paid", vendor_id: null, order_id: order.id, asset_id: item.asset_id, description: "Post-rental cleaning" }) });
         await api("/pulse/assets/" + item.asset_id + "/status", { method: "POST", body: JSON.stringify({ status: "available", order_id: order.id, notes: "清洗完成，可再次出租" }) });
       }
-      if (!pulseDemo() && kind === "refund") await api("/pulse/orders/" + order.id + "/status", { method: "POST", body: JSON.stringify({ status: "completed", notes: "押金已处理，订单完成" }) });
+      if (!pulseDemo() && kind === "refund" && order.status === "returned") {
+        const quote = await api("/pulse/settlements/orders/" + order.id);
+        if (!quote.rental_due_cents && !quote.deposit_available_cents) await api("/pulse/orders/" + order.id + "/status", { method: "POST", body: JSON.stringify({ status: "completed", notes: "租金与押金已结清，订单完成" }) });
+      }
       await loadPulse(); await openOrder(order.id); toast("业务动作已完成，资产、凭证、报表和分析已同步更新。");
+      if (pendingKey) pendingFinancialCommands.delete(pendingKey);
     } catch (error) { status("pulse-status", error.message, "error"); }
+    finally { orderActionBusy = false; }
   }
   async function openAsset(id) {
     const data = pulseDemo() ? await api("/pulse/demo/assets/" + id) : await api("/pulse/assets/" + id + "/economics");
@@ -1292,6 +1323,7 @@ export function initProductDomains({ api, toast }) {
     (journal.lines || []).forEach((line) => host.append(detail(line.account_code + " · " + line.account_name, (line.debit_cents ? "Debit " : "Credit ") + money(line.debit_cents || line.credit_cents, pulse.currency))));
   }
   async function loadFinance() {
+    const epoch = authGeneration, mode = pulse.mode;
     let trial; let statements; let accounts; let ledger;
     if (pulseDemo()) {
       trial = pulse.trial_balance; statements = pulse.statements; ledger = { accounts: trial.accounts.map((item) => ({ ...item, debit: item.closing_balance > 0 ? item.closing_balance : 0, credit: item.closing_balance < 0 ? -item.closing_balance : 0 })) };
@@ -1300,6 +1332,7 @@ export function initProductDomains({ api, toast }) {
       const rows = await Promise.all([api("/pulse/trial-balance?date_from=" + pulse.dateFrom + "&date_to=" + pulse.dateTo), api("/pulse/statements?date_from=" + pulse.dateFrom + "&date_to=" + pulse.dateTo), api("/pulse/accounts"), api("/pulse/general-ledger?date_from=" + pulse.dateFrom + "&date_to=" + pulse.dateTo)]);
       trial = rows[0]; statements = rows[1]; accounts = rows[2]; ledger = rows[3];
     }
+    if (epoch !== authGeneration || mode !== pulse.mode) return;
     const income = statements.income_statement || {};
     const balance = statements.balance_sheet || {};
     const cashFlow = statements.cash_flow || {};
@@ -1438,7 +1471,19 @@ export function initProductDomains({ api, toast }) {
       details.append(listHost); orderHost.append(details);
     });
     list($("pulse-cost-summary"), (data.cost_analysis || {}).categories || [], (item) => card(item.category, `${item.entries} 笔记录`, money(item.amount_cents, pulse.currency)), "尚无已录入成本。");
-    list($("pulse-deposit-scenarios"), (data.deposit_coverage || {}).scenarios || [], (item) => card(money(item.deposit_cents, pulse.currency), `${item.observations} 个${data.deposit_coverage.synthetic ? "合成" : "已记录"}损失样本 · 覆盖 ${percent(item.coverage_ratio)}`, `记录/假设损失 ${money(item.total_loss_cents, pulse.currency)} · 可覆盖 ${money(item.covered_cents, pulse.currency)} · 剩余暴露 ${money(item.residual_loss_cents, pulse.currency)}`), "暂无押金情景。");
+    const coverage = data.deposit_coverage || {};
+    const uncertainty = coverage.uncertainty || {};
+    list($("pulse-deposit-scenarios"), coverage.scenarios || [], (item) => {
+      const result = card(money(item.deposit_cents, pulse.currency), `${item.observations} 个${coverage.synthetic ? "合成" : "已记录"}损失样本 · 覆盖 ${percent(item.coverage_ratio)}`, `记录/假设损失 ${money(item.total_loss_cents, pulse.currency)} · 可覆盖 ${money(item.covered_cents, pulse.currency)} · 剩余暴露 ${money(item.residual_loss_cents, pulse.currency)}`);
+      const interval = uncertainty.status === "ok" && uncertainty.scenarios.find((row) => row.deposit_cents === item.deposit_cents);
+      if (interval) {
+        result.append(el("p", "", `覆盖率95%置信区间 ${interval.coverage_ratio_ci95.map(percent).join("–")}；单笔损失订单的平均未覆盖金额95%置信区间 ${interval.mean_uncovered_per_loss_order_cents_ci95.map((value) => money(value, pulse.currency)).join("–")}`));
+      }
+      return result;
+    }, "暂无押金情景。");
+    if (uncertainty.method) $("pulse-deposit-scenarios").append(el("p", "domain-empty",
+      `${uncertainty.status === "ok" ? `客户聚类 Bootstrap · ${uncertainty.resamples}次重采样 · ${uncertainty.customers}位客户 / ${uncertainty.loss_orders}笔损失订单。` : uncertainty.message} ${uncertainty.interpretation}`));
+    if (coverage.truncated) $("pulse-deposit-scenarios").append(el("p", "domain-empty", "当前记录超过展示上限，金额汇总亦不完整；请缩短查询期间。"));
   }
   async function loadPulseAnalytics() {
     const data = pulseDemo() ? pulse.analytics : await api("/pulse/analytics?date_from=" + pulse.dateFrom + "&date_to=" + pulse.dateTo);
@@ -1623,8 +1668,8 @@ export function initProductDomains({ api, toast }) {
     } catch (error) { status("pulse-status", error.message, "error"); }
   });
   $("pulse-asset-filter-clear").addEventListener("click", () => { pulse.assetStatusFilter = ""; renderPulseAssetList(); });
-  $("pulse-real-mode").addEventListener("click", async () => { pulse.mode = "real"; pulse.selectedOrder = null; pulse.assetStatusFilter = ""; await loadPulse(); tab(pulseDialog, "overview"); });
-  $("pulse-demo-mode").addEventListener("click", async () => { pulse.mode = "demo"; pulse.selectedOrder = null; pulse.assetStatusFilter = ""; await loadPulse(); tab(pulseDialog, "overview"); });
+  $("pulse-real-mode").addEventListener("click", async () => { settlementDesk.reset(); pendingFinancialCommands.clear(); pulse.mode = "real"; pulse.selectedOrder = null; pulse.assetStatusFilter = ""; await loadPulse(); tab(pulseDialog, "overview"); });
+  $("pulse-demo-mode").addEventListener("click", async () => { settlementDesk.reset(); pendingFinancialCommands.clear(); pulse.mode = "demo"; pulse.selectedOrder = null; pulse.assetStatusFilter = ""; await loadPulse(); tab(pulseDialog, "overview"); });
   $("pulse-demo-reset").addEventListener("click", async () => { applyPulseDemo(await api("/pulse/demo/reset", { method: "POST" })); renderPulse(); toast("Oia Demo Company 已恢复到会计一致的六个月样本。"); });
 
   leapDialog.querySelectorAll("[data-domain-tab]").forEach((node) => node.addEventListener("click", async () => { tab(leapDialog, node.dataset.domainTab); if (node.dataset.domainTab === "library" && !leap.libraryLoaded) { try { await loadLibrary(); } catch (error) { $("leap-library-status").textContent = error.message; } } }));
@@ -1633,6 +1678,7 @@ export function initProductDomains({ api, toast }) {
     try {
       if (name === "finance") await loadFinance();
       if (name === "analytics") await loadPulseAnalytics();
+      if (name === "settlement") await settlementDesk.load();
     } catch (error) {
       status("pulse-status", `无法加载${name === "finance" ? "财务报表" : "经营洞察"}：${error.message}`, "error");
     }
@@ -1648,6 +1694,7 @@ export function initProductDomains({ api, toast }) {
     async openPulse() { if (!pulseDialog.open) pulseDialog.showModal(); tab(pulseDialog, "overview"); try { await loadPulse(); } catch (error) { status("pulse-status", error.message, "error"); } },
     reset() {
       authGeneration += 1;
+      settlementDesk.reset(); pendingFinancialCommands.clear(); orderActionBusy = false;
       Object.assign(leap, {
         mode: "real", materials: [], excerpts: [], notes: [], wormholes: [], clashes: [], timeline: [],
         universe: { nodes: [], edges: [] }, library: [], libraryImports: [], libraryLoaded: false,

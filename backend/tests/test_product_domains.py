@@ -1080,6 +1080,7 @@ def test_real_order_status_drives_assigned_asset(product_store):
     start = datetime.now(timezone.utc) + timedelta(days=2)
     order = repo.create_order(1, OrderWrite(customer_id=customer["id"], start_at=start,
         end_at=start + timedelta(days=2), items=[OrderLineWrite(sku_id=sku["id"], asset_id=asset["id"])]))
+    repo.record_payment(1, PaymentWrite(order_id=order["id"], payment_type="deposit", amount_cents=3_000))
     repo.transition_order(1, order["id"], OrderStatusWrite(status="rented"))
     assert repo.list_entity(1, "pulse_assets")[0]["status"] == "rented"
     repo.transition_order(1, order["id"], OrderStatusWrite(status="returned"))
@@ -1092,7 +1093,7 @@ def test_real_order_status_drives_assigned_asset(product_store):
     repo.record_payment(1, PaymentWrite(order_id=order["id"], payment_type="deposit_refund", amount_cents=3_000))
     completed = repo.transition_order(1, order["id"], OrderStatusWrite(status="completed"))
     assert completed["status"] == "completed"
-    assert completed["inspections"] and completed["expenses"] and len(completed["journals"]) == 2
+    assert completed["inspections"] and completed["expenses"] and len(completed["journals"]) == 3
     assert repo.list_entity(1, "pulse_assets")[0]["status"] == "available"
 
 
