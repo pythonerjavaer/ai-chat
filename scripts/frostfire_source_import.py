@@ -22,6 +22,7 @@ import json
 import os
 import platform
 import re
+import ssl
 import subprocess
 import sys
 import time
@@ -32,6 +33,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from pydantic import ValidationError
+import certifi
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
@@ -491,7 +493,11 @@ def submit_payload(payload: dict[str, Any], token: str, timeout: float, *, trans
         }
     request = urllib.request.Request(endpoint, data=body, method="POST", headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # Some macOS Python environments have no usable OpenSSL CA file. Use
+        # the standard public CA bundle already supplied by the HTTP runtime;
+        # hostname and certificate verification remain enabled.
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise ImportError("server response is unexpectedly large")

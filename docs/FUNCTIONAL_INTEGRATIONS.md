@@ -78,3 +78,7 @@ Missing months appear only as zero-valued trend references, with a visible gap
 warning; they cannot satisfy the 60/120-month training gates. Model comparison
 waits for explicit monthly records, including confirmed zero-income months. A runtime
 test on synthetic data demonstrates implementation, not real-business accuracy.
+
+The macOS source sender uses the standard Certifi CA bundle with hostname and
+certificate verification enabled, so a Python environment missing its default
+OpenSSL CA path does not silently prevent monitor deliveries.

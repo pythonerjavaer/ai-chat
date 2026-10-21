@@ -23,8 +23,9 @@ def test_actual_monitor_sender_signed_delivery_replay_and_history_api(radar_serv
                "jobs": [sample_job("history-integration", verification_status="verified")]}
     seen = []
     with TestClient(main.app) as client:
-        def open_request(request, timeout):
+        def open_request(request, timeout, **options):
             assert timeout > 0
+            assert options["context"].check_hostname is True
             seen.append(request)
             response = client.post(urllib.parse.urlsplit(request.full_url).path, content=request.data, headers=dict(request.header_items()))
             if response.status_code >= 400:
@@ -66,7 +67,7 @@ def test_signature_keys_fail_closed_and_do_not_accept_root_token_as_child():
 
 def test_sender_auto_fallback_reuses_identical_payload_and_idempotency_key(monkeypatch):
     requests = []
-    def open_request(request, timeout):
+    def open_request(request, timeout, **_options):
         requests.append(request)
         if len(requests) == 1:
             raise urllib.error.HTTPError(request.full_url, 503, "temporarily unavailable", None, io.BytesIO())
