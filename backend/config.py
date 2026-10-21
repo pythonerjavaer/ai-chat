@@ -25,6 +25,7 @@ class Settings:
     recruitment_refresh_minutes: int
     recruitment_ingest_token: str
     future_radar_sync_token: str
+    future_radar_webhook_secret: str = field(repr=False)
     public_base_url: str
     enable_future_radar_mcp: bool
     recruitment_web_search_enabled: bool
@@ -180,6 +181,7 @@ def load_settings() -> Settings:
         recruitment_refresh_minutes=max(0, int(os.getenv("RECRUITMENT_REFRESH_MINUTES", "30").strip() or "30")),
         recruitment_ingest_token=os.getenv("RECRUITMENT_INGEST_TOKEN", "").strip(),
         future_radar_sync_token=os.getenv("FUTURE_RADAR_SYNC_TOKEN", "").strip(),
+        future_radar_webhook_secret=os.getenv("FUTURE_RADAR_WEBHOOK_SECRET", "").strip(),
         public_base_url=(
             os.getenv("PUBLIC_BASE_URL", "https://frostfire-ai.onrender.com").strip().rstrip("/")
             or "https://frostfire-ai.onrender.com"

@@ -1,9 +1,11 @@
 import asyncio
 import hashlib
+import hmac
 import importlib.util
 import json
 import logging
 import math
+import os
 import re
 import secrets
 import sqlite3
@@ -627,16 +629,30 @@ async def source_backfill_recovery_loop() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     startup_rss = log_memory_checkpoint(logger, "app_startup", "before")
-    database.init_db()
-    init_finance_schema(database.connect)
-    init_leap_schema(database.connect)
-    init_pulse_schema(database.connect)
-    future_radar_service.seed_registry()
-    wechat_title_service.repository.seed_watchlist()
+    release_id = os.environ.get("RENDER_GIT_COMMIT", "").strip()
+    schema_current = bool(release_id) and database.startup_schema_version_is_current(
+        release_id
+    )
+    schema_started = time.monotonic()
+    if schema_current:
+        logger.info(
+            "Startup schema already initialized for Render release %.12s; "
+            "skipping repeat migrations",
+            release_id,
+        )
+    else:
+        database.init_db()
+        init_finance_schema(database.connect)
+        init_leap_schema(database.connect)
+        init_pulse_schema(database.connect)
+        future_radar_service.seed_registry()
+        wechat_title_service.repository.seed_watchlist()
+        wechat_title_service.repository.backfill_lead_types()
+        database.ensure_recruitment_ingest_sources(EXPECTED_CHATGPT_RADAR_SOURCES)
+        database.purge_legacy_recruitment_samples()
+        database.mark_startup_schema_version_current(release_id)
+        logger.info("Startup schema initialization completed in %.2fs", time.monotonic() - schema_started)
     wechat_title_service.repository.interrupt_stale_scan_runs()
-    wechat_title_service.repository.backfill_lead_types()
-    database.ensure_recruitment_ingest_sources(EXPECTED_CHATGPT_RADAR_SOURCES)
-    database.purge_legacy_recruitment_samples()
     tasks: list[asyncio.Task] = [asyncio.create_task(
         restore_chatgpt_screened_opportunities_in_background()
     )]
@@ -730,6 +746,7 @@ def _api_usage_event_metadata(
     """Freeze business timing and only safe scalars before deferred work."""
     if not request.url.path.startswith("/api/") or request.url.path in {
         "/api/health",
+        "/api/health/live",
         "/api/admin/usage",
     }:
         return None
@@ -1082,6 +1099,8 @@ _HEALTH_CACHE_EXPIRES_AT = 0.0
 _HEALTH_CACHE_PAYLOAD: dict | None = None
 _HEALTH_OK_CACHE_SECONDS = 30.0
 _HEALTH_DEGRADED_CACHE_SECONDS = 15.0
+_FUTURE_RADAR_WEBHOOK_MAX_BYTES = 2 * 1024 * 1024
+_FUTURE_RADAR_WEBHOOK_CLOCK_SKEW_SECONDS = 300
 
 
 def _reset_health_cache() -> None:
@@ -1139,6 +1158,12 @@ async def health_endpoint() -> dict:
         }, _HEALTH_DEGRADED_CACHE_SECONDS)
     payload["database_status"] = "available"
     return _store_health_payload(payload, _HEALTH_OK_CACHE_SECONDS)
+
+
+@app.get("/api/health/live")
+async def health_liveness_endpoint() -> dict:
+    """Minimal process-only probe for platform health checks and keep-alives."""
+    return {"status": "ok", "version": app.version}
 
 
 def health() -> dict:
@@ -2666,6 +2691,83 @@ def sync_future_radar(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/future-radar/webhook")
+async def receive_future_radar_webhook(request: Request) -> dict:
+    """Accept signed push deliveries using the same versioned contract as REST sync."""
+    secret = getattr(settings, "future_radar_webhook_secret", "")
+    if not secret:
+        raise HTTPException(status_code=503, detail="Future Radar webhook is not configured.")
+    if len(secret.encode("utf-8")) < 32:
+        raise HTTPException(status_code=503, detail="Future Radar webhook secret is misconfigured.")
+
+    media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+    if media_type != "application/json" and not media_type.endswith("+json"):
+        raise HTTPException(status_code=415, detail="Webhook payload must be JSON.")
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > _FUTURE_RADAR_WEBHOOK_MAX_BYTES:
+                raise HTTPException(status_code=413, detail="Webhook payload is too large.")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length.") from exc
+
+    timestamp_text = request.headers.get("x-future-radar-timestamp", "").strip()
+    signature = request.headers.get("x-future-radar-signature", "").strip()
+    if not re.fullmatch(r"[0-9]{1,16}", timestamp_text, flags=re.ASCII):
+        raise HTTPException(status_code=401, detail="Missing or invalid webhook signature.")
+    try:
+        timestamp = int(timestamp_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Missing or invalid webhook signature.") from exc
+    if abs(time.time() - timestamp) > _FUTURE_RADAR_WEBHOOK_CLOCK_SKEW_SECONDS:
+        raise HTTPException(status_code=401, detail="Webhook timestamp is outside the allowed window.")
+
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > _FUTURE_RADAR_WEBHOOK_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Webhook payload is too large.")
+        chunks.append(chunk)
+    body = b"".join(chunks)
+
+    signed = f"{timestamp_text}.".encode("ascii") + body
+    expected = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
+    if not re.fullmatch(r"sha256=[0-9a-fA-F]{64}", signature, flags=re.ASCII) or not hmac.compare_digest(
+        signature[7:].lower(), expected
+    ):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+
+    try:
+        payload = FrostFireSyncV1.model_validate_json(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid Future Radar webhook payload.") from exc
+
+    idempotency_key = (
+        request.headers.get("idempotency-key", "").strip()
+        or request.headers.get("x-future-radar-event-id", "").strip()
+        or (payload.batch_id or "").strip()
+    )
+    if not idempotency_key or len(idempotency_key) > 180:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide a stable Idempotency-Key, X-Future-Radar-Event-Id, or batch_id.",
+        )
+
+    try:
+        result = await asyncio.to_thread(
+            future_radar_service.sync,
+            payload.model_dump(mode="json"),
+            idempotency_key=idempotency_key,
+        )
+    except SyncConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"delivery": "processed", **result}
 
 
 @app.post("/api/integrations/chatgpt-monitor/sync")

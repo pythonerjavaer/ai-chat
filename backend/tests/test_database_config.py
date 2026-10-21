@@ -15,6 +15,7 @@ from backend.config import load_settings
 def isolated_database_environment(monkeypatch):
     for key in (
         "DATABASE_BACKEND", "DATABASE_URL", "DATABASE_SCHEMA", "DATABASE_POOL_SIZE", "RENDER",
+        "FUTURE_RADAR_WEBHOOK_SECRET",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -63,6 +64,13 @@ def test_render_accepts_explicit_persistent_database(monkeypatch):
     monkeypatch.setenv("DATABASE_BACKEND", "postgres")
     monkeypatch.setenv("DATABASE_URL", "postgresql://test@localhost/test")
     assert load_settings().database_backend == "postgres"
+
+
+def test_future_radar_webhook_secret_is_optional_and_loaded_without_exposure(monkeypatch):
+    monkeypatch.setenv("FUTURE_RADAR_WEBHOOK_SECRET", "test-secret-not-to-log")
+    options = load_settings()
+    assert options.future_radar_webhook_secret == "test-secret-not-to-log"
+    assert "test-secret-not-to-log" not in repr(options)
 
 
 @pytest.mark.parametrize("schema", [

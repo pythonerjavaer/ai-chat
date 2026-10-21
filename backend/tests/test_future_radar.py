@@ -1,7 +1,11 @@
 import asyncio
+import hashlib
+import hmac
+import json
 import os
 import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import date
@@ -2006,6 +2010,70 @@ def test_future_radar_api_paginates_allows_user_run_and_strict_sync(
             json={"version": "FROSTFIRE_SYNC_V2", "source_id": "strict-schema-source"},
         )
         assert wrong_version.status_code == 422
+
+
+def test_future_radar_webhook_authenticates_and_deduplicates_delivery(
+    radar_service, monkeypatch
+):
+    secret = "isolated-future-radar-webhook-secret"
+    settings_values = vars(main.settings).copy()
+    settings_values.update({
+        "database_path": database.settings.database_path,
+        "future_radar_enabled": False,
+        "recruitment_refresh_minutes": 0,
+        "future_radar_webhook_secret": secret,
+    })
+    monkeypatch.setattr(main, "settings", SimpleNamespace(**settings_values))
+    monkeypatch.setattr(main, "future_radar_service", radar_service)
+
+    payload = {
+        "version": "FROSTFIRE_SYNC_V1",
+        "batch_id": "webhook-event-1",
+        "source_id": "signed-webhook-source",
+        "jobs": [sample_job("signed-webhook-job")],
+    }
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    def signed_headers(timestamp: str) -> dict[str, str]:
+        digest = hmac.new(
+            secret.encode("utf-8"),
+            f"{timestamp}.".encode("ascii") + body,
+            hashlib.sha256,
+        ).hexdigest()
+        return {
+            "Content-Type": "application/json",
+            "X-Future-Radar-Timestamp": timestamp,
+            "X-Future-Radar-Signature": f"sha256={digest}",
+        }
+
+    with TestClient(main.app) as client:
+        timestamp = str(int(time.time()))
+        first = client.post(
+            "/api/future-radar/webhook", content=body, headers=signed_headers(timestamp)
+        )
+        assert first.status_code == 200
+        assert first.json()["delivery"] == "processed"
+        assert first.json()["counts"]["new_jobs"] == 1
+
+        replay = client.post(
+            "/api/future-radar/webhook", content=body, headers=signed_headers(timestamp)
+        )
+        assert replay.status_code == 200
+        assert replay.json()["idempotent_replay"] is True
+        assert table_count(radar_service, "radar_jobs") == 1
+
+        forged = signed_headers(timestamp)
+        forged["X-Future-Radar-Signature"] = "sha256=" + "0" * 64
+        assert client.post(
+            "/api/future-radar/webhook", content=body, headers=forged
+        ).status_code == 401
+
+        stale_timestamp = str(int(time.time()) - 601)
+        assert client.post(
+            "/api/future-radar/webhook",
+            content=body,
+            headers=signed_headers(stale_timestamp),
+        ).status_code == 401
 
 
 def test_future_radar_pipeline_summary_exposes_all_processing_stages(

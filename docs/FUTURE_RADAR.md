@@ -243,7 +243,9 @@ Content-Type: application/json
 | `GET` | `/api/future-radar/sources` | JWT | 来源公开健康状态；支持 `enabled` 筛选 |
 | `POST` | `/api/future-radar/run` | JWT + 当前隐私同意 | `scan_type=quick`（默认）核对确定性官网、ATS、公开 API、Feed 与旧岗位池，不调用 AI；`scan_type=deep` 运行已配置的 OpenAI Web Search、公众号及新入口发现来源。手动请求不修改也不受 Scheduler 的来源间隔影响；同类型运行冲突返回 409，完成后后端可立即重跑。`source_ids` 只能缩小到对应模式的安全来源集合。`force=true` 还需要 `X-Admin-Token`，可忽略 due time 与 AI 内容缓存，但不能激活禁用来源或绕过并发锁、来源锁、外站限速和安全校验 |
 | `POST` | `/api/recruitment/ingest` | Ingest | 指定 ChatGPT 监控源以“ChatGPT 已筛选”直接入池；其他来源保留官网核验流程 |
-| `POST` | `/api/future-radar/sync` | Ingest | 严格接收 `FROSTFIRE_SYNC_V1` 结构化批次 |
+| `POST` | `/api/future-radar/sync` | Ingest Token | 主动 REST 同步，严格接收 `FROSTFIRE_SYNC_V1` 结构化批次 |
+| `POST` | `/api/future-radar/webhook` | HMAC 签名 | 可选事件推送入口，接收同一 `FROSTFIRE_SYNC_V1` 结构化批次 |
+| `GET` | `/api/health/live` | Public | 纯进程存活探针；不访问数据库，适用于 Render 与 UptimeRobot |
 | `POST` | `/api/future-radar/sources` | Admin | 创建来源 |
 | `PATCH` | `/api/future-radar/sources/{source_id}` | Admin | 更新来源运行配置 |
 
@@ -252,6 +254,12 @@ Content-Type: application/json
 来源与运行 API 只返回归一化错误代码和固定安全文案。OpenAI 的原始 429、额度、请求标识及其他 provider 诊断不会写入公开运行记录，也不会从来源健康接口回显；`AI_CREDITS_EXHAUSTED` 只表示 AI 补漏不可用，不影响确定性官网扫描。
 
 `POST /sync` 的 `version` 必须是 `FROSTFIRE_SYNC_V1`。每次 HTTP 请求中 `programs`、`jobs`、`articles` 各最多 100 条，三者合计最多 100 个实体；这是传输安全边界，不限制一轮监控处理的总量。`frostfire_source_import.py` 接收完整的有界输入页，按 `--batch-size` 默认 25、最大 100 连续发出全部请求；超出单页行数或字节边界时继续分页导入。拆分请求均保持 `snapshot_complete=false`，避免部分传输错误关闭尚未发送的记录。请求可以带 `Idempotency-Key`；未提供时依次使用 `batch_id` 或 payload hash。同一幂等键重放同一 payload 返回原结果，复用到不同 payload 返回 409；改变传输大小不改变岗位稳定 ID。未知字段、非 HTTPS URL、包含邮箱/电话号码的 evidence 会被 schema 拒绝。
+
+REST 仍是查询、批量导入、补拉和周期性对账的主接口，不会被 Webhook 替代。`/api/future-radar/webhook` 是可选的推送入口：发送端仍提交同一 `FROSTFIRE_SYNC_V1` JSON，由 `FUTURE_RADAR_WEBHOOK_SECRET` 做 HMAC-SHA256 验签；Secret 至少应为 32 字节随机值。签名格式为 `sha256=` + 小写十六进制 HMAC，签名原文是 `Unix时间戳 + "." + 原始请求体`；时间戳最多允许前后 5 分钟偏差，请求体最多 2 MiB。请求头使用 `X-Future-Radar-Timestamp`、`X-Future-Radar-Signature`，并应带稳定的 `Idempotency-Key`（或 `X-Future-Radar-Event-Id` / payload `batch_id`）。服务端在处理并持久化后才返回成功；同事件重试安全幂等。未配置 Secret 时路由关闭并返回 503。建议 Webhook 处理近实时变化，REST 定期对账及补偿漏投事件；只有上游 ATS/监控服务支持推送时，Webhook 才会带来额外价值。
+
+### 免费实例保活（可选）
+
+Render Blueprint 的进程健康检查使用 `/api/health/live`，不会在每次探测时额外查询数据库。若接受几乎耗尽免费实例时数，可在 UptimeRobot 免费档新建 HTTP(s) 监控，URL 设为 `https://frostfire-ai.onrender.com/api/health/live`，间隔 5 分钟，期望状态码 200。连续 30 天约消耗 720 小时，31 天约 744 小时；Render Free 的 750 小时是整个 Workspace 共用额度，其他免费服务也会占用。探测可降低因空闲休眠造成冷启动的概率，但不能缩短一次冷启动，也不能阻止平台主动重启或监控中断；实例休眠后的第一次探测仍可能等待启动完成。
 
 前端一次并行读取 dashboard、jobs、programs、events、sources、runs 和 search-updates；某一个接口失败时保留其他已成功区域。只有 Future Radar 对话框可见时才每 30 秒读取增量事件与当前页搜索候选。这个轮询不会触发抓取，也不是后台 scheduler。
 
@@ -330,6 +338,7 @@ AI 提取失败时会记录警告并降级：已经完成的确定性页面抓�
 | `RECRUITMENT_WEB_SEARCH_ENABLED` | 本地示例 `false`；当前 Render Blueprint `true` | 是否启用 `openai-public-web-search` 与五个 `wechat_web_search` 公网 discovery 来源；当前 Render Blueprint 设为每天检查一次 |
 | `RECRUITMENT_WEB_SEARCH_MODEL` | `gpt-5.4-mini` | 重点雇主与公众号公网 Web Search 模型 |
 | `RECRUITMENT_INGEST_TOKEN` | 无 | `/api/recruitment/ingest` 与 `/api/future-radar/sync` 的共享接收密钥 |
+| `FUTURE_RADAR_WEBHOOK_SECRET` | 无 | 可选 Webhook HMAC-SHA256 密钥；未配置时 `/api/future-radar/webhook` 关闭 |
 | `ADMIN_DASHBOARD_TOKEN` | 无 | 汇总使用面板、Source 配置 API 与 Force Scan 的管理员密钥；普通 Quick/Deep 不使用此 Token |
 | `DATABASE_PATH` | 项目现有默认 | Future Radar 与主应用共用的 SQLite 文件 |
 

@@ -78,6 +78,44 @@ def close_database_pools() -> None:
         close_postgres_pools()
 
 
+def startup_schema_version_is_current(
+    release_id: str,
+    *,
+    connection_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Return whether this immutable application release already ran migrations."""
+    if not release_id:
+        return False
+    with (connection_factory or connect)() as connection:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS app_startup_schema_versions (
+                release_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )"""
+        )
+        row = connection.execute(
+            "SELECT 1 FROM app_startup_schema_versions WHERE release_id=?",
+            (release_id,),
+        ).fetchone()
+    return row is not None
+
+
+def mark_startup_schema_version_current(
+    release_id: str,
+    *,
+    connection_factory: Callable[[], Any] | None = None,
+) -> None:
+    """Record a release only after all startup schema work completed successfully."""
+    if not release_id:
+        return
+    with (connection_factory or connect)() as connection:
+        connection.execute(
+            """INSERT INTO app_startup_schema_versions (release_id, applied_at)
+               VALUES (?, ?) ON CONFLICT(release_id) DO NOTHING""",
+            (release_id, utc_now()),
+        )
+
+
 def init_db(*, connection_factory: Callable[[], Any] | None = None) -> None:
     with (connection_factory or connect)() as connection:
         connection.executescript(

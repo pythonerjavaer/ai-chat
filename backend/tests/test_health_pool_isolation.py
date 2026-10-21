@@ -62,7 +62,18 @@ def isolated_health_database(monkeypatch, tmp_path):
 def probe_app():
     app = FastAPI()
     app.get("/api/health")(main.health_endpoint)
+    app.get("/api/health/live")(main.health_liveness_endpoint)
     return app
+
+
+def test_liveness_probe_is_database_free(monkeypatch):
+    monkeypatch.setattr(
+        database, "connect_health",
+        lambda **_: (_ for _ in ()).throw(AssertionError("liveness must not query the database")),
+    )
+    response = TestClient(probe_app()).get("/api/health/live")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "version": main.app.version}
 
 
 def test_health_http_endpoint_does_not_wait_for_saturated_business_worker_pool(monkeypatch):

@@ -265,7 +265,7 @@ def test_unhandled_business_error_is_not_held_by_telemetry(metrics_database, mon
     assert all(not isinstance(value, Request) for value in calls[0])
 
 
-@pytest.mark.parametrize("path", ["/api/health", "/api/admin/usage", "/index.html"])
+@pytest.mark.parametrize("path", ["/api/health", "/api/health/live", "/api/admin/usage", "/index.html"])
 def test_untracked_paths_keep_original_background_only(metrics_database, path):
     completed = []
     original = BackgroundTask(completed.append, "original")

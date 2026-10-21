@@ -6,7 +6,7 @@ services:
     # The Dockerfile builds both the frontend and backend from the repository root.
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
-    healthCheckPath: /api/health
+    healthCheckPath: /api/health/live
     envVars:
       # Configure only after the existing live database has been exported and
       # the migration has passed validation; never deploy an empty replacement.
@@ -69,6 +69,8 @@ services:
         generateValue: true
       - key: FUTURE_RADAR_SYNC_TOKEN
         generateValue: true
+      - key: FUTURE_RADAR_WEBHOOK_SECRET
+        sync: false
       - key: PUBLIC_BASE_URL
         value: https://frostfire-ai.onrender.com
       - key: ENABLE_FUTURE_RADAR_MCP
