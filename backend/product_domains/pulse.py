@@ -1282,7 +1282,8 @@ class PulseRepository:
                                   [_row(item) for item in order_facts])
         deposit_analysis = deposit_coverage_scenarios([int(item["amount_cents"]) for item in loss_cost_rows])
         deposit_analysis["uncertainty"] = deposit_uncertainty(
-            [_row(item) for item in loss_cost_rows], truncated=len(loss_cost_rows) > 10_000)
+            [{**_row(item), "amount_cents": int(item["amount_cents"])} for item in loss_cost_rows],
+            truncated=len(loss_cost_rows) > 10_000)
         deposit_analysis["truncated"] = len(loss_cost_rows) > 10_000
         cost_analysis = {"currency": "minor_units", "period": [date_from, date_to],
                          "categories": [{"category": item["category"], "amount_cents": int(item["amount_cents"]),

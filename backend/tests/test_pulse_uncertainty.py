@@ -1,9 +1,11 @@
 import numpy as np
 from datetime import datetime, timedelta, timezone
+from fastapi.testclient import TestClient
 
 from backend.product_domains.pulse_uncertainty import deposit_uncertainty
 from backend.product_domains.pulse import PulseRepository, CustomerWrite, SKUWrite, OrderWrite, OrderLineWrite, ExpenseWrite
 from backend.tests.test_product_domains import product_store  # noqa: F401
+from backend.tests.test_postgres_application import persistent_app, register  # noqa: F401
 
 
 def rows(customers=24, orders=2):
@@ -85,3 +87,14 @@ def test_actual_analytics_uses_owned_order_losses_and_date_scope(product_store):
         repo.ensure_user_setup(user)
         other = repo.analytics(user, date_from, date_to)["deposit_coverage"]["uncertainty"]
         assert other["loss_orders"] == 0 and other["scenarios"] == []
+
+
+def test_postgres_aggregate_money_is_normalized_before_bootstrap(persistent_app):
+    with TestClient(persistent_app.main.app) as client:
+        headers, _ = register(client, "bootstrap-pg-one")
+        register(client, "bootstrap-pg-two")
+        test_actual_analytics_uses_owned_order_losses_and_date_scope(persistent_app.database.connect)
+        response = client.get("/api/pulse/analytics?date_from=2000-01-01&date_to=2099-12-31", headers=headers)
+        assert response.status_code == 200
+        result = response.json()["deposit_coverage"]["uncertainty"]
+        assert result["status"] == "ok" and result["customers"] == 20 and result["loss_orders"] == 40
