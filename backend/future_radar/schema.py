@@ -457,6 +457,8 @@ def migrate(connection: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('future_radar_v2_job_taxonomy', datetime('now'))"
     )
     _backfill_operator_categories(connection)
+    from .temporal import migrate as migrate_temporal
+    migrate_temporal(connection)
 
 
 def _ensure_column(

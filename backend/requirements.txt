@@ -16,5 +16,4 @@ pymongo>=4.10.0,<5.0.0
 neo4j>=5.28.0,<7.0.0
 duckdb>=1.2.0,<2.0.0
 
-# Optional CPU deep-learning forecast candidate. Install separately when needed:
-# pip install -r requirements-ml.txt
+# The bounded CPU LSTM uses NumPy; no additional ML runtime is needed.

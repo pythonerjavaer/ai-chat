@@ -1136,6 +1136,18 @@ class FutureRadarService:
         }
 
     def sync(self, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        source_id = clean_text(payload.get("source_id"), limit=64)
+        if payload.get("version") != "FROSTFIRE_SYNC_V1" or not source_id:
+            raise ValueError("A FROSTFIRE_SYNC_V1 source_id is required.")
+        name, owner = f"future-radar-source:{source_id}", str(uuid.uuid4())
+        if not self.repository.acquire_lock(name, owner, SOURCE_LOCK_TTL_SECONDS):
+            raise RadarSourceBusy(source_id)
+        try:
+            return self._sync_locked(payload, idempotency_key=idempotency_key)
+        finally:
+            self.repository.release_lock(name, owner)
+
+    def _sync_locked(self, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
         if payload.get("version") != "FROSTFIRE_SYNC_V1":
             raise ValueError("Unsupported sync version.")
         source_id = clean_text(payload.get("source_id"), limit=64)

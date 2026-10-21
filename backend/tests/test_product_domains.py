@@ -971,7 +971,9 @@ def test_pulse_eda_boxplot_and_pca_are_auditable_and_degrade_on_small_sample():
         {"period": "2026-04", "revenue": 40000},
     ])
     assert forecast["status"] == "ok"
-    assert forecast["observations"] == 4  # March is an explicit zero-revenue month.
+    assert forecast["observations"] == 4  # March is zero-filled for the trend reference only.
+    assert forecast["ml_comparison"]["status"] == "incomplete_history"
+    assert forecast["missing_months"] == ["2026-03"]
     assert forecast["points"][0]["period"] == "2026-05"
     assert forecast["points"][0]["lower_95"] <= forecast["points"][0]["revenue"] <= forecast["points"][0]["upper_95"]
 
@@ -1008,15 +1010,15 @@ def test_revenue_ml_models_require_five_years_and_reserve_one_year_for_holdout()
     assert all(item["holdout_months"] >= 12 for item in enough["models"])
 
 
-def test_pytorch_lstm_is_gated_on_long_history_and_time_validated():
+def test_numpy_lstm_is_gated_on_long_history_and_horizon_validated():
     short = compare_revenue_models([100_000 + index * (60_000 / 71) for index in range(72)], datetime(2026, 1, 1))
     assert short["status"] == "ok"
     assert short["deep_learning"]["status"] == "insufficient_history"
     long = simulated_revenue_demo(months=144, seed=11)
     result = long["forecast"]["ml_comparison"]
     assert result["deep_learning"]["status"] == "ok"
-    assert result["deep_learning"]["evaluation"]["validation"] == "chronological rolling one-step holdout"
-    assert {"random_forest", "adaboost", "bayesian_ridge", "pytorch_lstm"} <= {
+    assert result["deep_learning"]["evaluation"]["validation"] == "chronological rolling-origin recursive multi-step holdout"
+    assert {"random_forest", "adaboost", "bayesian_ridge", "numpy_lstm", "seasonal_naive"} <= {
         item["model"] for item in result["models"]
     }
     assert len(result["points"]) == 3

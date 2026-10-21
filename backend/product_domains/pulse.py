@@ -1382,7 +1382,7 @@ class PulseRepository:
                 "cost_analysis": cost_analysis,
                 "deposit_coverage": deposit_analysis,
                 "limitations": {"cohort": "insufficient_data", "rfm": "rule_segments_only", "funnel": "insufficient_data",
-                                "forecasting": "three_month_linear_baseline_plus_last_value_baseline_RF_AdaBoost_BayesianRidge_only_after_60_continuous_months; PyTorch_LSTM_after_120_months; models_selected_by_chronological_holdout", "lost_demand": "unavailable_without_demand_events"}}
+                                "forecasting": "linear_baseline_for_short_history; last_value_and_seasonal_baselines_RF_AdaBoost_BayesianRidge_after_60_months; NumPy_LSTM_after_120_months; recursive_horizon_matched_chronological_holdout; selected_forecast_displayed", "lost_demand": "unavailable_without_demand_events"}}
 
     def _save_demo(self, user_id: int, state: dict[str, Any]) -> dict[str, Any]:
         state["updated_at"] = _now()

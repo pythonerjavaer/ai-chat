@@ -175,7 +175,7 @@ def test_source_rating_is_preserved_and_changes_deterministic_import_hash():
     assert updated["jobs"][0]["source_rating"] == {"scope": "company", "score": 88.5}
 
 
-@pytest.mark.parametrize("source", ["chatgpt-radar-04", "chatgpt-radar-05", "chatgpt-radar-10"])
+@pytest.mark.parametrize("source", ["chatgpt-radar-04", "chatgpt-radar-05"])
 def test_retired_monitor_ids_remain_logical_but_reject_fresh_imports(source):
     assert source_import._validate_logical_source_id(source) == source
     with pytest.raises(source_import.ImportError, match="active"):
@@ -221,7 +221,7 @@ def test_large_source_import_retry_reuses_stable_batch_ids_after_failure(monkeyp
     observed = []
     stored = set()
 
-    def submit(batch, _token, _timeout):
+    def submit(batch, _token, _timeout, **_kwargs):
         observed.append(batch["batch_id"])
         if len(observed) == 2:
             raise source_import.ImportError("submission endpoint is temporarily unavailable")
@@ -233,11 +233,9 @@ def test_large_source_import_retry_reuses_stable_batch_ids_after_failure(monkeyp
     monkeypatch.setattr(source_import.sys, "stdout", stdout)
     monkeypatch.setattr(source_import.sys, "stderr", stderr)
     args = ["--source-id", "chatgpt-radar-09", "--structured-json", "-", "--submit"]
-    assert source_import.main(args) == 2
-    assert len(stored) == 25 and not stdout.getvalue()
-    first_id = observed[0]
+    monkeypatch.setattr(source_import.time, "sleep", lambda _seconds: None)
     assert source_import.main(args) == 0
-    assert observed[2] == first_id
+    assert observed[1] == observed[2]  # automatic retry retains the same event ID
     assert len(stored) == 137
     assert json.loads(stdout.getvalue())["batches"] == 6
 

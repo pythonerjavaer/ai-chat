@@ -162,12 +162,23 @@ def linear_revenue_forecast(monthly_rows: list[dict[str, Any]], horizon: int = 3
         points.append({"period": f"{target_year:04d}-{target_month:02d}", "revenue": round(expected, 2),
                        "lower_95": round(max(0.0, expected - 1.96 * prediction_error), 2),
                        "upper_95": round(max(0.0, expected + 1.96 * prediction_error), 2)})
-    ml_comparison = compare_revenue_models(full_y, last_date, horizon)
-    return {"status": "ok", "observations": len(full_y), "method": "ordinary least squares linear time trend",
-            "horizon_months": len(points), "points": points,
+    missing_months = [period for period, _value in continuous if period not in by_month]
+    # Blank ledger months may mean unrecorded history, not genuine zero revenue.
+    # Never let zero filling fabricate the 60/120 observed-month model gates.
+    ml_comparison = (compare_revenue_models(full_y, last_date, horizon) if not missing_months else
+                     {"status": "incomplete_history", "observations": len(by_month),
+                      "missing_months": missing_months, "minimum_months": 60,
+                      "models": [], "selected_model": None, "points": []})
+    selected = ml_comparison.get("selected_model") if ml_comparison.get("status") == "ok" else "linear_trend"
+    displayed_points = ml_comparison["points"] if ml_comparison.get("status") == "ok" else points
+    return {"status": "ok", "observations": len(full_y), "method": selected,
+            "horizon_months": len(displayed_points), "points": displayed_points,
+            "selected_model": selected, "linear_baseline_points": points,
+            "missing_months": missing_months,
             "ml_comparison": ml_comparison,
             "assumptions": ["missing months between first and last observation are treated as zero revenue",
-                            "univariate linear trend; no seasonality, pricing, demand or causal variables"]}
+                            "univariate historical revenue; no pricing, demand or causal variables",
+                            "complex candidates need 60 months; LSTM needs 120; selection must beat both transparent baselines"]}
 
 
 def simulated_revenue_demo(months: int = 72, seed: int = 2026, baseline_cents: int = 250_000) -> dict[str, Any]:
@@ -268,176 +279,9 @@ def aggregate_order_context(rows: list[dict[str, Any]], minimum_group: int = 5) 
             "policy": "Observed group-level rates only; small groups suppressed. Subjective urgency is customer-stated; objective urgency is order lead time. No individual risk score or causal claim."}
 
 
-def _revenue_features(values: list[float], target_index: int) -> list[float]:
-    recent = [values[target_index - lag] if target_index >= lag else 0.0 for lag in (1, 2, 3)]
-    recent_mean = float(np.mean(recent))
-    month_angle = 2 * np.pi * (target_index % 12) / 12
-    return [*recent, recent_mean, float(np.sin(month_angle)), float(np.cos(month_angle)), values[target_index - 12]]
-
-
-def _pytorch_lstm_forecast(values: np.ndarray, last_date: datetime, horizon: int,
-                           minimum_months: int = 120) -> dict[str, Any]:
-    """Optional CPU LSTM: only run with a long monthly series and chronological holdout."""
-    if len(values) < minimum_months:
-        return {"status": "insufficient_history", "minimum_months": minimum_months,
-                "observations": len(values), "model": "pytorch_lstm", "points": []}
-    try:
-        import torch
-        from torch import nn
-    except ImportError:
-        return {"status": "unavailable", "minimum_months": minimum_months,
-                "observations": len(values), "model": "pytorch_lstm", "points": [],
-                "reason": "install optional backend/requirements-ml.txt"}
-
-    from sklearn.metrics import mean_absolute_error, mean_squared_error
-
-    torch.manual_seed(2026)
-    previous_torch_threads = torch.get_num_threads()
-    torch.set_num_threads(1)
-    lookback = 12
-    holdout = max(12, int(np.ceil((len(values) - lookback) * 0.2)))
-    split = len(values) - holdout
-
-    class RevenueLSTM(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.lstm = nn.LSTM(input_size=1, hidden_size=8, batch_first=True)
-            self.output = nn.Linear(8, 1)
-
-        def forward(self, batch):
-            sequence, _ = self.lstm(batch)
-            return self.output(sequence[:, -1, :])
-
-    def train_model(train_values: np.ndarray):
-        center = float(np.mean(train_values))
-        scale = max(float(np.std(train_values)), 1.0)
-        normalized = (train_values - center) / scale
-        x = np.asarray([normalized[index - lookback:index] for index in range(lookback, len(normalized))], dtype=np.float32)
-        y = np.asarray([normalized[index] for index in range(lookback, len(normalized))], dtype=np.float32)
-        model = RevenueLSTM()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-        loss_fn = nn.MSELoss()
-        x_tensor = torch.from_numpy(x).unsqueeze(-1)
-        y_tensor = torch.from_numpy(y).unsqueeze(-1)
-        model.train()
-        for _ in range(60):
-            optimizer.zero_grad()
-            loss = loss_fn(model(x_tensor), y_tensor)
-            loss.backward()
-            optimizer.step()
-        return model.eval(), center, scale
-
-    validation_model, center, scale = train_model(values[:split])
-    validation_windows = np.asarray([(values[index - lookback:index] - center) / scale
-                                     for index in range(split, len(values))], dtype=np.float32)
-    with torch.no_grad():
-        validation_prediction = validation_model(torch.from_numpy(validation_windows).unsqueeze(-1)).squeeze(-1).numpy() * scale + center
-    actual = values[split:]
-    evaluation = {"model": "pytorch_lstm", "mae": round(float(mean_absolute_error(actual, np.maximum(0, validation_prediction))), 2),
-                  "rmse": round(float(mean_squared_error(actual, np.maximum(0, validation_prediction)) ** 0.5), 2),
-                  "holdout_months": len(actual), "validation": "chronological rolling one-step holdout"}
-
-    model, center, scale = train_model(values)
-    history = ((values - center) / scale).astype(np.float32).tolist()
-    points = []
-    for step in range(1, max(1, min(12, int(horizon))) + 1):
-        window = torch.tensor(history[-lookback:], dtype=torch.float32).view(1, lookback, 1)
-        with torch.no_grad():
-            normalized_prediction = float(model(window).item())
-        prediction = max(0.0, normalized_prediction * scale + center)
-        history.append((prediction - center) / scale)
-        month_index = last_date.month - 1 + step
-        year, month = last_date.year + month_index // 12, month_index % 12 + 1
-        points.append({"period": f"{year:04d}-{month:02d}", "revenue": round(prediction, 2)})
-    torch.set_num_threads(previous_torch_threads)
-    return {"status": "ok", "minimum_months": minimum_months, "observations": len(values),
-            "evaluation": evaluation, "points": points,
-            "method": "PyTorch LSTM(12个月窗口，8个隐藏单元，CPU，60轮训练)"}
-
-
 def compare_revenue_models(values: np.ndarray, last_date: datetime, horizon: int = 3) -> dict[str, Any]:
-    """Compare ML forecasts only after enough real monthly history exists.
-
-    Backtests preserve time order and reserve at least one full year for
-    evaluation. A last-value baseline is included so a complex model is not
-    selected unless it improves on a transparent naive forecast.
-    """
-    values = np.asarray(values, dtype=float)
-    minimum_months = 60
-    if len(values) < minimum_months:
-        return {"status": "insufficient_history", "minimum_months": minimum_months,
-                "observations": len(values), "models": [], "selected_model": None, "points": []}
-    from sklearn.ensemble import AdaBoostRegressor, RandomForestRegressor
-    from sklearn.linear_model import BayesianRidge
-    from sklearn.metrics import mean_absolute_error, mean_squared_error
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.tree import DecisionTreeRegressor
-
-    indexes = list(range(12, len(values)))
-    features = np.asarray([_revenue_features(values.tolist(), index) for index in indexes])
-    targets = values[indexes]
-    holdout = max(12, int(np.ceil(len(indexes) * 0.2)))
-    split = len(indexes) - holdout
-    if split < 12:
-        return {"status": "insufficient_history", "minimum_months": minimum_months,
-                "observations": len(values), "models": [], "selected_model": None, "points": []}
-    candidates = {
-        "random_forest": RandomForestRegressor(n_estimators=160, max_depth=4, min_samples_leaf=2,
-                                                random_state=2026, n_jobs=1),
-        "adaboost": AdaBoostRegressor(estimator=DecisionTreeRegressor(max_depth=2), n_estimators=100,
-                                       learning_rate=0.05, random_state=2026),
-        "bayesian_ridge": make_pipeline(StandardScaler(), BayesianRidge()),
-    }
-    actual = targets[split:]
-    baseline_prediction = features[split:, 0]
-    evaluations = [{"model": "last_value_baseline",
-                    "mae": round(float(mean_absolute_error(actual, baseline_prediction)), 2),
-                    "rmse": round(float(mean_squared_error(actual, baseline_prediction) ** 0.5), 2),
-                    "holdout_months": len(actual),
-                    "validation": "chronological rolling one-step holdout"}]
-    for name, estimator in candidates.items():
-        estimator.fit(features[:split], targets[:split])
-        predicted = np.maximum(0.0, estimator.predict(features[split:]))
-        evaluations.append({"model": name, "mae": round(float(mean_absolute_error(actual, predicted)), 2),
-                            "rmse": round(float(mean_squared_error(actual, predicted) ** 0.5), 2),
-                            "holdout_months": len(actual), "validation": "chronological rolling one-step holdout"})
-    deep_learning = _pytorch_lstm_forecast(values, last_date, horizon)
-    if deep_learning.get("status") == "ok":
-        evaluations.append(deep_learning["evaluation"])
-    best_model = min(evaluations, key=lambda item: (
-        item["mae"], item["model"] != "last_value_baseline", item["model"],
-    ))
-    baseline_mae = evaluations[0]["mae"]
-    # Small holdout wins may just be noise; prefer the transparent baseline
-    # unless a candidate clears a modest practical improvement threshold.
-    selected_name = (best_model["model"] if best_model["model"] == "last_value_baseline"
-                     or best_model["mae"] <= baseline_mae * 0.95
-                     else "last_value_baseline")
-    if selected_name not in {"pytorch_lstm", "last_value_baseline"}:
-        selected = candidates[selected_name]
-        selected.fit(features, targets)
-    history = values.tolist()
-    last_month_index = len(history) - 1
-    forecast_points = []
-    for step in range(1, max(1, min(12, int(horizon))) + 1):
-        target_index = last_month_index + step
-        if selected_name == "pytorch_lstm":
-            prediction = deep_learning["points"][step - 1]["revenue"]
-        elif selected_name == "last_value_baseline":
-            prediction = history[-1]
-        else:
-            prediction = max(0.0, float(selected.predict(np.asarray([_revenue_features(history, target_index)]))[0]))
-        history.append(prediction)
-        month_index = last_date.month - 1 + step
-        year = last_date.year + month_index // 12
-        month = month_index % 12 + 1
-        forecast_points.append({"period": f"{year:04d}-{month:02d}", "revenue": round(prediction, 2)})
-    return {"status": "ok", "minimum_months": minimum_months, "observations": len(values),
-            "validation": "chronological rolling one-step holdout; no shuffled split",
-            "selection_rule": "候选模型 MAE 至少比上月值基线低 5% 才选用，否则保留基线",
-            "selected_model": selected_name, "models": evaluations, "points": forecast_points,
-            "deep_learning": deep_learning}
+    from .revenue_forecast import compare
+    return compare(values, last_date, horizon)
 
 
 def _finite_number(value: Any) -> bool:

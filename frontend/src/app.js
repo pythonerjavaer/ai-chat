@@ -2,6 +2,7 @@ import { renderRadarConstellation } from "./radar-constellation.js";
 import { sourceHealthCounts, sourceHealthGroup, sourceHealthStatus, sourceHealthExplanation, filterSourcesByHealth } from "./radar-source-health.js";
 import { initWechatTitleRadar } from "./radar-wechat-titles.js";
 import { initBridgeDetails } from "./radar-bridge-details.js";
+import { createRadarJobHistory } from "./radar-job-history.js";
 import DOMPurify from "dompurify";
 import { initRadarPersonal } from "./radar-personal.js";
 import { marked } from "marked";
@@ -3146,6 +3147,17 @@ function renderFutureRadarPipelineSummary(payload = state.futureRadar.pipelineSu
 function showFutureRadarBridgeDetails(filter = "overview") {
   activateFutureRadarTab("bridge");
   const loading = bridgeDetails.open(filter);
+  const root = $("future-radar-bridge-details");
+  let receipt = $("future-radar-integration-status");
+  if (root && !receipt) {
+    receipt = makeElement("p", "radar-pipeline-note", "正在读取推送连接状态…");
+    receipt.id = "future-radar-integration-status";
+    root.before(receipt);
+  }
+  if (receipt) void api("/future-radar/integrations/status").then((data) => {
+    const push = data.webhook || {};
+    receipt.textContent = `Webhook ${push.enabled ? "可接收签名推送" : "尚未配置"} · 已接收 ${push.events || 0} 个事件 · 重复投递 ${Math.max(0, (push.deliveries || 0) - (push.events || 0))} 次${push.last_received_at ? ` · 最近接收 ${formatRadarTime(push.last_received_at)}` : " · 尚未收到事件"}；REST 可用于同步和补拉。`;
+  }).catch(() => { receipt.textContent = "暂时无法读取推送连接状态，可稍后重试。"; });
   document.querySelector('[data-radar-panel="bridge"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
   return loading;
 }
@@ -3286,6 +3298,7 @@ function createFutureRadarOpportunityDetail(job) {
       body.appendChild(personalRadar.applicationControl(detail));
       const dates = futureRadarOpportunityDateCopy(detail);
       body.append(makeElement("span", "", dates.opening), makeElement("span", "", dates.closing));
+      if (detail.history_job_id) body.append(createRadarJobHistory({ jobId: detail.history_job_id, api, make: makeElement }));
       const primaryUrl = futureRadarPublicOpportunityUrl(detail) || futureRadarPublicOpportunityUrl(job);
       if (primaryUrl) {
         const link = makeElement("a", "radar-official-link", recruitmentVerification(detail) === "verified"

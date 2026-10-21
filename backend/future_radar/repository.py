@@ -861,6 +861,8 @@ class RadarRepository:
                     before_data, after_data, changed_fields, detected_at, source_id)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", events,
             )
+        from .temporal import observe
+        observe(connection, [mutation["row"] for mutation in changed], recorded_at=now)
         connection.executemany(
             """
             INSERT INTO job_sources
@@ -1091,6 +1093,11 @@ class RadarRepository:
                 _json(fields), now, source_id,
             ),
         )
+        if entity_type == "job" and after is not None:
+            from .temporal import observe
+            row = connection.execute("SELECT * FROM radar_jobs WHERE id=?", (entity_id,)).fetchone()
+            if row:
+                observe(connection, [dict(row)], recorded_at=now)
         return int(cursor.lastrowid or 0)
 
     @staticmethod
@@ -1225,6 +1232,8 @@ class RadarRepository:
                 before_data, after_data, changed_fields, detected_at, source_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", events,
         )
+        from .temporal import observe
+        observe(connection, [{**dict(row), "status": "closed"} for row in jobs], recorded_at=now)
         return len(jobs)
 
     @staticmethod

@@ -24,6 +24,7 @@ import platform
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +40,7 @@ if str(SCRIPT_ROOT) not in sys.path:
 
 from backend.future_radar.normalization import clean_text, stable_digest  # noqa: E402
 from backend.future_radar.schemas import FrostFireSyncV1  # noqa: E402
+from backend.future_radar.webhook import signing_key, signed_headers  # noqa: E402
 from backend.recruitment_watch import (  # noqa: E402
     WatchFetchError,
     fetch_watch_page,
@@ -143,6 +145,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--submit", action="store_true", help="submit with the ingest token instead of printing JSON"
     )
     parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument("--transport", choices=("auto", "rest", "webhook"), default="auto",
+                        help="auto uses signed push and falls back to idempotent REST when unavailable")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
                         help="entities per HTTP request (1-100; default: 25); all input entities are processed")
     args = parser.parse_args(argv)
@@ -467,30 +471,38 @@ def load_token() -> str:
     return os.getenv(TOKEN_ENV, "").strip() or read_keychain_token()
 
 
-def submit_payload(payload: dict[str, Any], token: str, timeout: float) -> Any:
+def submit_payload(payload: dict[str, Any], token: str, timeout: float, *, transport: str = "auto") -> Any:
     if sum(len(payload.get(key, [])) for key in ("programs", "jobs", "articles")) > MAX_BATCH_SIZE:
         raise ImportError("one HTTP request exceeds the 100-entity transport bound; split the input into requests")
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    request = urllib.request.Request(
-        ENDPOINT,
-        data=body,
-        method="POST",
-        headers={
+    if transport not in {"rest", "auto", "webhook"}:
+        raise ImportError("unsupported submission transport")
+    key = signing_key(explicit=os.getenv("FUTURE_RADAR_WEBHOOK_SECRET", ""), ingest_token=token)
+    if transport == "webhook" and not key:
+        raise ImportError("a webhook secret or ingest token of at least 32 bytes is required")
+    use_webhook = transport != "rest" and bool(key)
+    endpoint = ENDPOINT.removesuffix("/sync") + "/webhook" if use_webhook else ENDPOINT
+    headers = signed_headers(body, key, event_id=str(payload["batch_id"])) if use_webhook else {
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
             "User-Agent": "Frostfire-Controlled-Source-Import/1.0",
             "X-Recruitment-Token": token,
             "Idempotency-Key": str(payload["batch_id"]),
-        },
-    )
+        }
+    request = urllib.request.Request(endpoint, data=body, method="POST", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise ImportError("server response is unexpectedly large")
     except urllib.error.HTTPError as exc:
+        if use_webhook and transport == "auto" and exc.code in {404, 502, 503, 504}:
+            return submit_payload(payload, token, timeout, transport="rest")
         raise ImportError(f"server returned HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, OSError):
+        if use_webhook and transport == "auto":
+            # Same payload/key: an ambiguous push timeout cannot duplicate jobs.
+            return submit_payload(payload, token, timeout, transport="rest")
         raise ImportError("submission endpoint is temporarily unavailable") from None
     try:
         return json.loads(raw.decode("utf-8"))
@@ -546,7 +558,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ImportError(
                     f"set {TOKEN_ENV} or add macOS Keychain service '{KEYCHAIN_SERVICE}'"
                 )
-            results = [_safe_response(submit_payload(batch, token, args.timeout)) for batch in batches]
+            results = []
+            for batch in batches:
+                for attempt in range(3):
+                    try:
+                        results.append(_safe_response(submit_payload(batch, token, args.timeout, transport=args.transport)))
+                        break
+                    except ImportError as exc:
+                        retryable = "temporarily unavailable" in str(exc) or any(f"HTTP {code}" in str(exc) for code in (429, 502, 503, 504))
+                        if not retryable or attempt == 2:
+                            raise
+                        time.sleep(0.5 * (2 ** attempt))
             output = results[0] if len(results) == 1 else {"batches": len(results), "results": results}
         else:
             output = batches[0] if len(batches) == 1 else batches

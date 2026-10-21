@@ -122,7 +122,9 @@ from .future_radar.schemas import (
     SourceCreateRequest,
     SourcePatchRequest,
 )
-from .future_radar.service import FutureRadarService, RadarRunBusy, SyncConflict
+from .future_radar.service import FutureRadarService, RadarRunBusy, RadarSourceBusy, SyncConflict
+from .future_radar.temporal import history as radar_history, correct as correct_radar_history
+from .future_radar.webhook import signing_key as radar_webhook_signing_key
 from .chatgpt_monitor_ingestion import ChatGPTMonitorIngestionService, RetryableIngestionBusy
 from .source_backfill import BACKFILL_INTERVAL_SECONDS, SourceBackfillCoordinator
 from .future_radar_mcp import build_future_radar_mcp
@@ -2195,9 +2197,18 @@ def future_radar_opportunity(job_id: str, user: User) -> dict:
             item, profile, include_detail=True, public_input=public,
         ),
         cache_scope=_radar_scoring_scope(user["id"], profile) + ":detail",
+        include_member_ids=True,
     )
     if not job:
         raise HTTPException(status_code=404, detail="Radar opportunity not found.")
+    members = list(job.pop("_member_ids", []))
+    if members:
+        with database.connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM radar_jobs WHERE verification_status='verified' AND id IN ("
+                + ",".join("?" for _ in members) + ") ORDER BY last_changed_at DESC,id LIMIT 1", members,
+            ).fetchone()
+        job["history_job_id"] = row["id"] if row else None
     return job
 
 
@@ -2474,6 +2485,70 @@ def future_radar_job(job_id: str, user: User) -> dict:
     return scored
 
 
+class RadarHistoryChanges(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    city: str | None = Field(default=None, max_length=160)
+    region: str | None = Field(default=None, max_length=160)
+    opening_date: date | None = None
+    closing_date: date | None = None
+    status: Literal["open", "closed", "unknown"] | None = None
+
+
+class RadarHistoryCorrection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    valid_from: datetime
+    valid_to: datetime
+    expected_revision: str = Field(min_length=20, max_length=40)
+    reason: str = Field(min_length=5, max_length=500)
+    changes: RadarHistoryChanges
+
+
+@app.get("/api/future-radar/jobs/{job_id}/history")
+def future_radar_job_history(
+    job_id: str, user: User, valid_at: datetime | None = None,
+    known_at: datetime | None = None,
+    page: int = Query(default=1, ge=1, le=100_000),
+    page_size: int = Query(default=30, ge=1, le=100),
+) -> dict:
+    del user
+    job = future_radar_service.repository.get_job(job_id)
+    if not job or job.get("verification_status") != "verified":
+        raise HTTPException(status_code=404, detail="Radar job history not found.")
+    try:
+        with database.connect() as connection:
+            result = radar_history(connection, job["id"], valid_at=valid_at.isoformat() if valid_at else None,
+                                   known_at=known_at.isoformat() if known_at else None,
+                                   page=page, page_size=page_size)
+        for version in result["items"]:
+            public = _public_search_update_detail(version["job"])
+            version["job"] = {key: public.get(key) for key in version["job"]}
+            version["reason"] = _redact_public_text(version["reason"], limit=500)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/future-radar/jobs/{job_id}/history/corrections")
+def correct_future_radar_job_history(
+    job_id: str, request: RadarHistoryCorrection,
+    _: Annotated[None, Depends(require_admin_dashboard_token)],
+) -> dict:
+    changes = request.changes.model_dump(mode="json", exclude_unset=True)
+    if not changes or any(value is None for key, value in changes.items() if key not in {"opening_date", "closing_date"}):
+        raise HTTPException(status_code=422, detail="Provide at least one non-null corrected fact.")
+    if (changes.get("opening_date") and changes.get("closing_date")
+            and changes["opening_date"] > changes["closing_date"]):
+        raise HTTPException(status_code=422, detail="Opening date cannot follow closing date.")
+    try:
+        with future_radar_service.repository.transaction() as connection:
+            return correct_radar_history(connection, job_id, valid_from=request.valid_from.isoformat(),
+                                         valid_to=request.valid_to.isoformat(), changes=changes,
+                                         expected_revision=request.expected_revision, reason=request.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=409 if "reload" in str(exc) else 422, detail=str(exc)) from exc
+
+
 @app.get("/api/future-radar/programs")
 def future_radar_programs(
     user: User,
@@ -2687,6 +2762,8 @@ def sync_future_radar(
         return future_radar_service.sync(
             request.model_dump(mode="json"), idempotency_key=idempotency_key
         )
+    except RadarSourceBusy as exc:
+        raise HTTPException(status_code=503, detail="Source is busy; retry the same event.", headers={"Retry-After": "3"}) from exc
     except SyncConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -2696,7 +2773,10 @@ def sync_future_radar(
 @app.post("/api/future-radar/webhook")
 async def receive_future_radar_webhook(request: Request) -> dict:
     """Accept signed push deliveries using the same versioned contract as REST sync."""
-    secret = getattr(settings, "future_radar_webhook_secret", "")
+    secret = radar_webhook_signing_key(
+        explicit=getattr(settings, "future_radar_webhook_secret", ""),
+        ingest_token=getattr(settings, "recruitment_ingest_token", ""),
+    )
     if not secret:
         raise HTTPException(status_code=503, detail="Future Radar webhook is not configured.")
     if len(secret.encode("utf-8")) < 32:
@@ -2763,11 +2843,36 @@ async def receive_future_radar_webhook(request: Request) -> dict:
             payload.model_dump(mode="json"),
             idempotency_key=idempotency_key,
         )
+    except RadarSourceBusy as exc:
+        raise HTTPException(status_code=503, detail="Source is busy; retry the same event.", headers={"Retry-After": "3"}) from exc
     except SyncConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    received_at = database.utc_now()
+    with future_radar_service.repository.transaction() as connection:
+        connection.execute(
+            """INSERT INTO radar_webhook_deliveries
+               (event_id,source_id,first_received_at,last_received_at,deliveries) VALUES (?,?,?,?,1)
+               ON CONFLICT(event_id) DO UPDATE SET last_received_at=excluded.last_received_at,
+               deliveries=radar_webhook_deliveries.deliveries+1""",
+            (idempotency_key, payload.source_id, received_at, received_at),
+        )
     return {"delivery": "processed", **result}
+
+
+@app.get("/api/future-radar/integrations/status")
+def future_radar_integration_status(user: User) -> dict:
+    del user
+    enabled = bool(radar_webhook_signing_key(
+        explicit=getattr(settings, "future_radar_webhook_secret", ""),
+        ingest_token=getattr(settings, "recruitment_ingest_token", "")))
+    with database.connect() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS events, COALESCE(SUM(deliveries),0) AS deliveries, MAX(last_received_at) AS last_received_at FROM radar_webhook_deliveries"
+        ).fetchone()
+    return {"webhook": {"enabled": enabled, **dict(row)}, "rest_sync": True,
+            "job_history": "bitemporal", "lstm_runtime": "numpy_cpu"}
 
 
 @app.post("/api/integrations/chatgpt-monitor/sync")

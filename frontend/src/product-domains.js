@@ -1,3 +1,5 @@
+import { REVENUE_MODEL_NAMES, revenueForecastCopy } from "./pulse-forecast.js";
+
 const $ = (id) => document.getElementById(id);
 const money = (cents, currency = "AUD") => new Intl.NumberFormat("zh-CN", { style: "currency", currency, maximumFractionDigits: 2 }).format((Number(cents) || 0) / 100);
 const percent = (value) => value == null ? "样本不足" : `${(Number(value) * 100).toFixed(1)}%`;
@@ -1389,7 +1391,7 @@ export function initProductDomains({ api, toast }) {
         const demo = await api("/pulse/analytics/synthetic-ml-demo");
         renderPulseLine(demo.monthly_rows, demo.forecast);
         const result = demo.forecast?.ml_comparison || {};
-        const modelNames = { last_value_baseline: "上月值基线", random_forest: "随机森林（Random Forest）", adaboost: "AdaBoost", bayesian_ridge: "贝叶斯岭回归（Bayesian Ridge）", pytorch_lstm: "PyTorch 长短期记忆网络（LSTM）" };
+        const modelNames = REVENUE_MODEL_NAMES;
         const comparison = result.status === "ok"
           ? `时间顺序回测 MAE：${result.models.map((item) => `${modelNames[item.model] || item.model} ${money(Math.round(item.mae), pulse.currency)}`).join("；")}；当前选择 ${modelNames[result.selected_model] || result.selected_model}（${result.selection_rule || "以回测误差为准"}）。`
           : "ML候选模型样本门槛未满足。";
@@ -1472,9 +1474,7 @@ export function initProductDomains({ api, toast }) {
       metric(label, value == null ? "—" : money(Math.round(value), pulse.currency), unit)));
     renderPulseLine(eda.monthly_trends || [], eda.revenue_forecast || {});
     const forecast = eda.revenue_forecast || {};
-    $("pulse-time-series-forecast").textContent = forecast.status === "ok"
-      ? `3个月线性趋势基线（非季节模型）：${forecast.points.map((point) => `${point.period} ${money(Math.round(point.revenue), pulse.currency)}（95%区间 ${money(Math.round(point.lower_95), pulse.currency)}–${money(Math.round(point.upper_95), pulse.currency)}）`).join(" · ")}。${forecast.assumptions.join("；")}`
-      : `时间序列样本不足（${forecast.observations || 0}/${forecast.minimum_months || 3}个月），暂不外推。`;
+    $("pulse-time-series-forecast").textContent = revenueForecastCopy(forecast, (value) => money(value, pulse.currency));
     renderPulseBoxplot(order);
     renderPulsePca(eda.pca || {});
   }

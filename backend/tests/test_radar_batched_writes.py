@@ -317,7 +317,9 @@ def test_real_pg_rtt_batches_allow_concurrent_ten_candidate_ingest(batch_service
     ))
     original_connect = database.connect
     monkeypatch.setattr(database, "connect", lambda *, timeout=3: original_connect(timeout=timeout))
-    payload = main.RecruitmentIngestRequest(source_id="chatgpt-radar-03", jobs=[
+    # A public/offline fixture must not inherit the controlled ChatGPT source
+    # attestation policy; this test deliberately exercises pending verification.
+    payload = main.RecruitmentIngestRequest(source_id="offline-rtt-fixture", jobs=[
         {"source_item_id": f"new-{index}", "external_id": f"new-{index}",
          "company": "示例科技", "title": f"2027 校园招聘数据分析岗 new-{index}",
          "city": "上海", "employer_type": "互联网企业", "industry": "科技",

@@ -255,7 +255,7 @@ Content-Type: application/json
 
 `POST /sync` 的 `version` 必须是 `FROSTFIRE_SYNC_V1`。每次 HTTP 请求中 `programs`、`jobs`、`articles` 各最多 100 条，三者合计最多 100 个实体；这是传输安全边界，不限制一轮监控处理的总量。`frostfire_source_import.py` 接收完整的有界输入页，按 `--batch-size` 默认 25、最大 100 连续发出全部请求；超出单页行数或字节边界时继续分页导入。拆分请求均保持 `snapshot_complete=false`，避免部分传输错误关闭尚未发送的记录。请求可以带 `Idempotency-Key`；未提供时依次使用 `batch_id` 或 payload hash。同一幂等键重放同一 payload 返回原结果，复用到不同 payload 返回 409；改变传输大小不改变岗位稳定 ID。未知字段、非 HTTPS URL、包含邮箱/电话号码的 evidence 会被 schema 拒绝。
 
-REST 仍是查询、批量导入、补拉和周期性对账的主接口，不会被 Webhook 替代。`/api/future-radar/webhook` 是可选的推送入口：发送端仍提交同一 `FROSTFIRE_SYNC_V1` JSON，由 `FUTURE_RADAR_WEBHOOK_SECRET` 做 HMAC-SHA256 验签；Secret 至少应为 32 字节随机值。签名格式为 `sha256=` + 小写十六进制 HMAC，签名原文是 `Unix时间戳 + "." + 原始请求体`；时间戳最多允许前后 5 分钟偏差，请求体最多 2 MiB。请求头使用 `X-Future-Radar-Timestamp`、`X-Future-Radar-Signature`，并应带稳定的 `Idempotency-Key`（或 `X-Future-Radar-Event-Id` / payload `batch_id`）。服务端在处理并持久化后才返回成功；同事件重试安全幂等。未配置 Secret 时路由关闭并返回 503。建议 Webhook 处理近实时变化，REST 定期对账及补偿漏投事件；只有上游 ATS/监控服务支持推送时，Webhook 才会带来额外价值。
+REST 仍是查询、批量导入、补拉和周期性对账的主接口，不会被 Webhook 替代。`/api/future-radar/webhook` 是可选的推送入口：发送端仍提交同一 `FROSTFIRE_SYNC_V1` JSON，使用 HMAC-SHA256 验签；优先采用至少 32 字节的 `FUTURE_RADAR_WEBHOOK_SECRET`，未配置时从既有强度足够的 `RECRUITMENT_INGEST_TOKEN` 派生域隔离的签名子密钥（HMAC-SHA256，消息为 `frostfire/future-radar/webhook/v1`，结果十六进制）。发送端不会在推送请求中传输根令牌。签名格式为 `sha256=` + 小写十六进制 HMAC，签名原文是 `Unix时间戳 + "." + 原始请求体`；时间戳最多允许前后 5 分钟偏差，请求体最多 2 MiB。请求头使用 `X-Future-Radar-Timestamp`、`X-Future-Radar-Signature`，并应带稳定的 `Idempotency-Key`（或 `X-Future-Radar-Event-Id` / payload `batch_id`）。服务端在处理并持久化后才返回成功；同事件重试安全幂等。显式密钥配置过短时关闭入口；既无显式密钥也无至少 32 字节的受控同步根令牌时返回 503。建议 Webhook 处理近实时变化，REST 定期对账及补偿漏投事件；只有上游 ATS/监控服务支持推送时，Webhook 才会带来额外价值。
 
 ### 免费实例保活（可选）
 
@@ -338,7 +338,7 @@ AI 提取失败时会记录警告并降级：已经完成的确定性页面抓�
 | `RECRUITMENT_WEB_SEARCH_ENABLED` | 本地示例 `false`；当前 Render Blueprint `true` | 是否启用 `openai-public-web-search` 与五个 `wechat_web_search` 公网 discovery 来源；当前 Render Blueprint 设为每天检查一次 |
 | `RECRUITMENT_WEB_SEARCH_MODEL` | `gpt-5.4-mini` | 重点雇主与公众号公网 Web Search 模型 |
 | `RECRUITMENT_INGEST_TOKEN` | 无 | `/api/recruitment/ingest` 与 `/api/future-radar/sync` 的共享接收密钥 |
-| `FUTURE_RADAR_WEBHOOK_SECRET` | 无 | 可选 Webhook HMAC-SHA256 密钥；未配置时 `/api/future-radar/webhook` 关闭 |
+| `FUTURE_RADAR_WEBHOOK_SECRET` | 无 | 可选独立 HMAC-SHA256 密钥；未设置时从至少32字节的既有接收令牌派生签名子密钥，显式短密钥则关闭入口 |
 | `ADMIN_DASHBOARD_TOKEN` | 无 | 汇总使用面板、Source 配置 API 与 Force Scan 的管理员密钥；普通 Quick/Deep 不使用此 Token |
 | `DATABASE_PATH` | 项目现有默认 | Future Radar 与主应用共用的 SQLite 文件 |
 
